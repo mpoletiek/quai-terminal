@@ -2009,8 +2009,9 @@ impl App {
     /// cache is a minute too), or now with `force`.
     /// Ask the wallet worker for PnL: on opening the screen when the last answer is older than
     /// [`PNL_TTL`], and on `R`. Trades move it, so a stale answer is re-read rather than kept.
+    /// Nothing is marked loading without a worker to answer: the request would go nowhere.
     pub fn load_pnl(&mut self, force: bool) {
-        if self.eco.pnl_loading || !(force || self.eco.pnl_at.is_none_or(|t| t.elapsed() >= PNL_TTL)) {
+        if self.worker.is_none() || self.eco.pnl_loading || !(force || self.eco.pnl_at.is_none_or(|t| t.elapsed() >= PNL_TTL)) {
             return;
         }
         self.eco.pnl_at = Some(Instant::now());
