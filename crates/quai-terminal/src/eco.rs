@@ -124,7 +124,7 @@ async fn continue_plan(
             }
             return Ok(last_submission);
         };
-        let step = wallet_core::flows::is_step(&review);
+        let step = wallet_core::flows::is_step(&review).then(|| review.kind.clone());
         let submitted = match ctx.authorize(s, review).await {
             Ok(submitted) => submitted,
             Err(error) => {
@@ -133,9 +133,9 @@ async fn continue_plan(
             }
         };
         runner.submitted(s)?;
-        ctx.print_submitted(if step { "approve" } else { &runner.plan.label }, &submitted);
+        ctx.print_submitted(step.as_deref().unwrap_or(&runner.plan.label), &submitted);
         let intent: wallet_core::execution::TradingIntent = serde_json::from_value(runner.plan.intent["intent"].clone())?;
-        if !step && !intent.has_more_allocations() {
+        if step.is_none() && !intent.has_more_allocations() {
             return Ok(Some(submitted));
         }
         let operation_id = submitted.op_id.clone();

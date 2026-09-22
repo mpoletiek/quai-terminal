@@ -3135,7 +3135,8 @@ impl App {
         if quote.insufficient && paying_wquai {
             let needed = amount::parse_amount(&card.amount, 18).unwrap_or(U256::ZERO);
             let missing = needed.saturating_sub(U256::from(self.wrapped_atoms(false)));
-            let quai = self.dash.accounts.iter().fold(U256::ZERO, |s, a| s.saturating_add(a.balance));
+            // The swap is signed by the first account, so only its QUAI can be wrapped.
+            let quai = self.dash.accounts.first().map_or(U256::ZERO, |a| a.balance);
             if quai > missing {
                 prewrap = Some(amount::format_amount(missing, 18));
             }
@@ -4409,7 +4410,7 @@ impl App {
                     if let FlowKind::Steps { prepare, .. } = &mut flow.kind
                         && let Prepare::Trading { intent } = prepare.as_mut()
                         && intent.has_more_allocations()
-                        && let Some(op) = self.dash.ops.iter().find(|op| op.id == op_id && op.kind != "approve")
+                        && let Some(op) = self.dash.ops.iter().find(|op| op.id == op_id && !wallet_core::flows::is_step_kind(&op.kind))
                     {
                         if op.kind == "wrap_qi" && op.status != OpStatus::Settled {
                             if flow.last_poll.elapsed() > Duration::from_secs(5) {
@@ -4741,7 +4742,7 @@ impl App {
         }
         flow.review_op = None;
         flow.last_operation = Some(op_id.to_string());
-        if kind != "approve"
+        if !wallet_core::flows::is_step_kind(kind)
             && let FlowKind::Steps { prepare, .. } = &flow.kind
             && let Prepare::Trading { intent } = prepare.as_ref()
             && intent.has_more_allocations()
@@ -4790,8 +4791,10 @@ impl App {
                 return true;
             }
         }
-        if kind == "approve" {
-            if let FlowKind::Swap { .. } = flow.kind {
+        if wallet_core::flows::is_step_kind(kind) {
+            if kind == "approve"
+                && let FlowKind::Swap { .. } = flow.kind
+            {
                 self.eco.swap.approving = true;
             }
             flow.waiting = Some(op_id.to_string());
@@ -4799,7 +4802,8 @@ impl App {
             let label = flow.kind.label();
             self.eco.flow = Some(flow);
             self.checkpoint_flow();
-            self.toast(format!("approval sent · {label} continues when it confirms (you can keep using the wallet)"), false);
+            let step = if kind == "approve" { "approval" } else { "wrap" };
+            self.toast(format!("{step} sent · {label} continues when it confirms (you can keep using the wallet)"), false);
             true
         } else {
             flow.waiting = Some(op_id.to_string());
