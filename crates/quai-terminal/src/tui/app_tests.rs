@@ -464,6 +464,50 @@ fn a_deposit_walks_both_approvals_and_then_deposits() {
     assert!(matches!(app.modal, Modal::Result(_)), "and shows its result");
 }
 
+/// A deposit short of WQUAI starts by wrapping the shortfall from QUAI. That wrap is a step like
+/// an approval — waited on, then the sequence asks again — never the end of the deposit.
+#[test]
+fn a_deposit_short_of_wquai_wraps_then_approves_then_deposits() {
+    use super::super::eco::FlowKind;
+    use super::super::worker::Prepare;
+    use wallet_core::appdb::OpStatus;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.dash.unlocked = true;
+    let size = (100, 30);
+    let prepare = Prepare::AddLiquidityNext {
+        account: None,
+        pair: "0x00pair".into(),
+        amount: "3.5".into(),
+        token: Some("WQUAI".into()),
+        slippage: 50,
+        deadline: 10,
+    };
+    app.start_flow(FlowKind::Steps { prepare: Box::new(prepare), label: "add liquidity to SMOL/WQUAI".into() });
+    for (id, kind) in [("wrap0", "wrap_quai"), ("ap0", "approve")] {
+        app.on_event(review(id, kind), size);
+        assert!(matches!(app.modal, Modal::Review(_)), "{kind} opens a review");
+        app.modal = Modal::None;
+        app.committing_kind = Some(kind.into());
+        app.on_event(submitted(id), size);
+        let flow = app.eco.flow.as_ref().unwrap_or_else(|| panic!("the {kind} does not end the deposit"));
+        assert_eq!(flow.waiting.as_deref(), Some(id), "the sequence waits for the {kind}");
+        assert!(!matches!(app.modal, Modal::Result(_)), "and shows no final result for it");
+        app.dash.ops = vec![op(id, kind, OpStatus::Submitted)];
+        app.advance_flow();
+        assert!(!app.eco.flow.as_ref().unwrap().requested, "nothing asked while the {kind} is unconfirmed");
+        app.dash.ops = vec![op(id, kind, OpStatus::Confirmed)];
+        app.advance_flow();
+        let flow = app.eco.flow.as_ref().expect("the sequence continues");
+        assert!(flow.requested && flow.waiting.is_none(), "the next step is asked for after the {kind}");
+    }
+    app.on_event(review("add1", "add_liquidity"), size);
+    app.modal = Modal::None;
+    app.committing_kind = Some("add_liquidity".into());
+    app.on_event(submitted("add1"), size);
+    assert!(app.eco.flow.is_none(), "the deposit finishes the sequence");
+    assert!(matches!(app.modal, Modal::Result(_)), "and shows its result");
+}
+
 /// The market route is a sequence of reviewed steps: wrap, swap, then redeem exactly what
 /// the swap produced.
 #[test]

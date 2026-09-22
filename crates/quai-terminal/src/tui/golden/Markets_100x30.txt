@@ -1,5 +1,5 @@
  ◆  PREVIEW │ Trade › Markets │ ● Local dev  #1,234,567 │ watch-only                  ● 1 unread N
-                     Trade · ▸ Markets  Swap  Pools  Convert  Wrap  Launches  [ ]
+                     Trade · ▸ Markets  Swap  Pools  Convert  Wrap  Launches  PnL  [ ]
  1 Home         •  │┌ ▸ pairs · stale/partial source · reserves unverified · TVL $11.9k · 24h $2.87┐
 ▌2 Trade           ││ pair                                               price     24h     TVL/%   │
     › Markets      ││ ◆ US QUAI/USDT                                      0.008744 ▼25.4%   $3.33k │
@@ -8,14 +8,14 @@
       Convert      ││                                                                              │
       Wrap         │└──────────────────────────────────────────────────────────────────────────────┘
       Launches     │┌ QUAI/USDT · Quainance · 1h · T timeframe · f flip · t trade · updating… ─────┐
- 3 NFTs         ◧  ││ ◆ US 0.008744 USDT  ▼25.4%  24h · partial history  H 0.01173  L 0.008744     │
- 4 People          ││ vol 343.50 USDT ($343.50) · 30 trades · TVL $3.33k · you hold 90,412.2 QUAI  │
- 5 Activity        ││ ▄                                                                 0.01191    │
-                   ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
- 0 System          ││ █                                                                            │
-                   ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ 0.01024    │
-  [ ] tabs         ││ █                                                                            │
-                   ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
+      PnL          ││ ◆ US 0.008744 USDT  ▼25.4%  24h · partial history  H 0.01173  L 0.008744     │
+ 3 NFTs         ◧  ││ vol 343.50 USDT ($343.50) · 30 trades · TVL $3.33k · you hold 90,412.2 QUAI  │
+ 4 People          ││ ▄                                                                 0.01191    │
+ 5 Activity        ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
+                   ││ █                                                                            │
+ 0 System          ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ 0.01024    │
+                   ││ █                                                                            │
+  [ ] tabs         ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
                    ││ █ █ ─ █ ─ ─ █ ─ █ ─ █ ─ █ ─ ─ █ ─ █ ─ ─                           ◂0.008744  │
                    ││ hh:mm               hh:mm             hh:mm                                  │
                    ││ █   ▇   ▇   ▆   ▆   ▅   ▅   ▄   ▄   ▃                             vol max 25 │

@@ -288,6 +288,8 @@ pub enum Cmd {
         account: Option<String>,
         slippage: u16,
     },
+    /// This wallet's trading performance.
+    Pnl,
     Refresh {
         full: bool,
     },
@@ -383,6 +385,7 @@ impl Cmd {
             Cmd::Discard(_) => "discard",
             Cmd::Quote { .. } => "quote",
             Cmd::QiMax { .. } => "max_quote",
+            Cmd::Pnl => "pnl",
             Cmd::SplitQuote { .. } => "split_quote",
             Cmd::InspectContract { .. } => "inspect_contract",
             Cmd::AddAccount(_) => "add_account",
@@ -428,6 +431,7 @@ pub enum Ev {
         key: u64,
         result: Result<wallet_core::ops::QiSpecialMax, String>,
     },
+    Pnl(Result<Box<wallet_core::pnl::Pnl>, String>),
     Dashboard(Box<Dashboard>),
     /// What [`Cmd::InspectContract`] found, with the address that was asked about so a late
     /// answer for an address the user has since edited away can be dropped.
@@ -1073,9 +1077,22 @@ async fn prepare(session: &mut Session, req: Prepare) -> wallet_core::Result<wal
         Prepare::FillGap { from } => session.review_fill_gap(from.as_deref()).await,
         Prepare::SwapNext { account, from, to, amount, slippage, deadline } => {
             match session.swap_quote(account.as_deref(), &from, &to, &amount, slippage, wallet_core::data::Trust::Cached).await {
-                Ok(q) if q.insufficient => Err(wallet_core::CoreError::Insufficient(
-                    q.warnings.iter().find(|w| w.starts_with("you have")).cloned().unwrap_or_else(|| "balance too low".into()),
-                )),
+                // Paying WQUAI the account lacks: wrap the shortfall from QUAI first, if it can.
+                Ok(q) if q.insufficient => {
+                    let prewrap = match wallet_core::amount::parse_amount(&amount, 18) {
+                        Ok(atoms) if session.is_wquai(&from).await.unwrap_or(false) => {
+                            session.prewrap_quai(account.as_deref(), &from, atoms, "swap", None).await
+                        }
+                        _ => Ok(None),
+                    };
+                    match prewrap {
+                        Ok(Some(review)) => Ok(review),
+                        Ok(None) => Err(wallet_core::CoreError::Insufficient(
+                            q.warnings.iter().find(|w| w.starts_with("you have")).cloned().unwrap_or_else(|| "balance too low".into()),
+                        )),
+                        Err(e) => Err(e),
+                    }
+                }
                 Ok(q) if q.approval_needed => session.review_swap_approval(account.as_deref(), &from, &to, &amount, None).await,
                 Ok(_) => session.review_swap(account.as_deref(), &from, &to, &amount, slippage, deadline, None).await,
                 Err(e) => Err(e),
@@ -1444,6 +1461,7 @@ async fn run(
                 let result = session.quote_qi_special_max(wrapping, account.as_deref(), slippage, None).await.map_err(|e| e.to_string());
                 send(Ev::QiMax { key, result });
             }
+            Cmd::Pnl => send(Ev::Pnl(session.pnl().await.map(Box::new).map_err(|e| e.to_string()))),
             Cmd::SplitQuote { key, account, from, to, amount, slippage } => {
                 let result = session
                     .swap_split_quote(account.as_deref(), &from, &to, &amount, slippage, 20)

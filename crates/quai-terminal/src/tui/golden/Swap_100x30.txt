@@ -1,5 +1,5 @@
  ◆  PREVIEW │ Trade › Swap │ ● Local dev  #1,234,567 │ watch-only                     ● 1 unread N
-                     Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  [ ]
+                     Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  PnL  [ ]
  1 Home         •  │┌ ▸ swap · Quainance ──────────────────────────────────────────────────────────┐
 ▌2 Trade           ││ you pay                                                                      │
       Markets      ││   token       WQ [WQI ✓▾]                                                    │
@@ -8,14 +8,14 @@
       Convert      ││ you receive                                                                  │
       Wrap         ││   token       US [USDT ✓▾]                                                   │
       Launches     ││   amount      ⠋ quoting…                                                     │
- 3 NFTs         ◧  ││                                                                              │
- 4 People          ││   slippage    0.50% ‹›                                                       │
- 5 Activity        ││   deadline    10 min ‹›                                                      │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- 0 System          │┌ quote ───────────────────────────────────────────────────────────────────────┐
-                   ││ Type an amount; the quote updates as you type.                               │
-  [ ] tabs         ││                                                                              │
-                   ││ Quotes read the Quainance router and pools on-chain.                         │
+      PnL          ││                                                                              │
+ 3 NFTs         ◧  ││   slippage    0.50% ‹›                                                       │
+ 4 People          ││   deadline    10 min ‹›                                                      │
+ 5 Activity        │└──────────────────────────────────────────────────────────────────────────────┘
+                   │┌ quote ───────────────────────────────────────────────────────────────────────┐
+ 0 System          ││ Type an amount; the quote updates as you type.                               │
+                   ││                                                                              │
+  [ ] tabs         ││ Quotes read the Quainance router and pools on-chain.                         │
                    ││ Token inputs need an exact approval first; each step is its own review.      │
                    ││                                                                              │
                    ││                                                                              │

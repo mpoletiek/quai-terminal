@@ -1,5 +1,5 @@
  ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › Swap │ ● Local dev  #1 ● 1 unread N
- Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  [ ]
+ Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  PnL  [ ]
 ┌ ▸ swap · Quainance ──────────────────────────────────────────────────────────┐
 │ you pay                                                                      │
 │   token       WQ [WQI ✓▾]                                                    │

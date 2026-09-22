@@ -220,10 +220,40 @@ impl TradingIntent {
         *index += 1;
         Ok(true)
     }
+    /// A swap paying WQUAI the account lacks wraps the shortfall from QUAI first
+    /// ([`Session::prewrap_quai`]). What a step pays: a swap's input, a route's first leg, one
+    /// split allocation, an exact-output swap's input cap. A route's second leg is left alone: it
+    /// pays with what the first delivered.
+    async fn prewrap(&self, session: &mut Session) -> Result<Option<Review>> {
+        let (from, needed, purpose) = match &self.action {
+            TradingAction::Swap { from, amount, .. } | TradingAction::BoundedSwap { from, amount, .. } => (from.clone(), amount, "swap"),
+            TradingAction::CrossVenue { from, amount, stage: 0, .. } => (from.clone(), amount, "first swap"),
+            TradingAction::ExactOutput { from, max_input, .. } => (from.clone(), max_input, "swap"),
+            TradingAction::Split { plan, index, .. } => {
+                let (crate::swap::SwapAsset::Token { address, .. }, Some(allocation)) = (&plan.from, plan.allocations.get(*index)) else {
+                    return Ok(None);
+                };
+                let Ok(atoms) = crate::sdk::U256::from_str_radix(&allocation.amount_in, 10) else { return Ok(None) };
+                let fee = self.max_fee.as_deref();
+                return session.prewrap_quai(Some(&self.account), address, atoms, "split swap", fee).await;
+            }
+            _ => return Ok(None),
+        };
+        if !session.is_wquai(&from).await? {
+            return Ok(None);
+        }
+        // An amount the step itself will not accept is left for the step to refuse.
+        let Ok(atoms) = crate::amount::parse_amount(needed, 18) else { return Ok(None) };
+        session.prewrap_quai(Some(&self.account), &from, atoms, purpose, self.max_fee.as_deref()).await
+    }
+
     pub async fn next_review(&self, session: &mut Session) -> Result<Review> {
         let owner = session.account(Some(&self.account))?;
         if !owner.address.eq_ignore_ascii_case(&self.account) {
             return Err(CoreError::Rejected("saved trading owner must be an address".into()));
+        }
+        if let Some(review) = self.prewrap(session).await? {
+            return Ok(review);
         }
         let account = Some(self.account.as_str());
         let fee = self.max_fee.as_deref();
@@ -360,7 +390,7 @@ impl Coordinator {
             }
             if !plan.operations.contains(&op.id) {
                 plan.operations.push(op.id.clone());
-                if op.kind != "approve" {
+                if !crate::flows::is_step_kind(&op.kind) {
                     plan.intent["final_operation"] = op.id.into();
                 }
                 repaired = true;

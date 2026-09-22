@@ -426,6 +426,8 @@ pub const MARKET_CANDLES: usize = 64;
 /// is not what costs — each source's own TTL decides whether a tick reaches the network at all,
 /// and a tick inside that window is served from the store.
 pub const MARKET_REFRESH: Duration = Duration::from_secs(5);
+/// How long a PnL answer is shown before opening the screen reads it again.
+pub const PNL_TTL: Duration = Duration::from_secs(30);
 /// The swap card's pair chart: hourly, which the indexer buckets, so it is one query.
 pub const SWAP_CHART_BUCKET: u64 = 3_600;
 
@@ -636,6 +638,10 @@ pub struct Eco {
     pub nft_meta: HashMap<(String, String), Result<NftItem, String>>,
     pub asks: HashMap<(String, String), Result<AskCheck, String>>,
     pub token_info: HashMap<String, Result<(TokenInfo, Option<bool>), String>>,
+    /// This wallet's trading performance, when it was asked for, and whether an answer is due.
+    pub pnl: Option<Result<wallet_core::pnl::Pnl, String>>,
+    pub pnl_at: Option<Instant>,
+    pub pnl_loading: bool,
     /// Quainance's launch zone, newest first.
     pub launches: Option<Result<Vec<wallet_core::launches::Launch>, String>>,
     pub launches_at: Option<Instant>,
@@ -1065,6 +1071,7 @@ impl App {
             }
             Screen::Board => self.tick_board(),
             Screen::Launches => self.load_launches(false),
+            Screen::Pnl => self.load_pnl(false),
             Screen::Network => self.tick_chain_stats(),
             Screen::Wallets => self.load_wallets(),
             Screen::Explore => {
@@ -2000,6 +2007,49 @@ impl App {
 
     /// Ask for the launch zone when it has never loaded or is a minute old (the indexer's own
     /// cache is a minute too), or now with `force`.
+    /// Ask the wallet worker for PnL: on opening the screen when the last answer is older than
+    /// [`PNL_TTL`], and on `R`. Trades move it, so a stale answer is re-read rather than kept.
+    /// Nothing is marked loading without a worker to answer: the request would go nowhere.
+    pub fn load_pnl(&mut self, force: bool) {
+        if self.worker.is_none() || self.eco.pnl_loading || !(force || self.eco.pnl_at.is_none_or(|t| t.elapsed() >= PNL_TTL)) {
+            return;
+        }
+        self.eco.pnl_at = Some(Instant::now());
+        self.eco.pnl_loading = true;
+        self.send(Cmd::Pnl);
+    }
+
+    /// Positions the PnL screen lists, in its order.
+    pub fn pnl_positions(&self) -> &[wallet_core::pnl::Position] {
+        match &self.eco.pnl {
+            Some(Ok(p)) => &p.positions,
+            _ => &[],
+        }
+    }
+
+    fn pnl_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('R') => {
+                self.load_pnl(true);
+                self.toast("re-reading trades and prices", false);
+                true
+            }
+            // Trade the focused token against QUAI on the swap card.
+            KeyCode::Char('t') => {
+                let Some(p) = self.pnl_positions().get(self.selected).cloned() else { return true };
+                self.eco.swap.from = SwapAsset::Quai;
+                self.eco.swap.to = Some(SwapAsset::Token { address: p.token.clone(), symbol: p.symbol.clone(), decimals: p.decimals });
+                self.eco.swap.amount.clear();
+                self.eco.swap.quote = None;
+                self.eco.swap.field = 1;
+                self.switch(Screen::Swap);
+                self.toast(format!("buy {} with QUAI · f flips to sell", p.symbol), false);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn load_launches(&mut self, force: bool) {
         let due = Duration::from_secs(wallet_core::launches::LAUNCH_TTL);
         if force || self.eco.launches_at.is_none_or(|t| t.elapsed() >= due) {
@@ -2707,6 +2757,7 @@ impl App {
             Screen::Board => self.board_key(key),
             Screen::Pools => self.pools_key(key),
             Screen::Launches => self.launches_key(key),
+            Screen::Pnl => self.pnl_key(key),
             Screen::Swap => self.swap_key(key),
             Screen::Convert => self.convert_key(key),
             Screen::Wrap => self.wrap_key(key),
@@ -3135,7 +3186,8 @@ impl App {
         if quote.insufficient && paying_wquai {
             let needed = amount::parse_amount(&card.amount, 18).unwrap_or(U256::ZERO);
             let missing = needed.saturating_sub(U256::from(self.wrapped_atoms(false)));
-            let quai = self.dash.accounts.iter().fold(U256::ZERO, |s, a| s.saturating_add(a.balance));
+            // The swap is signed by the first account, so only its QUAI can be wrapped.
+            let quai = self.dash.accounts.first().map_or(U256::ZERO, |a| a.balance);
             if quai > missing {
                 prewrap = Some(amount::format_amount(missing, 18));
             }
@@ -4409,7 +4461,7 @@ impl App {
                     if let FlowKind::Steps { prepare, .. } = &mut flow.kind
                         && let Prepare::Trading { intent } = prepare.as_mut()
                         && intent.has_more_allocations()
-                        && let Some(op) = self.dash.ops.iter().find(|op| op.id == op_id && op.kind != "approve")
+                        && let Some(op) = self.dash.ops.iter().find(|op| op.id == op_id && !wallet_core::flows::is_step_kind(&op.kind))
                     {
                         if op.kind == "wrap_qi" && op.status != OpStatus::Settled {
                             if flow.last_poll.elapsed() > Duration::from_secs(5) {
@@ -4741,7 +4793,7 @@ impl App {
         }
         flow.review_op = None;
         flow.last_operation = Some(op_id.to_string());
-        if kind != "approve"
+        if !wallet_core::flows::is_step_kind(kind)
             && let FlowKind::Steps { prepare, .. } = &flow.kind
             && let Prepare::Trading { intent } = prepare.as_ref()
             && intent.has_more_allocations()
@@ -4790,8 +4842,10 @@ impl App {
                 return true;
             }
         }
-        if kind == "approve" {
-            if let FlowKind::Swap { .. } = flow.kind {
+        if wallet_core::flows::is_step_kind(kind) {
+            if kind == "approve"
+                && let FlowKind::Swap { .. } = flow.kind
+            {
                 self.eco.swap.approving = true;
             }
             flow.waiting = Some(op_id.to_string());
@@ -4799,7 +4853,8 @@ impl App {
             let label = flow.kind.label();
             self.eco.flow = Some(flow);
             self.checkpoint_flow();
-            self.toast(format!("approval sent · {label} continues when it confirms (you can keep using the wallet)"), false);
+            let step = if kind == "approve" { "approval" } else { "wrap" };
+            self.toast(format!("{step} sent · {label} continues when it confirms (you can keep using the wallet)"), false);
             true
         } else {
             flow.waiting = Some(op_id.to_string());
@@ -5577,6 +5632,7 @@ impl App {
             (None, Screen::Listings) => self.eco.visible_listings().get(self.selected).map(|l| l.contract.clone()),
             (None, Screen::Explore) => self.eco.collections_filtered().get(self.selected).map(|c| c.address.clone()),
             (None, Screen::Launches) => self.launch_rows().get(self.selected).map(|l| l.token.clone()),
+            (None, Screen::Pnl) => self.pnl_positions().get(self.selected).map(|p| p.token.clone()),
             _ => None,
         }
     }

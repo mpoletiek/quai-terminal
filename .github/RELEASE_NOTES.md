@@ -3,6 +3,20 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
+## What's new in 0.1.0-alpha.2
+
+- **Trading PnL in QUAI.** Trade › PnL, and `quai-terminal pnl --trades`, show per token what you
+  hold, its average cost, its price now, and realized and unrealized PnL, with the net after gas.
+  It counts the trades made from this wallet: receipt amounts where they were recorded, average
+  cost, marked at the deepest WQUAI pool or the token's bonding curve.
+- **QUAI is wrapped for you when a trade needs WQUAI.** A deposit into a WQUAI pool, or a trade
+  paying WQUAI, that finds too little WQUAI but enough QUAI now starts with a reviewed wrap of
+  exactly the shortfall. Automated orders are unchanged.
+- **The matrix lock screen falls back to ASCII rain** where no installed font draws its katakana,
+  instead of drawing blank cells.
+- **macOS fixes.** The background daemon now answers `stop`, `status` and `lock` on macOS; before,
+  it ignored every command. The Intel build runs on a supported runner.
+
 ## Download
 
 | Platform | File |
@@ -49,10 +63,11 @@ background was successfully negotiated with the terminal.
 
 Read this part.
 
-- **No trading transaction from this wallet has ever been broadcast to Quai mainnet.** Trading is
-  qualified by simulation against the deployed contracts and by execution on a disposable local
-  chain. Sending and receiving are exercised; the trading write paths are not, on mainnet, by
-  anyone, yet.
+- **Only part of trading has run on Quai mainnet.** Swaps, bonding-curve buys, adding and removing
+  liquidity, staking, unstaking and harvesting have all confirmed there from this wallet. Curve
+  sells, Hartii trades, exact-output and split swaps, and the automatic wrap before a trade have
+  not: they are qualified by simulation against the deployed contracts and by execution on a
+  disposable local chain.
 - It holds real keys. Back up your recovery phrase before funding anything, and try it with a small
   amount first.
 - `wallet watch` creates a watch-only wallet that cannot sign. That is the safe way to look around.

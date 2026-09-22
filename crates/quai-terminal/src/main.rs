@@ -27,6 +27,7 @@ fn command_name(cmd: &Option<Command>) -> &'static str {
         Some(Command::Token(_)) => "token",
         Some(Command::Contract(_)) => "contract",
         Some(Command::Portfolio(_)) => "portfolio",
+        Some(Command::Pnl(_)) => "pnl",
         Some(Command::Price(_)) => "price",
         Some(Command::Swap(_)) => "swap",
         Some(Command::Pool(_)) => "pool",
@@ -71,7 +72,8 @@ fn required_feature(cmd: &Option<Command>) -> Option<Feature> {
             | Command::Farm(_)
             | Command::Watch(_)
             | Command::Order(_)
-            | Command::Plan(_),
+            | Command::Plan(_)
+            | Command::Pnl(_),
         ) => Some(Feature::Trading),
         Some(Command::Alert(args::AlertCmd::Add { .. })) => Some(Feature::Trading),
         Some(Command::Nft(_) | Command::Market(_)) => Some(Feature::Nfts),
@@ -116,6 +118,7 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
         Some(Command::Token(c)) => commands::token(&ctx, c).await,
         Some(Command::Contract(c)) => commands::contract(&ctx, c).await,
         Some(Command::Portfolio(a)) => eco::portfolio(&mut ctx, a).await,
+        Some(Command::Pnl(a)) => eco::pnl(&ctx, a).await,
         Some(Command::Price(a)) => eco::price(&mut ctx, a).await,
         Some(Command::Swap(a)) => eco::swap(&ctx, a).await,
         Some(Command::Pool(c)) => eco::pool(&ctx, c).await,

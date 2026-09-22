@@ -1423,6 +1423,160 @@ fn market_quotes(app: &App, t: &Theme, c: &wallet_core::qi_market::Comparison, w
 
 /// Quainance's launch zone: every launched token, newest first, with where it trades now. A token
 /// still on its curve shows how far it is toward graduating; pooled ones trade from the Swap card.
+/// Trading PnL in QUAI: the totals, a row per token traded, what the focused one needs said,
+/// and the latest trades behind it.
+pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    use wallet_core::pnl::{price_text, quai_text, signed_text, units_text};
+    let block = panel(t, "trading PnL · in QUAI", true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let pnl = match &app.eco.pnl {
+        None => return empty_state(f, inner, t, spinner(), "Reading this wallet's trades…", &[]),
+        Some(Err(e)) => return empty_state(f, inner, t, "×", &app::friendly_error(e), &[("R", "retry")]),
+        Some(Ok(p)) if p.fills.is_empty() => {
+            return empty_state(
+                f,
+                inner,
+                t,
+                "○",
+                "No trades yet. Swaps and curve trades made from this wallet show up here, with their cost and gain in QUAI.",
+                &[("2", "trade")],
+            );
+        }
+        Some(Ok(p)) => p,
+    };
+    let tone = |v: f64| {
+        if v > 0.00005 {
+            Style::default().fg(t.ok)
+        } else if v < -0.00005 {
+            Style::default().fg(t.danger)
+        } else {
+            t.text_style()
+        }
+    };
+    let trade_rows = pnl.fills.len().min(8) as u16;
+    let [summary, positions, trades] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(4),
+        Constraint::Length(if inner.height >= 18 { trade_rows + 2 } else { 0 }),
+    ])
+    .areas(inner);
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("net ", t.dim_style()),
+                Span::styled(format!("{} QUAI", signed_text(pnl.net)), tone(pnl.net).add_modifier(Modifier::BOLD)),
+                Span::styled(if app.eco.pnl_loading { "  refreshing…" } else { "" }, t.dim_style()),
+            ]),
+            Line::from(vec![
+                Span::styled("realized ", t.dim_style()),
+                Span::styled(signed_text(pnl.realized), tone(pnl.realized)),
+                Span::styled("  unrealized ", t.dim_style()),
+                Span::styled(signed_text(pnl.unrealized), tone(pnl.unrealized)),
+                Span::styled(format!("  fees {}  ·  {} trades", quai_text(pnl.fees), pnl.fills.len()), t.dim_style()),
+            ]),
+        ]),
+        summary,
+    );
+    // Columns earn their place by width: the price and trade count go first, then average cost.
+    let (wide, medium) = (positions.width >= 96, positions.width >= 76);
+    let header = format!(
+        "  {:<10} {:>10} {}{}{:>10} {:>11} {:>11}{}",
+        "token",
+        "held",
+        if medium { format!("{:>11} ", "avg cost") } else { String::new() },
+        if wide { format!("{:>11} ", "price") } else { String::new() },
+        "value",
+        "unrealized",
+        "realized",
+        if wide { format!(" {:>6}", "trades") } else { String::new() },
+    );
+    let mut lines = vec![Line::from(Span::styled(header, t.dim_style()))];
+    let list = &pnl.positions;
+    let selected = app.selected.min(list.len().saturating_sub(1));
+    // Room for the focused token's notes under the table.
+    let room = (positions.height as usize).saturating_sub(3).max(1);
+    let start = selected.saturating_sub(room.saturating_sub(1));
+    for (i, p) in list.iter().enumerate().skip(start).take(room) {
+        let focused = i == selected;
+        let style = if focused { t.selected() } else { t.text_style() };
+        let held = if p.open > 0.0 { units_text(p.open) } else { "closed".into() };
+        let dash = || "—".to_string();
+        let mut spans = vec![
+            Span::styled(if focused { "▌ " } else { "  " }, Style::default().fg(t.focus)),
+            Span::styled(
+                format!("{:<10} ", truncate(&format!("{}{}", p.symbol, if p.estimated { " ~" } else { "" }), 10)),
+                style.add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{held:>10} "), if p.open > 0.0 { style } else { t.dim_style() }),
+        ];
+        if medium {
+            spans.push(Span::styled(format!("{:>11} ", p.avg_cost.map(price_text).unwrap_or_else(dash)), t.dim_style()));
+        }
+        if wide {
+            spans.push(Span::styled(format!("{:>11} ", p.mark.map(price_text).unwrap_or_else(dash)), t.dim_style()));
+        }
+        spans.extend([
+            Span::styled(format!("{:>10} ", p.value.map(quai_text).unwrap_or_else(dash)), style),
+            Span::styled(format!("{:>11} ", p.unrealized.map(signed_text).unwrap_or_else(dash)), p.unrealized.map_or(t.dim_style(), tone)),
+            Span::styled(format!("{:>11}", signed_text(p.realized)), tone(p.realized)),
+        ]);
+        if wide {
+            spans.push(Span::styled(format!(" {:>6}", p.trades), t.dim_style()));
+        }
+        lines.push(Line::from(spans));
+    }
+    // What the focused token's figures leave out, said once, under the table.
+    if let Some(p) = list.get(selected) {
+        let mut notes = Vec::new();
+        if p.open > 0.0 && p.mark.is_none() {
+            notes.push("no WQUAI pool or curve prices it, so it stands at cost".to_string());
+        }
+        if p.moved_out > 0.0 {
+            notes.push(format!("{} left the wallet other than by a trade, removed at cost", units_text(p.moved_out)));
+        }
+        if p.unmatched_sold > 0.0 {
+            notes.push(format!("{} sold with no buy recorded here: no gain claimed on it", units_text(p.unmatched_sold)));
+        }
+        if p.incomplete_basis {
+            notes.push("part of its cost is unknown".into());
+        }
+        if p.estimated {
+            notes.push("~ some figures are the review's; the receipt did not record them".into());
+        }
+        if !notes.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(format!("{}: {}", p.symbol, notes.join(" · ")), t.dim_style())));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), positions);
+    if trades.height > 0 {
+        let mut lines = vec![Line::from(Span::styled("latest trades", t.dim_style()))];
+        // The tokens take what the date, side and QUAI columns leave.
+        let width = (trades.width as usize).saturating_sub(40).clamp(20, 48);
+        for fill in pnl.fills.iter().take(trade_rows as usize) {
+            let when = chrono::DateTime::from_timestamp(fill.at as i64, 0)
+                .map(|at| at.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
+                .unwrap_or_default();
+            let tokens = fill
+                .legs
+                .iter()
+                .map(|l| format!("{}{} {}", if l.units > 0.0 { "+" } else { "" }, units_text(l.units), l.symbol))
+                .collect::<Vec<_>>()
+                .join("  ");
+            let side = fill.side();
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {when}  "), t.dim_style()),
+                Span::styled(format!("{side:<5}"), Style::default().fg(if side == "sell" { t.attention } else { t.focus })),
+                Span::styled(format!("{:<width$} ", truncate(&tokens, width)), t.text_style()),
+                // What a trade paid or fetched is a flow, not a gain: it is not coloured as one.
+                Span::styled(if fill.quai != 0.0 { format!("{} QUAI", signed_text(fill.quai)) } else { String::new() }, t.dim_style()),
+            ]));
+        }
+        f.render_widget(Paragraph::new(lines), trades);
+    }
+}
+
 pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::launches::Phase;
     // The focused token's curve sits beside the list on wide screens, under it otherwise.

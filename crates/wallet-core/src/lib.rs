@@ -37,6 +37,7 @@ pub mod ops;
 pub mod orders;
 pub mod paths;
 pub mod plans;
+pub mod pnl;
 pub mod portfolio;
 pub mod qi_exit;
 pub mod qi_market;

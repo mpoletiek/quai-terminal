@@ -124,7 +124,7 @@ async fn continue_plan(
             }
             return Ok(last_submission);
         };
-        let step = wallet_core::flows::is_step(&review);
+        let step = wallet_core::flows::is_step(&review).then(|| review.kind.clone());
         let submitted = match ctx.authorize(s, review).await {
             Ok(submitted) => submitted,
             Err(error) => {
@@ -133,9 +133,9 @@ async fn continue_plan(
             }
         };
         runner.submitted(s)?;
-        ctx.print_submitted(if step { "approve" } else { &runner.plan.label }, &submitted);
+        ctx.print_submitted(step.as_deref().unwrap_or(&runner.plan.label), &submitted);
         let intent: wallet_core::execution::TradingIntent = serde_json::from_value(runner.plan.intent["intent"].clone())?;
-        if !step && !intent.has_more_allocations() {
+        if step.is_none() && !intent.has_more_allocations() {
             return Ok(Some(submitted));
         }
         let operation_id = submitted.op_id.clone();
@@ -161,6 +161,112 @@ pub fn disclose(ctx: &mut Ctx, network_id: &str) {
 }
 
 // ============================================================== portfolio & prices
+
+pub async fn pnl(ctx: &Ctx, args: PnlArgs) -> Result<()> {
+    use wallet_core::pnl::{price_text, quai_text, signed_text, units_text};
+    let mut s = ctx.session().await?;
+    let pnl = s.pnl().await?;
+    if ctx.out.json() {
+        ctx.out.emit("pnl", &pnl);
+        return Ok(());
+    }
+    if pnl.fills.is_empty() {
+        println!("no trades yet · PnL counts the swaps and curve trades this wallet makes");
+        return Ok(());
+    }
+    let tint = |v: f64, text: String| {
+        if v > 0.00005 {
+            ctx.out.green(&text)
+        } else if v < -0.00005 {
+            ctx.out.red(&text)
+        } else {
+            text
+        }
+    };
+    println!(
+        "{} {}  {}",
+        ctx.out.bold("pnl"),
+        tint(pnl.net, format!("{} QUAI", signed_text(pnl.net))),
+        ctx.out.dim(&format!(
+            "realized {} · unrealized {} · fees {} · {} trades",
+            signed_text(pnl.realized),
+            signed_text(pnl.unrealized),
+            quai_text(pnl.fees),
+            pnl.fills.len()
+        ))
+    );
+    let rows = pnl
+        .positions
+        .iter()
+        .map(|p| {
+            let held = if p.open > 0.0 { units_text(p.open) } else { "closed".into() };
+            vec![
+                format!("{}{}", p.symbol, if p.estimated { " ~" } else { "" }),
+                held,
+                p.avg_cost.map(price_text).unwrap_or_else(|| "—".into()),
+                p.mark.map(price_text).unwrap_or_else(|| "—".into()),
+                p.value.map(quai_text).unwrap_or_else(|| "—".into()),
+                p.unrealized.map(|u| tint(u, signed_text(u))).unwrap_or_else(|| "—".into()),
+                tint(p.realized, signed_text(p.realized)),
+                p.trades.to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    ctx.out.table(&["token", "held", "avg cost", "price", "value", "unrealized", "realized", "trades"], &rows);
+    let mut notes = Vec::new();
+    if pnl.positions.iter().any(|p| p.estimated) {
+        notes.push("~ some figures come from the review; the receipt did not record them".to_string());
+    }
+    if pnl.unmarked > 0 {
+        notes.push(format!("{} open position(s) have no WQUAI pool or curve to price them; they count at cost", pnl.unmarked));
+    }
+    for p in &pnl.positions {
+        if p.unmatched_sold > 0.0 {
+            notes.push(format!(
+                "{}: {} sold with no buy recorded here, so no gain is claimed on it",
+                p.symbol,
+                units_text(p.unmatched_sold)
+            ));
+        }
+        if p.moved_out > 0.0 {
+            notes.push(format!("{}: {} left the wallet other than by a trade, removed at cost", p.symbol, units_text(p.moved_out)));
+        }
+        if p.incomplete_basis {
+            notes.push(format!("{}: part of its cost is unknown (bought with a token that had none recorded)", p.symbol));
+        }
+    }
+    for note in notes {
+        println!("{}", ctx.out.dim(&note));
+    }
+    if args.trades {
+        println!();
+        let rows = pnl
+            .fills
+            .iter()
+            .take(args.limit)
+            .map(|f| {
+                let when = chrono::DateTime::from_timestamp(f.at as i64, 0)
+                    .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_default();
+                let legs = f
+                    .legs
+                    .iter()
+                    .map(|l| format!("{}{} {}", if l.units > 0.0 { "+" } else { "" }, units_text(l.units), l.symbol))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                vec![
+                    when,
+                    f.side().into(),
+                    legs,
+                    if f.quai.abs() > 0.0 { signed_text(f.quai) } else { "—".into() },
+                    f.tx.as_deref().map(short_address).unwrap_or_default(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        ctx.out.table(&["when", "side", "tokens", "QUAI", "tx"], &rows);
+    }
+    Ok(())
+}
 
 pub async fn portfolio(ctx: &mut Ctx, args: PortfolioArgs) -> Result<()> {
     let mut s = ctx.session().await?;

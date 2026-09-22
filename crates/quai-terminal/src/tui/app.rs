@@ -55,7 +55,7 @@ impl Section {
     pub fn all_screens(self) -> &'static [Screen] {
         match self {
             Section::Home => &[Screen::Home, Screen::Qi, Screen::Accounts, Screen::Locks],
-            Section::Trade => &[Screen::Markets, Screen::Swap, Screen::Pools, Screen::Convert, Screen::Wrap, Screen::Launches],
+            Section::Trade => &[Screen::Markets, Screen::Swap, Screen::Pools, Screen::Convert, Screen::Wrap, Screen::Launches, Screen::Pnl],
             Section::Nfts => &[Screen::Collected, Screen::Explore, Screen::Listings],
             Section::People => &[Screen::Contacts, Screen::Channels, Screen::Board],
             Section::Activity => &[Screen::Activity],
@@ -118,6 +118,8 @@ pub enum Screen {
     Wrap,
     /// Quainance's launch zone: bonding-curve launches and where they trade now.
     Launches,
+    /// Trading performance in QUAI from this wallet's own trades.
+    Pnl,
     Collected,
     Explore,
     Listings,
@@ -135,7 +137,7 @@ pub enum Screen {
 
 impl Screen {
     #[cfg(test)]
-    pub const ALL: [Screen; 21] = [
+    pub const ALL: [Screen; 22] = [
         Screen::Home,
         Screen::Qi,
         Screen::Accounts,
@@ -146,6 +148,7 @@ impl Screen {
         Screen::Convert,
         Screen::Wrap,
         Screen::Launches,
+        Screen::Pnl,
         Screen::Collected,
         Screen::Explore,
         Screen::Listings,
@@ -171,6 +174,7 @@ impl Screen {
             Screen::Convert => "Convert",
             Screen::Wrap => "Wrap",
             Screen::Launches => "Launches",
+            Screen::Pnl => "PnL",
             Screen::Collected => "Collected",
             Screen::Explore => "Explore",
             Screen::Listings => "Listings",
@@ -193,7 +197,7 @@ impl Screen {
     /// operations, so they stay when trading is off.
     pub fn feature(self) -> Option<Feature> {
         match self {
-            Screen::Markets | Screen::Swap | Screen::Pools | Screen::Launches => Some(Feature::Trading),
+            Screen::Markets | Screen::Swap | Screen::Pools | Screen::Launches | Screen::Pnl => Some(Feature::Trading),
             Screen::Collected | Screen::Explore | Screen::Listings => Some(Feature::Nfts),
             Screen::Board => Some(Feature::Messaging),
             _ => None,
@@ -318,6 +322,7 @@ pub fn screen_hints(screen: Screen) -> &'static [(&'static str, &'static str)] {
         }
         Screen::Wrap => &[("0-9", "amount"), ("m", "max"), ("tab", "field"), ("←→", "mode"), ("enter", "review")],
         Screen::Locks => &[("j/k", "move"), ("R", "refresh")],
+        Screen::Pnl => &[("j/k", "token"), ("t", "trade token"), ("y", "copy token"), ("R", "refresh")],
         Screen::Launches => &[
             ("j/k", "move"),
             ("b", "buy"),
@@ -931,6 +936,7 @@ pub const ACTIONS: &[Action] = &[
     action!("Contacts (addresses & payment codes)", "4", "quai-terminal contact list", "contacts"),
     action!("Add contact", "4 a", "quai-terminal contact add NAME --address ADDR", "add_contact"),
     action!("Launches (Quainance launch zone)", "2 ]]]]]", "quai-terminal pool launches", "launches"),
+    action!("Trading PnL in QUAI", "2 ]]]]]]", "quai-terminal pnl --trades", "pnl"),
     action!("Speed up selected transaction", "5 u", "quai-terminal tx speedup ID", "speedup"),
     action!("Fill nonce gap", "", "quai-terminal tx fill-gap --from ACCOUNT", "fill_gap"),
     action!("Data sources", "0 ]]", "quai-terminal data status", "data_sources"),
@@ -1381,6 +1387,10 @@ impl App {
                     Err(error) => self.toast(friendly_error(&error), true),
                 }
             }
+            Ev::Pnl(result) => {
+                self.eco.pnl_loading = false;
+                self.eco.pnl = Some(result.map(|p| *p));
+            }
             Ev::QiMax { key, result } => {
                 if self.eco.max_request != Some((key, self.max_identity())) {
                     return;
@@ -1779,6 +1789,7 @@ impl App {
             Screen::Contacts => self.dash.contacts.len(),
             Screen::Locks => self.dash.locks.len(),
             Screen::Launches => self.launch_rows().len(),
+            Screen::Pnl => self.pnl_positions().len(),
             Screen::Network => self.dash.networks.len(),
             Screen::Settings => SETTINGS.len(),
             Screen::DataSources => DATA_SOURCES.len(),
@@ -2574,6 +2585,7 @@ impl App {
             "listings" => self.switch(Screen::Listings),
             "data_sources" => self.switch(Screen::DataSources),
             "launches" => self.switch(Screen::Launches),
+            "pnl" => self.switch(Screen::Pnl),
             "locks" => self.switch(Screen::Locks),
             "discover_tokens" => self.send(Cmd::DiscoverTokens),
             "test_data" => self.send_data(super::data::DataCmd::Test),
@@ -4301,7 +4313,7 @@ pub fn review_cli(r: &wallet_core::tx::Review) -> Option<String> {
 /// The optional feature a palette action belongs to.
 pub fn action_feature(id: &str) -> Option<Feature> {
     match id {
-        "trade" | "swap" | "launches" => Some(Feature::Trading),
+        "trade" | "swap" | "launches" | "pnl" => Some(Feature::Trading),
         "nfts" | "explore" | "listings" => Some(Feature::Nfts),
         _ => None,
     }
