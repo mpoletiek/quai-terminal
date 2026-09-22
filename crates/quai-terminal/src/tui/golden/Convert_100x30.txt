@@ -1,5 +1,5 @@
  ◆  PREVIEW │ Trade › Convert │ ● Local dev  #1,234,567 │ watch-only                  ● 1 unread N
-                     Trade · Markets  Swap  Pools  ▸ Convert  Wrap  Launches  [ ]
+                     Trade · Markets  Swap  Pools  ▸ Convert  Wrap  Launches  PnL  [ ]
  1 Home         •  │┌ ▸ convert · QUAI ↔ Qi ───────────────────────────────────────────────────────┐
 ▌2 Trade           ││ direction   ◆  QUAI → ◉  Qi ‹›                                               │
       Markets      ││ you pay     5000 QUAI   available 179071.7533 QUAI                           │
@@ -8,14 +8,14 @@
     › Convert      ││                                                                              │
       Wrap         ││ enter quote the conversion   r route   f flip                                │
       Launches     ││ Conversions in one prime block share a discount; beyond your slippage they   │
- 3 NFTs         ◧  ││ refund (fee spent).                                                          │
+      PnL          ││ refund (fee spent).                                                          │
+ 3 NFTs         ◧  ││                                                                              │
  4 People          ││                                                                              │
- 5 Activity        ││                                                                              │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- 0 System          │┌ both markets ────────────────────────────────────────────────────────────────┐
-                   ││ ▌◈ PROTOCOL protocol conversion        1,432.118 Qi                          │
-  [ ] tabs         ││ ▌  convert QUAI → Qi                                                         │
-                   ││ ▌  spendable locked by the protocol (weeks)   no LP fee or price impact      │
+ 5 Activity        │└──────────────────────────────────────────────────────────────────────────────┘
+                   │┌ both markets ────────────────────────────────────────────────────────────────┐
+ 0 System          ││ ▌◈ PROTOCOL protocol conversion        1,432.118 Qi                          │
+                   ││ ▌  convert QUAI → Qi                                                         │
+  [ ] tabs         ││ ▌  spendable locked by the protocol (weeks)   no LP fee or price impact      │
                    ││ ▌  ! conversions in one prime block share a discount; one above yo…          │
                    ││                                                                              │
                    ││  ≋ MARKET   market route (Quainance)   12,893.000 Qi  ✓ pays more            │

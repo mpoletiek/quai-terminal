@@ -893,6 +893,8 @@ fn every_screen_renders_at_every_size() {
             legs: vec![],
         }));
         app.eco.lockups = Some(Ok(0));
+        app.eco.pnl = Some(Ok(sample_pnl()));
+        app.eco.pnl_at = Some(std::time::Instant::now());
         // Markets: one pool with a day of swaps and syncs.
         {
             use wallet_core::markets::{DexOverview, Pool, PoolEvent, PoolToken};
@@ -1747,6 +1749,65 @@ fn launch_rows_carry_an_icon() {
     assert_eq!(cheez.find("CHEEZ").map(|i| cheez[..i].chars().count()), qoge.find("QOGE").map(|i| qoge[..i].chars().count()));
     if std::env::var("QW_SHOW").is_ok() {
         println!("{}", screen.join("\n"));
+    }
+}
+
+/// A wallet that bought MOON twice, sold some, swapped a little into STAR (unpriced), and sold
+/// CHEEZ it never bought here. Trades sit at noon UTC so their dates read the same in any zone
+/// the goldens are drawn in.
+fn sample_pnl() -> wallet_core::pnl::Pnl {
+    use wallet_core::pnl::{Fill, Leg, compute};
+    let leg = |token: &str, symbol: &str, units: f64| Leg { token: token.into(), symbol: symbol.into(), decimals: 18, units };
+    let fill = |id: &str, at: u64, quai: f64, legs: Vec<Leg>| Fill {
+        op_id: id.into(),
+        at,
+        tx: Some(format!("0x{id}")),
+        kind: "swap".into(),
+        account: "0xme".into(),
+        quai,
+        legs,
+        estimated: false,
+        fee: 0.05,
+    };
+    let fills = vec![
+        fill("b1", 1_789_473_600, -100.0, vec![leg("0xmoon", "MOON", 1000.0)]),
+        fill("b2", 1_789_560_000, -300.0, vec![leg("0xmoon", "MOON", 1000.0)]),
+        fill("s1", 1_789_646_400, 150.0, vec![leg("0xmoon", "MOON", -500.0)]),
+        fill("t1", 1_789_646_460, 0.0, vec![leg("0xmoon", "MOON", -100.0), leg("0xstar", "STAR", 25.0)]),
+        fill("s2", 1_789_646_520, 12.5, vec![leg("0xcheez", "CHEEZ", -4_000_000.0)]),
+    ];
+    let marks = std::collections::HashMap::from([("0xmoon".to_string(), 0.4)]);
+    compute(&fills, 0.2, &marks, &std::collections::HashMap::new())
+}
+
+/// The PnL screen leads with the net, lists each token with its cost and gains, and says under
+/// the table what the focused token's figures leave out.
+#[test]
+fn pnl_shows_totals_positions_and_what_a_token_leaves_out() {
+    let (_dir, mut app) = drawable_app();
+    app.eco.pnl = Some(Ok(sample_pnl()));
+    app.eco.pnl_at = Some(std::time::Instant::now());
+    app.switch(Screen::Pnl);
+    let screen = screen_text(&mut app, 160, 45);
+    let text = screen.join("\n");
+    // 50 realized on MOON, 280 unrealized on the 1,400 left, less 0.45 of gas.
+    assert!(text.contains("net +329.55 QUAI"), "{text}");
+    let row = |sym: &str| screen.iter().find(|l| l.contains(&format!(" {sym} ")) && !l.contains(" QUAI")).cloned().unwrap_or_default();
+    let moon = row("MOON");
+    assert!(moon.contains("1,400.0000") && moon.contains("+280.00") && moon.contains("+50.00"), "{moon}");
+    assert!(row("STAR").contains('—'), "STAR has no price: {}", row("STAR"));
+    assert!(row("CHEEZ").contains("closed"), "{}", row("CHEEZ"));
+    assert!(text.contains("latest trades") && text.contains("-4.0M CHEEZ"), "{text}");
+    assert!(text.contains("-100.0000 MOON  +25.0000 STAR"), "a token-for-token trade reads in full: {text}");
+    // Focus CHEEZ: the sale with no recorded buy is said, not counted.
+    app.selected = app.pnl_positions().iter().position(|p| p.symbol == "CHEEZ").unwrap();
+    let text = screen_text(&mut app, 160, 45).join("\n");
+    assert!(text.contains("CHEEZ: 4.0M sold with no buy recorded here"), "{text}");
+    // Narrow: the price and trade columns give way, the figures stay.
+    let narrow = screen_text(&mut app, 80, 24).join("\n");
+    assert!(narrow.contains("MOON") && narrow.contains("+280.00"), "{narrow}");
+    if std::env::var("QW_SHOW").is_ok() {
+        println!("{text}\n\n{narrow}");
     }
 }
 

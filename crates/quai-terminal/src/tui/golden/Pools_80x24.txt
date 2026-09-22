@@ -1,5 +1,5 @@
  ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › Pools │ ● Local dev  # ● 1 unread N
- Trade · Markets  Swap  ▸ Pools  Convert  Wrap  Launches  [ ]
+ Trade · Markets  Swap  ▸ Pools  Convert  Wrap  Launches  PnL  [ ]
 ┌ ▸ your liquidity · $435.32 ──────────────────────────────────────────────────┐
 │  WQ WQ WQI/WQUAI        0.40%     $284.10       —                            │
 │     └ 18 WQI + 2,214 WQUAI ◆ staked  ● rewards                               │

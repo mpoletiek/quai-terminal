@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › PnL │ ● Local dev  #1, ● 1 unread N
+ Trade · Markets  Swap  Pools  Convert  Wrap  Launches  ▸ PnL  [ ]
+┌ ▸ trading PnL · in QUAI ─────────────────────────────────────────────────────┐
+│ net +329.55 QUAI  refreshing…                                                │
+│ realized +50.00  unrealized +280.00  fees 0.4500  ·  5 trades                │
+│   token            held    avg cost      value  unrealized    realized       │
+│ ▌ MOON       1,400.0000      0.2000     560.00     +280.00      +50.00       │
+│   STAR          25.0000      0.8000          —           —        0.00       │
+│   CHEEZ          closed           —          —           —        0.00       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│ latest trades                                                                │
+│   09-17 hh:mm  sell -4.0M CHEEZ                          +12.50 QUAI         │
+│   09-17 hh:mm  swap -100.0000 MOON  +25.0000 STAR                            │
+│   09-17 hh:mm  sell -500.0000 MOON                       +150.00 QUAI        │
+│   09-16 hh:mm  buy  +1,000.0000 MOON                     -300.00 QUAI        │
+│   09-15 hh:mm  buy  +1,000.0000 MOON                     -100.00 QUAI        │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  j/k token  t trade token  y copy token  : palette  ? more

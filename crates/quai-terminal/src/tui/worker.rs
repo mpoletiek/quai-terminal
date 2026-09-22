@@ -288,6 +288,8 @@ pub enum Cmd {
         account: Option<String>,
         slippage: u16,
     },
+    /// This wallet's trading performance.
+    Pnl,
     Refresh {
         full: bool,
     },
@@ -383,6 +385,7 @@ impl Cmd {
             Cmd::Discard(_) => "discard",
             Cmd::Quote { .. } => "quote",
             Cmd::QiMax { .. } => "max_quote",
+            Cmd::Pnl => "pnl",
             Cmd::SplitQuote { .. } => "split_quote",
             Cmd::InspectContract { .. } => "inspect_contract",
             Cmd::AddAccount(_) => "add_account",
@@ -428,6 +431,7 @@ pub enum Ev {
         key: u64,
         result: Result<wallet_core::ops::QiSpecialMax, String>,
     },
+    Pnl(Result<Box<wallet_core::pnl::Pnl>, String>),
     Dashboard(Box<Dashboard>),
     /// What [`Cmd::InspectContract`] found, with the address that was asked about so a late
     /// answer for an address the user has since edited away can be dropped.
@@ -1457,6 +1461,7 @@ async fn run(
                 let result = session.quote_qi_special_max(wrapping, account.as_deref(), slippage, None).await.map_err(|e| e.to_string());
                 send(Ev::QiMax { key, result });
             }
+            Cmd::Pnl => send(Ev::Pnl(session.pnl().await.map(Box::new).map_err(|e| e.to_string()))),
             Cmd::SplitQuote { key, account, from, to, amount, slippage } => {
                 let result = session
                     .swap_split_quote(account.as_deref(), &from, &to, &amount, slippage, 20)

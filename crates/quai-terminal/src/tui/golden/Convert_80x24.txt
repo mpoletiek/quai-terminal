@@ -1,5 +1,5 @@
  ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › Convert │ ● Local dev  ● 1 unread N
- Trade · Markets  Swap  Pools  ▸ Convert  Wrap  Launches  [ ]
+ Trade · Markets  Swap  Pools  ▸ Convert  Wrap  Launches  PnL  [ ]
 ┌ ▸ convert · QUAI ↔ Qi ───────────────────────────────────────────────────────┐
 │ direction   ◆  QUAI → ◉  Qi ‹›                                               │
 │ you pay     5000 QUAI   available 179071.7533 QUAI                           │

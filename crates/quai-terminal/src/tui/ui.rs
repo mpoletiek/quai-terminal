@@ -420,6 +420,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
             Screen::Wrap => super::views::draw_wrap_card(f, app, &t, main),
             Screen::Locks => draw_locks(f, app, &t, main),
             Screen::Launches => super::views::draw_launches(f, app, &t, main),
+            Screen::Pnl => super::views::draw_pnl(f, app, &t, main),
             Screen::Collected => super::views::draw_collected(f, app, &t, main),
             Screen::Explore => super::views::draw_explore(f, app, &t, main),
             Screen::Listings => super::views::draw_listings(f, app, &t, main),

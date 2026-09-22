@@ -78,6 +78,9 @@ pub enum Command {
     Contract(ContractCmd),
     /// Portfolio value: every holding with a USD price, total and 7-day history.
     Portfolio(PortfolioArgs),
+    /// Trading performance in QUAI: cost, realized and unrealized PnL per token, from the trades
+    /// this wallet made.
+    Pnl(PnlArgs),
     /// USD prices for QUAI, Qi and tokens.
     Price(PriceArgs),
     /// Swap tokens through Quainance (`swap quote FROM TO AMOUNT`, `swap FROM TO --amount N`).
@@ -486,6 +489,16 @@ pub struct PortfolioArgs {
     /// Print the 7-day value series.
     #[arg(long)]
     pub history: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PnlArgs {
+    /// Also list the trades behind it, newest first.
+    #[arg(long)]
+    pub trades: bool,
+    /// How many trades `--trades` lists.
+    #[arg(long, default_value_t = 30)]
+    pub limit: usize,
 }
 
 #[derive(Args, Debug)]
