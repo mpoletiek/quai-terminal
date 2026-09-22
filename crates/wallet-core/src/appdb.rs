@@ -1835,14 +1835,22 @@ mod tests {
         assert_eq!(db.clear_history("orchard").unwrap(), 1);
     }
 
-    /// A lease left by a process that is gone is taken over at once; one held by a live process
-    /// (here, this one) is respected; and a release only ever drops this process's own lease.
+    /// A lease left by a process that is gone is taken over at once (on Linux, which can see that
+    /// it is gone; elsewhere once it ages out); one held by a live process (here, this one) is
+    /// respected; and a release only ever drops this process's own lease.
     #[test]
     fn a_lease_from_a_dead_process_is_not_waited_out() {
         let db = AppDb::shared_memory().unwrap();
         // A pid that cannot be running: past the kernel's maximum.
         db.conn.execute("INSERT INTO fetch_leases(key, since, pid) VALUES('mainnet:prices', ?1, 2147483000)", [now() as i64]).unwrap();
-        assert!(db.claim_fetch("mainnet:prices").unwrap(), "the dead holder's lease is taken over");
+        if cfg!(target_os = "linux") {
+            assert!(db.claim_fetch("mainnet:prices").unwrap(), "the dead holder's lease is taken over");
+        } else {
+            assert!(!db.claim_fetch("mainnet:prices").unwrap(), "without /proc the holder is assumed alive");
+            let aged = now().saturating_sub(FETCH_LEASE + 1) as i64;
+            db.conn.execute("UPDATE fetch_leases SET since = ?1 WHERE key = 'mainnet:prices'", [aged]).unwrap();
+            assert!(db.claim_fetch("mainnet:prices").unwrap(), "until its lease ages out");
+        }
         assert!(!db.claim_fetch("mainnet:prices").unwrap(), "and now this live process holds it");
         // Another live process's lease (pid 1 is always running) is left alone, even by a release.
         db.conn.execute("INSERT INTO fetch_leases(key, since, pid) VALUES('mainnet:dex_pools', ?1, 1)", [now() as i64]).unwrap();
