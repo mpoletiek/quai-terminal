@@ -118,6 +118,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     // Block digits are glyph noise for screen readers and the Linux console. This is a
     // session fallback only: it must never be written back into the saved preferences.
     app.plain = no_color || std::env::var("TERM").is_ok_and(|t| t == "linux");
+    fx::probe_fonts();
     app.start_onboarding();
     wallet_core::diag::timing("startup.app", startup);
     let mut first_frame = true;

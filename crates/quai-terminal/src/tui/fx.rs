@@ -380,8 +380,58 @@ pub fn random_lock_effect() -> &'static str {
     EFFECTS[u16::from_le_bytes(b) as usize % EFFECTS.len()].0
 }
 
-/// ttfx arguments that tint an effect with the active theme (accent → QUAI → Qi gradient).
+/// Rain for `matrix` where its katakana cannot be drawn: ttfx's own ASCII rain symbols, with the
+/// rest of the digits. None starts with `-`, which the argument parser would take for a flag.
+const ASCII_RAIN: &[&str] =
+    &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "Z", "*", ")", "(", ":", ".", "\"", "=", "+", "|", "_", "<", ">"];
+
+static KATAKANA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Whether this terminal can draw half-width katakana (U+FF66–FF9D), most of `matrix`'s rain.
+///
+/// Never waits: until [`probe_fonts`] has answered, the rain is ASCII, which draws everywhere.
+/// Missing glyphs are drawn blank or boxed, so a rain of them reads as a broken screen.
+pub fn katakana_renders() -> bool {
+    KATAKANA.get().copied().unwrap_or(false)
+}
+
+/// Ask once, off the render path, whether a font here covers half-width katakana (fontconfig
+/// takes tens of milliseconds). macOS always ships one. Over SSH the font is on the other
+/// machine and the Linux console has none, so both keep the ASCII rain, as does a system
+/// without fontconfig.
+pub fn probe_fonts() {
+    std::thread::spawn(|| {
+        let remote = std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some();
+        let console = std::env::var("TERM").is_ok_and(|t| t == "linux");
+        let covered = !remote
+            && !console
+            && (cfg!(target_os = "macos")
+                || std::process::Command::new("fc-list")
+                    .args([":charset=ff71", "family"])
+                    .stderr(std::process::Stdio::null())
+                    .output()
+                    .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty()));
+        let _ = KATAKANA.set(covered);
+    });
+}
+
+/// The `--rain-symbols` a matrix effect needs where its katakana would not draw.
+fn rain_args(effect: &str, katakana: bool) -> Vec<String> {
+    if ttfx_name(effect) != "matrix" || katakana {
+        return Vec::new();
+    }
+    std::iter::once("--rain-symbols").chain(ASCII_RAIN.iter().copied()).map(str::to_string).collect()
+}
+
+/// ttfx arguments that tint an effect with the active theme (accent → QUAI → Qi gradient), and
+/// keep its symbols to ones this terminal can draw.
 pub fn theme_args(effect: &str, theme: &super::theme::Theme) -> Vec<String> {
+    let mut args = theme_colors(effect, theme);
+    args.extend(rain_args(effect, katakana_renders()));
+    args
+}
+
+fn theme_colors(effect: &str, theme: &super::theme::Theme) -> Vec<String> {
     use super::theme::Theme;
     if effect == "matrix-red" {
         // Quai's brand red on black, whatever the active theme.
@@ -512,6 +562,39 @@ mod tests {
         assert!(c.done);
         assert!(!c.step(), "a finished effect stays finished");
         assert_eq!(c.frames, 4, "never past the cap");
+    }
+
+    /// Where no font covers katakana, both matrix rains fall in ASCII. ttfx quietly falls back to
+    /// its katakana defaults when it rejects arguments, so this is checked in the frames, not
+    /// the arguments.
+    #[test]
+    fn matrix_rain_falls_in_ascii_where_katakana_cannot_be_drawn() {
+        let keys = super::super::theme::builtin("tokyo-night").unwrap();
+        let theme = super::super::theme::Theme::from_palette("tokyo-night", "t", &keys).unwrap();
+        let rain = |name: &str, katakana: bool| {
+            let mut args = theme_colors(name, &theme);
+            args.extend(rain_args(name, katakana));
+            let mut c = Ceremony::with_args(name, &args, &wordmark_block(), 100, 30, 400).unwrap();
+            let (mut kana, mut other) = (0, 0);
+            for _ in 0..90 {
+                c.step();
+                for ch in c.frame().unwrap_or_default().split('\x1b').flat_map(|s| s.split_once('m').map(|(_, t)| t)).flat_map(str::chars) {
+                    match ch {
+                        '\u{FF66}'..='\u{FF9D}' => kana += 1,
+                        ' ' | '\n' | '█' | '▄' => {}
+                        _ => other += 1,
+                    }
+                }
+            }
+            (kana, other)
+        };
+        for name in ["matrix", "matrix-red"] {
+            let (kana, other) = rain(name, false);
+            assert_eq!(kana, 0, "{name}: katakana fell where no font draws it");
+            assert!(other > 0, "{name}: and the rain still falls");
+            assert!(rain(name, true).0 > 0, "{name}: where katakana draws, it is the rain");
+        }
+        assert!(rain_args("rain", false).is_empty(), "only the matrix rain is katakana");
     }
 
     #[test]
