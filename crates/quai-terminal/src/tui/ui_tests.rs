@@ -1349,8 +1349,7 @@ fn every_screen_renders_at_every_size() {
                     .collect();
                 // Spinners turn with the clock and the data dir is a fresh temp path: neither is layout.
                 // Clock times are local and the fixtures are dated from now, so they are masked too.
-                let out =
-                    mask_clock(&out.replace(|c| "⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼".contains(c), "⠋").replace(&app.paths.root().display().to_string(), "<data>"));
+                let out = mask_clock(&mask_data_dir(&out.replace(|c| "⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼".contains(c), "⠋"), app.paths.root()));
                 let file = golden.join(format!("{screen:?}_{w}x{h}.txt"));
                 if bless {
                     std::fs::create_dir_all(&golden).unwrap();
@@ -1476,6 +1475,18 @@ fn every_screen_renders_at_every_size() {
             }
         }
     }
+}
+
+/// The temp data dir → `<data>`, as drawn: shortened past 40 characters (a macOS temp path is),
+/// and padded to the width it took so the border after it stays put whatever the path's length.
+fn mask_data_dir(s: &str, root: &std::path::Path) -> String {
+    let root = root.display().to_string();
+    let mut out = s.to_string();
+    for shown in [super::super::app::short_path(&root), root] {
+        let mask = format!("{:<1$}", "<data>", shown.chars().count());
+        out = out.replace(&shown, &mask);
+    }
+    out
 }
 
 /// `14:05` → `hh:mm`, wherever a clock time appears.

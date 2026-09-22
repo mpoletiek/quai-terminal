@@ -32,7 +32,9 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             name: macos-apple-silicon
-          - os: macos-13
+          # The last Intel image GitHub offers (until August 2027); `macos-13` is retired and a
+          # job asking for it waits in the queue forever rather than failing.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             name: macos-intel
           - os: ubuntu-latest

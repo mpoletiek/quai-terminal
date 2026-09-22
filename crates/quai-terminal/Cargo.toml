@@ -34,8 +34,9 @@ unicode-width = "0.2"
 # Local time for chart axes (already in the dependency tree).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
-# Marking the process non-dumpable (already in the dependency tree, through crossterm).
-[target.'cfg(target_os = "linux")'.dependencies]
+# Marking the process non-dumpable and asking the kernel for our user id (already in the
+# dependency tree, through crossterm).
+[target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", default-features = false, features = ["process", "std", "fs"] }
 
 [dev-dependencies]

@@ -759,11 +759,11 @@ fn handle(ctx: &Ctx, watched: &mut [Watched], mut req: Request) -> bool {
 pub fn own_uid() -> u32 {
     // From the kernel, not `/proc/self`: a process marked non-dumpable ([`protect_memory`]) has
     // its `/proc` entries owned by root, so reading the owner there would say uid 0.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         rustix::process::getuid().as_raw()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     {
         u32::MAX
     }
@@ -829,7 +829,7 @@ pub async fn hand_unlock(paths: &wallet_core::paths::Paths, wallet: &str, passwo
     {
         let _ = (paths, wallet, password);
         Err(CoreError::Invalid(
-            "handing a password to the daemon checks the peer with SO_PEERCRED, which this system lacks; use `daemon run` in a terminal"
+            "not handing the password to the daemon: it checks the peer with SO_PEERCRED, which this system lacks; use `daemon run` in a terminal"
                 .into(),
         ))
     }

@@ -26,7 +26,7 @@
                    │┌ environment ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
                    ││ terminal      xterm-256color · block QR codes · 24-bit color                                                                             │
                    ││ theme         terminal · terminal palette                                                                                                │
-                   ││ data          <data>                                                                                                            │
+                   ││ data          <data>                                                                                                                     │
                    ││                                                                                                                                          │
                    ││ With theme = auto the wallet follows Omarchy live; T opens the showroom from anywhere.                                                   │
                    ││                                                                                                                                          │
