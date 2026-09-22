@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ Home › Accounts │ ● Local dev  #1,234,567 │ watch-only                  ● 1 unread N
+                     Home · Portfolio  Qi coins  ▸ Accounts  Locks  [ ]
+▌1 Home         •  │┌ ▸ quai accounts ─────────────────────────────────────────────────────────────┐
+      Portfolio    ││       label          address                ◆  QUAI  locked           nonce  │
+      Qi coins     ││ 0  ▌  Account 1      0x0023…f15a       179,071.7533  ◕ <0.0001        11     │
+    › Accounts     ││                                                                              │
+      Locks        ││                                                                              │
+ 2 Trade           ││                                                                              │
+ 3 NFTs         ◧  ││                                                                              │
+ 4 People          ││                                                                              │
+ 5 Activity        ││                                                                              │
+                   ││                                                                              │
+ 0 System          ││                                                                              │
+                   ││                                                                              │
+  [ ] tabs         ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  a add account  e rename  y copy  s send  : palette  ? more

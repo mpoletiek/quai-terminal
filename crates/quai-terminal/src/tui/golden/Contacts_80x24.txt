@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 2 3 4 People 5 0  │ People › Contacts │ ● Local d ● 1 unread N
+ People · ▸ Contacts  Channels  Board  [ ]
+┌ you ─────────────────────────────────────────────────────────────────────────┐
+│ This wallet has no payment code (import a recovery phrase to get one).       │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ ▸ contacts · 1 ──────────────────────────────────────────────────────────────┐
+│    name              address              payment code      note             │
+│ 0  bob               —                    PM8TJcZE…D1SWDD                    │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter pay  a add  e edit  n notify  : palette  ? more

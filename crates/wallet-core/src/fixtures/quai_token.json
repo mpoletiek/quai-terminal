@@ -1,0 +1,135 @@
+{
+ "token": {
+  "contract_address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+  "name": "Wrapped Qi",
+  "symbol": "WQI",
+  "decimals": 18,
+  "total_supply": "4.3312297152599565569273e+22",
+  "type": "ERC20",
+  "holder_count": 230,
+  "transfer_count": "4391",
+  "icon_url": "/token-icons/wrapped-qi.svg",
+  "website": null,
+  "description": null,
+  "created_at_block": "1923120",
+  "created_at_tx": "0x0058006fef8633f136e304bb2441dd6b413bf90c2504e52c84e991f48ebb7ece",
+  "creator_address": "0x0002c1e08c152f0cc8b1ce0e87862b22fb439538",
+  "last_updated": "2026-09-15T10:04:12.339Z",
+  "base_uri": null,
+  "contract_uri": null,
+  "supports_metadata": false,
+  "preview_image_url": null,
+  "preview_token_id": null,
+  "total_supply_block_height": "10109824",
+  "total_supply_block_hash": "0x0a763fb3e0cb02e6b3568097e57e39cbfa48ce3e215a7faa9c77af1c339fb866",
+  "total_supply_observed_at": "2026-09-15T12:02:25.331Z",
+  "icon_source_url": null
+ },
+ "holders": [
+  {
+   "rank": 1,
+   "address": "0x001f91029df78af6d13cbffa8724f1b2718da3f1",
+   "balance": "36511379576917947616543",
+   "percentage": 84.29
+  },
+  {
+   "rank": 2,
+   "address": "0x000ed989feefb2b8f40bf3ee60131ccbd8f9a5d0",
+   "balance": "1493164153445526130055",
+   "percentage": 3.44
+  },
+  {
+   "rank": 3,
+   "address": "0x002509f7eee56cb065010bd3cfd80176a75e0f68",
+   "balance": "1110000000000000000000",
+   "percentage": 2.56
+  }
+ ],
+ "holderBalanceTotal": "43312297152599565569273",
+ "transfers": [
+  {
+   "id": "86147",
+   "tx_hash": "0x00720004555b0ed834c3343e75643cdd237d7cebd676da2effc80605521f38eb",
+   "log_index": 0,
+   "batch_index": 0,
+   "block_hash": "0xa3e4e9682dcd657d60065dfad7f57b1e9de64fbb02458c35e9b226f42ebf4eb4",
+   "block_height": "10108442",
+   "token_address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+   "from_addr": "0x004a1ea50754d904883db3ca9138cd4bc321734b",
+   "to_addr": "0x00602f12ea0491f02865aa6c418815319e2a645b",
+   "value": "2163881251841715686",
+   "token_id": null,
+   "timestamp": "2026-09-15T10:04:10.000Z",
+   "is_canonical": true,
+   "effects_applied": true
+  },
+  {
+   "id": "86144",
+   "tx_hash": "0x0058001533879f629da302a3118eaf969ebc8c532d61e1a864af03e66537d920",
+   "log_index": 4,
+   "batch_index": 0,
+   "block_hash": "0xd22934facce7c096b98e965f015b343f32536f1bde11b19810af9511d7083d40",
+   "block_height": "10108424",
+   "token_address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+   "from_addr": "0x007b1b56ef119cdeac383eacbcccd9dadfa7e322",
+   "to_addr": "0x004a1ea50754d904883db3ca9138cd4bc321734b",
+   "value": "2163881251841715686",
+   "token_id": null,
+   "timestamp": "2026-09-15T10:02:33.000Z",
+   "is_canonical": true,
+   "effects_applied": true
+  },
+  {
+   "id": "86138",
+   "tx_hash": "0x001a003775dd7962d78c2f86426aba1602c6a981bb7cbb7c8618029d0471d351",
+   "log_index": 0,
+   "batch_index": 0,
+   "block_hash": "0x86816cd9227802a550ff3402ab7bf7bbe62536cce22cdb70dde8f17deb45b62f",
+   "block_height": "10108341",
+   "token_address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+   "from_addr": "0x004a1ea50754d904883db3ca9138cd4bc321734b",
+   "to_addr": "0x007b1b56ef119cdeac383eacbcccd9dadfa7e322",
+   "value": "1683340678899314079",
+   "token_id": null,
+   "timestamp": "2026-09-15T09:55:11.000Z",
+   "is_canonical": true,
+   "effects_applied": true
+  }
+ ],
+ "transfers24h": 234,
+ "transfers24hTruncated": false,
+ "marketStats": {
+  "market": null,
+  "holders": "230",
+  "holderGrowth24h": "3.139013",
+  "transfers24h": "236",
+  "transferGrowth24h": "57.333333",
+  "priceUsd": "1.0522159690703608107079810193999433627",
+  "floorPriceQuai": null,
+  "floorPriceUsd": null,
+  "marketCapUsd": "45573.8907210859810957335096502898640912935189295211834143171",
+  "marketCapBasis": "totalSupply",
+  "marketCapGrowth24h": "-1.541664",
+  "marketCapGrowthUnavailableReason": null,
+  "marketCapUnavailableReason": null,
+  "freshness": {
+   "transfersThrough": "2026-09-15T12:00:00.000Z",
+   "holdersThrough": "2026-09-15T10:59:59.000Z",
+   "priceUsdAt": "2026-09-15T11:59:14.829Z",
+   "floorPriceAt": null,
+   "floorPriceStale": null,
+   "floorPriceSyncedToBlock": null,
+   "marketCapGrowthThrough": "2026-09-15T11:59:14.829Z",
+   "marketCapBaselineAt": "2026-09-14T11:59:09.030Z"
+  },
+  "provenance": {
+   "holders": "canonical-index",
+   "holderGrowth24h": "certified-canonical-holder-snapshot",
+   "transfers24h": "canonical-hourly-read-model",
+   "priceUsd": "quainance:derived-quai*explorer:mexc",
+   "floorPrice": null,
+   "marketCap": "canonical-hourly-token-market-snapshot",
+   "marketCapGrowth24h": "canonical-hourly-market-snapshot"
+  }
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "items": [
+  {
+   "id": "44744",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "token_address": "0x0040198bd115cbc1ce165327b26af1a6d30fac3e",
+   "balance": "1e+22",
+   "last_updated_block": "353535",
+   "token": {
+    "contract_address": "0x0040198bd115cbc1ce165327b26af1a6d30fac3e",
+    "name": "QuaiFly",
+    "symbol": "FLY",
+    "decimals": 18,
+    "type": "ERC20",
+    "icon_url": null
+   }
+  },
+  {
+   "id": "16142",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "token_address": "0x004c7926967b899ea69e871a366a5b344660f7eb",
+   "balance": "89236368082793",
+   "last_updated_block": "517346",
+   "token": {
+    "contract_address": "0x004c7926967b899ea69e871a366a5b344660f7eb",
+    "name": "Soon",
+    "symbol": "SOON",
+    "decimals": 18,
+    "type": "ERC20",
+    "icon_url": "/token-icons/soon.png"
+   }
+  },
+  {
+   "id": "3054",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "token_address": "0x004d92fd198c21af21016f4b119b8b851b5aeaa4",
+   "balance": "20",
+   "last_updated_block": "271292",
+   "token": {
+    "contract_address": "0x004d92fd198c21af21016f4b119b8b851b5aeaa4",
+    "name": "Quai Miners",
+    "symbol": "QM",
+    "decimals": null,
+    "type": "ERC721",
+    "icon_url": null
+   }
+  }
+ ],
+ "total": 3,
+ "limit": 25,
+ "offset": 0
+}

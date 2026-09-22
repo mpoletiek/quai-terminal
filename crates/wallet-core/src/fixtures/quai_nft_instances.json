@@ -1,0 +1,37 @@
+{
+ "items": [
+  {
+   "token_id": "1",
+   "owner_address": "0x00201a76447452e62c008b6b5d70d6ed5837b946",
+   "owner_count": 1,
+   "quantity": "1",
+   "token_uri": "ipfs://QmNk5sPgaH7nVWjt29oQduk4B4FSBYgQcokXktQQRVkmxB/1.json",
+   "metadata_status": "FETCHED",
+   "metadata_failure_class": null,
+   "media_status": "CACHED",
+   "media_failure_class": null,
+   "media_url": "/api/nft-media/61c2ac6a34096a8767c28b2d3be69fb585eff089c9e188e107c07d90b5512bd7",
+   "metadata_json": {
+    "name": "Quai Miners #1",
+    "image": "ipfs://QmVZ5XxooW2ofpDqhGFKgPk1mmHmY4DbeB8jwo31ztPh1n/1.png"
+   }
+  },
+  {
+   "token_id": "2",
+   "owner_address": "0x003d32ef772f27e751bbab4347ba92d7c97c91d0",
+   "owner_count": 1,
+   "quantity": "1",
+   "token_uri": "ipfs://QmNk5sPgaH7nVWjt29oQduk4B4FSBYgQcokXktQQRVkmxB/2.json",
+   "metadata_status": "FETCHED",
+   "metadata_failure_class": null,
+   "media_status": "CACHED",
+   "media_failure_class": null,
+   "media_url": "/api/nft-media/30a1609a5a9e723322856304cf78d61e735a9aaf773edaf400a6e9f17648c161",
+   "metadata_json": {
+    "name": "Quai Miners #2",
+    "image": "ipfs://QmVZ5XxooW2ofpDqhGFKgPk1mmHmY4DbeB8jwo31ztPh1n/2.png"
+   }
+  }
+ ],
+ "total": 4996
+}

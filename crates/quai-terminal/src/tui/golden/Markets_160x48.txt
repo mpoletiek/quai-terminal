@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ Trade › Markets │ ● Local dev  #1,234,567 │ watch-only                                                             ● 1 unread N
+                     Trade · ▸ Markets  Swap  Pools  Convert  Wrap  Launches  [ ]
+ 1 Home         •  │┌ ▸ pairs · stale/partial source · reserves unverifie┐┌ QUAI/USDT · Quainance · 1h · T timeframe · f flip · t trade · updating… ───────────┐
+▌2 Trade           ││ pair                     price     24h     TVL/%   ││ ◆ US 0.008744 USDT  ▼25.4%  24h · partial history  H 0.01173  L 0.008744           │
+    › Markets      ││ ◆ US QUAI/USDT            0.008744 ▼25.4%   $3.33k ││ vol 343.50 USDT ($343.50) · 30 trades · TVL $3.33k · you hold 90,412.2 QUAI · 50.4 │
+      Swap         ││ QO◆  QOGE/QUAI ◈          0.0₃4062 —       $997.60 ││                                                                         0.01191    │
+      Pools        ││ CH◆  CHEEZ/QUAI ○          0.0₄744 —           68% ││ ▄                                                                                  │
+      Convert      ││                                                    ││ █                                                                                  │
+      Wrap         ││                                                    ││ █                                                                                  │
+      Launches     ││                                                    ││ █                                                                                  │
+ 3 NFTs         ◧  ││                                                    ││ █                                                                                  │
+ 4 People          ││                                                    ││ █                                                                                  │
+ 5 Activity        ││                                                    ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
+                   ││                                                    ││ █                                                                                  │
+ 0 System          ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+  [ ] tabs         ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ 0.01024    │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   │└────────────────────────────────────────────────────┘│ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
+                   │┌ flow · all pools ──────────────────────────────────┐│ █                                                                                  │
+                   ││                                                    ││ █                                                                                  │
+                   ││                                                    ││ █ █ █       ▄ ▄     █ █ ▄     █ █                                                  │
+                   ││                                                    ││ █ █ ▀ █ ▄   █ ▀ █ ▄ █   █ ▄ ▄ █ ▀ █ ▄                                              │
+                   ││                                                    ││ █ █     ▀ █ █     ▀ ▀       █ █     ▀ █                                 ◂0.008744  │
+                   ││                                                    ││                                                                         0.008565   │
+                   ││                                                    ││ hh:mm               hh:mm             hh:mm                                        │
+                   ││                                                    ││ █   ▇   ▇   ▆   ▆   ▅   ▅   ▄   ▄   ▃                                   vol max 25 │
+                   ││                                                    ││ █ ▄ █ ▄ █ ▃ █ ▃ █ ▃ █ ▂ █ ▂ █ ▂ █ ▂ █ ▁                                            │
+                   ││               ⠋  Watching for swaps…               ││ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █                                            │
+                   ││                                                    ││ trades        price       size                   total                 trader      │
+                   ││                                                    ││ now      buy     0.009091             1,100 QUAI            10.00 USDT you         │
+                   ││                                                    ││ 40m      buy     0.009182             1,100 QUAI            10.10 USDT you         │
+                   ││                                                    ││ 1h 20m   buy     0.009273             1,100 QUAI            10.20 USDT you         │
+                   ││                                                    ││ 2h       buy     0.009364             1,100 QUAI            10.30 USDT you         │
+                   ││                                                    ││ 2h 40m   buy     0.009455             1,100 QUAI            10.40 USDT you         │
+                   ││                                                    ││ 3h 20m   buy     0.009545             1,100 QUAI            10.50 USDT you         │
+                   ││                                                    ││ 4h       buy     0.009636             1,100 QUAI            10.60 USDT you         │
+                   ││                                                    ││ 4h 40m   buy     0.009727             1,100 QUAI            10.70 USDT you         │
+                   │└────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+ N notifications  t trade pair  w watch  A alert  tab flow  : palette  ? more

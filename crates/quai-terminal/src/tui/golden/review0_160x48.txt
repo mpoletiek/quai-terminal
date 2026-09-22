@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ Home › Portfolio │ ● Local dev  #1,234,567 │ watch-only                                                            ● 1 unread N
+                     Home · ▸ Portfolio  Qi coins  Accounts  Locks  [ ]
+▌1 Home         •  │┌ ▸ portfolio ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+    › Portfolio    ││ ▌$ ▀█    ▀▀█ █▀█ █ █                                                                                          ▁▁▂▂▃▃▄▄▅▅▅▆▆▇▇█ 7d  +4.1% │
+      Qi coins     ││ ▌   █    █▀▀ █▀█ ▀▀█                                                                                            ◔ some prices from cache │
+      Accounts     ││ ▌  ▀▀▀   ▀▀▀ ▀▀▀   ▀.52                                                                                                                  │
+      Locks        ││                                                                                                                                          │
+ 2 Trade           ││ ◧ 3 NFTs in 3 collections · not counted in the total  3 to view                                                                          │
+ 3 NFTs         ◧  │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ 4 People          │┌ ▸ holdings · 5 · $1,284.52 ────────────────────────────────────────────────────────────────┐┌ attention · 5 ─────────────────────────────┐
+ 5 Activity        ││    asset         balance                    price       value       alloc   24h     src    ││ ◕ 2.4 QI unlocks in 3d 18h                 │
+                   ││ ▀▀ ✓ QUA┌ review · Send QUAI ──────────────────────────────────────────────────────────────────────────────┐ification(s) · N to read     │
+ 0 System          ││ ▀▀ ✓ Qi │                                                                                                  │ stale (source did not answe │
+                   ││ ▀▀ ✓ WQI│  ▀▀▀▀ you pay           you receive                                                              │ unavailable: explorer.qu.ai │
+  [ ] tabs         ││ US ✓ USD│  ▀▀▀▀ QUAI      →   US  USDT                                                                     │ without a price             │
+                   ││ BO ⚠ BOS│                                                                                                  │─────────────────────────────┘
+                   ││         │  ! a warning                                                                                     │y ───────────────────────────┐
+                   ││ allocati│                                                                                                  │d Quai Miners #12 → 0x…    ✓ │
+                   ││ ████████│  balance changes                                                                                 │                             │
+                   ││ ■ QUAI 2│    −   1 QUAI                                                                                    │                             │
+                   ││         │    − 0.1 QUAI   network fee, at most                                                             │                             │
+                   ││ value · │                                                                                                  │                             │
+                   ││ $1,293.8│  network         Local dev                                                                       │                             │
+                   ││         │  from            0x00 (Account 1)                                                                │                             │
+                   ││         │  to              0x01                                                                            │                             │
+                   ││         │  amount          1 QUAI                                                                          │                             │
+                   ││         │  max fee         0.1 QUAI  (10.00% of amount)  ▲ above fee policy                                │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │  what happens                                                                                    │                             │
+                   ││         │    → signed and broadcast; included within a few blocks and tracked on activity (3)              │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │                                         — end of review —                                        │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │    Reject · enter       Approve & sign · tab     read ██████████████  esc rejects                │                             │
+                   ││         └──────────────────────────────────────────────────────────────────────────────────────────────────┘                             │
+                   ││          │                    ⢀⡠⠤⠒⠊⠉                                                       ││                                            │
+                   ││          │               ⢀⣀⠤⠔⠊⠁                                                            ││                                            │
+                   ││          │           ⢀⡠⠔⠊⠁                                                                 ││                                            │
+                   ││          │       ⣀⠤⠒⠉⠁                                                                     ││                                            │
+                   ││          │  ⣀⠤⠒⠊⠉                                                                          ││                                            │
+                   ││          │⠒⠉                                                                               ││                                            │
+                   ││          │                                                                                 ││                                            │
+                   ││ $1,187.19│                                                                                 ││                                            │
+                   ││          └──────────────────────────────────────────────────────────────────────────────── ││                                            │
+                   ││ 20714d ago                                                                      20714d ago ││                                            │
+                   │└────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────┘
+ N notifications  enter detail  t swap  s send  r receive  : palette  ? more

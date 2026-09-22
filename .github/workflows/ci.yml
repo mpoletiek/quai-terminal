@@ -1,0 +1,35 @@
+# Every push and pull request: formatting, lints as errors, unit tests and a RustSec advisory scan.
+# Live mainnet tests (`--ignored`) need the network and are run by hand before a release.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --lib --bins --tests --locked
+
+  audit:
+    runs-on: ubuntu-latest
+    # The advisory scan reports as a check run, which needs to write one; nothing else here does.
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

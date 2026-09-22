@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ Home › Portfolio │ ● Local dev  #1,234,567 │ watch-only                 ● 1 unread N
+                     Home · ▸ Portfolio  Qi coins  Accounts  Locks  [ ]
+▌┌ review · Buy Quai Pepe #212 ───────────────────────────────────────────────────────────────────┐┐
+ │                                                                                                ││
+ │                    Quai Pepe #212                                                              ││
+ │                    token #212                                                                  ││
+ │                    0x004d…eaa4                                                                 ││
+ │                                                                                                ││
+ │         QU                                                                                     │┘
+ │                                                                                                │┐
+ │                                                                                                ││
+ │                                                                                                ││
+ │  balance changes                                                                               ││
+ │    − 1,000 QUAI                                                                                ││
+ │    +     1 Quai Pepe #212   NFT                                                                ││
+ │    −   0.1 QUAI             network fee, at most                                               ││
+ │                                                                                                ││
+ │  network         Quai Mainnet                                                                  ││
+ │  from            0x00 (Account 1)                                                              ││
+ │  to              0x0012                                                                        │┘
+ │  amount          1000 QUAI                                                                     │┐
+ │  max fee         0.1 QUAI                                                                      ││
+ │                                                                                                ││
+ │  what happens                                                                                  │┘
+ │    → signed and broadcast; included within a few blocks and tracked on activity (3)            │┐
+ │                                                                                                ││
+ │    Reject · enter       Approve & sign · tab     read ████████████░░  space reads              ││
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘│
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter detail  t swap  s send  r receive  : palette  ? more

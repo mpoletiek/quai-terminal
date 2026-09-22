@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 2 3 4 People 5 0  │ People › Board │ ● Local dev  ● 1 unread N
+ People · Contacts  Channels  ▸ Board  [ ]
+┌ ▸ channels · people ─────────────────────────────────────────────────────────┐
+│   #general                                                                   │
+│ ◉ bob                                                                        │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ #general · reading… ─────────────────────────────────────────────────────────┐
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                            ⠋  Reading the board…                             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  tab list·messages  p post · write  : palette  ? more

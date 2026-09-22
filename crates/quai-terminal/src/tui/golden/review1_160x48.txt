@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ Home › Portfolio │ ● Local dev  #1,234,567 │ watch-only                                                            ● 1 unread N
+                     Home · ▸ Portfolio  Qi coins  Accounts  Locks  [ ]
+▌1 Home         •  │┌ ▸ portfolio ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+    › Portfolio    ││ ▌$ ▀█    ▀▀█ █▀█ █ █                                                                                          ▁▁▂▂▃▃▄▄▅▅▅▆▆▇▇█ 7d  +4.1% │
+      Qi coins     ││ ▌   █    █▀▀ █▀█ ▀▀█                                                                                            ◔ some prices from cache │
+      Accounts     ││ ▌  ▀▀▀   ▀▀▀ ▀▀▀   ▀.52                                                                                                                  │
+      Locks        ││                                                                                                                                          │
+ 2 Trade           ││ ◧ 3 NFTs in 3 collections · not counted in the total  3 to view                                                                          │
+ 3 NFTs         ◧  │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ 4 People          │┌ ▸ holdin┌ review · Buy Quai Pepe #212 ─────────────────────────────────────────────────────────────────────┐─────────────────────────────┐
+ 5 Activity        ││    asset│                                                                                                  │ks in 3d 18h                 │
+                   ││ ▀▀ ✓ QUA│                    Quai Pepe #212                                                                │ification(s) · N to read     │
+ 0 System          ││ ▀▀ ✓ Qi │                    token #212                                                                    │ stale (source did not answe │
+                   ││ ▀▀ ✓ WQI│                    0x004d…eaa4                                                                   │ unavailable: explorer.qu.ai │
+  [ ] tabs         ││ US ✓ USD│                                                                                                  │ without a price             │
+                   ││ BO ⚠ BOS│         QU                                                                                       │─────────────────────────────┘
+                   ││         │                                                                                                  │y ───────────────────────────┐
+                   ││ allocati│                                                                                                  │d Quai Miners #12 → 0x…    ✓ │
+                   ││ ████████│                                                                                                  │                             │
+                   ││ ■ QUAI 2│  balance changes                                                                                 │                             │
+                   ││         │    − 1,000 QUAI                                                                                  │                             │
+                   ││ value · │    +     1 Quai Pepe #212   NFT                                                                  │                             │
+                   ││ $1,293.8│    −   0.1 QUAI             network fee, at most                                                 │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │  network         Quai Mainnet                                                                    │                             │
+                   ││         │  from            0x00 (Account 1)                                                                │                             │
+                   ││         │  to              0x0012                                                                          │                             │
+                   ││         │  amount          1000 QUAI                                                                       │                             │
+                   ││         │  max fee         0.1 QUAI                                                                        │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │  what happens                                                                                    │                             │
+                   ││         │    → signed and broadcast; included within a few blocks and tracked on activity (3)              │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │                                         — end of review —                                        │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │                                                                                                  │                             │
+                   ││         │    Reject · enter       Approve & sign · tab     read ██████████████  esc rejects                │                             │
+                   ││         └──────────────────────────────────────────────────────────────────────────────────────────────────┘                             │
+                   ││          │           ⢀⡠⠔⠊⠁                                                                 ││                                            │
+                   ││          │       ⣀⠤⠒⠉⠁                                                                     ││                                            │
+                   ││          │  ⣀⠤⠒⠊⠉                                                                          ││                                            │
+                   ││          │⠒⠉                                                                               ││                                            │
+                   ││          │                                                                                 ││                                            │
+                   ││ $1,187.19│                                                                                 ││                                            │
+                   ││          └──────────────────────────────────────────────────────────────────────────────── ││                                            │
+                   ││ 20714d ago                                                                      20714d ago ││                                            │
+                   │└────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────┘
+ N notifications  enter detail  t swap  s send  r receive  : palette  ? more

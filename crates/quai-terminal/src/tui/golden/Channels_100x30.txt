@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ People › Channels │ ● Local dev  #1,234,567 │ watch-only                ● 1 unread N
+                     People · Contacts  ▸ Channels  Board  [ ]
+ 1 Home         •  │┌ you ─────────────────────────────────────────────────────────────────────────┐
+ 2 Trade           ││ This wallet has no payment code (import a recovery phrase to get one).       │
+ 3 NFTs         ◧  ││                                                                              │
+▌4 People          │└──────────────────────────────────────────────────────────────────────────────┘
+      Contacts     │┌ ▸ payment channels · 0 ──────────────────────────────────────────────────────┐
+    › Channels     ││                                                                              │
+      Board        ││                                                                              │
+ 5 Activity        ││                                                                              │
+                   ││                                                                              │
+ 0 System          ││                                                                              │
+                   ││                                                                              │
+  [ ] tabs         ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                      ○  Unlock to see payment channels.                      │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter pay Qi  a save as contact  S rescan  n notify  : palette  ? more

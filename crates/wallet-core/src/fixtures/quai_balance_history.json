@@ -1,0 +1,132 @@
+{
+ "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+ "kind": "LIQUID",
+ "history": [
+  {
+   "id": "91598033",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "block_hash": "0xabd2a26e2afce945784915dddd4c4bea053a30631096244099c4f48b9310cba3",
+   "block_height": "6968796",
+   "tx_hash": "0x6a256efe8a487a16baa3d97fd93a9e4e6bcaa55857780f66b27144120e6c8ef5",
+   "balance": "-1932484882428366823003",
+   "delta": "-2.320070735140580818e+21",
+   "coin_type": "QUAI",
+   "balance_kind": "LIQUID",
+   "unlock_height": null,
+   "is_canonical": true,
+   "timestamp": "2026-03-17T13:01:30.000Z"
+  },
+  {
+   "id": "7183817",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "block_hash": "0xa9dcfb6ee05b58fd92fa8738419b6f7e1b590aa886a68ba90235326d230bfd46",
+   "block_height": "551454",
+   "tx_hash": "0xd9ee1e5d1bccb791d0df8458f702475056e8f2e797908acdba01c0695f2d8abc",
+   "balance": "387585852712213994997",
+   "delta": "-488616552996250",
+   "coin_type": "QUAI",
+   "balance_kind": "LIQUID",
+   "unlock_height": null,
+   "is_canonical": true,
+   "timestamp": "2025-03-08T18:48:04.000Z"
+  },
+  {
+   "id": "6643031",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "block_hash": "0x2b60bbc3468ccb3da3f71e37e6c9469e6f155dd5b5e7c52a742ed4b67091dc1c",
+   "block_height": "517346",
+   "tx_hash": "0xae1d558eeeb2f56d7f4d4aab2262e60688d4ad16d2dc2e46541ae319ce80bc4f",
+   "balance": "387586341328766991247",
+   "delta": "-798918440224800",
+   "coin_type": "QUAI",
+   "balance_kind": "LIQUID",
+   "unlock_height": null,
+   "is_canonical": true,
+   "timestamp": "2025-03-06T19:27:26.000Z"
+  },
+  {
+   "id": "6642909",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "block_hash": "0xdf4d498135b1aacb805172307ae5014162abdd3af5b775e5532746e2adc491f5",
+   "block_height": "517340",
+   "tx_hash": "0x61b2ffda7961cc4060430dce5e4efd169ce55a3b8dabe97efb11b4976d6d621f",
+   "balance": "387587140247207216047",
+   "delta": "-363495774127280",
+   "coin_type": "QUAI",
+   "balance_kind": "LIQUID",
+   "unlock_height": null,
+   "is_canonical": true,
+   "timestamp": "2025-03-06T19:26:52.000Z"
+  },
+  {
+   "id": "2856567",
+   "address": "0x0098d857bbee89556f6b1f6b6d01bdcc13655989",
+   "block_hash": "0x7c9b5fc54388399dd61ab2bc8d769234010666c439672c2ceffb2e1b5ce802d3",
+   "block_height": "289170",
+   "tx_hash": "0x0760f411c7f65a88d2e6337e5e7d78ef7ee5cfc28c13c11a28539fedd4863dc3",
+   "balance": "387587503742981343327",
+   "delta": "-622216558261428",
+   "coin_type": "QUAI",
+   "balance_kind": "LIQUID",
+   "unlock_height": null,
+   "is_canonical": true,
+   "timestamp": "2025-02-21T15:19:40.000Z"
+  }
+ ],
+ "series": [
+  {
+   "block_height": "1",
+   "block_hash": "0x6f4e15d55afec4ecc7db836b354bb5f9f0b7abd0868f5b4f1e23faf12f625e03",
+   "timestamp": "2025-02-04T22:15:16.000Z",
+   "balance": "46438490697418700000000",
+   "coin_type": "QUAI",
+   "source": "GENESIS"
+  },
+  {
+   "block_height": "263090",
+   "block_hash": "0xecac346fe70865bfbd6496b42ae860e0d26af7a7f9fa00b392a82d7dab31a97f",
+   "timestamp": "2025-02-20T02:12:43.000Z",
+   "balance": "46388490534326850588110",
+   "coin_type": "QUAI",
+   "source": "INDEXED"
+  },
+  {
+   "block_height": "289170",
+   "block_hash": "0x7c9b5fc54388399dd61ab2bc8d769234010666c439672c2ceffb2e1b5ce802d3",
+   "timestamp": "2025-02-21T15:19:40.000Z",
+   "balance": "387587503742981343327",
+   "coin_type": "QUAI",
+   "source": "INDEXED"
+  },
+  {
+   "block_height": "517346",
+   "block_hash": "0x2b60bbc3468ccb3da3f71e37e6c9469e6f155dd5b5e7c52a742ed4b67091dc1c",
+   "timestamp": "2025-03-06T19:27:26.000Z",
+   "balance": "387586341328766991247",
+   "coin_type": "QUAI",
+   "source": "INDEXED"
+  },
+  {
+   "block_height": "551454",
+   "block_hash": "0xa9dcfb6ee05b58fd92fa8738419b6f7e1b590aa886a68ba90235326d230bfd46",
+   "timestamp": "2025-03-08T18:48:04.000Z",
+   "balance": "387585852712213994997",
+   "coin_type": "QUAI",
+   "source": "INDEXED"
+  }
+ ],
+ "certification": {
+  "status": "PARTIAL",
+  "currentAuthority": "EXACT_V055_BLOCK_HASH_ANCHOR_PLUS_CANONICAL_SUFFIX",
+  "preAnchorAuthority": "CERTIFIED_GENESIS_BASELINE_PLUS_INDEXED_DELTAS",
+  "anchorRunId": "ae4b7d1e-36da-4fef-ab8c-12a4d14524e1",
+  "anchorHeight": "9131016",
+  "anchorHash": "0xa4222699316e7743e3a9b2b13240d238f12c38ec12ae20c813142619ada1c2dd"
+ },
+ "total": null,
+ "limit": 50,
+ "offset": 0,
+ "next": "eyJ2IjoxLCJzY29wZSI6ImJhbGFuY2UtaGlzdG9yeTowMDdlZWNiMDQxNWEyMDE0NTc3YjVlZWQwMWIzZjJjZjE4YWExZTRhOmxpcXVpZCIsInZhbHVlcyI6WyIyODE0NDUiLCIyNzIwMTczIl19",
+ "nextCursor": "eyJ2IjoxLCJzY29wZSI6ImJhbGFuY2UtaGlzdG9yeTowMDdlZWNiMDQxNWEyMDE0NTc3YjVlZWQwMWIzZjJjZjE4YWExZTRhOmxpcXVpZCIsInZhbHVlcyI6WyIyODE0NDUiLCIyNzIwMTczIl19",
+ "hasMore": true
+}

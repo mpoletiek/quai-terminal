@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › Pools │ ● Local dev  # ● 1 unread N
+ Trade · Markets  Swap  ▸ Pools  Convert  Wrap  Launches  [ ]
+┌ ▸ your liquidity · $435.32 ──────────────────────────────────────────────────┐
+│  WQ WQ WQI/WQUAI        0.40%     $284.10       —                            │
+│     └ 18 WQI + 2,214 WQUAI ◆ staked  ● rewards                               │
+│ ▌US WQ USDT/WQUAI       0.22%     $151.22       —                            │
+│     └ 51 USDT + 5,920 WQUAI ◆ staked  ● rewards                              │
+│       ◈ launch-zone campaign · live  ·  — APR                                │
+│         297,619/day · 18.3M SMOL left                                        │
+│         1 LP staked here                                                     │
+│         1204 SMOL claimable · h claims                                       │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ all pools · tab to switch · a to add ────────────────────────────────────────┐
+│       pair                  TVL     apr                                      │
+│  US ◆  USDT/WQUAI         $3.33k                                             │
+│  QO ◆  QOGE/WQUAI        $997.60                                             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  j/k position  a add  r remove  s stake  : palette  ? more

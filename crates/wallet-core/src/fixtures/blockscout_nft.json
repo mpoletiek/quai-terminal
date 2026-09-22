@@ -1,0 +1,77 @@
+{
+ "items": [
+  {
+   "animation_url": null,
+   "external_app_url": null,
+   "id": "3",
+   "image_url": null,
+   "is_unique": null,
+   "metadata": null,
+   "owner": null,
+   "token": {
+    "address": "0x0023C085B7E0297f345D6FE155ee5B323885E192",
+    "circulating_market_cap": null,
+    "decimals": null,
+    "exchange_rate": null,
+    "holders": "8481",
+    "icon_url": null,
+    "name": "QuaiClub Membership NFT",
+    "symbol": "QCMBR",
+    "total_supply": null,
+    "type": "ERC-721",
+    "volume_24h": null
+   },
+   "token_type": "ERC-721",
+   "value": "1"
+  },
+  {
+   "animation_url": null,
+   "external_app_url": null,
+   "id": "0",
+   "image_url": null,
+   "is_unique": null,
+   "metadata": null,
+   "owner": null,
+   "token": {
+    "address": "0x0033c27F0bF219f332D1CA440D9b7c71b0050266",
+    "circulating_market_cap": null,
+    "decimals": null,
+    "exchange_rate": null,
+    "holders": "6",
+    "icon_url": null,
+    "name": "QuaiClub Membership NFT",
+    "symbol": "QCMBR",
+    "total_supply": null,
+    "type": "ERC-721",
+    "volume_24h": null
+   },
+   "token_type": "ERC-721",
+   "value": "1"
+  },
+  {
+   "animation_url": null,
+   "external_app_url": null,
+   "id": "0",
+   "image_url": null,
+   "is_unique": null,
+   "metadata": null,
+   "owner": null,
+   "token": {
+    "address": "0x00356Fd45BD6674cfc034e34D553Be029BDe059c",
+    "circulating_market_cap": null,
+    "decimals": null,
+    "exchange_rate": null,
+    "holders": "4898",
+    "icon_url": null,
+    "name": "QuaiClub Membership NFT",
+    "symbol": "QCMBR",
+    "total_supply": null,
+    "type": "ERC-721",
+    "volume_24h": null
+   },
+   "token_type": "ERC-721",
+   "value": "1"
+  }
+ ],
+ "next_page_params": null
+}

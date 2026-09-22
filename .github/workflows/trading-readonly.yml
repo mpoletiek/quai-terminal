@@ -1,0 +1,48 @@
+name: Trading read-only qualification
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 7 * * 1'
+permissions:
+  contents: read
+jobs:
+  trading-readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build bounded keyless probes
+        run: cargo test --locked -p wallet-core --test live_mainnet --no-run
+      - name: Probe trading sources without wallets or chain writes
+        shell: bash
+        run: |
+          mkdir -p evidence
+          python3 - <<'PY'
+          import datetime,hashlib,json,pathlib,subprocess
+          pathlib.Path('evidence/manifest.json').write_text(json.dumps({'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'cargoLockSha256':hashlib.sha256(pathlib.Path('Cargo.lock').read_bytes()).hexdigest(),'scope':'trading_readonly_ only; no NFT/messaging/signers/broadcasts'},indent=2)+'\n')
+          PY
+          set +e
+          timeout 240 cargo test --locked -p wallet-core --test live_mainnet trading_readonly_ -- --ignored --nocapture --test-threads=1 > evidence/probes.log 2>&1
+          status=$?
+          set -e
+          cat evidence/probes.log
+          python3 - "$status" <<'PY'
+          import json,pathlib,sys
+          text=pathlib.Path('evidence/probes.log').read_text();rows=[]
+          for line in text.splitlines():
+              if 'TRADING_RESULT ' in line:
+                  rows.append(json.loads(line.split('TRADING_RESULT ',1)[1]))
+          status=int(sys.argv[1]);classified=any(r.get('status')=='failed' for r in rows)
+          summary={'exitCode':status,'results':rows,'unclassifiedFailure':None if not status or classified else ('deadline' if status==124 else 'assertion_or_process_failure'),'complete':len(rows)==3 and all(r.get('status')=='passed' for r in rows)}
+          pathlib.Path('evidence/summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          if status==0 and not summary['complete']: raise SystemExit('missing probe results')
+          PY
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trading-readonly-${{ github.sha }}-${{ github.run_id }}
+          path: evidence/
+          retention-days: 30

@@ -1,0 +1,238 @@
+{
+ "contract": {
+  "address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+  "name": "Wrapped Qi",
+  "verified": false,
+  "creator_address": "0x007a65c95b3aa9379808e1b03fa34e568654428d",
+  "created_at_block": "1830710",
+  "created_at_tx": "0x0005001323bf44d27df9fcb052ea592fdd77ccdc7347045ee4b881352345eee5",
+  "deployment": {
+   "authoritative": true,
+   "block_height": "1830710",
+   "block_hash": "0xfd7b56e9387e70d9343cbc4ed8a1a18efdb5df65b0979b644e9dd79a0a067c01",
+   "tx_hash": "0x0005001323bf44d27df9fcb052ea592fdd77ccdc7347045ee4b881352345eee5",
+   "transaction_index": 97,
+   "trace_address": "",
+   "creation_kind": "TOP_LEVEL_CREATE",
+   "evidence_source": "SUCCESSFUL_RECEIPT",
+   "canonical_deployment_count": "1",
+   "updated_at": "2026-07-28T08:30:37.471Z"
+  },
+  "token_type": "ERC20",
+  "abi": [
+   {
+    "type": "function",
+    "name": "name",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [],
+    "outputs": [
+     {
+      "type": "string",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "symbol",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [],
+    "outputs": [
+     {
+      "type": "string",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "decimals",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [],
+    "outputs": [
+     {
+      "type": "uint8",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "totalSupply",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [],
+    "outputs": [
+     {
+      "type": "uint256",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "balanceOf",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [
+     {
+      "type": "address",
+      "name": "account"
+     }
+    ],
+    "outputs": [
+     {
+      "type": "uint256",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "transfer",
+    "constant": false,
+    "payable": false,
+    "inputs": [
+     {
+      "type": "address",
+      "name": "to"
+     },
+     {
+      "type": "uint256",
+      "name": "value"
+     }
+    ],
+    "outputs": [
+     {
+      "type": "bool",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "allowance",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [
+     {
+      "type": "address",
+      "name": "owner"
+     },
+     {
+      "type": "address",
+      "name": "spender"
+     }
+    ],
+    "outputs": [
+     {
+      "type": "uint256",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "approve",
+    "constant": false,
+    "payable": false,
+    "inputs": [
+     {
+      "type": "address",
+      "name": "spender"
+     },
+     {
+      "type": "uint256",
+      "name": "value"
+     }
+    ],
+    "outputs": [
+     {
+      "type": "bool",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "function",
+    "name": "transferFrom",
+    "constant": false,
+    "payable": false,
+    "inputs": [
+     {
+      "type": "address",
+      "name": "from"
+     },
+     {
+      "type": "address",
+      "name": "to"
+     },
+     {
+      "type": "uint256",
+      "name": "value"
+     }
+    ],
+    "outputs": [
+     {
+      "type": "bool",
+      "name": ""
+     }
+    ]
+   },
+   {
+    "type": "event",
+    "anonymous": false,
+    "name": "Transfer",
+    "inputs": [
+     {
+      "type": "address",
+      "name": "from",
+      "indexed": true
+     },
+     {
+      "type": "address",
+      "name": "to",
+      "indexed": true
+     },
+     {
+      "type": "uint256",
+      "name": "value"
+     }
+    ]
+   },
+   {
+    "type": "event",
+    "anonymous": false,
+    "name": "Approval",
+    "inputs": [
+     {
+      "type": "address",
+      "name": "owner",
+      "indexed": true
+     },
+     {
+      "type": "address",
+      "name": "spender",
+      "indexed": true
+     },
+     {
+      "type": "uint256",
+      "name": "value"
+     }
+    ]
+   }
+  ],
+  "interface_source": "token_standard",
+  "interface_verified": false,
+  "interface_usable": true
+ }
+}

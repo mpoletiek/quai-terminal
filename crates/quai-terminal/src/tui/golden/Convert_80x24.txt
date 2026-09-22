@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › Convert │ ● Local dev  ● 1 unread N
+ Trade · Markets  Swap  Pools  ▸ Convert  Wrap  Launches  [ ]
+┌ ▸ convert · QUAI ↔ Qi ───────────────────────────────────────────────────────┐
+│ direction   ◆  QUAI → ◉  Qi ‹›                                               │
+│ you pay     5000 QUAI   available 179071.7533 QUAI                           │
+│ slippage    3.00% ‹› (conversion)                                            │
+│ route       protocol conversion ‹›                                           │
+│                                                                              │
+│ enter quote the conversion   r route   f flip                                │
+│ Conversions in one prime block share a discount; beyond your slippage they   │
+│ refund (fee spent).                                                          │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ both markets ────────────────────────────────────────────────────────────────┐
+│ ▌◈ PROTOCOL protocol conversion        1,432.118 Qi                          │
+│ ▌  convert QUAI → Qi                                                         │
+│ ▌  spendable locked by the protocol (weeks)   no LP fee or price impact      │
+│ ▌  ! conversions in one prime block share a discount; one above yo…          │
+│                                                                              │
+│  ≋ MARKET   market route (Quainance)   12,893.000 Qi  ✓ pays more            │
+│    wrap QUAI → WQUAI  ·  swap WQUAI → WQI  ·  unwrap WQI → Qi                │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  0-9 amount  m max  tab field  ←→ direction  : palette  ? more

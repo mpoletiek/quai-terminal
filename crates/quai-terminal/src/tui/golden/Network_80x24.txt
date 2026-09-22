@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 2 3 4 5 0 System  │ System › Network │ ● Local de ● 1 unread N
+ System · Wallets  ▸ Network  Settings  Data sources  [ ]
+┌ node health ─────────────────────────────────────────────────────────────────┐
+│ network       Local dev (local)                                              │
+│ identity      ✓ chain id and genesis match                                   │
+│ chain id      1337                                                           │
+│ genesis       0xff                                                           │
+│ height        1,234,567                                                      │
+│ head age      3s                                                             │
+│ gas price     1 gwei                                                         │
+│ client        —                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ latency 11 ms · min 9 · max 30 ──────┐┌ blocks per refresh · last 4 ─────────┐
+│                                   █  ││                                    █ │
+│                                   █  ││                                  ▄ █ │
+│                                ▂▄▁█▃ ││                                  █▆█ │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+┌ ▸ networks · enter to switch ────────────────────────────────────────────────┐
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter switch network  : palette  ? more

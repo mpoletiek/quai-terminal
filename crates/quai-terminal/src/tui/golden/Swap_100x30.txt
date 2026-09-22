@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ Trade › Swap │ ● Local dev  #1,234,567 │ watch-only                     ● 1 unread N
+                     Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  [ ]
+ 1 Home         •  │┌ ▸ swap · Quainance ──────────────────────────────────────────────────────────┐
+▌2 Trade           ││ you pay                                                                      │
+      Markets      ││   token       WQ [WQI ✓▾]                                                    │
+    › Swap         ││   amount      50   available 171.4                                           │
+      Pools        ││                25%   50%   75%   max    % · f ↕                              │
+      Convert      ││ you receive                                                                  │
+      Wrap         ││   token       US [USDT ✓▾]                                                   │
+      Launches     ││   amount      ⠋ quoting…                                                     │
+ 3 NFTs         ◧  ││                                                                              │
+ 4 People          ││   slippage    0.50% ‹›                                                       │
+ 5 Activity        ││   deadline    10 min ‹›                                                      │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ 0 System          │┌ quote ───────────────────────────────────────────────────────────────────────┐
+                   ││ Type an amount; the quote updates as you type.                               │
+  [ ] tabs         ││                                                                              │
+                   ││ Quotes read the Quainance router and pools on-chain.                         │
+                   ││ Token inputs need an exact approval first; each step is its own review.      │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  tab edit  / pick token  % 25·50·75%  f flip  : palette  ? more

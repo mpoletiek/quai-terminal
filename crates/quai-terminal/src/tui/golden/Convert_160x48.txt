@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ Trade › Convert │ ● Local dev  #1,234,567 │ watch-only                                                             ● 1 unread N
+                     Trade · Markets  Swap  Pools  ▸ Convert  Wrap  Launches  [ ]
+ 1 Home         •  │┌ ▸ convert · QUAI ↔ Qi ───────────────────────────────────────┐┌ both markets ────────────────────────────────────────────────────────────┐
+▌2 Trade           ││ direction   ◆  QUAI → ◉  Qi ‹›                               ││ ▌◈ PROTOCOL protocol conversion                                          │
+      Markets      ││ you pay     5000 QUAI   available 179071.7533 QUAI           ││ ▌  ▀█    █ █ ▀▀█ ▀▀█                                                     │
+      Swap         ││ slippage    3.00% ‹› (conversion)                            ││ ▌   █    ▀▀█  ▀█ █▀▀                                                     │
+      Pools        ││ route       protocol conversion ‹›                           ││ ▌  ▀▀▀     ▀ ▀▀▀ ▀▀▀.118 Qi                                              │
+    › Convert      ││                                                              ││ ▌  convert QUAI → Qi                                                     │
+      Wrap         ││ enter quote the conversion   r route   f flip                ││ ▌  spendable locked by the protocol (weeks)   no LP fee or price impact  │
+      Launches     ││ Conversions in one prime block share a discount; beyond your ││ ▌  ! conversions in one prime block share a discount; one above yo…      │
+ 3 NFTs         ◧  ││ slippage they refund (fee spent).                            ││                                                                          │
+ 4 People          ││                                                              ││  ≋ MARKET   market route (Quainance)    ✓ pays more                      │
+ 5 Activity        ││                                                              ││    ▀█  ▀▀█   █▀█ █▀█ ▀▀█                                                 │
+                   ││                                                              ││     █  █▀▀   █▀█ ▀▀█  ▀█                                                 │
+ 0 System          ││                                                              ││    ▀▀▀ ▀▀▀   ▀▀▀ ▀▀▀ ▀▀▀.000 Qi                                          │
+                   ││                                                              ││    wrap QUAI → WQUAI  ·  swap WQUAI → WQI  ·  unwrap WQI → Qi            │
+  [ ] tabs         ││                                                              ││    spendable in minutes   no LP fee or price impact                      │
+                   ││                                                              ││    ! conversions in one prime block share a discount; one above yo…      │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││ the market route pays 800.26% more at this block                         │
+                   ││                                                              ││ Rates move with the pools and the block's conversion flow.               │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   ││                                                              ││                                                                          │
+                   │└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
+ N notifications  0-9 amount  m max  tab field  ←→ direction  : palette  ? more

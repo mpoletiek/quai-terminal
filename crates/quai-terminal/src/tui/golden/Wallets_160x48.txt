@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ System › Wallets │ ● Local dev  #1,234,567 │ watch-only                                                            ● 1 unread N
+                     System · ▸ Wallets  Network  Settings  Data sources  [ ]
+ 1 Home         •  │┌ ▸ wallets on this computer ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ 2 Trade           ││   wallet                 keys             value        QUAI           Qi         holds                  priced                           │
+ 3 NFTs         ◧  ││ ▸ preview                watch-only                  —              —          —                                                         │
+ 4 People          ││                                                                                                                                          │
+ 5 Activity        ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+▌0 System          ││                                                                                                                                          │
+    › Wallets      ││                                                                                                                                          │
+      Network      ││                                                                                                                                          │
+      Settings     ││                                                                                                                                          │
+      Data sources ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+  [ ] tabs         ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   ││                                                                                                                                          │
+                   │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter open wallet  a new wallet  i import phrase  e rename  : palette  ? more

@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 Home 2 3 4 5 0  │ Home › Accounts │ ● Local dev   ● 1 unread N
+ Home · Portfolio  Qi coins  ▸ Accounts  Locks  [ ]
+┌ ▸ quai accounts ─────────────────────────────────────────────────────────────┐
+│       label          address                ◆  QUAI  locked           nonce  │
+│ 0  ▌  Account 1      0x0023…f15a       179,071.7533  ◕ <0.0001        11     │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  a add account  e rename  y copy  s send  : palette  ? more

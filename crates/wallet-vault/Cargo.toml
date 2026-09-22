@@ -1,0 +1,20 @@
+[package]
+name = "wallet-vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Encrypted secret vault for Quai Terminal"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+base64.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+{
+ "quai": {
+  "usd": 0.008879,
+  "takenAt": "2026-09-15T11:59:15.055Z",
+  "source": "mexc"
+ },
+ "qi": {
+  "usd": 0.84999661803,
+  "takenAt": "2026-09-15T11:59:15.062Z",
+  "source": "derived:protocol-rate"
+ }
+}

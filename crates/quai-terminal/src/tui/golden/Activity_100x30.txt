@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ Activity › All │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                     Activity · ▸ All  Sends  Receipts  Trades  NFTs  [ ]
+ 1 Home         •  │┌ ▸ activity · all ────────────────────────────────────────────────────────────┐
+ 2 Trade           ││   when   what                     status                   gas tx            │
+ 3 NFTs         ◧  ││ 0 2071 ↘ received Quai Miners #12 ✓ received                   0x1           │
+ 4 People          ││                                                                              │
+▌5 Activity        ││                                                                              │
+    › All          ││                                                                              │
+      Sends        ││                                                                              │
+      Receipts     ││                                                                              │
+      Trades       ││                                                                              │
+      NFTs         ││                                                                              │
+                   ││                                                                              │
+ 0 System          ││                                                                              │
+                   ││                                                                              │
+  [ ] tabs         ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+                   │┌ detail ──────────────────────────────────────────────────────────────────────┐
+                   ││ ↘ received <0.0001 QM                                                        │
+                   ││ to          0x00                                                             │
+                   ││ value       ⠋ reading…                                                       │
+                   ││ gas         ⠋ reading…                                                       │
+                   ││ tx          0x1                                                              │
+                   ││ block       1                                                                │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  [ ] filter  enter detail  ' jump  y copy tx  : palette  ? more

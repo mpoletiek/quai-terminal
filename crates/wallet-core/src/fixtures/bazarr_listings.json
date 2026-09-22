@@ -1,0 +1,117 @@
+{
+ "listings": [
+  {
+   "contract": "0x00469e66615ec9db6b2eb4ad526c735d2887410d",
+   "token_id": "0",
+   "seller": "0x004a1ea50754d904883db3ca9138cd4bc321734b",
+   "price": "1000000000000000000",
+   "price_quai": "1.0",
+   "currency": "0x0000000000000000000000000000000000000000",
+   "created_block": "8022954",
+   "created_tx": "0x0011006dde2057036e416c2d758cd3448319c0e801c61aad5a403cd1f24ec29e",
+   "created_at": "2026-05-17T13:07:16.536Z",
+   "protocol": "zora",
+   "order_hash": null,
+   "quantity": "1",
+   "quantity_remaining": null,
+   "order_counter": null,
+   "order_payload": null,
+   "meta_name": null,
+   "meta_image_url": null,
+   "meta_image_cached": null
+  },
+  {
+   "contract": "0x00378f533bc9854274bf0d33f0d34ab00402e86a",
+   "token_id": "11",
+   "seller": "0x0029e24fe5e6c022c9854402d15780e593703bbd",
+   "price": "10000000000000000000",
+   "price_quai": "10.0",
+   "currency": "0x002b2596EcF05C93a31ff916E8b456DF6C77c750",
+   "created_block": "9286005",
+   "created_tx": "0x001200545806a97da0e1bd65e0b11e26fd125420837fa5b6316fb8ef84a1a11a",
+   "created_at": "2026-07-29T15:26:22.661Z",
+   "protocol": "zora",
+   "order_hash": null,
+   "quantity": "1",
+   "quantity_remaining": null,
+   "order_counter": null,
+   "order_payload": null,
+   "meta_name": "Caelestis Praetor #11",
+   "meta_image_url": "https://ipfs.io/ipfs/bafybeif6zmaqiwpgfvgwall5vkclwytlu646hflbgj2dc25kxbxhgwfyz4",
+   "meta_image_cached": "https://qvkifxhykyewaiqvkjdk.supabase.co/storage/v1/object/public/nft-media/0x00378f533bc9854274bf0d33f0d34ab00402e86a/11.jpg"
+  },
+  {
+   "contract": "0x00378f533bc9854274bf0d33f0d34ab00402e86a",
+   "token_id": "149",
+   "seller": "0x005821212fbd213b682fcbc070d22dc4bbb4c84b",
+   "price": "10000000000000000000",
+   "price_quai": "10.0",
+   "currency": "0x002b2596EcF05C93a31ff916E8b456DF6C77c750",
+   "created_block": "9395915",
+   "created_tx": "0x0065005e61ebc6bbece726810fe0eca1e808143c67234841a60d6a1215d79a2a",
+   "created_at": "2026-08-05T00:23:54.131Z",
+   "protocol": "zora",
+   "order_hash": null,
+   "quantity": "1",
+   "quantity_remaining": null,
+   "order_counter": null,
+   "order_payload": null,
+   "meta_name": "Caelestis Praetor #149",
+   "meta_image_url": "https://ipfs.io/ipfs/bafybeihog3wlkdeddrmjk6tjy7jnyhdcrirgnacallrbhcv46m7d3i7rvq",
+   "meta_image_cached": "https://qvkifxhykyewaiqvkjdk.supabase.co/storage/v1/object/public/nft-media/0x00378f533bc9854274bf0d33f0d34ab00402e86a/149.jpg"
+  },
+  {
+   "contract": "0x005173a1fc48f0c44af77b711d6f44b340d2ae40",
+   "token_id": "1",
+   "seller": "0x0029e24fe5e6c022c9854402d15780e593703bbd",
+   "price": "7000000000000000000",
+   "price_quai": "7.0",
+   "currency": "0x0000000000000000000000000000000000000000",
+   "created_block": "9395881",
+   "created_tx": "0x0066002dcee90476ad08e096903f2f55759abf93b516cb9872954f0d827942e3",
+   "created_at": "2026-08-05T00:30:09.699Z",
+   "protocol": "seaport",
+   "order_hash": "0xfb7c0c40aafb8362c6580538888c36158310824e561471ea9b4eeb82b88b1f06",
+   "quantity": "2",
+   "quantity_remaining": "1",
+   "order_counter": null,
+   "order_payload": {
+    "counter": "0",
+    "orderHash": "0xfb7c0c40aafb8362c6580538888c36158310824e561471ea9b4eeb82b88b1f06",
+    "parameters": {
+     "salt": "2436761378518297231",
+     "zone": "0x0000000000000000000000000000000000000000",
+     "offer": [
+      {
+       "token": "0x005173a1fc48f0c44af77b711d6f44b340d2ae40",
+       "itemType": 3,
+       "endAmount": "2",
+       "startAmount": "2",
+       "identifierOrCriteria": "1"
+      }
+     ],
+     "endTime": "1801438939",
+     "offerer": "0x0029e24fe5e6c022c9854402d15780e593703bbd",
+     "zoneHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "orderType": 1,
+     "startTime": "1785886939",
+     "conduitKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "consideration": [
+      {
+       "token": "0x0000000000000000000000000000000000000000",
+       "itemType": 0,
+       "endAmount": "7000000000000000000",
+       "recipient": "0x0029e24fe5e6c022c9854402d15780e593703bbd",
+       "startAmount": "7000000000000000000",
+       "identifierOrCriteria": "0"
+      }
+     ],
+     "totalOriginalConsiderationItems": "1"
+    }
+   },
+   "meta_name": "QuaiGod",
+   "meta_image_url": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MDAiIGhlaWdodD0iNjAwIiB2aWV3Qm94PSIwIDAgNjAwIDYwMCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0M0RjI0QSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3",
+   "meta_image_cached": null
+  }
+ ]
+}

@@ -1,0 +1,101 @@
+{
+ "instance": {
+  "id": "26967",
+  "token_address": "0x004d92fd198c21af21016f4b119b8b851b5aeaa4",
+  "token_id": "1",
+  "owner_address": "0x00201a76447452e62c008b6b5d70d6ed5837b946",
+  "quantity": "1",
+  "acquired_at_block": "658471",
+  "acquired_at_tx": "0x000a002030fa10a8aafa22296fb3bc3844ad52cc4c073c5e7c4b9072aa315f48",
+  "last_updated": "2026-07-12T02:51:38.670Z",
+  "token_uri": "ipfs://QmNk5sPgaH7nVWjt29oQduk4B4FSBYgQcokXktQQRVkmxB/1.json",
+  "metadata_json": {
+   "name": "Quai Miners #1",
+   "image": "ipfs://QmVZ5XxooW2ofpDqhGFKgPk1mmHmY4DbeB8jwo31ztPh1n/1.png",
+   "file_url": "ipfs://QmVZ5XxooW2ofpDqhGFKgPk1mmHmY4DbeB8jwo31ztPh1n/1.png",
+   "attributes": [
+    {
+     "value": "Quarry",
+     "trait_type": "Background"
+    },
+    {
+     "value": "Dwarf",
+     "trait_type": "Base"
+    },
+    {
+     "value": "Dwarf",
+     "trait_type": "Face"
+    },
+    {
+     "value": "Dwarf",
+     "trait_type": "Hair"
+    },
+    {
+     "value": "None",
+     "trait_type": "Extra"
+    },
+    {
+     "value": "None",
+     "trait_type": "Head"
+    },
+    {
+     "value": "Dwarf",
+     "trait_type": "Body"
+    }
+   ],
+   "description": "Quai miners is a collection of 5000 unique pixelated miner PFPs.",
+   "custom_fields": {
+    "dna": "a01b80f8ea52eb560f2396a33e1fd2b83a4292d4",
+    "date": 1706482804677,
+    "edition": 1,
+    "compiler": "HashLips Art Engine - Modified By ThePeanutGalleryAndCo"
+   }
+  },
+  "metadata_status": "FETCHED",
+  "metadata_failure_class": null,
+  "media_status": "CACHED",
+  "media_failure_class": null,
+  "media_url": "/api/nft-media/61c2ac6a34096a8767c28b2d3be69fb585eff089c9e188e107c07d90b5512bd7"
+ },
+ "token": {
+  "contract_address": "0x004d92fd198c21af21016f4b119b8b851b5aeaa4",
+  "name": "Quai Miners",
+  "symbol": "QM",
+  "decimals": null,
+  "total_supply": null,
+  "type": "ERC721",
+  "holder_count": 1044,
+  "transfer_count": "5984",
+  "icon_url": null,
+  "website": null,
+  "description": null,
+  "created_at_block": "262300",
+  "created_at_tx": "0x0014007d67415e4d2d14ebc65b570f0c3dba5bd1d750aeb59e2ca85d9a7604cc",
+  "creator_address": "0x005f2622895cda598581893c98d524c6076e8dd6",
+  "last_updated": "2026-09-04T11:08:48.927Z",
+  "base_uri": null,
+  "contract_uri": null,
+  "supports_metadata": true,
+  "preview_image_url": "ipfs://QmVZ5XxooW2ofpDqhGFKgPk1mmHmY4DbeB8jwo31ztPh1n/152.png",
+  "preview_token_id": "152",
+  "total_supply_block_height": null,
+  "total_supply_block_hash": null,
+  "total_supply_observed_at": null,
+  "icon_source_url": null
+ },
+ "owners": [
+  {
+   "owner_address": "0x00201a76447452e62c008b6b5d70d6ed5837b946",
+   "quantity": "1"
+  }
+ ],
+ "ownerCount": 1,
+ "totalQuantity": "1",
+ "transferCount": 2,
+ "responseCaps": {
+  "owners": {
+   "limit": 100,
+   "truncated": false
+  }
+ }
+}

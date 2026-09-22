@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ Trade › Markets │ ● Local dev  #1,234,567 │ watch-only                  ● 1 unread N
+                     Trade · ▸ Markets  Swap  Pools  Convert  Wrap  Launches  [ ]
+ 1 Home         •  │┌ ▸ pairs · stale/partial source · reserves unverified · TVL $11.9k · 24h $2.87┐
+▌2 Trade           ││ pair                                               price     24h     TVL/%   │
+    › Markets      ││ ◆ US QUAI/USDT                                      0.008744 ▼25.4%   $3.33k │
+      Swap         ││ QO◆  QOGE/QUAI ◈                                    0.0₃4062 —       $997.60 │
+      Pools        ││ CH◆  CHEEZ/QUAI ○                                    0.0₄744 —           68% │
+      Convert      ││                                                                              │
+      Wrap         │└──────────────────────────────────────────────────────────────────────────────┘
+      Launches     │┌ QUAI/USDT · Quainance · 1h · T timeframe · f flip · t trade · updating… ─────┐
+ 3 NFTs         ◧  ││ ◆ US 0.008744 USDT  ▼25.4%  24h · partial history  H 0.01173  L 0.008744     │
+ 4 People          ││ vol 343.50 USDT ($343.50) · 30 trades · TVL $3.33k · you hold 90,412.2 QUAI  │
+ 5 Activity        ││ ▄                                                                 0.01191    │
+                   ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
+ 0 System          ││ █                                                                            │
+                   ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ 0.01024    │
+  [ ] tabs         ││ █                                                                            │
+                   ││ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │
+                   ││ █ █ ─ █ ─ ─ █ ─ █ ─ █ ─ █ ─ ─ █ ─ █ ─ ─                           ◂0.008744  │
+                   ││ hh:mm               hh:mm             hh:mm                                  │
+                   ││ █   ▇   ▇   ▆   ▆   ▅   ▅   ▄   ▄   ▃                             vol max 25 │
+                   ││ █ ▄ █ ▄ █ ▃ █ ▃ █ ▃ █ ▂ █ ▂ █ ▂ █ ▂ █ ▁                                      │
+                   ││ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █                                      │
+                   ││ trades        price       size                total              trader      │
+                   ││ now      buy     0.009091          1,100 QUAI         10.00 USDT you         │
+                   ││ 40m      buy     0.009182          1,100 QUAI         10.10 USDT you         │
+                   ││ 1h 20m   buy     0.009273          1,100 QUAI         10.20 USDT you         │
+                   ││ 2h       buy     0.009364          1,100 QUAI         10.30 USDT you         │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  t trade pair  w watch  A alert  tab flow  : palette  ? more

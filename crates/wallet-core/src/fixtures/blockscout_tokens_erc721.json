@@ -1,0 +1,52 @@
+{
+ "items": [
+  {
+   "address": "0x0023C085B7E0297f345D6FE155ee5B323885E192",
+   "circulating_market_cap": null,
+   "decimals": null,
+   "exchange_rate": null,
+   "holders": "8481",
+   "icon_url": null,
+   "name": "QuaiClub Membership NFT",
+   "symbol": "QCMBR",
+   "total_supply": null,
+   "type": "ERC-721",
+   "volume_24h": null
+  },
+  {
+   "address": "0x00356Fd45BD6674cfc034e34D553Be029BDe059c",
+   "circulating_market_cap": null,
+   "decimals": null,
+   "exchange_rate": null,
+   "holders": "4898",
+   "icon_url": null,
+   "name": "QuaiClub Membership NFT",
+   "symbol": "QCMBR",
+   "total_supply": null,
+   "type": "ERC-721",
+   "volume_24h": null
+  },
+  {
+   "address": "0x0014D71aD09078f4821B9C3cC6C1f0761B3b7102",
+   "circulating_market_cap": null,
+   "decimals": null,
+   "exchange_rate": null,
+   "holders": "86",
+   "icon_url": null,
+   "name": "Quai Network Commemorative NFT",
+   "symbol": "QCOM",
+   "total_supply": null,
+   "type": "ERC-721",
+   "volume_24h": null
+  }
+ ],
+ "next_page_params": {
+  "contract_address_hash": "0x006cf982b7e3e5e78c058f5906edd9e7a236f625",
+  "fiat_value": null,
+  "holder_count": 3,
+  "is_name_null": false,
+  "items_count": 50,
+  "market_cap": null,
+  "name": "QuestLoot"
+ }
+}

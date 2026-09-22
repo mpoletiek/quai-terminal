@@ -1,0 +1,101 @@
+# Build the wallet for macOS and Linux and, on a tag, publish it as a GitHub release.
+#
+# macOS is built on macOS runners rather than cross-compiled: the code has `target_os` branches
+# (see `daemon.rs`) that only a real build exercises, so each target runs the test suite too. A
+# green Linux build says nothing about whether the macOS branches even compile.
+#
+# `workflow_dispatch` builds without publishing, which is how to check macOS before cutting a tag.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Also publish a GitHub release (needs a tag to exist)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One target failing should not hide whether the others work.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-apple-silicon
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: macos-intel
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # The library and binary tests only. Live mainnet tests are `--ignored` and need the network.
+      - name: Test
+        run: cargo test --workspace --lib --bins --locked --target ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin quai-terminal
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # By name: the workspace lists the libraries first, so packages[0] is not the wallet.
+          version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "quai-terminal-cli"))')"
+          stage="quai-terminal-${version}-${{ matrix.name }}"
+          mkdir -p "dist/$stage"
+          cp "target/${{ matrix.target }}/release/quai-terminal" "dist/$stage/"
+          cp README.md LICENSE "dist/$stage/"
+          tar -C dist -czf "dist/$stage.tar.gz" "$stage"
+          echo "asset=dist/$stage.tar.gz" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    # Only for a real tag, and only when asked. A dispatch without `publish` just proves it builds.
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.publish)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The notes file and the tag `--verify-tag` checks both live in the repository.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum *.tar.gz | tee SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Prerelease: an alpha must not be presented as the latest stable download, and
+          # `--verify-tag` refuses to invent a tag that was never pushed.
+          gh release create "${{ github.ref_name }}" dist/*.tar.gz dist/SHA256SUMS \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file .github/RELEASE_NOTES.md \
+            --prerelease \
+            --verify-tag

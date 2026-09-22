@@ -1,0 +1,42 @@
+{
+ "direction": "qi-to-quai",
+ "amountIn": "10000",
+ "protocolRate": {
+  "quaiPerQi": "91.262813095770561333",
+  "raw": "91262813095770561333"
+ },
+ "steps": {
+  "amountInQuai": "912628130957705613330",
+  "flowAmount": "100000000000000000000",
+  "cubicDiscounted": "218009575127946538204",
+  "kQuaiDiscountApplied": true,
+  "kQuaiDiscount": "0",
+  "afterKQuai": "218009575127946538204",
+  "flooredAt10Pct": false,
+  "valueOutQuaiTerms": "218009575127946538204",
+  "valueOut": "218009575127946538204"
+ },
+ "slip": {
+  "requested": null,
+  "effective": 9000,
+  "minReceived": "91262813095770561333",
+  "wouldRevert": false
+ },
+ "head": {
+  "height": "10111684",
+  "zoneHeaderPrimeHeight": "2235864",
+  "primeHeight": "2235863",
+  "time": "2026-09-15T14:35:56.000Z",
+  "controllerTime": "2026-09-15T14:35:26.000Z",
+  "primeTerminusHash": "0x22b8771829deda3685fd654c6cd336b2dc17ed6591d3733891dd799033dcc5a9",
+  "controllerBlockHash": "0x22b8771829deda3685fd654c6cd336b2dc17ed6591d3733891dd799033dcc5a9",
+  "exchangeRate": "13264669140000000000",
+  "quaiPerQi": "91262813095770561333",
+  "kQuaiDiscount": "0",
+  "conversionFlowAmount": "100000000000000000000",
+  "minerDifficulty": "1046118672646",
+  "normalizedMinerDifficulty": "26200006530",
+  "bestDifficultyNormalized": null
+ },
+ "disclaimer": "preview"
+}

@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ Activity › All │ ● Local dev  #1,234,567 │ watch-only                                                              ● 1 unread N
+                     Activity · ▸ All  Sends  Receipts  Trades  NFTs  [ ]
+ 1 Home         •  │┌ ▸ activity · all ────────────────────────────────────────────────────────────────┐┌ detail ──────────────────────────────────────────────┐
+ 2 Trade           ││   when       what                     status                   gas tx            ││ ↘ received <0.0001 QM                                │
+ 3 NFTs         ◧  ││ 0 20714d 4 ↘ received Quai Miners #12 ✓ received                   0x1           ││ to          0x00                                     │
+ 4 People          ││                                                                                  ││ value       ⠋ reading…                               │
+▌5 Activity        ││                                                                                  ││ gas         ⠋ reading…                               │
+    › All          ││                                                                                  ││ tx          0x1                                      │
+      Sends        ││                                                                                  ││ block       1                                        │
+      Receipts     ││                                                                                  ││                                                      │
+      Trades       ││                                                                                  ││                                                      │
+      NFTs         ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+ 0 System          ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+  [ ] tabs         ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   ││                                                                                  ││                                                      │
+                   │└──────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+ N notifications  [ ] filter  enter detail  ' jump  y copy tx  : palette  ? more

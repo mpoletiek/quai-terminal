@@ -1,0 +1,20 @@
+{
+ "schema": "quai.address-lockups.v2",
+ "snapshot": "eyJ2IjoxLCJzY29wZSI6ImxvY2t1cC1zbmFwc2hvdC12MiIsInZhbHVlcyI6WyIweDAwN2VlY2IwNDE1YTIwMTQ1NzdiNWVlZDAxYjNmMmNmMThhYTFlNGEiLCIxMDEwOTgzNiIsIjB4ZTI4ZGRkMjY1M2FjYTU0N2VlMDY1YWE0NGUxOGE4ZDY5NzdmZGEyMzNiNmVmMmRkZGVlZjVlZTkzMGNkMDc0YSIsIjM0NzA5NyIsIjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMCIsIjEwMTE5ZjRmLTg0YWQtNDJjMS04NDdiLTFhYjk5NDVhOWNlOSJdfQ",
+ "head": "10109836",
+ "headHash": "0xe28ddd2653aca547ee065aa44e18a8d6977fda233b6ef2dddeef5ee930cd074a",
+ "blockTimeSeconds": 5,
+ "total": 0,
+ "totals": {
+  "coinbase": 0,
+  "conversion": 0,
+  "utxo-lock": 0
+ },
+ "buckets": [],
+ "protocolStranded": {
+  "coin": "QUAI",
+  "amount": "0",
+  "redeemable": false,
+  "certification": "EXACT_V055_REPAIR_BOUND"
+ }
+}

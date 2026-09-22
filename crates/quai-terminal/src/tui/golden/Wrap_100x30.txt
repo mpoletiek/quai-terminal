@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ Trade › Wrap │ ● Local dev  #1,234,567 │ watch-only                     ● 1 unread N
+                     Trade · Markets  Swap  Pools  Convert  ▸ Wrap  Launches  [ ]
+ 1 Home         •  │┌ ▸ wrap ──────────────────────────────────────────────────────────────────────┐
+▌2 Trade           ││ mode        Qi → WQI ‹›                                                      │
+      Markets      ││ amount      0 QI                                                             │
+      Swap         ││ available   240 Qi spendable                                                 │
+      Pools        ││ wrap Qi into WQI backing (step 1 of 2)                                       │
+      Convert      ││                                                                              │
+    › Wrap         ││ enter review                                                                 │
+      Launches     ││ 1 wrap Qi → 2 wait for settlement → 3 claim WQI                              │
+ 3 NFTs         ◧  ││                                                                              │
+ 4 People          │└──────────────────────────────────────────────────────────────────────────────┘
+ 5 Activity        │┌ wrapped balances ────────────────────────────────────────────────────────────┐
+                   ││ Loading wrapped balances…                                                    │
+ 0 System          ││                                                                              │
+                   ││                                                                              │
+  [ ] tabs         ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  0-9 amount  m max  tab field  ←→ mode  : palette  ? more

@@ -1,0 +1,30 @@
+ ◆  PREVIEW │ Home › Portfolio │ ● Local dev  #1,234,567 │ watch-only                 ● 1 unread N
+                     Home · ▸ Portfolio  Qi coins  Accounts  Locks  [ ]
+▌1 Home         •  │┌ ▸ portfolio ─────────────────────────────────────────────────────────────────┐
+    › Portfolio    ││ ▌$ ▀█    ▀▀█ █▀█ █ █                              ▁▁▂▂▃▃▄▄▅▅▅▆▆▇▇█ 7d  +4.1% │
+      Qi coins     ││ ▌   █    █▀▀ █▀█ ▀▀█                                ◔ some prices from cache │
+      Accounts     ││ ▌  ▀▀▀   ▀▀▀ ▀▀▀   ▀.52                                                      │
+      Locks        ││                                                                              │
+ 2 Trade           ││ ◧ 3 NFTs in 3 collections · not counted in the total  3 to view              │
+ 3 NFTs         ◧  │└──────────────────────────────────────────────────────────────────────────────┘
+ 4 People          │┌ ▸ holdings · 5 · $1,284.52 ──────────────────────────────────────────────────┐
+ 5 Activity        ││    asset         balance                                  value       src    │
+                   ││ ▀▀ ✓ QUAI                                        90,412.2       $0.88 ◔ 1m   │
+ 0 System          ││ ▀▀ ✓ Qi                                            256.61      $90.00 ◔ 1m   │
+                   ││ ▀▀ ✓ WQI                                            171.4     $104.92 ◔ 1m   │
+  [ ] tabs         ││ US ✓ USDT                                           50.48     $101.00 ◔ 1m   │
+                   ││ BO ⚠ BOSS                                     1,200,000 ~           — ◔ 1m   │
+                   ││                                                                              │
+                   ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+                   │┌ attention · 5 ───────────────────────────────────────────────────────────────┐
+                   ││ ◕ 2.4 QI unlocks in 3d 18h                                                   │
+                   ││ ● 1 unread notification(s) · N to read                                       │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+                   │┌ recent activity ─────────────────────────────────────────────────────────────┐
+                   ││ 959w ↘ received Quai Miners #12 → 0x00                                     ✓ │
+                   ││                                                                              │
+                   ││                                                                              │
+                   │└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter detail  t swap  s send  r receive  : palette  ? more
