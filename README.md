@@ -92,42 +92,49 @@ Select a wallet with `-w NAME` and a network with `-n mainnet|orchard|<custom>`.
 
 ## TUI
 
-The TUI has six sections with sub-tabs:
+The TUI has seven sections with sub-tabs, down the rail on the left:
 
 | Key | Section | Sub-tabs (`[` / `]`) |
 | --- | --- | --- |
-| `1` | **Home** | Portfolio (total, 7-day value, the full holdings table, NFT strip, attention items, recent activity) · Qi coins (cash drawer, aggregate and sweep) · Accounts · Locks |
-| `2` | **Trade** | Markets (every Quainance market — main pools, graduated launches, tokens on their bonding curves — with candles and a live flow of every swap) · Swap (Quainance) · Pools (liquidity positions and gauge staking) · Convert (QUAI ↔ Qi) · Wrap · Launches (Quainance's launch zone: tokens on their bonding curve with where they stand on it, buy/sell/claim on the curve) |
-| `3` | **NFTs** | Collected · Explore (collections) · Listings (Bazarr) |
-| `4` | **People** | Contacts · Channels · Board (on-chain messages) |
-| `5` | **Activity** | All · Sends · Receipts · Trades · NFTs |
+| `1` | **Home** | Portfolio (total, 7-day value, the full holdings table, NFT strip, attention items, recent activity) · Qi coins (cash drawer, aggregate and sweep) · Accounts (with time-locked funds) |
+| `2` | **Markets** | Pairs (every Quainance market — main pools, graduated launches, tokens on their bonding curves — with candles and a live flow of every swap) · Launches (Quainance's launch zone: tokens on their bonding curve with where they stand on it, buy/sell/claim on the curve) · Pools (liquidity positions and gauge staking) |
+| `3` | **Trade** | Exchange (Swap, Convert QUAI ↔ Qi and Wrap on one card) · Orders (limit orders) · PnL |
+| `4` | **NFTs** | Collected · Explore (collections) · Listings (Bazarr) |
+| `5` | **People** | Contacts · Channels · Board (on-chain messages) |
+| `6` | **Activity** | All · Sends · Receipts · Trades · NFTs |
 | `0` | **System** | Wallets (switch, create, import) · Network (node health, hashrate per algorithm, transactions and gas paid per hour) · Settings · Data sources |
+
+Every screen uses the same keys for the same things. `space` opens the actions for what is selected, with that screen's own letters (on Pools, `h` harvests), and `?` lists the keys for the screen you are on. The mouse works too: click, scroll and hover.
 
 | Key | Action |
 | --- | --- |
 | `[` `]` / `tab` | sub-tabs / move focus between panes (and card fields) |
-| `enter` / `esc` | open the detail view for the focused row / back (the header shows a breadcrumb) |
-| `j`/`k`, `g`/`G`, `ctrl-d`/`ctrl-u` | move |
+| arrows or `h` `j` `k` `l` | move. The arrows always move; Settings › "Move with h j k l" turns the letters off |
+| `home` / `G`, `ctrl-d` / `ctrl-u` | first / last row, page down / up |
+| `g` then a letter | go straight to a screen (`g g`: first row) |
 | `'` then a label | jump to a labeled row (coins, activity) |
+| `enter` / `esc` / `backspace` | open the detail view for the focused row / back / the screen before |
+| `space` | actions for the selected item |
 | `:` or `ctrl-p` | command palette: every action, screen, contact, holding, market and word, recent choices first, and typed intents (`send alice 5 quai`, `swap 10 wqi to usdt`) that open the form or card filled in; `ctrl-y` copies the entry's CLI command |
 | `s` / `r` / `t` | send / receive / trade (opens Swap with the focused token) |
-| `c` / `C` | convert QUAI→Qi / Qi→QUAI |
-| `o` | copy the explorer or Bazarr link of the focused item |
-| `y` | copy the selected address, tx hash or payment code (OSC 52 clipboard, works over SSH/tmux) |
-| `T` / `L` | theme showroom / lock screen gallery |
-| `R` | full refresh |
-| `N` | notifications |
-| `l` | lock |
+| `b` / `S` | buy / sell |
+| `c` / `w` | convert QUAI ↔ Qi / wrap |
+| `a` / `e` / `x` | add / edit / remove |
+| `y` / `Y` | copy the selected address, tx hash or payment code / copy its explorer or Bazarr link (system clipboard, or OSC 52 over SSH) |
+| `/` / `,` / `.` / `f` | search / sort / view / flip |
+| `R` / `ctrl-r` | reload / full refresh |
+| `N` / `W` / `$` | notifications / wallets / hide or show the balance |
+| `ctrl-l` | lock |
 | `?` | the rest of this screen's keys, and what its words mean (`g` for the whole glossary) |
 | `q` | quit |
 
 **Pictures.** Token icons tint each token's symbol and allocation bar (contrast-checked), activity rows carry a token or collection badge, Home shows a few NFT thumbnails beside the total (never added to it), and swap and NFT reviews show the token icons or the NFT thumbnail above the fields. Amounts are always text.
 
-**Markets.** Trade opens on a trading view of every Quainance market: the main exchange's pools, the launch AMM's pairs for tokens that graduated from their curve (marked `◈`), and tokens still on their bonding curve (marked `○`, with how far they have raised in place of TVL). Each shows price, 24h change and TVL; the selected pair's candles (15m, 1h, 4h, 1d with `T`) with a price axis and volume bars, in your system's local time (4h and daily candles start at local midnight); 24h high, low, volume and trades; your holdings of both tokens; and a trade tape that marks your own trades. `f` flips base and quote, `t` opens the swap card for the pair (on a curve, its buy form). Prices come from pool reserves (Sync events) and the tape from Swap events: explorer.qu.ai pool logs on mainnet, `quai_getLogs` on the node elsewhere. A curve has no pool, so its chart and tape come from its trades in Quainance's launch index, market data only. `quai-terminal markets [PAIR] --timeframe 1h` prints the same.
+**Markets.** Markets › Pairs is a trading view of every Quainance market: the main exchange's pools, the launch AMM's pairs for tokens that graduated from their curve (marked `◈`), and tokens still on their bonding curve (marked `○`, with how far they have raised in place of TVL). Each shows price, 24h change and TVL; the selected pair's candles (15m, 1h, 4h, 1d with `T`) with a price axis and volume bars, in your system's local time (4h and daily candles start at local midnight); 24h high, low, volume and trades; your holdings of both tokens; and a trade tape that marks your own trades. `f` flips base and quote, `t` opens the swap card for the pair (on a curve, its buy form). Prices come from pool reserves (Sync events) and the tape from Swap events: explorer.qu.ai pool logs on mainnet, `quai_getLogs` on the node elsewhere. A curve has no pool, so its chart and tape come from its trades in Quainance's launch index, market data only. `quai-terminal markets [PAIR] --timeframe 1h` prints the same.
 
 **Signing sequences.** A swap that needs an approval, and an NFT purchase that needs marketplace and token approvals, run as one sequence: each step is still its own review, and the next review opens by itself once the previous transaction confirms, on whatever screen you are on (Home shows the progress). Rejecting any review, a failed step or a preparation error (such as too little balance, checked before any approval) ends the sequence. When wrapped Qi settles, the claim review opens for your signature; rejecting it stops the prompt until more backing arrives.
 
-**Two markets between QUAI and Qi.** Trade › Convert quotes both at once for the amount you type: the **protocol conversion** (one transaction at the controller's rate, subject to the block's conversion-flow discount, output locked by the protocol for weeks) and the **market route** through Quainance (wrap → swap → unwrap: several transactions, LP fee, price impact and slippage, spendable in minutes). `r` picks the route; the better-paying one is marked. The market route runs as a signing sequence, each step its own review, and redeems exactly what its swap produced (redemptions are whole Qi; the remainder stays wrapped). `quai-terminal convert quote <direction> <amount>` prints the same comparison.
+**Two markets between QUAI and Qi.** The Convert card (Trade › Exchange) quotes both at once for the amount you type: the **protocol conversion** (one transaction at the controller's rate, subject to the block's conversion-flow discount, output locked by the protocol for weeks) and the **market route** through Quainance (wrap → swap → unwrap: several transactions, LP fee, price impact and slippage, spendable in minutes). `r` picks the route; the better-paying one is marked. The market route runs as a signing sequence, each step its own review, and redeems exactly what its swap produced (redemptions are whole Qi; the remainder stays wrapped). `quai-terminal convert quote <direction> <amount>` prints the same comparison.
 
 **Paying a WQUAI pool from QUAI.** A swap that needs WQUAI you do not hold wraps the missing amount first, and a swap that pays out WQUAI offers to redeem it for QUAI afterwards — still one review per transaction.
 
@@ -157,7 +164,7 @@ The TUI has six sections with sub-tabs:
 
 **Monitoring endpoint.** Your own node can serve every read: balances, quotes, markets, tracking, the board, and the reads that prepare a transaction. Set it in System › Network › `m`, or with `quai-terminal network monitor mainnet http://10.0.0.12:9200` (`--pathing` for a gateway base, `--clear` to remove). It must report that network's chain id and genesis, or it is not used. Transactions are still broadcast through the network's main RPC, because a monitoring node has no hashrate behind it. The terminal, its background lanes, the daemon and the CLI all use it, and try it again every few minutes if it stops answering.
 
-**Themes.** First run opens a theme showroom (live preview, type to filter), also available later with `T`. With `theme = "auto"` the wallet follows Omarchy's current `colors.toml` and reloads live when you switch themes; outside Omarchy it falls back to the terminal's own ANSI palette. Built in: Quai Red (brand red on black), Quai Dark/Light, High Contrast, Tokyo Night (Night, Storm, Moon, Day), Catppuccin (Mocha, Macchiato, Frappé, Latte), Gruvbox Dark/Light, Nord, Dracula, Rosé Pine (Main, Moon, Dawn), Kanagawa (Wave, Dragon), Everforest Dark/Light, One Dark, Solarized Dark/Light, Nightfox, Monokai Pro, Ayu Mirage and Flexoki Light, plus any Omarchy theme directory or `colors.toml` path. Every palette is contrast-checked (body text ≥ 4.5:1; state colors ≥ 3:1 on every surface). `QUAI_TERMINAL_THEME=nord quai-terminal` tries one for a session; `quai-terminal theme list` / `theme preview NAME` work from the shell.
+**Themes.** First run opens a theme showroom (live preview, type to filter), also available later from the command palette (`:` then "theme"). With `theme = "auto"` the wallet follows Omarchy's current `colors.toml` and reloads live when you switch themes; outside Omarchy it is Quai Dark, or Quai Light on a light terminal, and the terminal's own ANSI palette is a theme you can choose. Built in: Quai Red (brand red on black), Quai Dark/Light, High Contrast, Colorblind safe, Tokyo Night (Night, Storm, Moon, Day), Catppuccin (Mocha, Macchiato, Frappé, Latte), Gruvbox Dark/Light, Nord, Dracula, Rosé Pine (Main, Moon, Dawn), Kanagawa (Wave, Dragon), Everforest Dark/Light, One Dark, Solarized Dark/Light, Nightfox, Monokai Pro, Ayu Mirage and Flexoki Light, plus any Omarchy theme directory or `colors.toml` path. Every palette is contrast-checked (body text ≥ 4.5:1; state colors ≥ 3:1 on every surface). `QUAI_TERMINAL_THEME=nord quai-terminal` tries one for a session; `quai-terminal theme list` / `theme preview NAME` work from the shell.
 
 **Accessibility.** States always carry a glyph and a word, not just a color. `--no-color` / `NO_COLOR` switches to monochrome, turns off block digits and reduces motion; Settings has motion, effects, big digits and a terminal bell. Everything in the TUI is also a CLI command with `--output json`.
 
