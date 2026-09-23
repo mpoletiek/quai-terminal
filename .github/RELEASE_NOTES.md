@@ -3,17 +3,21 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
-## What's new in 0.1.0-alpha.3
+## What's new in 0.1.0-alpha.4
 
-- **Install with one line.** On Linux or macOS,
-  `curl -fsSL https://raw.githubusercontent.com/mpoletiek/quai-terminal/main/install.sh | sh`
-  downloads the right build for your computer, checks it against `SHA256SUMS`, and puts
-  `quai-terminal` in `~/.local/bin`. `uninstall.sh` removes it again and never deletes your wallets.
-- **Node RPC can go through Tor.** With `config set proxy socks5h://127.0.0.1:9050`, requests to a
-  public node now go through the proxy like every other lookup, and fail rather than go direct if it
-  is down. A node on your own machine or LAN is still reached directly.
-- **Built on quai-sdk 0.1.0-alpha.11**, and `diagnostics info` now reports the SDK version the
-  build actually uses.
+The terminal interface is rebuilt. How your wallets are stored and how transactions are signed are
+unchanged.
+
+- **One set of keys everywhere.** Every screen uses the same keys for the same things, and
+  <kbd>Space</kbd> opens the actions for whatever is selected. <kbd>?</kbd> lists the keys for the
+  screen you are on, and <kbd>:</kbd> finds any action by name.
+- **The mouse works:** click, scroll and hover throughout.
+- **Arrows or h j k l.** The arrow keys always move. Settings › "Move with h j k l" turns the letters
+  off so they only mean each screen's own actions.
+- **Easier to read:** a larger section rail and tab strip, a colorblind-safe theme, contrast checked
+  on every built-in theme, and `--plain` for screen readers and the Linux console.
+- **Safer reviews:** a review can't be approved in a window too small to show it, nothing animates
+  over a review or over amounts, and a failed send says plainly whether money may have left.
 
 ## Download
 
