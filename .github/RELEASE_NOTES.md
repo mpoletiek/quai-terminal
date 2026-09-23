@@ -3,19 +3,17 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
-## What's new in 0.1.0-alpha.2
+## What's new in 0.1.0-alpha.3
 
-- **Trading PnL in QUAI.** Trade › PnL, and `quai-terminal pnl --trades`, show per token what you
-  hold, its average cost, its price now, and realized and unrealized PnL, with the net after gas.
-  It counts the trades made from this wallet: receipt amounts where they were recorded, average
-  cost, marked at the deepest WQUAI pool or the token's bonding curve.
-- **QUAI is wrapped for you when a trade needs WQUAI.** A deposit into a WQUAI pool, or a trade
-  paying WQUAI, that finds too little WQUAI but enough QUAI now starts with a reviewed wrap of
-  exactly the shortfall. Automated orders are unchanged.
-- **The matrix lock screen falls back to ASCII rain** where no installed font draws its katakana,
-  instead of drawing blank cells.
-- **macOS fixes.** The background daemon now answers `stop`, `status` and `lock` on macOS; before,
-  it ignored every command. The Intel build runs on a supported runner.
+- **Install with one line.** On Linux or macOS,
+  `curl -fsSL https://raw.githubusercontent.com/mpoletiek/quai-terminal/main/install.sh | sh`
+  downloads the right build for your computer, checks it against `SHA256SUMS`, and puts
+  `quai-terminal` in `~/.local/bin`. `uninstall.sh` removes it again and never deletes your wallets.
+- **Node RPC can go through Tor.** With `config set proxy socks5h://127.0.0.1:9050`, requests to a
+  public node now go through the proxy like every other lookup, and fail rather than go direct if it
+  is down. A node on your own machine or LAN is still reached directly.
+- **Built on quai-sdk 0.1.0-alpha.11**, and `diagnostics info` now reports the SDK version the
+  build actually uses.
 
 ## Download
 
