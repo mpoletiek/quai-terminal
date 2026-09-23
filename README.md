@@ -25,6 +25,28 @@ It also connects to the Quai ecosystem: a USD **portfolio** with token prices, i
 
 > **Alpha software.** The SDK is alpha. Wrapper contracts, the payment mailbox, conversions, swaps and NFT purchases have been exercised end to end on a local dev chain; swap quotes, listing checks and purchase calls are also checked read-only against mainnet. Try small amounts first before using mainnet funds.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mpoletiek/quai-terminal/main/install.sh | sh
+```
+
+This downloads the prebuilt binary for your computer from the newest release (Linux x86-64, or macOS
+on Apple Silicon or Intel), checks it against that release's `SHA256SUMS`, and puts `quai-terminal` in
+`~/.local/bin`. Nothing is compiled and nothing runs as root. If that directory is not on your `PATH`,
+the installer prints the line to add. To pin a release, put `QUAI_TERMINAL_VERSION=v0.1.0-alpha.2`
+before `sh`; `QUAI_TERMINAL_INSTALL_DIR` picks another directory. To read the script before running it,
+download [`install.sh`](install.sh) and run `sh install.sh`.
+
+To remove it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mpoletiek/quai-terminal/main/uninstall.sh | sh
+```
+
+This stops the background daemon and removes the binary. It never deletes your wallets: it prints
+where their data is, and how to delete it once you have your recovery phrases.
+
 ## Build
 
 ```sh

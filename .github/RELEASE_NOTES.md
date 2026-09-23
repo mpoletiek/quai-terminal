@@ -19,6 +19,14 @@ in it" below before doing anything with real money.
 
 ## Download
 
+The quickest way, on Linux or macOS, installs the right file for your computer and checks it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mpoletiek/quai-terminal/main/install.sh | sh
+```
+
+Or download a file yourself:
+
 | Platform | File |
 | --- | --- |
 | Mac, Apple Silicon (M1 and later) | `quai-terminal-<version>-macos-apple-silicon.tar.gz` |
