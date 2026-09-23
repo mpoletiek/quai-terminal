@@ -44,9 +44,14 @@ pub struct Global {
     /// Skip every third-party lookup (explorer, prices, images, marketplace) for this command.
     #[arg(long, global = true)]
     pub offline_data: bool,
-    /// Disable colors (also when NO_COLOR is set to any non-empty value).
-    #[arg(long, global = true, env = "NO_COLOR", value_parser = clap::builder::FalseyValueParser::new())]
+    /// Disable colors (also when NO_COLOR is set to any non-empty value, `0` included: the
+    /// no-color.org convention is presence, not truth).
+    #[arg(long, global = true)]
     pub no_color: bool,
+    /// The TUI in plain mode, for screen readers and the Linux console: no pictures, no block
+    /// digits, no motion, ASCII marks. Every action also has a command (`--output json`).
+    #[arg(long, global = true)]
+    pub plain: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

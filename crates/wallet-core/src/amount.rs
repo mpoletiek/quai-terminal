@@ -190,6 +190,18 @@ pub fn compact(value: f64) -> String {
     }
 }
 
+/// A count and its noun, in the right number: `1 transaction`, `3 transactions`, `0 coins`.
+/// `noun` is the singular; a noun that does not take a plain `s` passes its plural after a
+/// `|` (`"sender|senders"` is the same as `"sender"`, `"entry|entries"` is not).
+pub fn count<N: std::fmt::Display + PartialEq + From<u8>>(n: N, noun: &str) -> String {
+    let (one, many) = match noun.split_once('|') {
+        Some((one, many)) => (one.to_string(), many.to_string()),
+        None => (noun.to_string(), format!("{noun}s")),
+    };
+    let one_of = n == N::from(1);
+    format!("{} {}", group_thousands(&n.to_string()), if one_of { one } else { many })
+}
+
 /// USD display: `$1,284.52`, `$0.00881`, `<$0.01`.
 pub fn usd(value: f64) -> String {
     if !value.is_finite() {
@@ -254,6 +266,15 @@ pub fn usd_price(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_agree_with_their_nouns() {
+        assert_eq!(count(1, "transaction"), "1 transaction");
+        assert_eq!(count(0, "coin"), "0 coins");
+        assert_eq!(count(1234, "message"), "1,234 messages");
+        assert_eq!(count(2, "entry|entries"), "2 entries");
+        assert_eq!(count(1, "entry|entries"), "1 entry");
+    }
 
     #[test]
     fn tiny_values_count_their_zeros() {

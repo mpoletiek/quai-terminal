@@ -4,11 +4,15 @@
 //! content, so amounts and addresses are untouched. Modeled on Omarchy's Hyprland windows:
 //!
 //! - The focused panel's border is a two-stop 45° gradient (theme accent → a companion color).
-//! - Vivid: the gradient turns slowly (one turn per 12 s) and a short glint laps the border every
-//!   11 s, skipped while you are typing. Nothing moves while a modal is open.
+//! - Vivid: the gradient turns slowly (one turn per 12 s). Nothing moves while a modal is open,
+//!   and after a minute without input the light rests where it is until the next key.
+//! - The glint is a messenger: one lap of the focused border when its data changes, never on a
+//!   timer (Full and Vivid).
 //! - On a screen change every border draws itself in from its top-left corner (replaces the
-//!   random cell scramble, which briefly animated amounts).
-//! - The header carries a gradient hairline (colored underline) that a block heartbeat runs along.
+//!   random cell scramble, which briefly animated amounts), unless screens are changing fast.
+//! - The header carries a gradient hairline (colored underline): the status channel, where a
+//!   block's heartbeat, the one-shot `Signal`s, a comet for work of unknown length and the
+//!   auto-lock drain run.
 //!
 //! Truecolor only; other terminals keep the plain bold focus border.
 
@@ -22,16 +26,22 @@ use wallet_core::config::Motion;
 type Rgb = (u8, u8, u8);
 
 const TURN_MS: u64 = 12_000;
-const TURN_STEP_MS: u64 = 80;
-const GLINT_EVERY_MS: u64 = 11_000;
+/// A step of the turn is 4.5°, which the eye takes as smooth: finer steps cost frames and
+/// terminal bandwidth without looking different.
+const TURN_STEP_MS: u64 = 150;
 const GLINT_LAP_MS: u64 = 1_400;
 const GLINT_STEP_MS: u64 = 33;
 const GLINT_TAIL: f32 = 9.0;
-/// Border draw-in on screen change.
-pub const INTRO_MS: u128 = 220;
-const INTRO_STAGGER_MS: u128 = 25;
+/// Ambient motion rests after this long without a key or a click, exactly where it stands (the
+/// clock stops, so nothing snaps back), and wakes on the next one. A wallet left open on a desk
+/// costs nothing to show.
+pub const REST_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+/// Border draw-in on screen change: quick, and the stagger stops after six panels.
+pub const INTRO_MS: u128 = 160;
+const INTRO_STAGGER_MS: u128 = 12;
+const INTRO_STAGGERED: u128 = 6;
 /// How long a draw-in (with stagger) can take.
-pub const INTRO_TOTAL_MS: u128 = INTRO_MS + INTRO_STAGGER_MS * 10;
+pub const INTRO_TOTAL_MS: u128 = INTRO_MS + INTRO_STAGGER_MS * INTRO_STAGGERED;
 /// One-shot light on a row or slot (confirmation reached, coin landed).
 pub const FLASH_MS: u128 = 900;
 
@@ -62,6 +72,12 @@ fn beat_progress(app: &App) -> Option<(f32, u8)> {
 pub fn tint(t: &Theme, color: Color, k: f32) -> Option<Color> {
     let (c, s) = (rgb(color)?, rgb(t.surface)?);
     let m = lerp(s, c, k);
+    Some(Color::Rgb(m.0, m.1, m.2))
+}
+
+/// `from` easing into `to` as `k` goes 0 → 1 (truecolor; `None` otherwise).
+pub fn fade_to(from: Color, to: Color, k: f32) -> Option<Color> {
+    let m = lerp(rgb(from)?, rgb(to)?, ease_out(k));
     Some(Color::Rgb(m.0, m.1, m.2))
 }
 
@@ -264,23 +280,32 @@ pub fn paint(app: &App, buf: &mut Buffer, t: &Theme) {
     let quiet = matches!(app.modal, Modal::None);
     let vivid = app.motion() == Motion::Vivid && quiet && app.focused;
     let clock = app.eco.anim_ms;
-    let intro = app.edge_intro.map(|s| s.elapsed().as_millis()).filter(|ms| *ms < INTRO_TOTAL_MS && app.motion().effects());
+    // Nothing moves while a modal is open: the modal's own border counts as a panel here, and a
+    // review or a secret is read, not watched. The focused gradient stays, still.
+    let intro = app.edge_intro.map(|s| s.elapsed().as_millis()).filter(|ms| quiet && *ms < INTRO_TOTAL_MS && app.motion().effects());
     let found = panels(buf, t);
     let angle = if vivid { 45.0 + 360.0 * (clock % TURN_MS) as f32 / TURN_MS as f32 } else { 45.0 };
     let (cos, sin) = (angle.to_radians().cos(), angle.to_radians().sin());
-    let glinting = vivid && app.last_input.elapsed().as_secs() >= 2 && clock % GLINT_EVERY_MS < GLINT_LAP_MS;
+    let turning = vivid && app.last_input.elapsed() < REST_AFTER;
+    // The glint is a messenger: one lap of the focused border when its data changes (a quote
+    // landed, the chart loaded, the total moved), never on a timer. Idle means still.
+    let glint_ms = app
+        .glint_at
+        .map(|at| at.elapsed().as_millis() as u64)
+        .filter(|ms| quiet && app.focused && app.motion().effects() && *ms < GLINT_LAP_MS);
+    let glinting = glint_ms.is_some();
     // A prime block sends a light around every panel.
-    let prime_lap = beat_progress(app).filter(|(_, order)| *order == 0).map(|(p, _)| ease_in_out(p));
+    let prime_lap = beat_progress(app).filter(|(_, order)| quiet && *order == 0).map(|(p, _)| ease_in_out(p));
     let mut moving = false;
     selection_edge(buf, t);
     for (i, panel) in found.iter().enumerate() {
         let cells = perimeter(panel.rect);
         let n = cells.len() as f32;
-        let reveal = intro.map(|ms| ease_out((ms as f32 - (i as u128 * INTRO_STAGGER_MS) as f32) / INTRO_MS as f32));
+        let reveal = intro.map(|ms| ease_out((ms as f32 - ((i as u128).min(INTRO_STAGGERED) * INTRO_STAGGER_MS) as f32) / INTRO_MS as f32));
         let (cx, cy) =
             (f32::from(panel.rect.x) + f32::from(panel.rect.width) / 2.0, f32::from(panel.rect.y) + f32::from(panel.rect.height) / 2.0);
         let extent = (f32::from(panel.rect.width) / 2.0 * cos.abs() + f32::from(panel.rect.height) * sin.abs()).max(1.0);
-        let head = glinting.then(|| ease_in_out((clock % GLINT_EVERY_MS) as f32 / GLINT_LAP_MS as f32) * (n + GLINT_TAIL));
+        let head = glint_ms.map(|ms| ease_in_out(ms as f32 / GLINT_LAP_MS as f32) * (n + GLINT_TAIL));
         for (k, (x, y)) in cells.into_iter().enumerate() {
             let Some(cell) = buf.cell_mut((x, y)) else { continue };
             if !is_edge(cell.symbol()) {
@@ -317,48 +342,123 @@ pub fn paint(app: &App, buf: &mut Buffer, t: &Theme) {
                 }
             }
             cell.set_fg(Color::Rgb(color.0, color.1, color.2));
-            moving |= vivid;
+            moving |= turning;
         }
     }
-    header_rule(app, buf, t, start, end);
-    if moving {
-        let step = if glinting {
-            GLINT_STEP_MS
-        } else {
-            // Wake for the next glint on time.
-            let to_glint = GLINT_EVERY_MS - clock % GLINT_EVERY_MS;
-            TURN_STEP_MS.min(to_glint.max(1))
-        };
+    let hairline = header_rule(app, buf, t, start, end, quiet);
+    let turn = if glinting { Some(GLINT_STEP_MS) } else { moving.then_some(TURN_STEP_MS) };
+    if let Some(step) = [turn, hairline].into_iter().flatten().min() {
         app.eco.anim_step.set(Some(step));
         app.eco.anim_drawn.set(clock / step);
     }
 }
 
+/// A one-shot light along the header hairline. The news travels along the structure to where
+/// it is, then goes still; nothing moves over a number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal {
+    /// The wallet unlocked: one lap in the accent.
+    Wake,
+    /// Value arrived: one lap in ok from the right edge toward the rail (inbound moves inbound).
+    Arrival,
+    /// A transaction of yours reached its last confirmation: one lap in ok.
+    Settled,
+    /// A key kept the wallet open in its last minute: a quick refill.
+    Refill,
+}
+
+impl Signal {
+    /// How long it runs (ms), its tail (cells), whether it runs right to left.
+    fn shape(self) -> (f32, f32, bool) {
+        match self {
+            Signal::Wake | Signal::Settled => (700.0, 10.0, false),
+            Signal::Arrival => (800.0, 12.0, true),
+            Signal::Refill => (150.0, 24.0, false),
+        }
+    }
+
+    fn color(self, t: &Theme) -> Color {
+        match self {
+            Signal::Wake | Signal::Refill => t.focus,
+            Signal::Arrival | Signal::Settled => t.ok,
+        }
+    }
+
+    pub fn ms(self) -> u128 {
+        self.shape().0 as u128
+    }
+}
+
+/// The comet that laps the hairline while work of unknown length runs (one lap, ms; its length).
+const COMET_LAP_MS: u64 = 1_600;
+const COMET_LEN: f32 = 6.0;
+/// The drain starts this long before auto-lock.
+pub const DRAIN_SECS: u64 = 60;
+
 /// A gradient hairline under the header (a colored underline, so no row is added), faded into
-/// the header at both ends, with a light running along it when a block arrives.
-fn header_rule(app: &App, buf: &mut Buffer, t: &Theme, start: Rgb, end: Rgb) {
+/// the header at both ends. It is the app's status channel, most important first: a one-shot
+/// signal (`Signal`), a block's light, a comet while something of unknown length runs, and in
+/// the last minute before auto-lock a drain from the right. Returns when it next changes (ms).
+fn header_rule(app: &App, buf: &mut Buffer, t: &Theme, start: Rgb, end: Rgb, quiet: bool) -> Option<u64> {
     let area = buf.area;
-    if app.locked || app.onboarding.is_some() || area.width < 60 || area.height < 18 {
-        return;
+    if app.locked || app.onboarding.is_some() || super::ui::too_small((area.width, area.height)) {
+        return None;
     }
     let raised = rgb(t.raised).unwrap_or((0, 0, 0));
     let spark = rgb(t.ok).map(|ok| lerp(ok, rgb(t.strong).unwrap_or(ok), 0.4));
-    let (_, tail, strength) = heartbeat(app.beat_order);
-    let beat = beat_progress(app).map(|(p, _)| ease_out(p) * (f32::from(area.width) + tail));
+    let moves = quiet && app.motion().effects();
     let w = f32::from(area.width);
+    // (head position, tail, strength, color) of whatever runs along it now.
+    let signal = app.hairline.filter(|(s, at)| moves && at.elapsed().as_millis() < s.ms()).and_then(|(s, at)| {
+        let (ms, tail, leftward) = s.shape();
+        let p = ease_out(at.elapsed().as_millis() as f32 / ms) * (w + tail);
+        let head = if leftward { w - 1.0 - p } else { p };
+        rgb(s.color(t)).map(|c| (head, tail, 1.0, c, leftward))
+    });
+    let (_, beat_tail, strength) = heartbeat(app.beat_order);
+    let beat =
+        beat_progress(app).filter(|_| quiet).zip(spark).map(|((p, _), c)| (ease_out(p) * (w + beat_tail), beat_tail, strength, c, false));
+    let comet = (moves && app.busy_label().is_some())
+        .then(|| rgb(t.pending))
+        .flatten()
+        .map(|c| ((app.eco.anim_ms % COMET_LAP_MS) as f32 / COMET_LAP_MS as f32 * (w + COMET_LEN), COMET_LEN, 0.9, c, false));
+    let light = signal.or(beat).or(comet);
+    // The drain: what is left of the minute, as the lit part from the left.
+    let drain = app.autolock_remaining().filter(|left| *left <= DRAIN_SECS && moves).map(|_| {
+        let limit = u128::from(app.config.auto_lock_minutes) * 60_000;
+        let left = limit.saturating_sub(app.last_input.elapsed().as_millis()) as f32;
+        (left / (DRAIN_SECS as f32 * 1000.0)).clamp(0.0, 1.0)
+    });
     for x in area.left()..area.right() {
         let Some(cell) = buf.cell_mut((x, area.y)) else { continue };
+        // A picture's placeholder cell carries its placement in the underline color.
+        if cell.symbol().starts_with(super::placeholders::PLACEHOLDER) {
+            continue;
+        }
         let fx = f32::from(x - area.left());
         let fade = (fx / 8.0).min((w - 1.0 - fx) / 8.0).clamp(0.0, 1.0);
         let mut color = lerp(raised, lerp(start, end, fx / w.max(1.0)), 0.25 + 0.75 * fade);
-        if let (Some(head), Some(spark)) = (beat, spark) {
-            let behind = head - fx;
+        if let Some(lit) = drain
+            && fx >= lit * w
+        {
+            color = lerp(color, raised, 0.85);
+        }
+        if let Some((head, tail, strength, c, leftward)) = light {
+            let behind = if leftward { fx - head } else { head - fx };
             if (0.0..=tail).contains(&behind) {
-                color = lerp(color, spark, (1.0 - behind / tail) * strength);
+                color = lerp(color, c, (1.0 - behind / tail) * strength);
             }
         }
         cell.underline_color = Color::Rgb(color.0, color.1, color.2);
         cell.modifier.insert(Modifier::UNDERLINED);
+    }
+    if signal.is_some() || comet.is_some() {
+        Some(33)
+    } else if drain.is_some() {
+        // One cell's worth of the minute.
+        Some((DRAIN_SECS * 1000 / u64::from(area.width.max(1))).max(33))
+    } else {
+        None
     }
 }
 

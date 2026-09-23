@@ -1,30 +1,30 @@
- ◆  PREVIEW │ Trade › Launches │ ● Local dev  #1,234,567 │ watch-only                 ● 1 unread N
-                     Trade · Markets  Swap  Pools  Convert  Wrap  ▸ Launches  PnL  [ ]
- 1 Home         •  │┌ ▸ launch zone · 3 tokens ────────────────────────────────────────────────────┐
-▌2 Trade           ││      token     stage               price QUAI           USD  trades          │
-      Markets      ││ ▌ CH CHEEZ     ■■■■■■□□□□  51%        0.0₄517     $0.0₆4555      64          │
-      Swap         ││   QO QOGE      graduated               0.0₃27     $0.0₅2379      64          │
-      Pools        ││   PU PUNK      pooled                       —             —      64          │
-      Convert      ││ price basis: price basis unknown · 0x000000000000000000000000000000000000000 │
-      Wrap         ││                                                                              │
-    › Launches     ││                                                                              │
-      PnL          ││                                                                              │
- 3 NFTs         ◧  ││                                                                              │
- 4 People          ││                                                                              │
- 5 Activity        │└──────────────────────────────────────────────────────────────────────────────┘
-                   │┌ CHEEZ on its bonding curve ──────────────────────────────────────────────────┐
- 0 System          ││ raised  12.8k / 25.0k QUAI  51.4% to graduation                              │
-                   ││ sold    51.3% of the curve's tokens   fee 0.60%                              │
-  [ ] tabs         ││ price   0.0₄517 QUAI · $0.0₆4555                                             │
-                   ││ yours   1.2M CHEEZ ≈ 64.6250 QUAI at this price                              │
-                   ││ credit  3 QUAI to claim · c                                                  │
-                   ││ 0.0₃1126 QUAI per CHEEZ at graduation · b buy  S sell  c claim               │
-                   ││                                                                 ▁▁▂▃▃▅▆▆▇▇██ │
-                   ││                                                    ▁▁▂▂▃▄▄▅▆▆▇▇█████████████ │
-                   ││                                     ▁▁▁▂▃▃▄▄▅▅▅▆▇▇██████████████████████████ │
-                   ││                  ▁▁▁▂▂▂▃▃▄▄▄▅▆▆▆▇▇██████████████████████████████████████████ │
-                   ││ ▄▄▄▄▅▅▅▆▆▆▇▇▇███████████████████████████████████████████████████████████████ │
-                   ││                                        ▲ here · 12.8k QUAI raised            │
-                   ││ launch                                               graduates at 25.0k QUAI │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- N notifications  j/k move  b buy  S sell  c claim  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        Markets ·  Pairs   Launches   Pools   [ ]
+                       ───────────────────━━━━━━━━━━────────────────────────────────────────────────
+  1  Home           • │┌ ▸ launch zone · 3 tokens ─────────────────────────────────────────────────┐
+                      ││      token     stage               price QUAI           USD  trades       │
+▌ 2  Markets          ││ ▌ CH CHEEZ     ■■■■■■□□□□  51%        0.0₄517     $0.0₆4555      64       │
+                      ││   QO QOGE      graduated               0.0₃27     $0.0₅2379      64       │
+  3  Trade            ││   PU PUNK      pooled                       —             —      64       │
+                      ││ price basis: price basis unknown · 0x000000000000000000000000000000000000 │
+  4  NFTs           ◧ ││                                                                           │
+                      ││                                                                           │
+  5  People           ││                                                                           │
+                      ││                                                                           │
+  6  Activity         │└───────────────────────────────────────────────────────────────────────────┘
+                      │┌ CHEEZ on its bonding curve ───────────────────────────────────────────────┐
+                      ││ raised  12.8k / 25.0k QUAI  51.4% to graduation                           │
+  0  System           ││ sold    51.3% of the curve's tokens   fee 0.60%                           │
+                      ││ price   0.0₄517 QUAI · $0.0₆4555                                          │
+   [ ] tabs           ││ yours   1.2M CHEEZ ≈ 64.6250 QUAI at this price                           │
+                      ││ credit  3 QUAI to claim · c                                               │
+                      ││ 0.0₃1126 QUAI per CHEEZ at graduation · b buy  S sell  c claim            │
+                      ││                                                               ▁▂▂▃▅▅▆▇▇██ │
+                      ││                                                  ▁▁▂▃▃▄▄▅▆▆▇█████████████ │
+                      ││                                   ▁▁▁▂▂▃▄▄▅▅▅▆▇▇█████████████████████████ │
+                      ││                 ▁▁▁▂▂▂▃▃▄▄▄▅▆▆▆▇▇████████████████████████████████████████ │
+                      ││ ▄▄▄▄▅▅▅▆▆▆▇▇▇████████████████████████████████████████████████████████████ │
+                      ││                                      ▲ here · 12.8k QUAI raised           │
+                      ││ launch                                            graduates at 25.0k QUAI │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  b buy  S sell  t trade (pooled)  space actions  : palette  ? more

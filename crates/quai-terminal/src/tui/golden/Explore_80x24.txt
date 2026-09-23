@@ -1,6 +1,6 @@
- ◆  PREVIEW │ 1 2 3 NFTs 4 5 0  │ NFTs › Explore │ ● Local dev  # ● 1 unread N
- NFTs · Collected  ▸ Explore  Listings  [ ]
-┌ ▸ collections · by recent volume · S sort · / search ────────────────────────┐
+ ◆  PREVIEW │ 1 2 3 4 NFTs 5 6 0 │ ● Local dev │ watch-only       ● 1 unread N
+ NFTs ·  Collected   Explore   Listings   [ ]
+┌ ▸ collections · by recent volume · , sort · / search ────────────────────────┐
 │       collection                           floor       volume  holders       │
 │ ▀▀▀▀  Quai Pepes                      1,000 QUAI            —      900       │
 │ ▀▀▀▀  0x0046…410d                                                            │
@@ -21,4 +21,4 @@
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  / search  enter collection  S sort  : palette  ? more
+ N notifications  enter open  / search  , sort  : palette  ? more

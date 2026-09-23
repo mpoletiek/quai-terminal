@@ -219,7 +219,8 @@ fn the_wallets_screen_marks_the_open_wallet() {
     };
     // The table rows are the ones naming a wallet kind; the header and tabs are not.
     // Rows inside the panel: the header names the open wallet's kind too, and is not one.
-    let listed: Vec<&String> = rows.iter().filter(|r| r.contains("watch-only") && r.contains("││")).collect();
+    // The selected wallet's detail, under the list, says watch-only too; it is not a row.
+    let listed: Vec<&String> = rows.iter().filter(|r| r.contains("watch-only") && r.contains("││") && !r.contains("cannot sign")).collect();
     assert_eq!(listed.len(), 2, "both wallets are listed: {listed:?}");
     let open = app.meta.as_ref().unwrap().name.clone();
     let marked: Vec<&&String> = listed.iter().filter(|r| r.contains("▸")).collect();
@@ -258,7 +259,7 @@ fn a_flow_row_takes_the_chart_to_its_pair() {
     // `o` copies the swap's transaction, not the pool's.
     key(&mut app, KeyCode::Tab);
     key(&mut app, KeyCode::Char('o'));
-    assert!(app.clipboard.as_deref().is_none_or(|u| u.contains("0x2")), "{:?}", app.clipboard);
+    assert!(app.clipboard.as_ref().is_none_or(|c| c.text.as_str().contains("0x2")), "{:?}", app.clipboard);
 }
 
 /// The dust floor hides the small trades, and a swap nobody can price survives it.
@@ -275,6 +276,8 @@ fn the_dust_floor_hides_small_trades_but_never_unpriced_ones() {
         ..wallet_core::explorer::TokenMarket::default()
     }];
     assert_eq!(app.flow_rows().len(), 2, "no floor shows both");
+    // The floor is in the action sheet (space m), and `.` steps it while the flow has the focus.
+    app.on_key(KeyEvent::new(KeyCode::Char(' '), crossterm::event::KeyModifiers::NONE), (160, 44));
     app.on_key(KeyEvent::new(KeyCode::Char('m'), crossterm::event::KeyModifiers::NONE), (160, 44));
     assert_eq!(app.eco.markets_view.flow_min_usd, 1.0);
     let rows = app.flow_rows();
@@ -503,14 +506,110 @@ fn scaled_sparkline_right_aligns() {
     assert_eq!(scaled(&[], 3), vec![0, 0, 0]);
 }
 
-/// Renders every screen and modal across themes and sizes: catches layout panics/overflow.
-#[test]
-fn every_screen_renders_at_every_size() {
+/// Every modal the golden test draws, over a populated app.
+pub(crate) fn modals(app: &App) -> Vec<Modal> {
+    use super::super::app::{ConfirmAction, Picker, ReviewState};
+
+    vec![
+        Modal::None,
+        Modal::Help,
+        Modal::Palette { query: "con".into(), selected: 1 },
+        Modal::Receive { asset_qi: false, account: 0 },
+        Modal::Notifications,
+        Modal::Wallets { selected: 0 },
+        Modal::Confirm { title: "Quit".into(), body: "Leave?".into(), action: ConfirmAction::Quit },
+        Modal::Themes(Picker::new(app)),
+        Modal::Effects(super::super::app::Gallery::new("decrypt")),
+        Modal::Review(ReviewState {
+            review: wallet_core::tx::Review {
+                op_id: "x".into(),
+                kind: "send_quai".into(),
+                title: "Send QUAI".into(),
+                network: "Local dev".into(),
+                from: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a (Account 1)".into(),
+                to: "0x00F41a2B3c4D5e6F7a8B9c0D1e2F3a4B5c6D804B".into(),
+                asset: "QUAI".into(),
+                amount: "1 QUAI".into(),
+                amount_base: "1".into(),
+                max_fee: "0.1 QUAI".into(),
+                fee_bps: Some(1000),
+                fields: vec![],
+                coins: vec![],
+                warnings: vec!["a warning".into()],
+                visuals: vec![
+                    wallet_core::tx::ReviewVisual { role: "pay".into(), symbol: "QUAI".into(), contract: "quai".into(), token_id: None },
+                    wallet_core::tx::ReviewVisual {
+                        role: "receive".into(),
+                        symbol: "USDT".into(),
+                        contract: "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5".into(),
+                        token_id: None,
+                    },
+                ],
+                fee_over_policy: true,
+                changes: wallet_core::tx::balance_changes(
+                    "send_quai",
+                    "QUAI",
+                    U256::from(10u64).pow(U256::from(18u8)),
+                    18,
+                    U256::from(10u64).pow(U256::from(18u8)),
+                    (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
+                    &serde_json::Value::Null,
+                ),
+            },
+            scroll: 0,
+            content_lines: 1,
+            viewport: 1,
+            approve_focused: false,
+            opened: std::time::Instant::now(),
+        }),
+        Modal::Review(ReviewState {
+            review: wallet_core::tx::Review {
+                op_id: "y".into(),
+                kind: "nft_buy".into(),
+                title: "Buy Quai Pepe #212".into(),
+                network: "Quai Mainnet".into(),
+                from: "0x00 (Account 1)".into(),
+                to: "0x0012".into(),
+                asset: "QUAI".into(),
+                amount: "1000 QUAI".into(),
+                amount_base: "1".into(),
+                max_fee: "0.1 QUAI".into(),
+                fee_bps: None,
+                fields: vec![],
+                coins: vec![],
+                warnings: vec![],
+                visuals: vec![wallet_core::tx::ReviewVisual {
+                    role: "nft".into(),
+                    symbol: "Quai Pepe #212".into(),
+                    contract: "0x004d92fd198c21af21016f4b119b8b851b5aeaa4".into(),
+                    token_id: Some("212".into()),
+                }],
+                fee_over_policy: false,
+                changes: wallet_core::tx::balance_changes(
+                    "nft_buy",
+                    "QUAI",
+                    U256::from(1000u64) * U256::from(10u64).pow(U256::from(18u8)),
+                    18,
+                    U256::from(1000u64) * U256::from(10u64).pow(U256::from(18u8)),
+                    (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
+                    &serde_json::json!({"name": "Quai Pepe #212", "token_id": "212"}),
+                ),
+            },
+            scroll: 0,
+            content_lines: 1,
+            viewport: 1,
+            approve_focused: false,
+            opened: std::time::Instant::now(),
+        }),
+    ]
+}
+
+/// The populated app every screen test draws: a watch-only wallet with holdings, activity,
+/// markets, NFTs, launches and pools, on a frozen clock. The directory must outlive the app.
+pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
     // Fixtures are dated from now and candles bucket on the clock, so the golden screens are
     // drawn at one fixed moment (2026-09-18, part-way through an hour).
     wallet_core::registry::freeze_clock(Some(1_789_705_234));
-    use super::super::app::{ConfirmAction, Picker, ReviewState};
-    use ratatui::{Terminal, backend::TestBackend};
     use wallet_core::appdb::{Contact, Notice};
     use wallet_core::network::NodeHealth;
     use wallet_core::session::{AccountBalance, CoinView, QiBalanceView, QiSummary};
@@ -520,7 +619,9 @@ fn every_screen_renders_at_every_size() {
     let paths = wallet_core::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap();
     let registry = wallet_core::registry::Registry::new(paths.clone());
     let meta = registry.create_watch("preview", &[("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(), "Main".into())]).unwrap();
-    let caps = super::super::terminal::detect(wallet_core::config::GraphicsMode::Cells);
+    let mut caps = super::super::terminal::detect(wallet_core::config::GraphicsMode::Cells);
+    // The same glyphs whichever terminal runs the tests (goldens are compared in CI too).
+    caps.drawn_blocks = false;
     let theme = super::super::theme::Theme::terminal(false);
     let connected = wallet_core::config::AppConfig {
         explorer_lookups: true,
@@ -597,107 +698,15 @@ fn every_screen_renders_at_every_size() {
         payment_code: Some("PM8TJcZEnoV5gpCTuZiGKMUKrrPTr4K5D1SWDD".into()),
         note: String::new(),
     }];
-    d.notifications =
-        vec![Notice { id: 1, at: 0, level: "success".into(), title: "Confirmed".into(), body: "send of 1 QUAI".into(), read: false }];
+    d.notifications = vec![Notice {
+        id: 1,
+        at: 1_789_705_234 - 60,
+        level: "success".into(),
+        title: "Confirmed".into(),
+        body: "send of 1 QUAI".into(),
+        read: false,
+    }];
 
-    let modals = |app: &App| -> Vec<Modal> {
-        vec![
-            Modal::None,
-            Modal::Help,
-            Modal::Palette { query: "con".into(), selected: 1 },
-            Modal::Receive { asset_qi: false, account: 0 },
-            Modal::Notifications,
-            Modal::Confirm { title: "Quit".into(), body: "Leave?".into(), action: ConfirmAction::Quit },
-            Modal::Themes(Picker::new(app)),
-            Modal::Effects(super::super::app::Gallery::new("decrypt")),
-            Modal::Review(ReviewState {
-                review: wallet_core::tx::Review {
-                    op_id: "x".into(),
-                    kind: "send_quai".into(),
-                    title: "Send QUAI".into(),
-                    network: "Local dev".into(),
-                    from: "0x00 (Account 1)".into(),
-                    to: "0x01".into(),
-                    asset: "QUAI".into(),
-                    amount: "1 QUAI".into(),
-                    amount_base: "1".into(),
-                    max_fee: "0.1 QUAI".into(),
-                    fee_bps: Some(1000),
-                    fields: vec![],
-                    coins: vec![],
-                    warnings: vec!["a warning".into()],
-                    visuals: vec![
-                        wallet_core::tx::ReviewVisual {
-                            role: "pay".into(),
-                            symbol: "QUAI".into(),
-                            contract: "quai".into(),
-                            token_id: None,
-                        },
-                        wallet_core::tx::ReviewVisual {
-                            role: "receive".into(),
-                            symbol: "USDT".into(),
-                            contract: "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5".into(),
-                            token_id: None,
-                        },
-                    ],
-                    fee_over_policy: true,
-                    changes: wallet_core::tx::balance_changes(
-                        "send_quai",
-                        "QUAI",
-                        U256::from(10u64).pow(U256::from(18u8)),
-                        18,
-                        U256::from(10u64).pow(U256::from(18u8)),
-                        (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
-                        &serde_json::Value::Null,
-                    ),
-                },
-                scroll: 0,
-                content_lines: 1,
-                viewport: 1,
-                approve_focused: false,
-                opened: std::time::Instant::now(),
-            }),
-            Modal::Review(ReviewState {
-                review: wallet_core::tx::Review {
-                    op_id: "y".into(),
-                    kind: "nft_buy".into(),
-                    title: "Buy Quai Pepe #212".into(),
-                    network: "Quai Mainnet".into(),
-                    from: "0x00 (Account 1)".into(),
-                    to: "0x0012".into(),
-                    asset: "QUAI".into(),
-                    amount: "1000 QUAI".into(),
-                    amount_base: "1".into(),
-                    max_fee: "0.1 QUAI".into(),
-                    fee_bps: None,
-                    fields: vec![],
-                    coins: vec![],
-                    warnings: vec![],
-                    visuals: vec![wallet_core::tx::ReviewVisual {
-                        role: "nft".into(),
-                        symbol: "Quai Pepe #212".into(),
-                        contract: "0x004d92fd198c21af21016f4b119b8b851b5aeaa4".into(),
-                        token_id: Some("212".into()),
-                    }],
-                    fee_over_policy: false,
-                    changes: wallet_core::tx::balance_changes(
-                        "nft_buy",
-                        "QUAI",
-                        U256::from(1000u64) * U256::from(10u64).pow(U256::from(18u8)),
-                        18,
-                        U256::from(1000u64) * U256::from(10u64).pow(U256::from(18u8)),
-                        (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
-                        &serde_json::json!({"name": "Quai Pepe #212", "token_id": "212"}),
-                    ),
-                },
-                scroll: 0,
-                content_lines: 1,
-                viewport: 1,
-                approve_focused: false,
-                opened: std::time::Instant::now(),
-            }),
-        ]
-    };
     // Ecosystem fixtures: portfolio, images, NFTs, listings, collections, a quote and an ask.
     {
         use std::sync::Arc;
@@ -758,7 +767,8 @@ fn every_screen_renders_at_every_size() {
             ],
             total_usd: 1284.52,
             unpriced: 1,
-            history: (0..28).map(|i| ValuePoint { at: i, usd: 1200.0 + i as f64 * 3.0 }).collect(),
+            // Seven days, every six hours, ending now.
+            history: (0..28u64).map(|i| ValuePoint { at: 1_789_705_234 - (27 - i) * 21_600, usd: 1200.0 + i as f64 * 3.0 }).collect(),
             change_7d: Some(4.1),
             nfts: wallet_core::portfolio::NftSummary { items: 3, collections: 3 },
             prices: Some(wallet_core::explorer::PriceBoard {
@@ -816,7 +826,8 @@ fn every_screen_renders_at_every_size() {
             currency: "0x0000000000000000000000000000000000000000".into(),
             protocol: "zora".into(),
             quantity: "1".into(),
-            created_at: 1,
+            // Listed four hours before the frozen clock.
+            created_at: 1_789_705_234 - 4 * 3600,
             name: Some("Quai Pepe #212".into()),
             image: None,
         };
@@ -1076,11 +1087,21 @@ fn every_screen_renders_at_every_size() {
                 tx_hash: Some("0x1".into()),
                 block: Some(1),
                 detail: serde_json::json!({"source": "explorer", "standard": "ERC-721", "token_id": "12", "name": "Quai Miners", "counterparty": "0x00cc"}),
-                observed: 1,
+                // Two hours before the frozen clock.
+                observed: 1_789_705_234 - 7200,
             });
     }
     // Mainnet profile so swap and marketplace views render their full cards.
     app.network_id = "mainnet".into();
+    (dir, app)
+}
+
+/// Renders every screen and modal across themes and sizes: catches layout panics/overflow.
+#[test]
+fn every_screen_renders_at_every_size() {
+    use super::super::app::Picker;
+    use ratatui::{Terminal, backend::TestBackend};
+    let (_dir, mut app) = populated_app();
     let details = vec![
         super::super::app::Detail::Asset("quai".into()),
         super::super::app::Detail::Asset("0x002b2596ecf05c93a31ff916e8b456df6c77c750".into()),
@@ -1224,6 +1245,10 @@ fn every_screen_renders_at_every_size() {
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 app.onboarding = Some(super::super::app::Onboarding::Privacy { selected: 0 });
                 term.draw(|f| draw(f, &mut app)).unwrap();
+                app.onboarding = Some(super::super::app::Onboarding::Welcome);
+                term.draw(|f| draw(f, &mut app)).unwrap();
+                app.onboarding = Some(super::super::app::Onboarding::Motion { selected: 1, from: wallet_core::config::Motion::Vivid });
+                term.draw(|f| draw(f, &mut app)).unwrap();
                 app.onboarding = None;
             }
         }
@@ -1261,6 +1286,9 @@ fn every_screen_renders_at_every_size() {
     app.caps.ssh = false;
     app.caps.tmux = false;
     app.config.motion = Motion::Vivid;
+    // Someone is here: the light rests a minute after the last key, and the sweep above can
+    // take that long on a slow machine.
+    app.last_input = std::time::Instant::now();
     term.draw(|f| draw(f, &mut app)).unwrap();
     // The pass has already recolored the focused corner, so look for the lit border itself.
     let buf = term.backend().buffer();
@@ -1307,11 +1335,14 @@ fn every_screen_renders_at_every_size() {
     app.modal = Modal::None;
     app.config.motion = Motion::Off;
     app.theme = saved_theme;
-    // A modal without bitmaps keeps the glyph.
+    // Under a modal the header keeps its logo (it is chrome, not dimmed), and nothing is placed
+    // behind the glass: a bitmap can't dim with the page.
     app.modal = Modal::Help;
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert_eq!(term.backend().buffer().cell((1, 0)).map(|c| c.symbol()), Some("◆"));
-    assert!(super::super::images::kitty_items(&app).is_empty());
+    assert_eq!(term.backend().buffer().cell((1, 0)).map(|c| c.symbol()), Some(" "), "the logo, not the ◆ glyph");
+    let placed = super::super::images::kitty_items(&app);
+    assert!(placed.iter().any(|p| (p.x, p.y) == (1, 0)), "header logo still placed");
+    assert!(placed.iter().all(|p| p.y == 0), "nothing behind the glass: {:?}", placed.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>());
     app.modal = Modal::None;
     app.caps.tier = super::super::terminal::Tier::Cells;
     term.draw(|f| draw(f, &mut app)).unwrap();
@@ -1340,6 +1371,9 @@ fn every_screen_renders_at_every_size() {
                     continue;
                 }
                 app.switch(screen);
+                // Each screen as first opened: screens remember their pane and cursor now.
+                app.pane = 0;
+                app.selected = 0;
                 app.eco.swap.field = 5;
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 let buf = term.backend().buffer();
@@ -1388,6 +1422,48 @@ fn every_screen_renders_at_every_size() {
                 }
             }
         }
+        // Plain (NO_COLOR, `--plain`, the Linux console): no color at all, ASCII marks, nothing
+        // moving. Every meaning must still be on the screen as text; these hold that.
+        let (saved_theme, saved_plain) = (app.theme.clone(), app.plain);
+        app.theme = super::super::theme::Theme::mono();
+        app.plain = true;
+        let (w, h) = (80u16, 24u16);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let review = modals(&app).into_iter().find(|m| matches!(m, Modal::Review(_)));
+        for (name, screen, modal) in [
+            ("Home", Screen::Home, None),
+            ("Activity", Screen::Activity, None),
+            ("Accounts", Screen::Accounts, None),
+            ("review", Screen::Home, review),
+        ] {
+            app.switch(screen);
+            app.pane = 0;
+            app.selected = 0;
+            if let Some(mut m) = modal {
+                if let Modal::Review(r) = &mut m {
+                    r.opened = std::time::Instant::now() - std::time::Duration::from_secs(600);
+                }
+                app.modal = m;
+            }
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            app.modal = Modal::None;
+            let buf = term.backend().buffer();
+            let out: String = (0..h)
+                .map(|y| {
+                    (0..w).map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ")).collect::<String>().trim_end().to_string() + "\n"
+                })
+                .collect();
+            let out = mask_clock(&mask_data_dir(&out, app.paths.root()));
+            let file = golden.join(format!("plain_{name}_{w}x{h}.txt"));
+            if bless {
+                std::fs::write(&file, &out).unwrap();
+            } else if std::fs::read_to_string(&file).ok().as_deref() != Some(out.as_str()) {
+                std::fs::write(file.with_extension("actual"), &out).unwrap();
+                drift.push(file.display().to_string());
+            }
+        }
+        app.theme = saved_theme;
+        app.plain = saved_plain;
     }
     assert!(drift.is_empty(), "screens differ from their golden files (QW_BLESS=1 to accept):\n{}", drift.join("\n"));
     if let Ok(dir) = std::env::var("QW_DUMP_VIEWS") {
@@ -1482,13 +1558,47 @@ fn every_screen_renders_at_every_size() {
 /// The temp data dir → `<data>`, as drawn: shortened past 40 characters (a macOS temp path is),
 /// and padded to the width it took so the border after it stays put whatever the path's length.
 fn mask_data_dir(s: &str, root: &std::path::Path) -> String {
+    // A wallet's directory is drawn as one path, shortened (`…`) when the temp dir is long, as it
+    // is on macOS. Mask the whole path whatever its length, keeping each line's width so the border
+    // after it stays put.
+    let s: String = s
+        .split_inclusive('\n')
+        .map(|line| {
+            let Some(at) = line.find("wallets/") else { return line.to_string() };
+            let id = line[at + "wallets/".len()..].chars().take_while(char::is_ascii_hexdigit).count();
+            if id == 0 {
+                return line.to_string();
+            }
+            let start = line[..at].rfind(' ').map_or(0, |i| i + 1);
+            let end = at + "wallets/".len() + id;
+            let (old, new) = (line[start..end].chars().count(), "<data>/wallets/<id>");
+            let tail = &line[end..];
+            let spaces = tail.chars().take_while(|c| *c == ' ').count();
+            // Pad or trim the spaces after the path by the difference.
+            let pad = (spaces + old).saturating_sub(new.len());
+            format!("{}{new}{}{}", &line[..start], " ".repeat(pad), &tail[spaces..])
+        })
+        .collect();
     let root = root.display().to_string();
-    let mut out = s.to_string();
+    let mut out = s;
     for shown in [super::super::app::short_path(&root), root] {
         let mask = format!("{:<1$}", "<data>", shown.chars().count());
         out = out.replace(&shown, &mask);
     }
-    out
+    // A wallet's directory is named by its id, which is new every run.
+    let mut masked = String::new();
+    let mut rest = out.as_str();
+    while let Some(at) = rest.find("/wallets/") {
+        let (head, tail) = rest.split_at(at + "/wallets/".len());
+        masked.push_str(head);
+        let id = tail.chars().take_while(char::is_ascii_hexdigit).count();
+        if id > 0 {
+            masked.push_str(&format!("{:<1$}", "<id>", id));
+        }
+        rest = &tail[id..];
+    }
+    masked.push_str(rest);
+    masked
 }
 
 /// `14:05` → `hh:mm`, wherever a clock time appears.
@@ -1522,7 +1632,7 @@ fn mask_clock(s: &str) -> String {
 /// DejaVu) with different widths and metrics, and render oversized or clipped.
 #[test]
 fn glyphs_stay_in_the_nerd_font_set() {
-    const ALLOWED: &str = "━╍±·»×èéê–—‖“”•…‹›←↑→↓↔↕↗↘↩−≈≋≤─│┈┌┐└┘├┤┬┴┼▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏░▔■□▪▲▸▼▾◂◆◈◉○◌◎●◔◕◧⚠✓✕⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼";
+    const ALLOWED: &str = GLYPHS;
     let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     let mut offenders = Vec::new();
     while let Some(path) = stack.pop() {
@@ -1542,6 +1652,10 @@ fn glyphs_stay_in_the_nerd_font_set() {
     }
     assert!(offenders.is_empty(), "glyphs outside the Nerd Font set:\n{}", offenders.join("\n"));
 }
+
+/// The non-ASCII glyphs any monospace font here draws: the Unicode icon set lives inside it, and
+/// Nerd Font icons are written only as escapes in `icons.rs`.
+pub(crate) const GLYPHS: &str = "━╍±·»×èéê–—‖“”•…‹›←↑→↓↔↕↗↘↩−≈≋≤─│┃┈┊┌┐└┘├┤┬┴┼▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏░▒▔■□▪▲▸▼▾◂◆◇◈◉◊○◌◎●◔◕◦◧⚠✓✕⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼";
 
 /// Rough raster of a buffer for visual review: 8×16 cells, box glyphs as strokes, other glyphs
 /// as blocks, underlines as a bottom line.
@@ -1629,6 +1743,94 @@ fn screen_text(app: &mut App, w: u16, h: u16) -> Vec<String> {
     term.draw(|f| draw(f, app)).unwrap();
     let buffer = term.backend().buffer();
     (0..h).map(|y| (0..w).filter_map(|x| buffer.cell((x, y)).map(|c| c.symbol().to_string())).collect::<String>()).collect()
+}
+
+/// A wide terminal shows the selected row's detail in a column beside the list; a narrower one
+/// stacks it under the list when there are rows to spare. The time locks, which were their own
+/// tab, sit under the accounts at every size.
+#[test]
+fn the_selected_row_is_inspected_beside_or_under_the_list() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Accounts);
+    let label = app.dash.accounts[0].label.clone();
+    let title = format!("account · {label}");
+    let find = |rows: &[String], needle: &str| rows.iter().position(|r| r.contains(needle));
+    let wide = screen_text(&mut app, 160, 48);
+    assert_eq!(app.breakpoint, Breakpoint::Wide);
+    let list_row = find(&wide, "quai accounts").expect("the list");
+    let inspector_row = find(&wide, &title).expect("the inspector");
+    assert_eq!(list_row, inspector_row, "side by side at 160 columns");
+    assert!(wide[inspector_row].find(&title) > wide[list_row].find("quai accounts"), "the inspector is on the right");
+    assert!(find(&wide, "time locks").is_some(), "the locks sit under the accounts");
+    let regular = screen_text(&mut app, 100, 30);
+    assert_eq!(app.breakpoint, Breakpoint::Regular);
+    assert!(find(&regular, &title) > find(&regular, "time locks"), "stacked under the list and the locks");
+    // The panels are as tall as what they hold: one account is one row, not the whole screen.
+    let locks = find(&regular, "time locks").unwrap();
+    assert!(locks - find(&regular, "quai accounts").unwrap() <= 4, "the accounts panel holds its rows and no more");
+    assert_eq!(Screen::Accounts.section().all_screens(), &[Screen::Home, Screen::Qi, Screen::Accounts], "no separate locks tab");
+}
+
+/// Where the terminal draws text larger than a cell, Home's total is sized text over placeholder
+/// cells, not block digits; under a modal it is block digits again, so the dimming covers it.
+#[test]
+fn the_headline_total_is_sized_text_where_the_terminal_can() {
+    use super::super::term::backend::BIG_TEXT_CELL;
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Home);
+    app.caps.text_sizing = true;
+    let rows = screen_text(&mut app, 160, 48);
+    let sized = app.big_text.borrow().clone();
+    assert_eq!(sized.len(), 1, "one headline");
+    let b = &sized[0];
+    assert!(b.text.starts_with('$') && b.text.contains(',') && !b.text.contains('.'), "dollars, grouped, cents apart: {:?}", b.text);
+    assert_eq!(b.scale, 2);
+    let row = &rows[b.y as usize];
+    let placeholders = row.matches(BIG_TEXT_CELL).count() as u16;
+    assert_eq!(placeholders, b.width(), "its cells hold its place: {row:?}");
+    assert!(rows[b.y as usize + 1].contains('.'), "the cents sit beside it on its lower row");
+    // A modal: block digits, nothing sized.
+    app.modal = Modal::Help;
+    let rows = screen_text(&mut app, 160, 48);
+    assert!(app.big_text.borrow().is_empty(), "nothing sized under a modal");
+    assert!(!rows.iter().any(|r| r.contains(BIG_TEXT_CELL)));
+    app.modal = Modal::None;
+    // Without the capability, never.
+    app.caps.text_sizing = false;
+    screen_text(&mut app, 160, 48);
+    assert!(app.big_text.borrow().is_empty());
+}
+
+/// The wallet's own addresses link to the explorer wherever they are shown: grouped in the
+/// inspector, shortened in the table. The link covers exactly what shows the address.
+#[test]
+fn the_wallets_addresses_link_to_the_explorer() {
+    let (_dir, mut app) = populated_app();
+    app.caps.hyperlinks = true;
+    // A network with an explorer (the fixture's local one has none, and links nothing).
+    app.network_id = "mainnet".into();
+    app.switch(Screen::Accounts);
+    let rows = screen_text(&mut app, 160, 48);
+    let buffer = {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut term = Terminal::new(TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        term.backend().buffer().clone()
+    };
+    let links = super::super::links::scan(&app, &buffer);
+    let address = app.dash.accounts[0].address.to_lowercase();
+    let net = app.net();
+    let url = net.as_ref().and_then(|n| n.address_url(&address)).expect("mainnet has an explorer");
+    let shown: Vec<String> = links
+        .iter()
+        .filter(|l| l.url.eq_ignore_ascii_case(&url))
+        .map(|l| rows[l.y as usize].chars().skip(l.x as usize).take((l.end - l.x) as usize).collect())
+        .collect();
+    assert!(shown.iter().any(|s| s.contains('…')), "the shortened one in the table: {shown:?}");
+    assert!(shown.iter().any(|s| s.starts_with("0x ") && s.len() > 20), "the grouped one in the inspector: {shown:?}");
+    assert!(shown.iter().all(|s| s.starts_with("0x") && !s.ends_with(' ')), "exactly the address: {shown:?}");
+    app.caps.hyperlinks = false;
+    screen_text(&mut app, 160, 48);
 }
 
 /// System › Network shows the chain beside the node: hashrate per algorithm, transactions and gas
@@ -1797,8 +1999,8 @@ fn pnl_shows_totals_positions_and_what_a_token_leaves_out() {
     assert!(moon.contains("1,400.0000") && moon.contains("+280.00") && moon.contains("+50.00"), "{moon}");
     assert!(row("STAR").contains('—'), "STAR has no price: {}", row("STAR"));
     assert!(row("CHEEZ").contains("closed"), "{}", row("CHEEZ"));
-    assert!(text.contains("latest trades") && text.contains("-4.0M CHEEZ"), "{text}");
-    assert!(text.contains("-100.0000 MOON  +25.0000 STAR"), "a token-for-token trade reads in full: {text}");
+    assert!(text.contains("latest trades") && text.contains("−4.0M CHEEZ"), "{text}");
+    assert!(text.contains("−100.0000 MOON  +25.0000 STAR"), "a token-for-token trade reads in full: {text}");
     // Focus CHEEZ: the sale with no recorded buy is said, not counted.
     app.selected = app.pnl_positions().iter().position(|p| p.symbol == "CHEEZ").unwrap();
     let text = screen_text(&mut app, 160, 45).join("\n");
@@ -1818,11 +2020,13 @@ fn settings_name_the_ipfs_gateways() {
     let _gateway = crate::tui::IPFS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (_dir, mut app) = drawable_app();
     app.switch(Screen::Settings);
+    // The list scrolls to the cursor: stand on the gateways.
+    app.selected = app.settings_rows().iter().position(|(id, _)| *id == "abi_ipfs").unwrap();
     let screen = screen_text(&mut app, 140, 40).join("\n");
     let rows: Vec<&str> = screen.lines().filter(|l| l.contains("IPFS gateway")).collect();
     assert_eq!(rows.len(), 2, "one row per gateway: {rows:?}");
-    let images = rows.iter().find(|l| l.contains("images")).unwrap_or(&"");
-    let abis = rows.iter().find(|l| l.contains("ABIs")).unwrap_or(&"");
+    let images = rows.iter().find(|l| l.contains("pictures")).unwrap_or(&"");
+    let abis = rows.iter().find(|l| l.contains("contracts")).unwrap_or(&"");
     assert!(images.contains("https://ipfs.qu.ai") && images.contains("default"), "{images}");
     assert!(abis.contains("https://ipfs.qu.ai") && abis.contains("default"), "{abis}");
 }
@@ -1884,11 +2088,11 @@ fn layouts_split_and_hide_as_asked() {
     app.switch(Screen::Markets);
     app.config.layout = "auto".into();
     let wide = text(&mut app, 220);
-    assert!(app.trader && wide.contains("swap · Quainance") && wide.contains("markets · Quainance"), "auto splits at 220 columns");
+    assert!(app.trader && wide.contains("swap on Quainance") && wide.contains("markets · Quainance"), "auto splits at 220 columns");
     let narrow = text(&mut app, 160);
-    assert!(!app.trader && !narrow.contains("swap · Quainance"), "but not at 160");
+    assert!(!app.trader && !narrow.contains("swap on Quainance"), "but not at 160");
     app.config.layout = "trader".into();
-    assert!(text(&mut app, 160).contains("swap · Quainance"), "trader splits from 140");
+    assert!(text(&mut app, 160).contains("swap on Quainance"), "trader splits from 140");
     app.switch(Screen::Swap);
     assert!(text(&mut app, 160).contains("markets · Quainance"), "and the Swap screen keeps Markets beside it");
     app.config.layout = "standard".into();
@@ -1922,7 +2126,8 @@ fn channel_offers_render_above_channels_with_their_answer_keys() {
     for (w, h) in [(160, 48), (100, 30), (80, 24)] {
         let text = screen_text(&mut app, w, h).join("\n");
         assert!(text.contains("1 offered"), "{w}x{h}: panel title counts offers\n{text}");
-        let offer_row = text.lines().position(|l| l.contains("offered · enter")).unwrap_or_else(|| panic!("{w}x{h}: offer row\n{text}"));
+        let offer_row =
+            text.lines().position(|l| l.contains("offered · s accepts")).unwrap_or_else(|| panic!("{w}x{h}: offer row\n{text}"));
         let peer_row = text.lines().position(|l| l.contains("alice")).unwrap_or_else(|| panic!("{w}x{h}: channel row\n{text}"));
         assert!(offer_row < peer_row, "{w}x{h}: offers come first");
         assert!(text.contains("2.5 Qi"), "{w}x{h}: what is waiting\n{text}");
@@ -1935,15 +2140,13 @@ fn channel_offers_render_above_channels_with_their_answer_keys() {
     assert!(wide.contains("rescan") && !wide.contains("not a channel until you"), "{wide}");
 }
 
-/// The lock screen never shows a still wordmark between effects: the frame on which one ceremony
-/// runs out already carries the first frame of the next.
-///
-/// The old behaviour parked a finished effect, drew the bare wordmark, and waited four seconds
-/// before starting another — an end-screen twice as long as some of the effects themselves.
+/// The lock screen plays one effect when the wallet locks and then rests: an idle wallet spends
+/// most of its life here, and effects chained forever held a core at a fifth. The end is a
+/// cross-fade (the finished frame thins away over the still wordmark), never a cut, and nothing
+/// starts again until the next lock.
 #[test]
-fn lock_effects_roll_into_each_other_with_no_still_frame() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+fn the_lock_effect_plays_once_then_rests() {
+    use ratatui::{Terminal, backend::TestBackend};
     let dir = tempfile::tempdir().unwrap();
     let paths = wallet_core::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap();
     let registry = wallet_core::registry::Registry::new(paths.clone());
@@ -1954,29 +2157,478 @@ fn lock_effects_roll_into_each_other_with_no_still_frame() {
     let mut app = App::new(paths, "local".into(), wallet_core::config::AppConfig::default(), theme, caps, Some(meta));
     app.locked = true;
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-
-    // One draw gets a ceremony running.
+    app.tick((120, 40));
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.ambient.is_some(), "the lock screen animates");
+    assert!(app.ambient.is_some(), "locking plays an effect");
 
-    // Stand in a ceremony with a single frame left, so the next draw is the hand-over frame.
+    // Stand in a ceremony with a single frame left, so the next draw is the one it ends on.
     let (w, h) = app.ambient.as_ref().unwrap().size();
     let mut ending = super::super::fx::Ceremony::new("rings", &super::super::fx::wordmark_block(), w, h, 1).unwrap();
     assert!(ending.step(), "its one frame is the cap");
     assert!(!ending.step(), "and it is spent");
     app.ambient = Some(ending);
-
     term.draw(|f| draw(f, &mut app)).unwrap();
-    // Still an effect: the still-wordmark branch runs only when nothing is playing, so reaching
-    // this at all says the screen never fell back to it.
-    let next = app.ambient.as_ref().expect("a finished effect is replaced, not parked");
-    assert_eq!(next.size(), (w, h), "the replacement is built for the same canvas");
-    assert!(!next.finished(), "the replacement is a live effect, not the spent one");
-    assert!(next.has_frame(), "it was stepped before it was painted — no blank hand-over frame");
-    // And the outgoing frame is held under it, so the hand-over frame carries ink either way:
-    // a fresh effect's first frames are nearly empty, which is the cut this dissolve covers.
-    assert!(app.lock_fade.is_some(), "the finished wordmark dissolves under the new effect");
+    assert!(app.ambient.is_none() && app.lock_rested, "a finished effect is not replaced");
+    assert!(app.lock_fade.is_some(), "its last frame dissolves over the resting wordmark");
     let buf = term.backend().buffer();
     let inked = (1..=h).any(|y| (0..w).any(|x| buf.cell((x, y)).is_some_and(|c| c.symbol().trim() != "")));
-    assert!(inked, "the hand-over frame is never an empty canvas");
+    assert!(inked, "the resting screen is never an empty canvas");
+    // Nothing brings it back until the next lock.
+    app.tick((120, 40));
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.ambient.is_none(), "the tick does not restart it either");
+    app.locked = false;
+    app.enter_lock(Some((120, 40)));
+    assert!(app.ambient.is_some() && !app.lock_rested, "the next lock plays one again");
+    // Typing a password stills it at once.
+    app.lock_input.push('x');
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.ambient.is_none() && app.lock_rested, "nothing moves near a password");
+}
+
+/// With a modal open, what is behind it goes quiet: no text behind keeps a full-strength color,
+/// no border behind stays lit, and the page color itself is left alone (a see-through
+/// background stays see-through). The modal is drawn at full strength.
+#[test]
+fn a_modal_dims_what_is_behind_it() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    let t = app.theme.clone();
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
+    app.modal = Modal::Confirm {
+        title: "Unfollow".into(),
+        body: "Stop following #general?".into(),
+        action: super::super::app::ConfirmAction::Unfollow("general".into()),
+    };
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    // The modal's box: everything within the raised cells' bounds, and its shadow.
+    let raised: Vec<(u16, u16)> = (0..36).flat_map(|y| (0..120).map(move |x| (x, y))).filter(|p| buf[*p].bg == t.raised).collect();
+    let (x0, x1) = (raised.iter().map(|p| p.0).min().unwrap(), raised.iter().map(|p| p.0).max().unwrap() + 1);
+    let (y0, y1) = (raised.iter().map(|p| p.1).min().unwrap(), raised.iter().map(|p| p.1).max().unwrap() + 1);
+    let inside = |x: u16, y: u16| (x0..=x1).contains(&x) && (y0..=y1).contains(&y);
+    let mut modal_text = 0;
+    for y in 0..36 {
+        for x in 0..120 {
+            let c = &buf[(x, y)];
+            if inside(x, y) {
+                if c.fg == t.text || c.fg == t.strong {
+                    modal_text += 1;
+                }
+                continue;
+            }
+            // The footer row names the modal's keys and the header keeps the wallet in view:
+            // both are chrome, and stay lit.
+            if y == 35 || y == 0 {
+                continue;
+            }
+            for lit in [t.text, t.strong, t.focus, t.danger, t.ok] {
+                assert_ne!(c.fg, lit, "({x},{y}) {:?} behind the modal is at full strength", c.symbol());
+            }
+            assert!(c.bg != t.selection, "({x},{y}) the selection behind the modal is not dimmed");
+            assert!(!c.modifier.contains(Modifier::BOLD), "({x},{y}) bold behind the modal");
+        }
+    }
+    assert!(modal_text > 10, "the modal itself is drawn at full strength");
+    // The page stays the page.
+    assert_eq!(buf[(119, 20)].bg, t.surface);
+}
+
+/// The accent budget: the accent marks what has focus (the lit border and its title, the
+/// selection marker, the active tab, the cursor, the primary button) and the keys to press. Values,
+/// names, prices and headings are never in it. Counted per screen in the body (the chrome rows are
+/// the tab strip, the header and the footer's key hints); a screen that paints data in the accent
+/// blows the budget.
+#[test]
+fn the_accent_is_kept_for_focus_and_keys() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    let t = app.theme.clone();
+    let (w, h) = (160u16, 48u16);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    for screen in Screen::ALL {
+        app.switch(screen);
+        app.modal = Modal::None;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut lit = Vec::new();
+        // Rows 0–2 are the header and the two-row tab strip; row 3 is the focused box's own
+        // title, which the budget allows.
+        for y in 4..h - 1 {
+            for x in 0..w {
+                let c = &buf[(x, y)];
+                if c.fg == t.focus && !"─│┌┐└┘├┤┬┴┼ ".contains(c.symbol()) {
+                    lit.push(c.symbol().to_string());
+                }
+            }
+        }
+        assert!(lit.len() <= 40, "{screen:?} spends the accent on {} cells: {}", lit.len(), lit.concat());
+    }
+}
+
+/// The glyph setting reaches the screen: Nerd Font icons in the rail and header where asked for,
+/// nothing outside ASCII among the status marks in the ASCII set, and the Unicode set (what the
+/// goldens are drawn with) has no Nerd Font icon at all.
+#[test]
+fn the_icon_setting_picks_the_glyphs() {
+    use wallet_core::config::IconMode;
+    let (_dir, mut app) = populated_app();
+    let draw_text = |app: &mut App| -> String {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..36).map(|y| (0..120).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect()
+    };
+    let nerd = |s: &str| s.chars().any(|c| ('\u{f0000}'..='\u{fffff}').contains(&c));
+    app.config.icons = IconMode::Unicode;
+    assert!(!nerd(&draw_text(&mut app)), "the Unicode set draws no Nerd Font icon");
+    app.config.icons = IconMode::Nerd;
+    let text = draw_text(&mut app);
+    assert!(text.contains(super::super::icons::Icon::Home.glyph(super::super::icons::Set::Nerd)), "the rail shows section icons:\n{text}");
+    assert!(text.contains(&format!("{} watch-only", super::super::icons::Icon::Watching.glyph(super::super::icons::Set::Nerd))), "{text}");
+    app.config.icons = IconMode::Ascii;
+    let text = draw_text(&mut app);
+    assert!(!nerd(&text));
+    for mark in ["✓", "✕", "◌", "◔", "◕", "●", "○"] {
+        assert!(!text.contains(mark), "{mark} in the ASCII set:\n{text}");
+    }
+}
+
+/// The header drops whole segments as it narrows, never words: at every width it still names the
+/// wallet, the node and that the wallet is watch-only, and nothing it shows is cut short.
+#[test]
+fn the_header_drops_segments_not_words() {
+    let (_dir, mut app) = populated_app();
+    for w in 60u16..=200 {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 30)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let top: String = (0..w).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        for must in ["PREVIEW", "Local dev", "watch-only"] {
+            assert!(top.contains(must), "{w} columns lost {must}: {top}");
+        }
+        for piece in top.split(" │ ").map(str::trim) {
+            assert!(!piece.ends_with('…'), "{w} columns cut a segment: {top}");
+        }
+    }
+}
+
+/// Glyphs that mean something are written only in the icon registry: a screen asks for
+/// `Icon::Ok`, never types `✓`, so every mark follows the icon setting and keeps one meaning.
+/// (Comments, tests, the glossary's prose and the CLI theme preview may name them.)
+#[test]
+fn meaningful_glyphs_come_from_the_registry() {
+    const MARKS: &str = "✓✕◌◔◕●○⚠◇◈◦◊";
+    let mut offenders = Vec::new();
+    let mut files = Vec::new();
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry.path().is_dir() {
+                dirs.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    assert!(files.iter().any(|p| p.ends_with("ui/modals.rs")), "the scan reaches the screen modules");
+    for p in files {
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || ["icons.rs", "glossary.rs", "theme.rs"].contains(&name.as_str()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        // Everything after `#[cfg(test)]` is tests.
+        let code = text.split("#[cfg(test)]\nmod tests").next().unwrap_or(&text);
+        for (n, line) in code.lines().enumerate() {
+            let line = line.split("//").next().unwrap_or("");
+            if let Some(c) = line.chars().find(|c| MARKS.contains(*c)) {
+                offenders.push(format!("{name}:{} {c}  {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "write these through icons::Icon:\n{}", offenders.join("\n"));
+}
+
+/// One lit panel per screen: the focus border says where the keys go, so two of them is a lie.
+/// (Counted by top-left corners drawn in the focus color.)
+#[test]
+fn one_panel_is_lit() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    let focus = app.theme.focus;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    let mut lies = Vec::new();
+    let mut seen = 0;
+    for screen in Screen::ALL {
+        app.switch(screen);
+        for pane in 0..screen.panes().max(1) {
+            app.pane = pane;
+            app.modal = Modal::None;
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            let buf = term.backend().buffer();
+            let lit = (0..48u16)
+                .flat_map(|y| (0..160u16).map(move |x| (x, y)))
+                .filter(|p| buf[*p].symbol() == "┌" && buf[*p].fg == focus)
+                .count();
+            seen += lit;
+            if lit > 1 {
+                lies.push(format!("{screen:?} pane {pane}: {lit} lit panels"));
+            }
+        }
+    }
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+    assert!(seen > 20, "the count finds lit panels at all ({seen})");
+}
+
+/// A decoration frame (only the edge light moved) is exactly the frame a full redraw would have
+/// drawn at the same moment, on every screen: it relights the last content instead of drawing it.
+#[test]
+fn an_edges_only_frame_equals_a_full_one() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.caps.truecolor = true;
+    app.config.motion = Motion::Vivid;
+    app.focused = true;
+    app.last_input = std::time::Instant::now() - std::time::Duration::from_secs(10);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    let mut relit = 0;
+    for screen in Screen::ALL {
+        app.switch(screen);
+        // The border intro is a full-frame animation of its own; this compares the frames after it.
+        app.edge_intro = None;
+        app.modal = Modal::None;
+        app.eco.anim_ms = 1_000;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        // A picture fading in or a border drawing itself in is a full frame by rule
+        // (`wants_animation`); compare once those rest.
+        while app.eco.fading() || app.animating() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            term.draw(|f| draw(f, &mut app)).unwrap();
+        }
+        if app.eco.anim_step.get().is_none() {
+            continue;
+        }
+        app.eco.anim_ms = 5_000;
+        term.draw(|f| draw_edges(f, &mut app)).unwrap();
+        let edges = term.backend().buffer().clone();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let full = term.backend().buffer().clone();
+        // Spinners turn with the wall clock between the two draws; a turned spinner is a full
+        // frame by rule (`spinning`), so they are not what this compares.
+        let spin = |c: &ratatui::buffer::Cell| "⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼".contains(c.symbol());
+        let diffs: Vec<String> = (0..48u16)
+            .flat_map(|y| (0..160u16).map(move |x| (x, y)))
+            .filter(|p| edges[*p] != full[*p] && !(spin(&edges[*p]) && spin(&full[*p])))
+            .take(8)
+            .map(|p| format!("{p:?} edges {:?} {:?} / full {:?} {:?}", edges[p].symbol(), edges[p].fg, full[p].symbol(), full[p].fg))
+            .collect();
+        assert!(diffs.is_empty(), "{screen:?}: the relit frame differs from a full one:\n{}", diffs.join("\n"));
+        relit += 1;
+    }
+    assert!(relit > 10, "screens with moving edges were checked ({relit})");
+}
+
+/// Left alone, the edge light rests: after a minute without input nothing asks for frames, and
+/// the next input wakes it.
+#[test]
+fn the_edge_light_rests_when_nobody_is_there() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.caps.truecolor = true;
+    app.config.motion = Motion::Vivid;
+    app.focused = true;
+    app.switch(Screen::Home);
+    app.edge_intro = None;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    app.last_input = std::time::Instant::now() - std::time::Duration::from_secs(5);
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.eco.anim_step.get().is_some(), "in use, the light turns");
+    app.last_input = std::time::Instant::now() - super::super::edge::REST_AFTER - std::time::Duration::from_secs(1);
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.eco.anim_step.get().is_none(), "left alone, nothing asks for a frame");
+    app.last_input = std::time::Instant::now();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.eco.anim_step.get().is_some(), "a key wakes it");
+}
+
+/// The frame budget, on the golden fixture: every screen draws a full frame and a decoration
+/// frame (edges only) within budget at p90. A release-build check, since debug timings mean
+/// nothing: `cargo test --release -p quai-terminal-cli frame_budget -- --ignored --nocapture`.
+/// CI runs it. Measured here at about 1.1 ms full and 0.45 ms edges (p50), so the budget leaves
+/// room for a slower CI machine and still fails a screen that suddenly costs several times more,
+/// which is what the Explore view model did before it was cached.
+#[test]
+#[ignore = "timing; release builds only (CI runs it with --release --ignored)"]
+fn frame_budget() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.caps.truecolor = true;
+    app.config.motion = Motion::Vivid;
+    app.focused = true;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    let at = |mut v: Vec<u128>, q: usize| {
+        v.sort_unstable();
+        v[v.len() * q / 100]
+    };
+    let mut report = Vec::new();
+    let mut over = Vec::new();
+    for screen in Screen::ALL {
+        app.switch(screen);
+        app.edge_intro = None;
+        app.modal = Modal::None;
+        // Warm the caches a first frame fills.
+        for _ in 0..3 {
+            term.draw(|f| draw(f, &mut app)).unwrap();
+        }
+        // Three rounds, keeping each measure's best: a slow neighbour on a shared machine spoils
+        // a round, a real regression spoils every one.
+        let (mut full90, mut edges90, mut full50, mut edges50) = (u128::MAX, u128::MAX, u128::MAX, u128::MAX);
+        for round in 0..3u64 {
+            let (mut full, mut edges) = (Vec::new(), Vec::new());
+            for i in 0..40u64 {
+                app.eco.anim_ms = 1_000 + (round * 40 + i) * 150;
+                let t = std::time::Instant::now();
+                term.draw(|f| draw(f, &mut app)).unwrap();
+                full.push(t.elapsed().as_micros());
+                let t = std::time::Instant::now();
+                term.draw(|f| draw_edges(f, &mut app)).unwrap();
+                edges.push(t.elapsed().as_micros());
+            }
+            full50 = full50.min(at(full.clone(), 50));
+            edges50 = edges50.min(at(edges.clone(), 50));
+            full90 = full90.min(at(full, 90));
+            edges90 = edges90.min(at(edges, 90));
+        }
+        report.push(format!("{screen:?}: full p50 {full50} p90 {full90} us, edges p50 {edges50} p90 {edges90} us"));
+        // Render plus ratatui's diff into the test backend.
+        if full90 > 4_000 || edges90 > 1_500 {
+            over.push(format!("{screen:?} full {full90} us edges {edges90} us"));
+        }
+    }
+    eprintln!("{}", report.join("\n"));
+    assert!(over.is_empty(), "over the frame budget:\n{}", over.join("\n"));
+}
+
+/// What the wallet owns is on Home: liquidity positions are holdings rows, their value is in the
+/// total (and said to be), and Enter on one opens it on Pools, under the cursor.
+#[test]
+fn liquidity_positions_are_holdings_on_home() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Home);
+    let tokens = app.eco.portfolio.as_ref().unwrap().rows.len();
+    let positions = app.home_positions().len();
+    assert!(positions > 0, "the fixture holds positions");
+    assert_eq!(app.list_len(), tokens + positions, "the cursor reaches them");
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let text: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    let pools = app.pools_usd();
+    assert!(text.contains(&format!("incl. {} in pools", wallet_core::amount::usd(pools))), "the hero says what it includes");
+    let pair = app.home_positions()[1].pair.clone();
+    app.selected = tokens + 1;
+    app.screen_enter();
+    assert_eq!(app.screen, Screen::Pools);
+    assert_eq!(app.position_rows()[app.selected].pair, pair, "the same position, under the cursor");
+}
+
+/// A picture stays placed when its row is restyled after it was reserved (the selection moving
+/// onto the row), and is taken down when something is drawn over its cells.
+#[test]
+fn a_picture_survives_its_row_being_selected() {
+    use super::super::images::{RESERVED, place_inline_icons};
+    let (_dir, mut app) = populated_app();
+    app.caps.tier = super::super::terminal::Tier::Pixels;
+    app.modal = Modal::None;
+    let t = app.theme.clone();
+    let area = Rect::new(0, 0, 20, 4);
+    let picture = Rect::new(2, 1, 4, 2);
+    let png: super::super::eco::KittyPng = (std::sync::Arc::new(vec![1, 2, 3]), 7);
+    for (restyle, kept) in [(true, true), (false, false)] {
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        for y in picture.top()..picture.bottom() {
+            for x in picture.left()..picture.right() {
+                buf[(x, y)].set_symbol(RESERVED).set_bg(t.surface);
+            }
+        }
+        if restyle {
+            // The selection passes over the row: its style changes, its cells do not.
+            buf.set_style(Rect::new(0, 1, 20, 1), Style::default().bg(t.selection));
+        } else {
+            // A popup draws over part of it.
+            buf[(3, 2)].set_symbol(" ");
+        }
+        app.eco.kitty.borrow_mut().push((picture, png.clone(), 0));
+        place_inline_icons(&app, &mut buf, &t);
+        let placed = super::super::images::kitty_items(&app);
+        assert_eq!(placed.len() == 1, kept, "restyled {restyle}: {} placed", placed.len());
+    }
+}
+
+/// A list longer than its panel shows where you are in it: a thumb on the panel's right border.
+#[test]
+fn a_long_list_shows_a_scrollbar() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Qi);
+    let rows = screen_text(&mut app, 100, 30);
+    let thumb: usize = rows.iter().filter(|r| r.contains('┃')).count();
+    assert!(thumb >= 1, "a thumb on the coin list");
+    assert!(thumb < 20, "a thumb, not the whole border: {thumb}");
+}
+
+/// The pointer marks what it is over without filling it: a row gets a faint edge, a tab an
+/// underline, a shortened address its whole self in a tooltip. Approve never lights.
+#[test]
+fn hover_marks_without_filling() {
+    let (_dir, mut app) = populated_app();
+    app.network_id = "mainnet".into();
+    app.caps.hyperlinks = true;
+    app.switch(Screen::Accounts);
+    let draw = |app: &mut App| {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        term.backend().buffer().clone()
+    };
+    let buf = draw(&mut app);
+    // The shortened address in the table, and the tab strip.
+    let row_of = |needle: &str| (0..30u16).find(|y| (0..100u16).map(|x| buf[(x, *y)].symbol()).collect::<String>().contains(needle));
+    let y = row_of("…").expect("a shortened address");
+    let line: String = (0..100u16).map(|x| buf[(x, y)].symbol()).collect();
+    let x = line.chars().position(|c| c == '…').unwrap() as u16;
+    app.pointer.at = Some((x, y));
+    let hovered = draw(&mut app);
+    let tooltip: String = (0..100u16).map(|cx| hovered[(cx, y + 1)].symbol()).collect();
+    let full = app.dash.accounts[0].address.clone();
+    assert!(
+        tooltip.contains(&full[2..6]) && tooltip.contains(&full[full.len() - 4..]) && tooltip.contains("0x "),
+        "the whole address, grouped: {tooltip:?}"
+    );
+    // A tab under the pointer is underlined, and nothing else about it changes.
+    let tabs = row_of("Accounts").unwrap();
+    let tab_line: String = (0..100u16).map(|x| buf[(x, tabs)].symbol()).collect();
+    let tx = tab_line[..tab_line.find("Qi coins").unwrap()].chars().count() as u16;
+    app.pointer.at = Some((tx + 1, tabs));
+    let hovered = draw(&mut app);
+    assert!(hovered[(tx + 1, tabs)].modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(hovered[(tx + 1, tabs)].bg, buf[(tx + 1, tabs)].bg, "no fill");
+    app.pointer.at = None;
+}
+
+/// The terminal's own cursor waits (hidden) at the focus, for magnifiers and screen readers:
+/// the selected row of the list in front. Motion Off stills every spinner.
+#[test]
+fn the_cursor_waits_at_the_focus_and_off_means_still() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Activity);
+    app.selected = 0;
+    screen_text(&mut app, 100, 30);
+    let (x, y) = app.focus_at.expect("the selected row");
+    let row = app.hits.borrow().live_regions().iter().find(|(r, _)| r.x == x && r.y == y).map(|(_, t)| t.clone());
+    assert!(matches!(row, Some(Target::Row { index: 0, .. })), "{row:?}");
+    app.config.motion = Motion::Off;
+    app.busy = Some("syncing…".into());
+    let rows = screen_text(&mut app, 100, 30);
+    assert!(rows[0].contains("◌ syncing"), "a still mark: {:?}", rows[0]);
+    assert!(!app.spun, "and no frames asked for it");
 }

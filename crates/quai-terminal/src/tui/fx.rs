@@ -161,19 +161,6 @@ impl Ceremony {
     pub fn frame(&self) -> Option<&str> {
         self.frame.as_deref()
     }
-
-    /// Whether a frame has been produced yet. A ceremony carries none until it is stepped, and
-    /// painting one before that leaves the canvas blank — which is what a hand-over must avoid.
-    #[cfg(test)]
-    pub fn has_frame(&self) -> bool {
-        self.frame.is_some()
-    }
-
-    /// Whether the effect has run out (frame cap, or the effect itself ended).
-    #[cfg(test)]
-    pub fn finished(&self) -> bool {
-        self.done
-    }
 }
 
 /// Paint SGR-colored text into a buffer region, clipping to the area.
@@ -373,11 +360,31 @@ pub fn ttfx_name(name: &str) -> &str {
     name.strip_suffix("-red").unwrap_or(name)
 }
 
-/// Pick a random lock-screen effect.
+/// The effects a random lock screen draws from: the brand set, calm and on-theme. Everything
+/// else in `EFFECTS` stays in the gallery for whoever picks it. Left out of the random draw on
+/// purpose: lightning (`thunderstorm` flashes; checked against three flashes a second before it
+/// could be allowed), a glitch that reads as broken (`vhstape`, `unstable`), and toys
+/// (`bouncyballs`, `bubbles`, `blackhole`, `fireworks`).
+pub const BRAND: &[&str] = &[
+    "matrix-red",
+    "decrypt",
+    "beams",
+    "sweep",
+    "highlight",
+    "synthgrid",
+    "laseretch",
+    "middleout",
+    "print",
+    "errorcorrect",
+    "wipe",
+    "colorshift",
+];
+
+/// Pick a random lock-screen effect from the brand set.
 pub fn random_lock_effect() -> &'static str {
     let mut b = [0u8; 2];
     let _ = wallet_core::sdk::crypto::fill_random(&mut b);
-    EFFECTS[u16::from_le_bytes(b) as usize % EFFECTS.len()].0
+    BRAND[u16::from_le_bytes(b) as usize % BRAND.len()]
 }
 
 /// Rain for `matrix` where its katakana cannot be drawn: ttfx's own ASCII rain symbols, with the
@@ -497,16 +504,19 @@ pub fn poem_rain<'a>(hashes: impl Iterator<Item = &'a str>) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// Seal stamped by celebrations (ASCII only: ttfx treats one codepoint as one cell).
-pub fn seal(word: &str) -> String {
-    let inner = format!("  {word}  ");
-    let rule = "-".repeat(inner.len());
-    format!("+{rule}+\n|{inner}|\n+{rule}+")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_random_lock_draws_only_from_the_brand_set() {
+        assert!(BRAND.iter().all(|b| EFFECTS.iter().any(|(name, _)| name == b)), "every brand effect exists");
+        for _ in 0..64 {
+            let e = random_lock_effect();
+            assert!(BRAND.contains(&e), "{e}");
+            assert!(!["thunderstorm", "vhstape", "unstable", "bouncyballs", "bubbles", "blackhole", "fireworks"].contains(&e));
+        }
+    }
 
     /// Every line of the wordmark is the same width. Each is centred on its own, so a short row
     /// slides sideways against the others — which is exactly what a ragged top row did.
@@ -613,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn themed_celebrations_build() {
+    fn themed_effects_build() {
         let keys = super::super::theme::builtin("tokyo-night").unwrap();
         let theme = super::super::theme::Theme::from_palette("tokyo-night", "t", &keys).unwrap();
         for name in EFFECTS.iter().map(|(n, _)| *n) {
@@ -622,7 +632,8 @@ mod tests {
             argv.extend(args.iter().cloned());
             let parsed: Result<ttfx::cli::Cli, _> = clap::Parser::try_parse_from(&argv);
             assert!(parsed.is_ok(), "{name}: {:?}", parsed.err().map(|e| e.to_string()));
-            let mut c = Ceremony::with_args(name, &args, &seal("RECEIVED"), 30, 5, 60).unwrap_or_else(|| panic!("{name}"));
+            let mut c =
+                Ceremony::with_args(name, &args, "+--------+\n|  quai  |\n+--------+", 30, 5, 60).unwrap_or_else(|| panic!("{name}"));
             assert!(c.step(), "{name}");
         }
     }

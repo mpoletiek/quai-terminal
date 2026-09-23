@@ -1,30 +1,30 @@
- ◆  PREVIEW │ People › Board │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
-                     People · Contacts  Channels  ▸ Board  [ ]
- 1 Home         •  │┌ ▸ channels · people ─────────────────────────────────────────────────────────┐
- 2 Trade           ││   #general                                                                   │
- 3 NFTs         ◧  ││ ◉ bob                                                                        │
-▌4 People          ││                                                                              │
-      Contacts     │└──────────────────────────────────────────────────────────────────────────────┘
-      Channels     │┌ #general · reading… ─────────────────────────────────────────────────────────┐
-    › Board        ││                                                                              │
- 5 Activity        ││                                                                              │
-                   ││                                                                              │
- 0 System          ││                                                                              │
-                   ││                                                                              │
-  [ ] tabs         ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                            ⠋  Reading the board…                             │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- N notifications  tab list·messages  p post · write  a new channel  / filter  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        People ·  Contacts   Channels   Board   [ ]
+                       ────────────────────────────────━━━━━━━──────────────────────────────────────
+  1  Home           • │┌ ▸ channels · people ──────────────────────────────────────────────────────┐
+                      ││   #general                                                                │
+  2  Markets          ││ ◉ bob                                                                     │
+                      ││                                                                           │
+  3  Trade            │└───────────────────────────────────────────────────────────────────────────┘
+                      │┌ #general · reading… ──────────────────────────────────────────────────────┐
+  4  NFTs           ◧ ││                                                                           │
+                      ││                                                                           │
+▌ 5  People           ││                                                                           │
+                      ││                                                                           │
+  6  Activity         ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+  0  System           ││                                                                           │
+                      ││                                                                           │
+   [ ] tabs           ││                           ◌  Reading the board…                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter write  a follow a channel  / filter  space actions  : palette  ? more

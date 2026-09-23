@@ -1,30 +1,30 @@
- ◆  PREVIEW │ System › Settings │ ● Local dev  #1,234,567 │ watch-only                ● 1 unread N
-                     System · Wallets  Network  ▸ Settings  Data sources  [ ]
- 1 Home         •  │┌ ▸ settings ──────────────────────────────────────────────────────────────────┐
- 2 Trade           ││ Theme                          terminal  ›                                   │
- 3 NFTs         ◧  ││ Motion                         off                                           │
- 4 People          ││ Layout                         auto · trader from 200 columns                │
- 5 Activity        ││ Messaging                      ● on · board, sealed DMs, chat dock           │
-                   ││ Trading                        ● on · markets, swap, pools, launches         │
-▌0 System          ││ NFTs                           ● on · collected, explore, listings           │
-      Wallets      ││ Background daemon              ● starts with the terminal · not running      │
-      Network      ││ Unlock the daemon too          ● each unlock here unlocks it in the daemon   │
-    › Settings     ││ Effects & celebrations         ● on                                          │
-      Data sources ││ Lock screen animation          random  ›                                     │
-                   ││ Terminal bell on good news     ○ off                                         │
-  [ ] tabs         ││ Big balance digits             ● on                                          │
-                   ││ Balance in the top bar         ● on · $ toggles it                           │
-                   ││ Notifications                  ● on                                          │
-                   ││ Auto-lock                      10 min                                        │
-                   ││ NFT images and token icons     ›                                             │
-                   ││ IPFS gateway · images          https://ipfs.qu.ai · default  ›               │
-                   ││ IPFS gateway · contract ABIs   https://ipfs.qu.ai · default  ›               │
-                   ││ Reveal recovery phrase…        ›                                             │
-                   ││ Encrypted backup…              ›                                             │
-                   ││ Full refresh                   ›                                             │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
-                   │┌ environment ─────────────────────────────────────────────────────────────────┐
-                   ││ terminal      xterm-256color · block QR codes · 24-bit color                 │
-                   ││ theme         terminal · terminal palette                                    │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter change  T theme showroom  L lock screen gallery  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        System ·  Wallets   Network   Settings   Data sources   [ ]
+                       ──────────────────────────────━━━━━━━━━━─────────────────────────────────────
+  1  Home           • │┌ ▸ settings ───────────────────────────────────────────────────────────────┐
+                      ││ Appearance                                                                │
+  2  Markets          ││   Theme                          terminal  ›                              │
+                      ││   Motion                         off                                      │
+  3  Trade            ││   Background                     auto · the theme's, solid                │
+                      ││   Icons                          auto · unicode                           │
+  4  NFTs           ◧ ││   Layout                         auto · trader from 200 columns           │
+                      ││   Mouse                          auto · clicks, wheel and hover · shift-d │
+  5  People           ││   Move with h j k l              ● on · the arrows always move            │
+                      ││   Big balance digits             ● on                                     │
+  6  Activity         ││   Balance in the top bar         ● on · $ toggles it                      │
+                      ││   Effects & celebrations         ● on                                     │
+                      ││   Lock screen animation          random  ›                                │
+▌ 0  System           ││   Terminal bell on good news     ○ off                                    │
+                      ││                                                                           │
+   [ ] tabs           ││ Features                                                                  │
+                      ││   Messaging                      ● on · board, sealed DMs, chat dock      │
+                      ││   Trading                        ● on · markets, swap, pools, launches    │
+                      ││   NFTs                           ● on · collected, explore, listings      │
+                      ││   Notifications                  ● on                                     │
+                      ││   ↓ 9 more                                                                │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+                      │┌ environment ──────────────────────────────────────────────────────────────┐
+                      ││ terminal      xterm-256color · block QR codes · 24-bit color              │
+                      ││ theme         terminal · terminal palette                                 │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter change · open  h step back  l step on  : palette  ? more

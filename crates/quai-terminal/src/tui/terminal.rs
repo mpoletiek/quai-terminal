@@ -2,10 +2,10 @@
 
 use crate::commands::Ctx;
 use base64::Engine;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use std::collections::VecDeque;
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 use wallet_core::Result;
 use wallet_core::config::GraphicsMode;
 
@@ -30,6 +30,22 @@ pub struct Caps {
     pub tmux: bool,
     pub ssh: bool,
     pub kitty_keyboard: bool,
+    /// The palette's color 8 as the terminal reported it (for the terminal theme's lines).
+    pub ansi8: Option<(u8, u8, u8)>,
+    /// Text can be drawn larger than a cell (OSC 66), for the headline number.
+    pub text_sizing: bool,
+    /// The terminal draws block and legacy-computing glyphs itself (kitty, Ghostty), so octants
+    /// show whatever the font; elsewhere they depend on a font that has them.
+    pub drawn_blocks: bool,
+    /// Pictures go as kitty Unicode placeholders (inside tmux with passthrough allowed), so
+    /// tmux moves them with the pane (`placeholders`).
+    pub placeholders: bool,
+    /// The taskbar shows progress sent as OSC 9;4. Only where it is known to: elsewhere OSC 9 is
+    /// a desktop notification (iTerm2, and others), and a progress update would pop one up.
+    pub taskbar_progress: bool,
+    /// Hyperlinks (OSC 8) are safe to send: everywhere but the Linux console, which prints
+    /// sequences it doesn't know.
+    pub hyperlinks: bool,
     pub cell_px: (u16, u16),
 }
 
@@ -37,21 +53,39 @@ fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_default()
 }
 
+/// Whether tmux passes escape sequences through to the terminal (`allow-passthrough`).
+fn tmux_passthrough() -> bool {
+    std::process::Command::new("tmux")
+        .args(["show-options", "-gqv", "allow-passthrough"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .is_some_and(|o| matches!(String::from_utf8_lossy(&o.stdout).trim(), "on" | "all"))
+}
+
 /// Detect capabilities without touching the terminal (safe before raw mode).
 pub fn detect(mode: GraphicsMode) -> Caps {
     let term = env("TERM");
     let program = env("TERM_PROGRAM");
     let tmux = std::env::var_os("TMUX").is_some() || term.starts_with("tmux") || term.starts_with("screen");
+    // A multiplexer that doesn't pass kitty graphics through: pictures sent into it land as
+    // garbage in its own screen, so it gets cells.
+    let other_mux = std::env::var_os("ZELLIJ").is_some() || std::env::var_os("STY").is_some();
     let ssh = std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some();
-    let kitty_like = std::env::var_os("KITTY_WINDOW_ID").is_some()
+    let kitty_graphics = std::env::var_os("KITTY_WINDOW_ID").is_some()
         || term == "xterm-kitty"
         || term == "xterm-ghostty"
-        || program.eq_ignore_ascii_case("ghostty")
-        || program.eq_ignore_ascii_case("WezTerm");
-    let truecolor = matches!(env("COLORTERM").as_str(), "truecolor" | "24bit") || kitty_like;
+        || program.eq_ignore_ascii_case("ghostty");
+    // WezTerm speaks the kitty protocol only in part (placements with z-index and unicode
+    // placeholders among what it lacks), so it is a truecolor terminal drawing cells by default;
+    // `graphics = "pixels"` still turns bitmaps on for it.
+    let wezterm = program.eq_ignore_ascii_case("WezTerm") || term.contains("wezterm");
+    let truecolor = matches!(env("COLORTERM").as_str(), "truecolor" | "24bit") || kitty_graphics || wezterm;
+    // Inside tmux, kitty pictures work through placeholders when tmux lets them through.
+    let passthrough = tmux && kitty_graphics && !other_mux && !ssh && truecolor && tmux_passthrough();
     let auto_tier = if term == "dumb" {
         Tier::Text
-    } else if kitty_like && !tmux && !ssh {
+    } else if kitty_graphics && ((!tmux && !other_mux && !ssh) || passthrough) {
         Tier::Pixels
     } else {
         Tier::Cells
@@ -67,6 +101,9 @@ pub fn detect(mode: GraphicsMode) -> Caps {
         .filter(|s| s.columns > 0 && s.rows > 0 && s.width > 0 && s.height > 0)
         .map(|s| ((s.width / s.columns).max(1), (s.height / s.rows).max(1)))
         .unwrap_or((8, 16));
+    let hyperlinks = term != "linux";
+    let taskbar_progress = !tmux
+        && (program.eq_ignore_ascii_case("ghostty") || std::env::var_os("WT_SESSION").is_some() || std::env::var_os("ConEmuPID").is_some());
     Caps {
         tier,
         truecolor,
@@ -74,217 +111,16 @@ pub fn detect(mode: GraphicsMode) -> Caps {
         terminal: if program.is_empty() { term } else { program },
         tmux,
         ssh,
-        kitty_keyboard: kitty_like,
+        // Known only once the terminal has answered (see `term::probe`).
+        kitty_keyboard: false,
+        text_sizing: false,
+        ansi8: None,
+        drawn_blocks: kitty_graphics,
+        placeholders: tmux && tier == Tier::Pixels,
+        taskbar_progress,
+        hyperlinks,
         cell_px,
     }
-}
-
-/// The sole terminal input owner, including capability negotiation. Crossterm consumes DA1
-/// internally; OSC 11 is filtered from its decoded event stream. No raw-stdin reader can survive
-/// a timeout or steal later keys. Unrelated events retain their exact codes, modifiers and order.
-#[derive(Default)]
-pub struct Input {
-    ready: VecDeque<Event>,
-    reply_events: Vec<Event>,
-    reply: Vec<u8>,
-    /// When the current partial reply started, to tell a terminal's answer from a person's Esc.
-    reply_at: Option<Instant>,
-    light: Option<bool>,
-}
-
-/// How long a buffer that could still become an OSC 11 or DA1 reply is held before it is treated
-/// as ordinary keys. A terminal emits the rest of its answer in microseconds; a person reaching
-/// for the next key takes far longer, so this separates them without swallowing either.
-const AMBIGUOUS_REPLY_GRACE: Duration = Duration::from_millis(50);
-
-impl Input {
-    /// Run after raw mode starts. The same owner must service the subsequent UI event loop, since
-    /// a terminal may finish a fragmented OSC response after this bounded startup window.
-    pub fn probe_background(timeout: Duration) -> Self {
-        let mut input = Self::default();
-        // Both ends, not just stdin: the query goes out on stdout, so a redirected stdout would
-        // write escape bytes into whatever is collecting it — a file, a pipe, the JSON a caller is
-        // about to parse — and still never reach a terminal that could answer. The TUI has both on
-        // the tty and is unaffected; a command whose output is piped is not.
-        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) || !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-            return input;
-        }
-        let mut out = std::io::stdout();
-        if out.write_all(b"\x1b]11;?\x1b\\\x1b[c").and_then(|_| out.flush()).is_err() {
-            return input;
-        }
-        let deadline = Instant::now() + timeout;
-        // A noisy input source cannot allocate unbounded memory during negotiation.
-        while input.ready.len() < 256 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match event::poll(remaining) {
-                Ok(true) => match event::read() {
-                    Ok(event) => input.feed(event),
-                    Err(_) => break,
-                },
-                _ => break,
-            }
-        }
-        input.flush_idle_prefix();
-        input
-    }
-
-    pub fn light_background(&self) -> Option<bool> {
-        self.light
-    }
-
-    pub fn poll(&mut self, timeout: Duration) -> std::io::Result<bool> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if !self.ready.is_empty() {
-                return Ok(true);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if !event::poll(remaining)? {
-                self.flush_idle_prefix();
-                return Ok(!self.ready.is_empty());
-            }
-            self.feed(event::read()?);
-            if Instant::now() >= deadline {
-                self.flush_idle_prefix();
-                return Ok(!self.ready.is_empty());
-            }
-        }
-    }
-
-    pub fn read(&mut self) -> std::io::Result<Event> {
-        loop {
-            if let Some(event) = self.ready.pop_front() {
-                return Ok(event);
-            }
-            self.poll(Duration::from_secs(60))?;
-        }
-    }
-
-    /// Release a buffer that is not a recognized reply. Called when something has already proved
-    /// the buffered bytes were ordinary keys — an event that cannot continue either reply — so the
-    /// keys are replayed at once, in order, with no delay.
-    fn flush_ambiguous_prefix(&mut self) {
-        if self.reply.starts_with(b"\x1b]11;") || self.reply.starts_with(b"\x1b[?") {
-            return;
-        }
-        self.ready.extend(self.reply_events.drain(..));
-        self.reply.clear();
-        self.reply_at = None;
-    }
-
-    /// The same release, but on an idle timeout, where nothing has proved anything yet.
-    ///
-    /// A reply can be split across poll windows, leaving only part of its introducer buffered.
-    /// Releasing that at the first timeout replayed the fragment as keys — `Alt+]`, `1`, `1`, `;`
-    /// — and left the report that followed to arrive as text, so a terminal answering slowly typed
-    /// its own answer into the UI. A buffer that could still become a reply is therefore held for
-    /// [`AMBIGUOUS_REPLY_GRACE`] first: the rest of a terminal's answer beats that comfortably,
-    /// and a person reaching for the next key does not.
-    fn flush_idle_prefix(&mut self) {
-        if (b"\x1b]11;".starts_with(&self.reply) || b"\x1b[?".starts_with(&self.reply))
-            && self.reply_at.is_some_and(|at| at.elapsed() < AMBIGUOUS_REPLY_GRACE)
-        {
-            return;
-        }
-        self.flush_ambiguous_prefix();
-    }
-
-    fn feed(&mut self, event: Event) {
-        // Non-text keys, paste, mouse, focus and resize are never part of an OSC reply.
-        let bytes = match &event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match (key.code, key.modifiers) {
-                (KeyCode::Esc, KeyModifiers::NONE) => vec![0x1b],
-                (KeyCode::Char('g'), KeyModifiers::CONTROL) => vec![0x07],
-                (KeyCode::Char(c), KeyModifiers::ALT) if c.is_ascii() => vec![0x1b, c as u8],
-                (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) if c.is_ascii() => vec![c as u8],
-                _ => {
-                    self.flush_ambiguous_prefix();
-                    self.ready.push_back(event);
-                    return;
-                }
-            },
-            _ => {
-                self.flush_ambiguous_prefix();
-                self.ready.push_back(event);
-                return;
-            }
-        };
-        if self.reply.is_empty() && bytes[0] != 0x1b {
-            self.ready.push_back(event);
-            return;
-        }
-        if self.reply.is_empty() {
-            self.reply_at = Some(Instant::now());
-        }
-        self.reply.extend(bytes);
-        self.reply_events.push(event);
-        let prefix = b"\x1b]11;";
-        if prefix.starts_with(&self.reply) || b"\x1b[?".starts_with(&self.reply) {
-            return;
-        }
-        if self.reply.starts_with(b"\x1b[?") {
-            let body = &self.reply[3..];
-            if body.ends_with(b"c") && body[..body.len() - 1].iter().all(|b| b.is_ascii_digit() || *b == b';') {
-                self.reply.clear();
-                self.reply_at = None;
-                self.reply_events.clear();
-                return;
-            }
-            if body.len() < 128 && body.iter().all(|b| b.is_ascii_digit() || *b == b';') {
-                return;
-            }
-        }
-        if !self.reply.starts_with(prefix) {
-            // A genuine escape/Alt sequence merely shared a prefix with OSC. Replay exactly.
-            self.ready.extend(self.reply_events.drain(..));
-            self.reply.clear();
-            self.reply_at = None;
-            return;
-        }
-        if self.reply.ends_with(b"\x07") || self.reply.ends_with(b"\x1b\\") {
-            if let Some(light) = parse_osc11(&self.reply) {
-                self.light = Some(light);
-            }
-            self.reply.clear();
-            self.reply_at = None;
-            self.reply_events.clear();
-        } else if self.reply.len() > 256 {
-            // Recognized but malformed report: bounded storage, with no report text as commands.
-            self.reply.truncate(prefix.len());
-            self.reply_events.clear();
-        }
-    }
-}
-
-/// Parse a complete, framed OSC 11 RGB report (BEL or ST terminated). Components are one to
-/// four hexadecimal digits, as specified by XParseColor; malformed values never shift/overflow.
-pub fn parse_osc11(reply: &[u8]) -> Option<bool> {
-    let start = reply.windows(9).position(|w| w == b"\x1b]11;rgb:")? + 9;
-    let rest = &reply[start..];
-    let end = rest.iter().position(|b| *b == 0x07 || *b == 0x1b)?;
-    if rest[end] == 0x1b && rest.get(end + 1) != Some(&b'\\') {
-        return None;
-    }
-    let color = std::str::from_utf8(&rest[..end]).ok()?;
-    let values: Option<Vec<u32>> = color
-        .split('/')
-        .map(|part| {
-            if part.is_empty() || part.len() > 4 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
-            }
-            let value = u32::from_str_radix(part, 16).ok()?;
-            Some(value * 255 / ((1u32 << (4 * part.len())) - 1))
-        })
-        .collect();
-    let values = values?;
-    if values.len() != 3 {
-        return None;
-    }
-    Some(values[0] * 299 + values[1] * 587 + values[2] * 114 >= 128_000)
 }
 
 /// One bitmap on screen for a frame: PNG, cell area and stacking order. `z < 0` draws under
@@ -319,6 +155,42 @@ pub struct KittyGraphics {
     frame: u64,
     log: Option<std::fs::File>,
     log_checked: bool,
+    /// What to send: taken by the frame loop and written inside the frame's synchronized block,
+    /// so pictures change in the same instant as the cells around them.
+    pending: Vec<u8>,
+    /// Where large pictures are handed over as files (the terminal is on this machine), rather
+    /// than base64 through the pty: a big NFT is hundreds of kilobytes of escape codes otherwise.
+    pub file_dir: Option<std::path::PathBuf>,
+    /// Unicode placeholder mode (inside tmux): (image id, cols, rows) → its virtual placement.
+    virtual_placed: std::collections::HashMap<(u32, u16, u16), u32>,
+}
+
+/// Pictures above this size go by file when they can; smaller ones are cheaper inline.
+const FILE_OVER: usize = 16 * 1024;
+
+/// The directory for handed-over pictures, when the terminal runs on this machine: tmpfs where
+/// there is one. Kitty deletes each file after reading it (`t=t`), which it does only for files
+/// in a temporary directory whose path says `tty-graphics-protocol`.
+pub fn picture_dir(remote: bool) -> Option<std::path::PathBuf> {
+    if remote {
+        return None;
+    }
+    let shm = std::path::Path::new("/dev/shm");
+    let base = if shm.is_dir() { shm.to_path_buf() } else { std::env::temp_dir() };
+    Some(base)
+}
+
+/// Remove this process's handed-over pictures that the terminal did not take (it deletes the
+/// ones it reads).
+pub fn clean_picture_files(dir: &std::path::Path) {
+    let prefix = format!("quai-terminal-tty-graphics-protocol-{}-", std::process::id());
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
 }
 
 const IMAGE_ID: u32 = 0x5157; // private id base for this app
@@ -358,27 +230,7 @@ impl KittyGraphics {
             if stale {
                 self.transmitted.remove(&h);
             }
-            let id = match self.transmitted.get_mut(&h) {
-                Some(entry) => {
-                    entry.1 = frame;
-                    entry.0
-                }
-                None => {
-                    let id = IMAGE_ID + self.next_image;
-                    self.next_image = self.next_image.wrapping_add(1) % 1_000_000;
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(p.png.as_slice());
-                    let chunks: Vec<&[u8]> = encoded.as_bytes().chunks(3072).collect();
-                    for (j, chunk) in chunks.iter().enumerate() {
-                        let more = u8::from(j + 1 < chunks.len());
-                        let header = if j == 0 { format!("a=t,f=100,t=d,i={id},q=2,m={more}") } else { format!("m={more},q=2") };
-                        out.extend(wrap(format!("\x1b_G{header};{}\x1b\\", String::from_utf8_lossy(chunk)), tmux).as_bytes());
-                    }
-                    self.transmitted.insert(h, (id, frame, std::time::Instant::now()));
-                    let bytes = p.png.len();
-                    self.trace(|| format!("{frame} transmit id={id} bytes={bytes}"));
-                    id
-                }
-            };
+            let id = self.transmit(&p.png, h, tmux, &mut out);
             let key = (id, p.x, p.y, p.cols, p.rows, p.z);
             if !wanted.contains(&key) {
                 wanted.push(key);
@@ -422,11 +274,94 @@ impl KittyGraphics {
             let left = self.transmitted.len();
             self.trace(|| format!("{frame} evicted down to {left}"));
         }
-        if !out.is_empty() {
-            let mut stdout = std::io::stdout();
-            let _ = stdout.write_all(&out);
-            let _ = stdout.flush();
+        self.pending.extend_from_slice(&out);
+    }
+
+    /// The image's id, sending it first if the terminal does not have it yet.
+    fn transmit(&mut self, png: &[u8], h: u64, tmux: bool, out: &mut Vec<u8>) -> u32 {
+        let frame = self.frame;
+        if let Some(entry) = self.transmitted.get_mut(&h) {
+            entry.1 = frame;
+            return entry.0;
         }
+        let id = IMAGE_ID + self.next_image;
+        self.next_image = self.next_image.wrapping_add(1) % 1_000_000;
+        // A large picture, with the terminal on this machine: a file it reads and deletes.
+        // Otherwise, or if the file cannot be written, the bytes inline.
+        let file = self.file_dir.as_ref().filter(|_| png.len() > FILE_OVER).and_then(|dir| {
+            let path = dir.join(format!("quai-terminal-tty-graphics-protocol-{}-{id}.png", std::process::id()));
+            std::fs::write(&path, png).ok().map(|_| path)
+        });
+        match file {
+            Some(path) => {
+                let name = base64::engine::general_purpose::STANDARD.encode(path.to_string_lossy().as_bytes());
+                out.extend(wrap(format!("\x1b_Ga=t,f=100,t=t,i={id},q=2;{name}\x1b\\"), tmux).as_bytes());
+            }
+            None => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+                let chunks: Vec<&[u8]> = encoded.as_bytes().chunks(3072).collect();
+                for (j, chunk) in chunks.iter().enumerate() {
+                    let more = u8::from(j + 1 < chunks.len());
+                    let header = if j == 0 { format!("a=t,f=100,t=d,i={id},q=2,m={more}") } else { format!("m={more},q=2") };
+                    out.extend(wrap(format!("\x1b_G{header};{}\x1b\\", String::from_utf8_lossy(chunk)), tmux).as_bytes());
+                }
+            }
+        }
+        self.transmitted.insert(h, (id, frame, std::time::Instant::now()));
+        let bytes = png.len();
+        self.trace(|| format!("{frame} transmit id={id} bytes={bytes}"));
+        id
+    }
+
+    /// Placeholder mode: a new frame of pictures begins (for eviction by last use).
+    pub fn begin_frame(&mut self) {
+        self.frame += 1;
+    }
+
+    /// Placeholder mode: the image's id and a virtual placement of it at `cols` × `rows`,
+    /// sending either if the terminal does not have it yet. The frame's cells then name both.
+    pub fn ensure_virtual(&mut self, png: &[u8], h: u64, cols: u16, rows: u16, tmux: bool) -> (u32, u32) {
+        let mut out = Vec::new();
+        let id = self.transmit(png, h, tmux, &mut out);
+        let pid = match self.virtual_placed.get(&(id, cols, rows)) {
+            Some(pid) => *pid,
+            None => {
+                self.next_placement = self.next_placement % 4_000_000 + 1;
+                let pid = self.next_placement;
+                out.extend(wrap(format!("\x1b_Ga=p,U=1,i={id},p={pid},c={cols},r={rows},q=2\x1b\\"), tmux).as_bytes());
+                self.virtual_placed.insert((id, cols, rows), pid);
+                let frame = self.frame;
+                self.trace(|| format!("{frame} virtual id={id} p={pid} {cols}x{rows}"));
+                pid
+            }
+        };
+        self.pending.extend_from_slice(&out);
+        (id, pid)
+    }
+
+    /// Placeholder mode: past the budget, delete the images unused longest (their virtual
+    /// placements go with them).
+    pub fn evict_idle(&mut self, tmux: bool) {
+        if self.transmitted.len() <= MAX_TRANSMITTED {
+            return;
+        }
+        let frame = self.frame;
+        let mut idle: Vec<(u64, u32, u64)> =
+            self.transmitted.iter().filter(|(_, (_, used, _))| *used < frame).map(|(h, (id, used, _))| (*used, *id, *h)).collect();
+        idle.sort_unstable();
+        let excess = self.transmitted.len() - MAX_TRANSMITTED * 3 / 4;
+        let mut out = Vec::new();
+        for (_, id, h) in idle.into_iter().take(excess) {
+            out.extend(wrap(format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\"), tmux).as_bytes());
+            self.transmitted.remove(&h);
+            self.virtual_placed.retain(|k, _| k.0 != id);
+        }
+        self.pending.extend_from_slice(&out);
+    }
+
+    /// The bytes waiting to go to the terminal (see `pending`).
+    pub fn take_output(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
     }
 
     /// Remove every placement (image data stays cached in the terminal).
@@ -439,9 +374,7 @@ impl KittyGraphics {
             out.extend(wrap(format!("\x1b_Ga=d,d=i,i={id},p={pid},q=2\x1b\\"), tmux).as_bytes());
         }
         self.trace(|| "clear".into());
-        let mut stdout = std::io::stdout();
-        let _ = stdout.write_all(&out);
-        let _ = stdout.flush();
+        self.pending.extend_from_slice(&out);
     }
 
     /// Forget what the terminal holds, so the next frame sends the pictures again. A theme
@@ -458,6 +391,7 @@ impl KittyGraphics {
         self.clear(tmux);
         let transmitted = self.transmitted.len();
         self.transmitted.clear();
+        self.virtual_placed.clear();
         self.trace(|| format!("forget {transmitted} image(s)"));
     }
 
@@ -469,9 +403,8 @@ impl KittyGraphics {
             out.extend(wrap(format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\"), tmux).as_bytes());
         }
         self.transmitted.clear();
-        let mut stdout = std::io::stdout();
-        let _ = stdout.write_all(&out);
-        let _ = stdout.flush();
+        self.virtual_placed.clear();
+        self.pending.extend_from_slice(&out);
     }
 }
 
@@ -528,28 +461,28 @@ pub fn qr_modules(data: &str, quiet: usize) -> Option<(usize, Vec<bool>)> {
 
 pub fn diagnostics_cmd(ctx: &Ctx) -> Result<()> {
     let caps = detect(ctx.config.graphics);
-    // The background is the one capability `detect` cannot infer: it has to be asked for, and the
-    // terminal answers as input. That negotiation is where a slow terminal once had its reply
-    // decoded as keystrokes, so a command called "probe terminal capabilities" should report what
-    // the probe actually got rather than leave this the only thing it does not cover. Raw mode is
-    // required to read the reply and is restored immediately; a non-terminal stdin reports unknown.
-    // `probe_background` refuses unless both ends are a terminal, so a piped run reports unknown
-    // rather than writing its query into the caller's output. Raw mode is needed to read the
-    // reply and is restored immediately.
-    let raw = crossterm::terminal::enable_raw_mode().is_ok();
-    let light_background = Input::probe_background(Duration::from_millis(150)).light_background();
-    if raw {
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
+    // What the terminal answers to the same questions the TUI asks at startup, rather than what
+    // the environment suggests: `kitty_keyboard_protocol` used to be a guess from TERM, and said
+    // yes inside tmux. Raw mode is needed to read the answers and is left at once. A run whose
+    // input or output isn't a terminal reports nothing asked — its query would land in whatever
+    // is collecting the output, and no terminal would answer it.
+    let answers = probe_now();
     let (theme, file) = super::theme::resolve(ctx.paths.root(), &ctx.config.theme, false, ctx.global.no_color);
+    let hex = |c: Option<(u8, u8, u8)>| c.map(|(r, g, b)| format!("#{r:02x}{g:02x}{b:02x}"));
     let info = serde_json::json!({
         "terminal": caps.terminal,
-        "light_background": light_background,
+        "answered": answers.as_ref().map(|a| a.answered),
+        "probe_ms": answers.as_ref().map(|a| a.took.as_secs_f64() * 1000.0),
+        "background": answers.as_ref().and_then(|a| hex(a.background)),
+        "foreground": answers.as_ref().and_then(|a| hex(a.foreground)),
+        "light_background": answers.as_ref().and_then(|a| a.light()),
         "graphics_tier": format!("{:?}", caps.tier),
-        "truecolor": caps.truecolor,
+        "truecolor": caps.truecolor || answers.as_ref().is_some_and(|a| a.truecolor),
+        "underline_color": answers.as_ref().map(|a| a.underline_color),
+        "synchronized_output": answers.as_ref().map(|a| a.sync_output),
+        "kitty_keyboard_protocol": answers.as_ref().map(|a| a.kitty_keyboard),
         "tmux": caps.tmux,
         "ssh": caps.ssh,
-        "kitty_keyboard_protocol": caps.kitty_keyboard,
         "cell_pixels": [caps.cell_px.0, caps.cell_px.1],
         "size": crossterm::terminal::size().ok(),
         "theme": theme.name,
@@ -566,148 +499,64 @@ pub fn diagnostics_cmd(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Run the startup probe outside the TUI, when both ends are a terminal.
+#[cfg(unix)]
+fn probe_now() -> Option<super::term::probe::Answers> {
+    use termina::Terminal as _;
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) || !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        return None;
+    }
+    let mut tty = termina::PlatformTerminal::new().ok()?;
+    tty.enter_raw_mode().ok()?;
+    let answers = super::term::probe::run(&mut tty, std::io::stdin());
+    let _ = tty.enter_cooked_mode();
+    Some(answers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn osc11_parsing() {
-        assert_eq!(parse_osc11(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;22c"), Some(true));
-        assert_eq!(parse_osc11(b"\x1b]11;rgb:0000/0000/0000\x07"), Some(false));
-        assert_eq!(parse_osc11(b"\x1b[?62c"), None);
-        assert_eq!(parse_osc11(b"\x1b]11;rgb:1e/1e/2e\x1b\\"), Some(false));
-    }
-
-    fn key(c: char) -> Event {
-        Event::Key(crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
-    }
-
-    fn osc_events() -> Vec<Event> {
-        let mut events = vec![Event::Key(crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT))];
-        events.extend("11;rgb:ffff/ffff/ffff".chars().map(key));
-        events.push(Event::Key(crossterm::event::KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::ALT)));
-        events
-    }
-
-    #[test]
-    fn negotiated_reply_keeps_real_events_and_late_fragments() {
-        let mut input = Input::default();
-        let before = Event::Paste("user pasted OSC-like rgb:1/2/3".into());
-        let after = Event::Key(crossterm::event::KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
-        input.feed(before.clone());
-        let reply = osc_events();
-        for event in &reply[..8] {
-            input.feed(event.clone());
-        }
-        // A timeout hands the same parser to the main loop; partial report state survives.
-        input.flush_idle_prefix();
-        for event in &reply[8..] {
-            input.feed(event.clone());
-        }
-        input.feed(after.clone());
-        assert_eq!(input.light_background(), Some(true));
-        assert_eq!(input.ready.into_iter().collect::<Vec<_>>(), vec![before, after]);
-    }
-
-    /// A reply split inside its own introducer — `\x1b]`, `\x1b]1`, `\x1b]11` — used to be
-    /// replayed as keys at the first idle timeout, so the terminal's answer arrived as `Alt+]`,
-    /// `1`, `1`, `;` and the background was never learned. Every cut point must survive instead.
-    #[test]
-    fn an_idle_timeout_inside_the_introducer_does_not_type_the_reply_as_keys() {
-        let reply = osc_events();
-        for cut in 1..=5 {
-            let mut input = Input::default();
-            for event in &reply[..cut] {
-                input.feed(event.clone());
-            }
-            input.flush_idle_prefix();
-            assert!(input.ready.is_empty(), "cut {cut} released a partial reply as keys: {:?}", input.ready);
-            for event in &reply[cut..] {
-                input.feed(event.clone());
-            }
-            assert_eq!(input.light_background(), Some(true), "cut {cut} lost the report");
-            assert!(input.ready.is_empty(), "cut {cut} leaked reply text: {:?}", input.ready);
-        }
-    }
-
-    /// The grace only covers an idle timeout. An event that cannot continue either reply proves
-    /// the buffer was ordinary typing, so those keys are released at once and in order.
-    #[test]
-    fn a_key_that_cannot_continue_a_reply_releases_the_buffer_immediately() {
-        let mut input = Input::default();
-        let esc = Event::Key(crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        let lambda = key('\u{03bb}');
-        input.feed(esc.clone());
-        assert!(input.ready.is_empty(), "a lone Esc is still ambiguous");
-        input.feed(lambda.clone());
-        assert_eq!(input.ready.iter().cloned().collect::<Vec<_>>(), vec![esc, lambda], "no delay, no reordering");
-    }
-
-    /// The query goes out on stdout, so a redirected stdout must not be written to: the bytes would
-    /// land in whatever is collecting it — `diagnostics terminal -o json` is piped routinely — and
-    /// no terminal would answer anyway. Under `cargo test` stdout is not a tty, which is exactly
-    /// the case being guarded.
-    #[test]
-    fn a_redirected_stdout_is_never_written_a_query_it_cannot_answer() {
-        let input = Input::probe_background(Duration::from_millis(5));
-        assert_eq!(input.light_background(), None, "nothing can be learned without a terminal on both ends");
-        assert!(input.ready.is_empty(), "and nothing is invented to deliver");
-    }
-
-    #[test]
-    fn genuine_escape_alt_and_unicode_keys_are_preserved() {
-        let keys = vec![
-            Event::Key(crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-            key('\u{03bb}'),
-            key('x'),
-            Event::Key(crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT)),
-            key('z'),
-        ];
-        let mut input = Input::default();
-        for event in &keys {
-            input.feed(event.clone());
-        }
-        input.flush_ambiguous_prefix();
-        assert_eq!(input.ready.into_iter().collect::<Vec<_>>(), keys);
-    }
-
-    #[test]
-    fn osc11_requires_complete_bounded_components_and_frame() {
-        for bytes in [
-            b"rgb:ffff/ffff/ffff".as_slice(),
-            b"\x1b]11;rgb:ffff/ffff/ffff",
-            b"\x1b]11;rgb:100000000/0/0\x07",
-            b"\x1b]11;rgb:/0/0\x07",
-            b"\x1b]11;rgb:ffff/ffff/ffff/0\x07",
-        ] {
-            assert_eq!(parse_osc11(bytes), None);
-        }
-    }
-
     // The parent test below launches this exact worker inside a real PTY. No wallet is opened.
+    // It runs the startup probe and then reads keys the way the TUI does, and reports both.
     #[test]
+    #[cfg(unix)]
     fn input_pty_worker() {
+        use termina::Terminal as _;
         let Ok(output) = std::env::var("QUAI_INPUT_PTY_RESULT") else {
             return;
         };
-        crossterm::terminal::enable_raw_mode().unwrap();
-        // Wide enough that a loaded machine cannot starve the reply out of the window and make the
-        // parent's `late` case arrive early: the parent waits four times this before its late OSC.
-        let mut input = Input::probe_background(Duration::from_millis(200));
+        let mut tty = termina::PlatformTerminal::new().unwrap();
+        tty.enter_raw_mode().unwrap();
+        let reader = tty.event_reader();
+        let mut answers = super::super::term::probe::run(&mut tty, std::io::stdin());
         let deadline = Instant::now() + Duration::from_secs(2);
-        let mut keys = Vec::new();
-        while Instant::now() < deadline && keys.len() < 3 {
-            if input.poll(Duration::from_millis(50)).unwrap() {
-                keys.push(format!("{:?}", input.read().unwrap()));
+        let mut keys: Vec<String> = std::mem::take(&mut answers.after)
+            .into_iter()
+            .filter_map(super::super::term::input::convert)
+            .filter(|e| matches!(e, crossterm::event::Event::Key(_)))
+            .map(|e| format!("{e:?}"))
+            .collect();
+        while Instant::now() < deadline && keys.len() < 2 {
+            if reader.poll(Some(Duration::from_millis(50)), |_| true).unwrap() {
+                let event = reader.read(|_| true).unwrap();
+                if event.is_escape() {
+                    super::super::term::probe::absorb(&mut answers, &event);
+                }
+                if let Some(e @ crossterm::event::Event::Key(_)) = super::super::term::input::convert(event) {
+                    keys.push(format!("{e:?}"));
+                }
             }
         }
-        crossterm::terminal::disable_raw_mode().unwrap();
-        std::fs::write(output, serde_json::to_vec(&serde_json::json!({"light": input.light_background(), "keys":keys})).unwrap()).unwrap();
+        tty.enter_cooked_mode().unwrap();
+        std::fs::write(output, serde_json::to_vec(&serde_json::json!({"light": answers.light(), "keys": keys})).unwrap()).unwrap();
     }
 
+    /// The startup probe against a real PTY: replies in either order, split into single bytes,
+    /// late, or missing never reach the app as keys, and keys typed after it arrive intact.
     #[test]
     #[cfg(unix)]
-    fn input_pty_negotiation_preserves_keys_in_both_orders_and_after_timeout() {
+    fn input_pty_negotiation_keeps_replies_out_of_the_keys() {
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-terminal-input.py");
         // The harness is a development script and is not shipped everywhere this crate is. Say so
         // rather than failing: a missing harness is not a negotiation bug, and pretending it is

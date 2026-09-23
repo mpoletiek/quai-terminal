@@ -42,8 +42,52 @@ pub enum GraphicsMode {
     Text,
 }
 
+/// How the TUI uses the mouse.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MouseMode {
+    /// Full on this computer, clicks only over SSH (every pointer move would cross the network),
+    /// off on the Linux console.
+    #[default]
+    Auto,
+    /// Clicks, the wheel, drags and hover.
+    Full,
+    /// Clicks, the wheel and drags; no hover.
+    Click,
+    /// No mouse: the terminal keeps its own text selection.
+    Off,
+}
+
+/// What the TUI paints behind everything.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundMode {
+    /// The terminal's own background (and its opacity) when the theme's background is the
+    /// terminal's color, as with Omarchy themes; the theme's color otherwise.
+    #[default]
+    Auto,
+    /// Always the terminal's own background: a translucent window stays translucent under any
+    /// theme.
+    Terminal,
+    /// Always the theme's color: solid, whatever is behind the window.
+    Solid,
+}
+
+/// Which glyphs the TUI draws.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IconMode {
+    /// Nerd Font icons where the terminal draws them (kitty, ghostty, WezTerm, or an installed
+    /// Nerd Font; never over SSH), Unicode elsewhere, ASCII on the Linux console.
+    #[default]
+    Auto,
+    Nerd,
+    Unicode,
+    Ascii,
+}
+
 /// Current TUI layout version (sections and sub-tabs).
-pub const LAYOUT_VERSION: u32 = 3;
+pub const LAYOUT_VERSION: u32 = 5;
 
 /// What third-party data a caller may fetch, from the preferences plus `--offline-data`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +214,12 @@ pub struct AppConfig {
     pub motion: Motion,
     /// Graphics tier.
     pub graphics: GraphicsMode,
+    /// Mouse support (`auto`, `full`, `click`, `off`).
+    pub mouse: MouseMode,
+    /// The page background (`auto`, `terminal`, `solid`).
+    pub background: BackgroundMode,
+    /// Glyphs (`auto`, `nerd`, `unicode`, `ascii`).
+    pub icons: IconMode,
     /// Desktop/terminal notifications.
     pub notifications: bool,
     /// Include amounts in notifications and status output.
@@ -194,6 +244,10 @@ pub struct AppConfig {
     pub ceremonies: bool,
     /// Terminal bell on confirmed receipts and unlocked funds (opt-in).
     pub sound: bool,
+    /// A review signs only after Enter is held until its bar fills, never on one press (opt-in).
+    pub hold_to_sign: bool,
+    /// h j k l move the cursor as well as the arrows. Off frees them for each view's own actions.
+    pub vim_keys: bool,
     /// Large block digits for balances (off for screen readers / NO_COLOR).
     pub big_numbers: bool,
     /// Show the wallet's QUAI balance in the top bar (`$` hides it for a shoulder-surfer).
@@ -263,6 +317,9 @@ impl Default for AppConfig {
             theme: "auto".into(),
             motion: Motion::Vivid,
             graphics: GraphicsMode::Auto,
+            mouse: MouseMode::Auto,
+            background: BackgroundMode::Auto,
+            icons: IconMode::Auto,
             notifications: true,
             show_amounts_in_notifications: false,
             // Address-linked lookups are opt-in: onboarding asks, and until then nothing tells a
@@ -279,6 +336,8 @@ impl Default for AppConfig {
             swap_deadline_minutes: 10,
             ceremonies: true,
             sound: false,
+            hold_to_sign: false,
+            vim_keys: true,
             big_numbers: true,
             balance_in_bar: true,
             layout: "auto".into(),

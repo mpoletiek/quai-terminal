@@ -1,48 +1,48 @@
- ◆  PREVIEW  179,071.75 QUAI │ Home › Portfolio │ ● Local dev  #1,234,567 │ watch-only                                                            ● 1 unread N
-                     Home · ▸ Portfolio  Qi coins  Accounts  Locks  [ ]
-▌1 Home         •  │┌ ▸ portfolio ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-    › Portfolio    ││ ▌$ ▀█    ▀▀█ █▀█ █ █                                                                                          ▁▁▂▂▃▃▄▄▅▅▅▆▆▇▇█ 7d  +4.1% │
-      Qi coins     ││ ▌   █    █▀▀ █▀█ ▀▀█                                                                                            ◔ some prices from cache │
-      Accounts     ││ ▌  ▀▀▀   ▀▀▀ ▀▀▀   ▀.52                                                                                                                  │
-      Locks        ││                                                                                                                                          │
- 2 Trade           ││ ◧ 3 NFTs in 3 collections · not counted in the total  3 to view                                                                          │
- 3 NFTs         ◧  │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- 4 People          │┌ ▸ holdings · 5 · $1,284.52 ────────────────────────────────────────────────────────────────┐┌ attention · 5 ─────────────────────────────┐
- 5 Activity        ││    asset         balance                    price       value       alloc   24h     src    ││ ◕ 2.4 QI unlocks in 3d 18h                 │
-                   ││ ▀▀ ✓ QUA┌ review · Send QUAI ──────────────────────────────────────────────────────────────────────────────┐ification(s) · N to read     │
- 0 System          ││ ▀▀ ✓ Qi │                                                                                                  │ stale (source did not answe │
-                   ││ ▀▀ ✓ WQI│  ▀▀▀▀ you pay           you receive                                                              │ unavailable: explorer.qu.ai │
-  [ ] tabs         ││ US ✓ USD│  ▀▀▀▀ QUAI      →   US  USDT                                                                     │ without a price             │
-                   ││ BO ⚠ BOS│                                                                                                  │─────────────────────────────┘
-                   ││         │  ! a warning                                                                                     │y ───────────────────────────┐
-                   ││ allocati│                                                                                                  │d Quai Miners #12 → 0x…    ✓ │
-                   ││ ████████│  balance changes                                                                                 │                             │
-                   ││ ■ QUAI 2│    −   1 QUAI                                                                                    │                             │
-                   ││         │    − 0.1 QUAI   network fee, at most                                                             │                             │
-                   ││ value · │                                                                                                  │                             │
-                   ││ $1,293.8│  network         Local dev                                                                       │                             │
-                   ││         │  from            0x00 (Account 1)                                                                │                             │
-                   ││         │  to              0x01                                                                            │                             │
-                   ││         │  amount          1 QUAI                                                                          │                             │
-                   ││         │  max fee         0.1 QUAI  (10.00% of amount)  ▲ above fee policy                                │                             │
-                   ││         │                                                                                                  │                             │
-                   ││         │  what happens                                                                                    │                             │
-                   ││         │    → signed and broadcast; included within a few blocks and tracked on activity (3)              │                             │
-                   ││         │                                                                                                  │                             │
-                   ││         │                                         — end of review —                                        │                             │
-                   ││         │                                                                                                  │                             │
-                   ││         │                                                                                                  │                             │
-                   ││         │    Reject · enter       Approve & sign · tab     read ██████████████  esc rejects                │                             │
-                   ││         └──────────────────────────────────────────────────────────────────────────────────────────────────┘                             │
-                   ││          │                    ⢀⡠⠤⠒⠊⠉                                                       ││                                            │
-                   ││          │               ⢀⣀⠤⠔⠊⠁                                                            ││                                            │
-                   ││          │           ⢀⡠⠔⠊⠁                                                                 ││                                            │
-                   ││          │       ⣀⠤⠒⠉⠁                                                                     ││                                            │
-                   ││          │  ⣀⠤⠒⠊⠉                                                                          ││                                            │
-                   ││          │⠒⠉                                                                               ││                                            │
-                   ││          │                                                                                 ││                                            │
-                   ││ $1,187.19│                                                                                 ││                                            │
-                   ││          └──────────────────────────────────────────────────────────────────────────────── ││                                            │
-                   ││ 20714d ago                                                                      20714d ago ││                                            │
-                   │└────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────┘
- N notifications  enter detail  t swap  s send  r receive  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                                                                               ● 1 unread N
+                         Home ·  Portfolio   Qi coins   Accounts   [ ]
+                        ────────━━━━━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▌ 1  Home            • │┌ portfolio ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+                       ││ ▌$ ▀█    ▀▀█ ▀█  █▀█                                                                                      ▁▁▂▂▃▃▄▄▅▅▅▆▆▇▇█ 7d  +4.1% │
+  2  Markets           ││ ▌   █      █  █  ▀▀█                                                                                        ◔ some prices from cache │
+                       ││ ▌  ▀▀▀ ▌   ▀ ▀▀▀ ▀▀▀.84                                                                                       incl. $435.32 in pools │
+  3  Trade             ││                                                                                                                                      │
+                       ││ ◧ 3 NFTs in 3 collections · not counted in the total  4 to view                                                                      │
+  4  NFTs            ◧ │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                       │┌ ▸ ho┌ review · Send QUAI ──────────────────────────────────────────────────────────────────────────────┐─────────────────────────────┐
+  5  People            ││    a│                                                                                                  │ks in 3d 18h                 │
+                       ││ ▀▀ ✓│  ▀▀▀▀ you pay           you receive                                                              │ification · N to read        │
+  6  Activity          ││ ▀▀ ✓│  ▀▀▀▀ QUAI      →   US  USDT                                                                     │ stale (source did not answe │
+                       ││ ▀▀ ✓│                                                                                                  │ unavailable: explorer.qu.ai │
+                       ││ US ✓│  ⚠ a warning                                                                                     │thout a price                │
+  0  System            ││ BO ⚠│                                                                                                  │─────────────────────────────┘
+                       ││    W│  balance changes                                                                                 │y ───────────────────────────┐
+   [ ] tabs            ││    U│    −   1 QUAI                                                                                    │d Quai Miners #12 → 0x…    ✓ │
+                       ││     │    − 0.1 QUAI   network fee, at most                                                             │                             │
+                       ││ allo│                                                                                                  │                             │
+                       ││ ████│  network         Local dev                                                                       │                             │
+                       ││ ■ QU│  from            0x 0023 60Bc 8E2A 359b E733 5B06 De43 F1c7 F040 f15a (Account 1)                │                             │
+                       ││     │  to              0x 00F4 1a2B 3c4D 5e6F 7a8B 9c0D 1e2F 3a4B 5c6D 804B                            │                             │
+                       ││ valu│  amount          1 QUAI                                                                          │                             │
+                       ││ $1,2│  max fee         0.1 QUAI  (10.00% of amount)   ▲ above fee policy                               │                             │
+                       ││     │                                                                                                  │                             │
+                       ││     │  what happens                                                                                    │                             │
+                       ││     │    → signed and broadcast; included within a few blocks and tracked in Activity (g a)            │                             │
+                       ││     │    ! once signed and broadcast, it can't be undone                                               │                             │
+                       ││     │    → Account 1 keeps at least 179,071.6533 QUAI                                                  │                             │
+                       ││     │                                                                                                  │                             │
+                       ││     │                                         — end of review —                                        │                             │
+                       ││     │                                                                                                  │                             │
+                       ││     │                                                                                                  │                             │
+                       ││     │    Reject · enter       Approve & sign · tab     read ██████████████  esc rejects                │                             │
+                       ││     └──────────────────────────────────────────────────────────────────────────────────────────────────┘                             │
+                       ││          │                   ⣀⡠⠤⠒⠊⠁                                                    ││                                            │
+                       ││          │              ⣀⠤⠔⠒⠉                                                          ││                                            │
+                       ││          │         ⢀⡠⠤⠒⠉                                                               ││                                            │
+                       ││          │    ⣀⠤⠔⠒⠉⠁                                                                   ││                                            │
+                       ││          │⠤⠒⠊⠉                                                                         ││                                            │
+                       ││          │                                                                             ││                                            │
+                       ││ $1,187.19│                                                                             ││                                            │
+                       ││          └──────────────────────────────────────────────────────────────────────────── ││                                            │
+                       ││     7d ago                                                                         now ││                                            │
+                       │└────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────┘
+ tab reject · approve  enter the focused button  y copy as a command  esc reject

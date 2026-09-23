@@ -394,6 +394,27 @@ pub fn build_id() -> String {
     )
 }
 
+/// A daemon is being started or replaced on a background thread (`ensure_current_soon`).
+pub static STARTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `ensure_current` off the caller's thread. Replacing an older daemon waits for it to stop
+/// (up to 10 s), which must not hold the first frame back; a wallet unlocked meanwhile waits for
+/// `STARTING` to clear before it is handed over (`App::hand_to_daemon`).
+pub fn ensure_current_soon(paths: wallet_core::paths::Paths, interval: u64) {
+    use std::sync::atomic::Ordering;
+    STARTING.store(true, Ordering::SeqCst);
+    let started = std::thread::Builder::new().name("daemon-start".into()).spawn(move || {
+        match ensure_current(&paths, interval) {
+            Ok(what) => wallet_core::diag::mark(&format!("daemon.autostart {what}")),
+            Err(e) => wallet_core::diag::mark(&format!("daemon.autostart_failed {e}")),
+        }
+        STARTING.store(false, Ordering::SeqCst);
+    });
+    if started.is_err() {
+        STARTING.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Make sure a daemon is running this program: start one if none is, and replace one running
 /// an older build (after an upgrade or rebuild). Wallets it held unlocked are locked by the
 /// restart; the terminal hands them over again as they are unlocked. Returns what happened.
@@ -564,8 +585,8 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
     };
     write_state(&watched);
     eprintln!(
-        "quai-terminal daemon: {} wallet(s) on {} · {} unlocked · polling every {interval}s{}",
-        watched.len(),
+        "quai-terminal daemon: {} on {} · {} unlocked · polling every {interval}s{}",
+        wallet_core::amount::count(watched.len(), "wallet"),
         network.id,
         watched.iter().filter(|w| w.session.is_unlocked()).count(),
         if detached { "" } else { " (Ctrl-C to stop)" }
@@ -904,8 +925,12 @@ pub fn spawn_background(paths: &wallet_core::paths::Paths, interval: u64) -> Res
 pub fn start(ctx: &Ctx, interval: u64) -> Result<()> {
     let n = ctx.registry.list()?.len();
     match ensure_current(&ctx.paths, interval)? {
-        "started" => println!("{} daemon started in the background, watching {n} wallet(s)", ctx.out.green("✓")),
-        "replaced" => println!("{} daemon restarted on this version, watching {n} wallet(s)", ctx.out.green("✓")),
+        "started" => {
+            println!("{} daemon started in the background, watching {}", ctx.out.green("✓"), wallet_core::amount::count(n, "wallet"))
+        }
+        "replaced" => {
+            println!("{} daemon restarted on this version, watching {}", ctx.out.green("✓"), wallet_core::amount::count(n, "wallet"))
+        }
         "busy" => println!("the daemon is finishing a poll; run this again in a moment"),
         _ => println!("the daemon is already running"),
     }

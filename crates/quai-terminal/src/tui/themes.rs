@@ -19,6 +19,30 @@ macro_rules! theme {
 }
 
 pub const CATALOG: &[BuiltinTheme] = &[
+    // Okabe–Ito: every meaning pair stays apart for the common color-vision deficiencies. Up
+    // and ok are sky blue, down and danger vermillion, never red against green.
+    theme!(
+        "colorblind-safe",
+        "Colorblind safe",
+        "Accessibility",
+        r##"
+mode = "dark"
+accent = "#e69f00"
+selection = "#243447"
+muted = "#8a93a0"
+background = "#0d1117"
+lighter_background = "#161b22"
+foreground = "#e6edf3"
+bright_foreground = "#ffffff"
+red = "#ff7a33"
+orange = "#e69f00"
+yellow = "#f0e442"
+green = "#56b4e9"
+cyan = "#a6d8f5"
+blue = "#3a9bdc"
+magenta = "#cc79a7"
+"##
+    ),
     theme!(
         "quai-red",
         "Quai Red",
@@ -32,13 +56,13 @@ background = "#080606"
 lighter_background = "#151010"
 foreground = "#efe6e3"
 bright_foreground = "#ffffff"
-red = "#ff4f5e"
-orange = "#ff9a3c"
-yellow = "#f2c14e"
+red = "#ff4f8b"
+orange = "#ffb000"
+yellow = "#f5dc6b"
 green = "#5fd38d"
-cyan = "#ff8f6b"
+cyan = "#6cb6ff"
 blue = "#ff5a2e"
-magenta = "#ff6f91"
+magenta = "#b48cff"
 "##
     ),
     theme!(
@@ -682,4 +706,20 @@ magenta = "#a02f6f"
 
 pub fn find(id: &str) -> Option<&'static BuiltinTheme> {
     CATALOG.iter().find(|t| t.id == id)
+}
+
+/// Genesis: the session-only theme the Konami code gives (in Help). Quai red on true black, the
+/// lines drawn in red. Never saved; the next start is the chosen theme again.
+pub fn genesis(from: &super::theme::Theme) -> super::theme::Theme {
+    use ratatui::style::Color::Rgb;
+    let mut t = super::theme::resolve(std::path::Path::new("/nonexistent"), "quai-red", false, false).0;
+    t.name = "Genesis".into();
+    t.surface = Rgb(0, 0, 0);
+    t.raised = Rgb(14, 4, 7);
+    t.selection = Rgb(52, 10, 22);
+    t.line = Rgb(74, 18, 32);
+    t.line_strong = Rgb(122, 28, 52);
+    t.shadow = Rgb(0, 0, 0);
+    t.icons = from.icons;
+    t
 }

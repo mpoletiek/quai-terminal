@@ -1,5 +1,5 @@
- ◆  PREVIEW │ 1 2 3 4 People 5 0  │ People › Contacts │ ● Local d ● 1 unread N
- People · ▸ Contacts  Channels  Board  [ ]
+ ◆  PREVIEW │ 1 2 3 4 5 People 6 0 │ ● Local dev │ watch-only     ● 1 unread N
+ People ·  Contacts   Channels   Board   [ ]
 ┌ you ─────────────────────────────────────────────────────────────────────────┐
 │ This wallet has no payment code (import a recovery phrase to get one).       │
 │                                                                              │
@@ -21,4 +21,4 @@
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter pay  a add  e edit  n notify  : palette  ? more
+ N notifications  s pay  a add contact  space actions  : palette  ? more

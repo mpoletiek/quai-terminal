@@ -1,24 +1,24 @@
- ◆  PREVIEW │ 1 Home 2 3 4 5 0  │ Home › Accounts │ ● Local dev   ● 1 unread N
- Home · Portfolio  Qi coins  ▸ Accounts  Locks  [ ]
+ ◆  PREVIEW │ 1 Home 2 3 4 5 6 0 │ ● Local dev │ watch-only       ● 1 unread N
+ Home ·  Portfolio   Qi coins   Accounts   [ ]
 ┌ ▸ quai accounts ─────────────────────────────────────────────────────────────┐
 │       label          address                ◆  QUAI  locked           nonce  │
 │ 0  ▌  Account 1      0x0023…f15a       179,071.7533  ◕ <0.0001        11     │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  a add account  e rename  y copy  s send  : palette  ? more
+┌ time locks · ! explorer differs ─────────────────────────────────────────────┐
+│ ▌ 2.4 Qi    ◕ unlocks #1,300,000 · ~3d 18h  QUAI→Qi conversion               │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ account · Account 1 ─────────────────────────────────────────────────────────┐
+│ 0x 0023 60Bc 8E2A 359b E733 5B06 De43 F1c7 F040 f15a                         │
+│                                                                              │
+│ balance       179,071.7533 QUAI                                              │
+│ locked        ◕ <0.0001 QUAI                                                 │
+│ sent          11 transactions (the nonce)                                    │
+│ derived       index 0 of the phrase                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+ N notifications  s send  r receive here  space actions  : palette  ? more

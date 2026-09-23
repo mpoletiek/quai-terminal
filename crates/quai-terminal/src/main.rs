@@ -206,6 +206,7 @@ fn main() {
         default_hook(info);
     }));
     let mut cli = Cli::parse();
+    cli.global.no_color |= no_color_requested(std::env::var_os("NO_COLOR"));
     if cli.global.json {
         cli.global.output = args::Output::Json;
     }
@@ -223,5 +224,22 @@ fn main() {
     if let Err(err) = result {
         out.error(name, &err);
         std::process::exit(err.exit_code());
+    }
+}
+
+/// no-color.org: color is off when `NO_COLOR` is present and not empty, whatever its value.
+fn no_color_requested(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
+#[cfg(test)]
+mod no_color_tests {
+    #[test]
+    fn any_non_empty_no_color_turns_color_off() {
+        for v in ["1", "0", "false", "no", "yes"] {
+            assert!(super::no_color_requested(Some(v.into())), "{v}");
+        }
+        assert!(!super::no_color_requested(Some("".into())));
+        assert!(!super::no_color_requested(None));
     }
 }

@@ -1,48 +1,48 @@
- ◆  PREVIEW  179,071.75 QUAI │ Trade › Swap │ ● Local dev  #1,234,567 │ watch-only                                                                ● 1 unread N
-                     Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  PnL  [ ]
- 1 Home         •  │┌ ▸ swap · Quainance ───────────────────────────────────────────────────────┐┌ quote ──────────────────────────────────────────────────────┐
-▌2 Trade           ││ you pay                                                                   ││ Type an amount; the quote updates as you type.              │
-      Markets      ││   token       WQ [WQI ✓▾]                                                 ││                                                             │
-    › Swap         ││   amount      50   available 171.4                                        ││ Quotes read the Quainance router and pools on-chain.        │
-      Pools        ││                25%   50%   75%   max    % · f ↕                           ││ Token inputs need an exact approval first; each step is its │
-      Convert      ││ you receive                                                               ││ own review.                                                 │
-      Wrap         ││   token       US [USDT ✓▾]                                                ││                                                             │
-      Launches     ││   amount      ⠋ quoting…                                                  ││                                                             │
-      PnL          ││                                                                           ││                                                             │
- 3 NFTs         ◧  ││   slippage    0.50% ‹›                                                    ││                                                             │
- 4 People          ││   deadline    10 min ‹›                                                   ││                                                             │
- 5 Activity        │└───────────────────────────────────────────────────────────────────────────┘│                                                             │
-                   │┌ WQI/USDT · 1h ────────────────────────────────────────────────────────────┐│                                                             │
- 0 System          ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-  [ ] tabs         ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                          ⠋  Reading the market…                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   ││                                                                           ││                                                             │
-                   │└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────┘
- N notifications  tab edit  / pick token  % 25·50·75%  f flip  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                                                                               ● 1 unread N
+                         Trade ·  Exchange   Orders   PnL   [ ]
+                        ─────────━━━━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1  Home            • │┌ ▸ exchange · swap on Quainance ─────────────────────────────────────────┐┌ quote ────────────────────────────────────────────────────┐
+                       ││ you pay                                                                 ││ Type an amount; the quote updates as you type.            │
+  2  Markets           ││   token       WQ [WQI ✓▾]                                               ││                                                           │
+                       ││   amount      50   available 171.4                                      ││ Quotes read the Quainance router and pools on-chain.      │
+▌ 3  Trade             ││                25%   50%   75%   max    % · f ↕                         ││ Token inputs need an exact approval first; each step is   │
+                       ││ you receive                                                             ││ its own review.                                           │
+  4  NFTs            ◧ ││   token       US [USDT ✓▾]                                              ││                                                           │
+                       ││   amount      ◌ quoting…                                                ││                                                           │
+  5  People            ││                                                                         ││                                                           │
+                       ││   slippage    0.50% ‹›                                                  ││                                                           │
+  6  Activity          ││   deadline    10 min ‹›                                                 ││                                                           │
+                       │└─────────────────────────────────────────────────────────────────────────┘│                                                           │
+                       │┌ WQI/USDT · 1h ──────────────────────────────────────────────────────────┐│                                                           │
+  0  System            ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+   [ ] tabs            ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                         ◌  Reading the market…                          ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       ││                                                                         ││                                                           │
+                       │└─────────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────┘
+ N notifications  enter edit · review  / pick token  f flip  space actions  : palette  ? more

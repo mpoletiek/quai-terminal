@@ -7,6 +7,8 @@ use std::io::Write;
 pub enum TermBackend {
     Osc9,
     Osc99,
+    /// foot and others: `OSC 777 ; notify ; title ; body`.
+    Osc777,
 }
 
 pub fn detect_terminal() -> Option<TermBackend> {
@@ -18,6 +20,9 @@ pub fn detect_terminal() -> Option<TermBackend> {
     if std::env::var_os("KITTY_WINDOW_ID").is_some() || term == "xterm-kitty" {
         return Some(TermBackend::Osc99);
     }
+    if term.starts_with("foot") {
+        return Some(TermBackend::Osc777);
+    }
     None
 }
 
@@ -26,12 +31,21 @@ fn clean(text: &str) -> String {
 }
 
 /// Build the escape sequence for a terminal notification.
+///
+/// kitty's notifications each get an id of their own: sharing one made every notice replace the
+/// last, so two arriving together showed as one. `o=unfocused` has kitty show it only while its
+/// window is in the background, where a notice is news rather than an echo of the screen.
 pub fn sequence(backend: TermBackend, title: &str, body: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     let title = clean(title);
     let body = clean(body);
     let seq = match backend {
         TermBackend::Osc9 => format!("\x1b]9;{title}: {body}\x1b\\"),
-        TermBackend::Osc99 => format!("\x1b]99;i=1:d=0;{title}\x1b\\\x1b]99;i=1:d=1:p=body;{body}\x1b\\"),
+        TermBackend::Osc99 => {
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("\x1b]99;i=qt{id}:d=0:o=unfocused;{title}\x1b\\\x1b]99;i=qt{id}:d=1:p=body;{body}\x1b\\")
+        }
+        TermBackend::Osc777 => format!("\x1b]777;notify;{};{}\x1b\\", title.replace(';', ","), body.replace(';', ",")),
     };
     if std::env::var_os("TMUX").is_some() { format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b")) } else { seq }
 }

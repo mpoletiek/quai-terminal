@@ -1,48 +1,48 @@
- ◆  PREVIEW  179,071.75 QUAI │ Home › Qi coins │ ● Local dev  #1,234,567 │ watch-only                                                             ● 1 unread N
-                     Home · Portfolio  ▸ Qi coins  Accounts  Locks  [ ]
-▌1 Home         •  │┌ qi balance ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-      Portfolio    ││ ◉  ■ spendable 240   ■ locked 5   ■ reserved 5   · checkpoint #1,234,560                                                                 │
-    › Qi coins     ││ ████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ │
-      Accounts     ││            ▄          ▄        ▄       ▄       ▄                                                                                         │
-      Locks        ││ drawer  0.001 ×8   0.01 ×8   0.1 ×8   1 ×8   10 ×8    32 small coins — A aggregates them                                                 │
- 2 Trade           │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- 3 NFTs         ◧  │┌ ▸ coins ───────────────────────────────────────────────────────────────────────────────────┐┌ denominations ─────────────────────────────┐
- 4 People          ││     Qi           state      origin                                           address       ││       10 ████████████████████ ×8           │
- 5 Activity        ││ 0 ◉        0.001 ○ reserved payment from PM8TJ…                              0x00F4…804B   ││        1 ████████████████████ ×8           │
-                   ││ 1 ◉         0.01 ✓          payment from PM8TJ…                              0x00F4…804B   ││      0.1 ████████████████████ ×8           │
- 0 System          ││ 2 ◉          0.1 ✓          payment from PM8TJ…                              0x00F4…804B   ││     0.01 ████████████████████ ×8           │
-                   ││ 3 ◉            1 ✓          payment from PM8TJ…                              0x00F4…804B   ││    0.001 ████████████████████ ×8           │
-  [ ] tabs         ││ 4 ◉           10 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ 5 ◉        0.001 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ 6 ◉         0.01 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ 7 ◉          0.1 ◕ locked   payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ 8 ◉            1 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ 9 ◉           10 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ a ◉        0.001 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ b ◉         0.01 ○ reserved payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ c ◉          0.1 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ d ◉            1 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ e ◉           10 ◕ locked   payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ f ◉        0.001 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ g ◉         0.01 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ h ◉          0.1 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ i ◉            1 ✓          payment from PM8TJ…                              0x00F4…804B   │└────────────────────────────────────────────┘
-                   ││ j ◉           10 ✓          payment from PM8TJ…                              0x00F4…804B   │┌ receive & mining addresses ────────────────┐
-                   ││ k ◉        0.001 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ l ◉         0.01 ◕ locked   payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ m ◉          0.1 ○ reserved payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ n ◉            1 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ o ◉           10 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ p ◉        0.001 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ q ◉         0.01 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ r ◉          0.1 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ s ◉            1 ◕ locked   payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ t ◉           10 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ u ◉        0.001 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ v ◉         0.01 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ w ◉          0.1 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ x ◉            1 ○ reserved payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ y ◉           10 ✓          payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   ││ z ◉        0.001 ◕ locked   payment from PM8TJ…                              0x00F4…804B   ││                                            │
-                   │└────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────┘
- N notifications  s send  r receive  a new address  S scan  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                                                                               ● 1 unread N
+                         Home ·  Portfolio   Qi coins   Accounts   [ ]
+                        ────────────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+▌ 1  Home            • │┌ qi balance ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+                       ││ ◉  ■ spendable 240   ■ locked 5   ■ reserved 5   · checkpoint #1,234,560                                                             │
+  2  Markets           ││ ████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ │
+                       ││            ▄          ▄        ▄       ▄       ▄                                                                                     │
+  3  Trade             ││ drawer  0.001 ×8   0.01 ×8   0.1 ×8   1 ×8   10 ×8    32 small coins — A aggregates them                                             │
+                       │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  4  NFTs            ◧ │┌ ▸ coins ───────────────────────────────────────────────────────────────────────────────┐┌ denominations ─────────────────────────────┐
+                       ││     Qi           state      origin                                       address       ││       10 ████████████████████ ×8           │
+  5  People            ││ 0 ◉        0.001 ◌ reserved payment from PM8TJ…                          0x00F4…804B   ┃│        1 ████████████████████ ×8           │
+                       ││ 1 ◉         0.01 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│      0.1 ████████████████████ ×8           │
+  6  Activity          ││ 2 ◉          0.1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│     0.01 ████████████████████ ×8           │
+                       ││ 3 ◉            1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│    0.001 ████████████████████ ×8           │
+                       ││ 4 ◉           10 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+  0  System            ││ 5 ◉        0.001 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ 6 ◉         0.01 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+   [ ] tabs            ││ 7 ◉          0.1 ◕ locked   payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ 8 ◉            1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ 9 ◉           10 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ a ◉        0.001 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ b ◉         0.01 ◌ reserved payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ c ◉          0.1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ d ◉            1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ e ◉           10 ◕ locked   payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ f ◉        0.001 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ g ◉         0.01 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ h ◉          0.1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ i ◉            1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃└────────────────────────────────────────────┘
+                       ││ j ◉           10 ✓          payment from PM8TJ…                          0x00F4…804B   ┃┌ receive & mining addresses ────────────────┐
+                       ││ k ◉        0.001 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ l ◉         0.01 ◕ locked   payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ m ◉          0.1 ◌ reserved payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ n ◉            1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ o ◉           10 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ p ◉        0.001 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ q ◉         0.01 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ r ◉          0.1 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ s ◉            1 ◕ locked   payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ t ◉           10 ✓          payment from PM8TJ…                          0x00F4…804B   ┃│                                            │
+                       ││ u ◉        0.001 ✓          payment from PM8TJ…                          0x00F4…804B   ││                                            │
+                       ││ v ◉         0.01 ✓          payment from PM8TJ…                          0x00F4…804B   ││                                            │
+                       ││ w ◉          0.1 ✓          payment from PM8TJ…                          0x00F4…804B   ││                                            │
+                       ││ x ◉            1 ◌ reserved payment from PM8TJ…                          0x00F4…804B   ││                                            │
+                       ││ y ◉           10 ✓          payment from PM8TJ…                          0x00F4…804B   ││                                            │
+                       │└────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────┘
+ N notifications  s send Qi  r receive Qi  a new address  space actions  : palette  ? more

@@ -30,10 +30,30 @@ pub struct Theme {
     pub attention: Color,
     pub danger: Color,
     pub link: Color,
+    /// Resting borders, rules and dividers: quieter than any text (1.6–2.4:1 against the
+    /// surface), so the lit focus border is the brightest line on screen by a wide margin.
+    pub line: Color,
+    /// Boundaries a person acts on (input tracks, meter troughs): ≈3:1.
+    pub line_strong: Color,
+    /// A price that rose or fell. Kept apart from `ok`/`danger`, which mean state: a falling
+    /// price is not an error.
+    pub up: Color,
+    pub down: Color,
+    /// Categorical colors for series and allocations (never state colors).
+    pub chart: [Color; 8],
+    /// Ink on a filled accent or danger chip: whichever of black or white reads best on it.
+    pub on_accent: Color,
+    pub on_danger: Color,
+    /// The one-cell shadow under a modal.
+    pub shadow: Color,
+    /// The resting node dot: `ok`, quieter.
+    pub ok_soft: Color,
     /// Colors for effects/charts (hex-capable themes only).
     pub accent_rgb: Option<(u8, u8, u8)>,
     pub adjusted: bool,
     pub monochrome: bool,
+    /// Which glyphs draw here (set by the app each frame; Unicode until then).
+    pub icons: super::icons::Set,
 }
 
 fn hex(value: &str) -> Option<(u8, u8, u8)> {
@@ -68,6 +88,113 @@ fn rgb(c: (u8, u8, u8)) -> Color {
     Color::Rgb(c.0, c.1, c.2)
 }
 
+/// Hue (degrees), saturation and lightness.
+fn hsl((r, g, b): (u8, u8, u8)) -> (f64, f64, f64) {
+    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f64::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h * 60.0, s, l)
+}
+
+fn from_hsl(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match h as u32 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let to = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (to(r), to(g), to(b))
+}
+
+fn linear(c: u8) -> f64 {
+    let c = c as f64 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn gamma(c: f64) -> u8 {
+    let c = if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+    (c * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// OKLab: a space where equal distances look equally different.
+fn oklab((r, g, b): (u8, u8, u8)) -> (f64, f64, f64) {
+    let (r, g, b) = (linear(r), linear(g), linear(b));
+    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
+    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
+    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
+    (
+        0.210_454_255_3 * l + 0.793_617_785 * m - 0.004_072_046_8 * s,
+        1.977_998_495_1 * l - 2.428_592_205 * m + 0.450_593_709_9 * s,
+        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766 * s,
+    )
+}
+
+fn from_oklab((l, a, b): (f64, f64, f64)) -> (u8, u8, u8) {
+    let l_ = (l + 0.396_337_777_4 * a + 0.215_803_757_3 * b).powi(3);
+    let m_ = (l - 0.105_561_345_8 * a - 0.063_854_172_8 * b).powi(3);
+    let s_ = (l - 0.089_484_177_5 * a - 1.291_485_548 * b).powi(3);
+    (
+        gamma(4.076_741_662_1 * l_ - 3.307_711_591_3 * m_ + 0.230_969_929_2 * s_),
+        gamma(-1.268_438_004_6 * l_ + 2.609_757_401_1 * m_ - 0.341_319_396_5 * s_),
+        gamma(-0.004_196_086_3 * l_ - 0.703_418_614_7 * m_ + 1.707_614_701 * s_),
+    )
+}
+
+/// How different two colors look (OKLab distance; about 0.1 reads as clearly different side by
+/// side).
+pub fn distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let (x, y) = (oklab(a), oklab(b));
+    ((x.0 - y.0).powi(2) + (x.1 - y.1).powi(2) + (x.2 - y.2).powi(2)).sqrt()
+}
+
+/// Turn `c` around the hue circle, away from every color in `from`, until it is at least `min`
+/// from each (keeping its lightness and chroma), at most 60°. Palettes often put red and orange
+/// a hair apart; an error and a warning must not look alike.
+fn separate(c: (u8, u8, u8), from: &[(u8, u8, u8)], min: f64) -> (u8, u8, u8) {
+    let near = |c: (u8, u8, u8)| from.iter().copied().min_by(|x, y| distance(c, *x).total_cmp(&distance(c, *y)));
+    let Some(anchor) = near(c) else { return c };
+    if distance(c, anchor) >= min {
+        return c;
+    }
+    let (l, a, b) = oklab(c);
+    let chroma = a.hypot(b).max(0.04);
+    let hue = b.atan2(a);
+    let (_, aa, ab) = oklab(anchor);
+    // Away from the anchor's hue: the shorter way round points at it.
+    let toward = (ab.atan2(aa) - hue + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+    let step = if toward > 0.0 { -1.0f64 } else { 1.0 }.to_radians() * 3.0;
+    // A muted palette has little hue to turn: past 60° the color gains chroma instead.
+    let mut best = c;
+    for i in 1..=30u32 {
+        let h = hue + step * i.min(20) as f64;
+        let chroma = chroma * (1.0 + 0.1 * i.saturating_sub(20) as f64);
+        let turned = from_oklab((l, chroma * h.cos(), chroma * h.sin()));
+        best = turned;
+        if from.iter().all(|f| distance(turned, *f) >= min) {
+            break;
+        }
+    }
+    best
+}
+
 /// Parsed palette keys (canonical Quattro names, legacy aliases resolved).
 pub fn parse_colors(text: &str) -> std::result::Result<BTreeMap<String, String>, String> {
     let table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
@@ -89,6 +216,32 @@ pub fn parse_colors(text: &str) -> std::result::Result<BTreeMap<String, String>,
 
 impl Theme {
     /// ANSI palette theme: follows the terminal's own colors.
+    /// The terminal theme, fitted to what the terminal said about itself: lines and the
+    /// selection move off palette color 8 where it is too faint to see against the background
+    /// (solarized-dark's is the background itself), and with truecolor and a known background
+    /// modals get a raised surface and a shadow of their own.
+    pub fn fit_to_terminal(&mut self, background: Option<(u8, u8, u8)>, ansi8: Option<(u8, u8, u8)>, truecolor: bool) {
+        if self.name != "terminal" {
+            return;
+        }
+        if let (Some(bg), Some(a8)) = (background, ansi8)
+            && contrast(a8, bg) < 1.6
+        {
+            self.line = Color::Gray;
+            self.line_strong = Color::White;
+            self.selection = if self.light { Color::Gray } else { Color::Blue };
+        }
+        if let (true, Some((r, g, b))) = (truecolor, background) {
+            let lift = |c: u8, k: f32| {
+                let c = f32::from(c);
+                (if self.light { c * (1.0 - k) } else { c + (255.0 - c) * k }).round() as u8
+            };
+            let sink = |c: u8| (f32::from(c) * 0.55).round() as u8;
+            self.raised = Color::Rgb(lift(r, 0.07), lift(g, 0.07), lift(b, 0.07));
+            self.shadow = Color::Rgb(sink(r), sink(g), sink(b));
+        }
+    }
+
     pub fn terminal(light: bool) -> Theme {
         Theme {
             name: "terminal".into(),
@@ -108,9 +261,28 @@ impl Theme {
             attention: Color::LightRed,
             danger: Color::Red,
             link: Color::Cyan,
+            line: Color::DarkGray,
+            line_strong: Color::Gray,
+            up: Color::Green,
+            down: Color::Red,
+            chart: [
+                Color::Blue,
+                Color::Magenta,
+                Color::Cyan,
+                Color::Yellow,
+                Color::Green,
+                Color::LightBlue,
+                Color::LightMagenta,
+                Color::LightCyan,
+            ],
+            on_accent: Color::Reset,
+            on_danger: Color::Reset,
+            shadow: Color::Reset,
+            ok_soft: Color::Green,
             accent_rgb: None,
             adjusted: false,
             monochrome: false,
+            icons: super::icons::Set::Unicode,
         }
     }
 
@@ -130,9 +302,15 @@ impl Theme {
             &mut t.attention,
             &mut t.danger,
             &mut t.link,
+            &mut t.line,
+            &mut t.line_strong,
+            &mut t.up,
+            &mut t.down,
+            &mut t.ok_soft,
         ] {
             *c = Color::Reset;
         }
+        t.chart = [Color::Reset; 8];
         t.monochrome = true;
         t
     }
@@ -198,9 +376,52 @@ impl Theme {
             c
         };
         let dim = ensure(ensure(dim, &[background, raised], 4.5, extreme), &[selection], 3.0, extreme);
-        let state = |c: (u8, u8, u8)| ensure(c, &[background, raised], 3.0, extreme);
-        let (red, green, yellow, orange, blue, magenta, cyan, accent) =
-            (state(red), state(green), state(yellow), state(orange), state(blue), state(magenta), state(cyan), state(accent));
+        // State colors are read as text (errors, warnings, amounts), so they hold text contrast
+        // on every surface they are drawn on, the raised header and modals included. At 3:1
+        // `danger` read 3.16:1 on nightfox's modals.
+        let state = |c: (u8, u8, u8)| ensure(c, &[background, raised], 4.5, extreme);
+        let (red, green, yellow, orange, blue, magenta, cyan) =
+            (state(red), state(green), state(yellow), state(orange), state(blue), state(magenta), state(cyan));
+        // The accent is lines and marks as much as text: 3:1 keeps a light accent light.
+        let accent = ensure(accent, &[background, raised], 3.0, extreme);
+        // Meanings that must not be confused, settled in order of what is at stake: an error
+        // never looks like the focus, a warning never looks like an error, Qi never looks like
+        // QUAI, pending never looks like a warning. Each turn is checked for contrast again.
+        let red = state(separate(red, &[accent], 0.1));
+        let orange = state(separate(orange, &[red, accent], 0.1));
+        let magenta = state(separate(magenta, &[blue, accent], 0.1));
+        let yellow = state(separate(yellow, &[orange, green], 0.08));
+        // A resting line sits between the surface and dim text: present, never competing.
+        let line = {
+            let mut l = mix(foreground, background, 0.78);
+            for _ in 0..20 {
+                let c = contrast(l, background);
+                if c < 1.6 {
+                    l = mix(l, extreme, 0.08);
+                } else if c > 2.4 {
+                    l = mix(l, background, 0.08);
+                } else {
+                    break;
+                }
+            }
+            l
+        };
+        let line_strong = ensure(mix(foreground, background, 0.6), &[background], 3.0, extreme);
+        let ink =
+            |fill: (u8, u8, u8)| if contrast((0, 0, 0), fill) >= contrast((255, 255, 255), fill) { (0, 0, 0) } else { (255, 255, 255) };
+        let shadow = if light { mix(background, (0, 0, 0), 0.08) } else { mix(background, (0, 0, 0), 0.45) };
+        // Eight categorical hues around the color wheel from the accent, each held to
+        // 3:1 on the page so a thin bar still reads.
+        let chart = {
+            let (h, s, l) = hsl(accent);
+            let mut out = [Color::Reset; 8];
+            for (i, slot) in out.iter_mut().enumerate() {
+                // Starting a sixth of the way round: the accent itself means focus.
+                let c = from_hsl((h + 60.0 + 360.0 * i as f64 / 8.0 + 20.0 * (i % 2) as f64) % 360.0, s.max(0.45), l.clamp(0.45, 0.65));
+                *slot = rgb(ensure(c, &[background], 3.0, extreme));
+            }
+            out
+        };
         Some(Theme {
             name: name.into(),
             source: source.into(),
@@ -219,10 +440,30 @@ impl Theme {
             attention: rgb(orange),
             danger: rgb(red),
             link: rgb(cyan),
+            line: rgb(line),
+            line_strong: rgb(line_strong),
+            up: rgb(green),
+            down: rgb(red),
+            chart,
+            on_accent: rgb(ink(accent)),
+            on_danger: rgb(ink(red)),
+            shadow: rgb(shadow),
+            ok_soft: rgb(mix(green, background, 0.25)),
             accent_rgb: Some(accent),
             adjusted,
             monochrome: false,
+            icons: super::icons::Set::Unicode,
         })
+    }
+
+    /// An icon in this terminal's glyph set.
+    pub fn icon(&self, icon: super::icons::Icon) -> &'static str {
+        icon.glyph(self.icons)
+    }
+
+    /// An icon and its trailing space, or nothing where the set has no glyph for it.
+    pub fn lead(&self, icon: super::icons::Icon) -> String {
+        icon.lead(self.icons)
     }
 
     pub fn base(&self) -> Style {
@@ -232,14 +473,46 @@ impl Theme {
     pub fn text_style(&self) -> Style {
         Style::default().fg(self.text)
     }
+    /// Quiet text. On the terminal palette that is the terminal's own faint foreground: ANSI 8
+    /// "bright black" is invisible on some palettes (1.00:1 on Solarized dark), faint never is.
     pub fn dim_style(&self) -> Style {
-        Style::default().fg(self.dim)
+        match self.dim {
+            Color::Rgb(..) => Style::default().fg(self.dim),
+            _ => Style::default().fg(Color::Reset).add_modifier(Modifier::DIM),
+        }
     }
     pub fn strong_style(&self) -> Style {
         Style::default().fg(self.strong).add_modifier(Modifier::BOLD)
     }
+    /// A filled chip: `color` as the background, the surface as ink. Where the surface is the
+    /// terminal's own default (the terminal palette and NO_COLOR themes) that ink would be the
+    /// terminal's foreground — pale text on a pale ANSI green, about 1:1 — so the chip is drawn
+    /// in reverse video instead, which always inks with the terminal's own background.
+    pub fn chip(&self, color: Color) -> Style {
+        match (self.surface, color) {
+            (Color::Rgb(..), Color::Rgb(..)) => {
+                let ink = if color == self.danger { self.on_danger } else { self.ink_on(color) };
+                Style::default().fg(ink).bg(color).add_modifier(Modifier::BOLD)
+            }
+            _ => Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        }
+    }
+    /// Black or white, whichever reads best on `fill`.
+    pub fn ink_on(&self, fill: Color) -> Color {
+        match fill {
+            Color::Rgb(r, g, b) => {
+                if contrast((0, 0, 0), (r, g, b)) >= contrast((255, 255, 255), (r, g, b)) {
+                    Color::Rgb(0, 0, 0)
+                } else {
+                    Color::Rgb(255, 255, 255)
+                }
+            }
+            _ => self.on_accent,
+        }
+    }
+    /// A panel's border: the lit accent when focused, the quiet `line` at rest.
     pub fn border(&self, focused: bool) -> Style {
-        if focused { Style::default().fg(self.focus).add_modifier(Modifier::BOLD) } else { Style::default().fg(self.dim) }
+        if focused { Style::default().fg(self.focus).add_modifier(Modifier::BOLD) } else { Style::default().fg(self.line) }
     }
     /// Body-text contrast ratio against the surface (hex themes only).
     pub fn text_contrast(&self) -> Option<f64> {
@@ -298,13 +571,18 @@ pub fn resolve(ctx_home: &Path, setting: &str, light_hint: bool, no_color: bool)
     };
     match setting {
         "terminal" => return (Theme::terminal(light_hint), None),
+        // No color at all: every meaning carried by a glyph or a word.
+        "monochrome" => return (Theme::mono(), None),
         "auto" | "" => {
             if let Some(path) = omarchy_colors()
                 && let Some(t) = load_file(&path, "omarchy")
             {
                 return (t, Some(path));
             }
-            return (Theme::terminal(light_hint), None);
+            // Without Omarchy, the house theme for the terminal's light or dark background. The
+            // terminal palette is a choice (`terminal`), never a default: its greys and ANSI
+            // colors have unknown contrast, and a wallet can't guess at what an Approve reads as.
+            return (house(light_hint), None);
         }
         other => {
             if let Some(keys) = builtin(other)
@@ -327,13 +605,19 @@ pub fn resolve(ctx_home: &Path, setting: &str, light_hint: bool, no_color: bool)
             }
         }
     }
-    (Theme::terminal(light_hint), None)
+    (house(light_hint), None)
+}
+
+/// Quai Dark, or Quai Light on a light terminal.
+fn house(light: bool) -> Theme {
+    let id = if light { "quai-light" } else { "quai-dark" };
+    builtin(id).and_then(|keys| Theme::from_palette(id, "built-in", &keys)).unwrap_or_else(|| Theme::terminal(light))
 }
 
 /// All discoverable theme names.
 pub fn available(ctx_home: &Path) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> =
-        vec![("auto".into(), "Omarchy current theme, else terminal".into()), ("terminal".into(), "terminal ANSI palette".into())];
+        vec![("auto".into(), "Omarchy current theme, else Quai Dark or Light".into()), ("terminal".into(), "terminal ANSI palette".into())];
     out.extend(super::themes::CATALOG.iter().map(|t| (t.id.to_string(), format!("built-in · {}", t.family))));
     for dir in theme_dirs(ctx_home) {
         if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -402,7 +686,7 @@ pub fn preview_cmd(ctx: &Ctx, name: Option<&str>) -> Result<()> {
     println!(
         "  {}  {}  {}  {}",
         paint(theme.ok, "✓ confirmed"),
-        paint(theme.pending, "◔ pending"),
+        paint(theme.pending, "◌ pending"),
         paint(theme.attention, "! refunded"),
         paint(theme.danger, "✕ failed")
     );
@@ -412,6 +696,25 @@ pub fn preview_cmd(ctx: &Ctx, name: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On a palette whose color 8 is the background (solarized-dark), lines and the selection
+    /// move to colors that show; with truecolor, modals get a raised surface and a shadow.
+    #[test]
+    fn the_terminal_theme_fits_a_faint_palette() {
+        let mut t = Theme::terminal(false);
+        let base03 = (0x00, 0x2b, 0x36);
+        t.fit_to_terminal(Some(base03), Some(base03), false);
+        assert_eq!((t.line, t.selection), (Color::Gray, Color::Blue));
+        assert_eq!(t.raised, Color::Reset, "no truecolor, no painted surface");
+        let mut t = Theme::terminal(false);
+        t.fit_to_terminal(Some((0x1e, 0x1e, 0x2e)), Some((0x58, 0x5b, 0x70)), true);
+        assert_eq!(t.line, Color::DarkGray, "a color 8 that shows is kept");
+        assert!(matches!(t.raised, Color::Rgb(..)) && matches!(t.shadow, Color::Rgb(..)));
+        let mut named = resolve(std::path::Path::new("/nonexistent"), "quai-red", false, false).0;
+        let before = named.clone().raised;
+        named.fit_to_terminal(Some(base03), Some(base03), true);
+        assert_eq!(named.raised, before, "only the terminal theme is fitted");
+    }
 
     #[test]
     fn builtins_parse_and_meet_contrast() {
@@ -444,17 +747,75 @@ mod tests {
                 ("pending", t.pending),
                 ("attention", t.attention),
                 ("danger", t.danger),
+                ("link", t.link),
                 ("focus", t.focus),
             ] {
+                // State colors are text; the accent is also lines and marks.
+                let min = if role == "focus" { 3.0 } else { 4.5 };
                 for (bg_name, back) in [("surface", (br, bg, bb)), ("raised", (rr, rg, rb))] {
                     let ratio = contrast(rgb(c), back);
-                    assert!(ratio >= 3.0, "{} {role} on {bg_name} {ratio:.2}", entry.id);
+                    assert!(ratio >= min, "{} {role} on {bg_name} {ratio:.2}", entry.id);
                 }
             }
             assert!(contrast(rgb(t.dim), (br, bg, bb)) >= 4.5, "{} dim on surface", entry.id);
             assert!(contrast(rgb(t.dim), (rr, rg, rb)) >= 4.5 - 0.3, "{} dim on raised", entry.id);
             assert!(contrast(rgb(t.dim), (sr, sg, sb)) >= 3.0, "{} dim on selection", entry.id);
             assert!(contrast(rgb(t.strong), (sr, sg, sb)) >= 4.5, "{} strong on selection", entry.id);
+        }
+    }
+
+    /// Every filled chip (the focused button, Approve & sign, a danger pill) carries ink that
+    /// reads on its fill, in every theme.
+    #[test]
+    fn catalog_fills_carry_readable_ink() {
+        for entry in super::super::themes::CATALOG {
+            let t = Theme::from_palette(entry.id, "test", &builtin(entry.id).unwrap()).unwrap();
+            for (role, fill) in
+                [("focus", t.focus), ("ok", t.ok), ("danger", t.danger), ("attention", t.attention), ("quai", t.quai), ("qi", t.qi)]
+            {
+                let style = t.chip(fill);
+                let (Some(Color::Rgb(fr, fg, fb)), Some(Color::Rgb(br, bg, bb))) = (style.fg, style.bg) else {
+                    panic!("{} {role}", entry.id)
+                };
+                let ratio = contrast((fr, fg, fb), (br, bg, bb));
+                assert!(ratio >= 4.5, "{} ink on {role} {ratio:.2}", entry.id);
+            }
+        }
+    }
+
+    /// Colors that mean different things look different, in every theme.
+    #[test]
+    fn catalog_meanings_are_distinguishable() {
+        let rgb = |c: Color| match c {
+            Color::Rgb(r, g, b) => (r, g, b),
+            _ => panic!(),
+        };
+        for entry in super::super::themes::CATALOG {
+            let t = Theme::from_palette(entry.id, "test", &builtin(entry.id).unwrap()).unwrap();
+            for (a, an, b, bn, min) in [
+                (t.danger, "danger", t.focus, "focus", 0.1),
+                (t.attention, "attention", t.danger, "danger", 0.1),
+                (t.qi, "qi", t.quai, "quai", 0.1),
+                (t.qi, "qi", t.focus, "focus", 0.1),
+                (t.pending, "pending", t.attention, "attention", 0.08),
+                (t.danger, "danger", t.ok, "ok", 0.1),
+            ] {
+                let d = distance(rgb(a), rgb(b));
+                // Contrast guards may pull a turned color back a little.
+                assert!(d >= min - 0.015, "{}: {an} and {bn} look alike ({d:.3})", entry.id);
+            }
+        }
+    }
+
+    /// Quiet lines are quieter than dim text, and dim text quieter than text.
+    #[test]
+    fn catalog_lines_sit_below_text() {
+        for entry in super::super::themes::CATALOG {
+            let t = Theme::from_palette(entry.id, "test", &builtin(entry.id).unwrap()).unwrap();
+            let (Color::Rgb(lr, lg, lb), Color::Rgb(br, bg, bb), Color::Rgb(dr, dg, db)) = (t.line, t.surface, t.dim) else { panic!() };
+            let line = contrast((lr, lg, lb), (br, bg, bb));
+            assert!((1.5..=2.5).contains(&line), "{} line {line:.2}", entry.id);
+            assert!(contrast((dr, dg, db), (br, bg, bb)) > line + 1.5, "{} dim vs line", entry.id);
         }
     }
 
