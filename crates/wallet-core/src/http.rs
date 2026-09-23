@@ -25,8 +25,9 @@ static PROXY: OnceLock<Option<String>> = OnceLock::new();
 /// for Tor). Set once, before the first request; with a proxy set nothing goes out directly, so a
 /// proxy that is down fails the request instead of revealing the address it was hiding.
 ///
-/// This covers the wallet's own lookups (explorer, prices, images, indexers). Node RPC goes
-/// through the SDK's transport, which does not take a proxy: pair this with your own node.
+/// This covers the wallet's own lookups (explorer, prices, images, indexers) and node RPC to a
+/// public node ([`crate::network::rpc_proxy`]); a node on this machine or the LAN is reached
+/// directly.
 pub fn set_proxy(url: Option<&str>) -> Result<()> {
     let url = url.map(str::trim).filter(|u| !u.is_empty());
     if let Some(u) = url {

@@ -223,8 +223,8 @@ pub struct AppConfig {
     /// Message-board channels this wallet follows, in the order they are shown.
     #[serde(default = "default_channels")]
     pub board_channels: Vec<String>,
-    /// Proxy for third-party lookups (`socks5h://127.0.0.1:9050` for Tor). Node RPC is not
-    /// proxied: point the network at your own node for that.
+    /// Proxy for third-party lookups and node RPC (`socks5h://127.0.0.1:9050` for Tor). A node on
+    /// this machine or the LAN is still reached directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
     /// IPFS gateway for images and NFT metadata (`crate::ipfs`). None is `https://ipfs.qu.ai`.
