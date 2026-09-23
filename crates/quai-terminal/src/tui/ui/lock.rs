@@ -15,24 +15,48 @@ pub(crate) fn draw_lock(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
     let [_, art, form, _] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(art_h), Constraint::Length(11), Constraint::Min(0)]).areas(area);
     let accent = t.accent_rgb.map(|(r, g, b)| Color::Rgb(r, g, b)).unwrap_or(t.focus);
-    // An effect plays when the wallet locks. With `lock_loop` on (the default) the next follows
-    // once it has dissolved into the wordmark (`App::tick`); off, the screen rests after one,
-    // since effects chained forever hold about a fifth of a core. Either way it goes still the
-    // moment a password is being typed, and waits while the window is in the background (a
-    // frozen effect resumes where it was).
+    // An effect plays when the wallet locks. With `lock_loop` on (the default) the next starts the
+    // moment one ends, in the background too; off, the screen rests after one, since effects
+    // chained forever hold about a fifth of a core. Either way it goes still the moment a
+    // password is being typed, and picks up again (`App::tick`) once the field is empty.
     let typing = !app.lock_input.is_empty() || app.unlocking;
+    let last_frame = |app: &App| app.ambient.as_ref().and_then(|c| c.frame()).map(|f| (f.to_string(), std::time::Instant::now()));
     let rest = |app: &mut App| {
-        app.lock_fade = app.ambient.as_ref().and_then(|c| c.frame()).map(|f| (f.to_string(), std::time::Instant::now()));
+        app.lock_fade = last_frame(app);
         app.ambient = None;
         app.lock_rested = true;
     };
-    if let Some(c) = app.ambient.as_mut()
-        && (typing || (app.focused && !c.advance()))
-    {
-        rest(app);
+    if let Some(c) = app.ambient.as_mut() {
+        if typing {
+            rest(app);
+        } else if !c.advance() {
+            // Looping: the next effect starts in this very frame, with the one that just ended
+            // dissolving over it, so there is no held last frame between them. Whether or not
+            // the window has the focus: the lock screen is a screensaver.
+            let ended = last_frame(app);
+            app.ambient = None;
+            if app.config.lock_loop {
+                app.start_lock_ceremony((area.width, area.height));
+            }
+            if app.ambient.is_some() {
+                app.lock_fade = ended;
+            } else {
+                app.lock_fade = ended;
+                app.lock_rested = true;
+            }
+        }
     }
     if let Some(c) = &app.ambient {
         c.render(art, f.buffer_mut(), t.base().fg(accent));
+        // The effect that just ended thins away on top of the one that began.
+        if let Some((frame, at)) = app.lock_fade.take() {
+            let ms = at.elapsed().as_millis();
+            if ms < HANDOVER_MS {
+                let keep = 1.0 - ms as f32 / HANDOVER_MS as f32;
+                super::super::fx::paint_dissolve(&frame, art, f.buffer_mut(), t.base().fg(accent), keep);
+                app.lock_fade = Some((frame, at));
+            }
+        }
     } else {
         // Resting (or effects off): the wordmark, with the chain line under it.
         wordmark(f, art, t);

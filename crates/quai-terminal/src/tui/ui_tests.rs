@@ -2161,53 +2161,59 @@ fn the_lock_effect_loops_or_plays_once_then_rests() {
     term.draw(|f| draw(f, &mut app)).unwrap();
     assert!(app.ambient.is_some(), "locking plays an effect");
 
-    // Stand in a ceremony with a single frame left, so the next draw is the one it ends on.
     let (w, h) = app.ambient.as_ref().unwrap().size();
-    let mut ending = super::super::fx::Ceremony::new("rings", &super::super::fx::wordmark_block(), w, h, 1).unwrap();
-    assert!(ending.step(), "its one frame is the cap");
-    assert!(!ending.step(), "and it is spent");
-    app.ambient = Some(ending);
-    term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.ambient.is_none() && app.lock_rested, "a finished effect is not replaced");
-    assert!(app.lock_fade.is_some(), "its last frame dissolves over the resting wordmark");
-    let buf = term.backend().buffer();
-    let inked = (1..=h).any(|y| (0..w).any(|x| buf.cell((x, y)).is_some_and(|c| c.symbol().trim() != "")));
-    assert!(inked, "the resting screen is never an empty canvas");
-    // Looping (the default): once the last frame has dissolved, the next effect starts.
+    // A ceremony with a single frame left, so the next draw is the one it ends on.
+    let ending = || {
+        let mut c = super::super::fx::Ceremony::new("rings", &super::super::fx::wordmark_block(), w, h, 1).unwrap();
+        assert!(c.step(), "its one frame is the cap");
+        assert!(!c.step(), "and it is spent");
+        c
+    };
+    let inked = |term: &Terminal<TestBackend>| {
+        let buf = term.backend().buffer();
+        (1..=h).any(|y| (0..w).any(|x| buf.cell((x, y)).is_some_and(|c| c.symbol().trim() != "")))
+    };
+
+    // Looping (the default): the next effect starts in the very draw the last one ends in, with
+    // the old frame dissolving over it. No held frame, no wait for a tick, and focus does not
+    // matter: in the background it plays on.
     assert!(app.config.lock_loop, "looping is the default");
-    app.tick((120, 40));
-    assert!(app.ambient.is_none(), "not while the last one is still dissolving");
-    // As in the running terminal: the fade ages out with no frame drawn to clear it, because once
-    // it is over nothing animates. The next effect must follow anyway.
-    let (frame, _) = app.lock_fade.take().expect("still fading");
-    app.lock_fade = Some((frame, std::time::Instant::now() - std::time::Duration::from_millis(600)));
-    app.focused = true;
-    assert!(!super::wants_animation(&app), "an aged fade asks for no frames");
-    app.tick((120, 40));
-    assert!(app.ambient.is_some() && !app.lock_rested, "the next effect follows");
-    // Not while a password is being typed, nor in a background window.
-    app.ambient = None;
-    app.lock_rested = true;
+    for focused in [true, false] {
+        app.focused = focused;
+        app.ambient = Some(ending());
+        app.lock_rested = false;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.ambient.as_ref().is_some_and(|c| c.frame().is_none()), "focused {focused}: a fresh effect began at once");
+        assert!(!app.lock_rested && app.lock_fade.is_some(), "focused {focused}: the old frame dissolves over it");
+        assert!(inked(&term), "focused {focused}: never an empty canvas in between");
+        assert!(super::wants_animation(&app), "focused {focused}: frames keep coming");
+    }
+    // Typing stills it; once the field is empty again the loop picks up, focused or not.
     app.lock_input.push('x');
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.ambient.is_none() && app.lock_rested, "nothing moves near a password");
     app.tick((120, 40));
     assert!(app.ambient.is_none(), "nothing starts near a password");
     app.lock_input.clear();
+    // Whatever was fading has aged out with no frame drawn to clear it, as in the running terminal.
+    app.lock_fade = Some(("·".into(), std::time::Instant::now() - std::time::Duration::from_millis(600)));
     app.focused = false;
     app.tick((120, 40));
-    assert!(app.ambient.is_none(), "nor while the window is in the background");
-    app.focused = true;
-    // Played once: nothing brings it back until the next lock.
+    assert!(app.ambient.is_some() && !app.lock_rested, "the loop resumes, in the background too");
+
+    // Played once: a finished effect is not replaced, and rests on the wordmark.
     app.config.lock_loop = false;
-    app.tick((120, 40));
+    app.focused = true;
+    app.ambient = Some(ending());
     term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.ambient.is_none() && app.lock_rested, "a finished effect is not replaced");
+    assert!(app.lock_fade.is_some(), "its last frame dissolves over the resting wordmark");
+    assert!(inked(&term), "the resting screen is never an empty canvas");
+    app.tick((120, 40));
     assert!(app.ambient.is_none(), "the tick does not restart it");
     app.locked = false;
     app.enter_lock(Some((120, 40)));
     assert!(app.ambient.is_some() && !app.lock_rested, "the next lock plays one again");
-    // Typing a password stills it at once.
-    app.lock_input.push('x');
-    term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.ambient.is_none() && app.lock_rested, "nothing moves near a password");
 }
 
 /// With a modal open, what is behind it goes quiet: no text behind keeps a full-strength color,

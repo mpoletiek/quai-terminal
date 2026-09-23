@@ -1277,7 +1277,9 @@ pub(crate) fn paint_qr(buf: &mut Buffer, area: Rect, size: usize, grid: &[bool])
 pub fn wants_animation(app: &App) -> bool {
     // Nothing turns for a window nobody is looking at: the 500 ms tick still redraws when a status
     // changes, and animation picks up again on focus.
-    app.focused && app.motion() != Motion::Off && (app.animating() || app.eco.fading())
+    // The lock screen is the exception: a screensaver plays whether or not anyone is looking.
+    let lock_screen = app.locked && (app.ambient.is_some() || app.lock_fade.is_some());
+    (app.focused || lock_screen) && app.motion() != Motion::Off && (app.animating() || app.eco.fading())
 }
 
 /// Whether a spinner is showing that should turn: the status line's while work runs, and the

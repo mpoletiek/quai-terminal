@@ -1891,13 +1891,13 @@ impl App {
         if before != self.toasts.len() {
             self.dirty = true;
         }
-        // A lock screen that isn't being drawn yet (no size) gets its first effect here. After it,
-        // the next one follows once the last has dissolved, while looping is on, the window has
-        // the focus and no password is being typed; otherwise the screen rests until the next lock.
+        // A lock screen that isn't being drawn yet (no size) gets its first effect here. Effects
+        // follow one another in the draw (`draw_lock`); this picks the loop up again after typing
+        // stilled it and the field was cleared. Without looping the screen rests until the next lock.
         // The fade is judged by its age, not by whether a frame has cleared it: once it is over,
         // nothing animates, so no frame is drawn to clear it.
         let faded = self.lock_fade.as_ref().is_none_or(|(_, at)| at.elapsed().as_millis() >= super::ui::HANDOVER_MS);
-        let replay = self.config.lock_loop && self.lock_rested && faded && self.focused && self.lock_input.is_empty() && !self.unlocking;
+        let replay = self.config.lock_loop && self.lock_rested && faded && self.lock_input.is_empty() && !self.unlocking;
         if self.locked && self.ambient.is_none() && (!self.lock_rested || replay) && self.meta.is_some() {
             self.lock_rested = false;
             self.lock_fade = None;

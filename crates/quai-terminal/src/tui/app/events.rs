@@ -78,9 +78,9 @@ impl App {
                 Some(line) => format!("{}\n\n{line}", super::super::fx::wordmark_block()),
                 None => super::super::fx::wordmark_block(),
             };
-            // 900 frames at LOCK_SPEED is about ten seconds, which reads as a flourish rather
-            // than a wait.
-            self.ambient = Ceremony::with_args(&effect, &args, &text, w, h, 900).map(|c| c.at_speed(super::super::fx::LOCK_SPEED));
+            // A safety cap only: every effect ends on its own well before it (the longest, swarm,
+            // is about 2,000 frames). One cut short froze on whatever frame the cap landed on.
+            self.ambient = Ceremony::with_args(&effect, &args, &text, w, h, 2_400).map(|c| c.at_speed(super::super::fx::LOCK_SPEED));
         }
     }
 
