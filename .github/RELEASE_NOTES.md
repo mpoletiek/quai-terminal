@@ -3,21 +3,23 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
-## What's new in 0.1.0-alpha.4
+## What's new in 0.1.0-alpha.5
 
-The terminal interface is rebuilt. How your wallets are stored and how transactions are signed are
-unchanged.
-
-- **One set of keys everywhere.** Every screen uses the same keys for the same things, and
-  <kbd>Space</kbd> opens the actions for whatever is selected. <kbd>?</kbd> lists the keys for the
-  screen you are on, and <kbd>:</kbd> finds any action by name.
-- **The mouse works:** click, scroll and hover throughout.
-- **Arrows or h j k l.** The arrow keys always move. Settings › "Move with h j k l" turns the letters
-  off so they only mean each screen's own actions.
-- **Easier to read:** a larger section rail and tab strip, a colorblind-safe theme, contrast checked
-  on every built-in theme, and `--plain` for screen readers and the Linux console.
-- **Safer reviews:** a review can't be approved in a window too small to show it, nothing animates
-  over a review or over amounts, and a failed send says plainly whether money may have left.
+- **Limit orders that explain themselves and are watched.** Quai has no order book, so an order is
+  the wallet waiting for a price on your behalf. Nothing is posted on-chain and nothing is signed
+  without you. Set a target as `+5%` or an amount to receive. The dialog shows the price now and
+  at the target, and what the order guarantees after slippage. Active orders are re-checked every
+  30 seconds by the open terminal or, when it is closed, the background daemon. You are told once
+  when one is reachable, and Trade › Orders prepares the review. From the shell:
+  `quai-terminal order create quai usdt 1 --target +5%`.
+- **NFTs the explorer lost are filled in.** When explorer.qu.ai failed to read an NFT's metadata,
+  it showed as just "#241". It is now read from where the NFT's contract says it is, through your
+  IPFS gateway (`ipfs://` only, never a host the creator chose).
+- **Collections show every item.** Explore loads a collection's items as you scroll, instead of
+  stopping at the first 48.
+- **Esc leaves a conversion.** On Convert or Wrap, Esc goes back to the swap card and its pair.
+- **The lock screen loops its animations again.** Settings › "Loop the lock screen animation"
+  turns it off to play one per lock.
 
 ## Download
 
@@ -77,7 +79,8 @@ Read this part.
   liquidity, staking, unstaking and harvesting have all confirmed there from this wallet. Curve
   sells, Hartii trades, exact-output and split swaps, and the automatic wrap before a trade have
   not: they are qualified by simulation against the deployed contracts and by execution on a
-  disposable local chain.
+  disposable local chain. A limit order's swap is an ordinary swap once you approve its review,
+  but no order has yet been run to completion on mainnet.
 - It holds real keys. Back up your recovery phrase before funding anything, and try it with a small
   amount first.
 - `wallet watch` creates a watch-only wallet that cannot sign. That is the safe way to look around.
