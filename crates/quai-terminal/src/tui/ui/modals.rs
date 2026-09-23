@@ -127,8 +127,15 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
     match &mut app.modal {
         Modal::None => {}
         Modal::Form(form) => {
-            let notes = u16::from(form.note.is_some()) + u16::from(form.contract_note.is_some());
-            let h = form.fields.len() as u16 * 3 + 7 + notes * 2;
+            // A limit order's note is its live preview: what the typed target means now.
+            if let super::super::app::FormKind::OrderCreate { preview, slippage, .. } = &form.kind {
+                form.note = Some(super::super::order_ui::note(preview, *slippage, &form.fields));
+            }
+            // Room for the notes as they wrap at the modal's width.
+            let wrapped = |n: &Option<String>| {
+                n.as_ref().map_or(0, |n| n.lines().map(|l| (l.chars().count() as u16).div_ceil(80).max(1)).sum::<u16>() + 1)
+            };
+            let h = form.fields.len() as u16 * 3 + 5 + wrapped(&form.note) + wrapped(&form.contract_note);
             let rect = centered(area, 84, h);
             let title = form.title.clone();
             let inner = modal_frame(f, rect, t, &title);
@@ -140,7 +147,14 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                 lines.push(Line::from(""));
             }
             if let Some(n) = &form.note {
-                lines.push(Line::from(Span::styled(n.clone(), Style::default().fg(t.attention))));
+                // Its first paragraph says what the form is for; any after it (a limit order's
+                // live preview) are ordinary text, one line each.
+                let mut rest = false;
+                for line in n.lines() {
+                    rest |= line.is_empty();
+                    let style = if rest { t.text_style() } else { Style::default().fg(t.attention) };
+                    lines.push(Line::from(Span::styled(line.to_string(), style)));
+                }
                 lines.push(Line::from(""));
             }
             let account_value = form

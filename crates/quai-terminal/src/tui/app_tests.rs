@@ -3286,7 +3286,7 @@ fn order_review_stays_separate_from_unrelated_flows_and_late_observations() {
     assert!(matches!(&app.modal,Modal::Review(state) if state.review.op_id=="order-op"));
     let wallet = app.meta.as_ref().unwrap().id.clone();
     let network = app.dash.network_id.clone();
-    app.on_event(Ev::Orders { wallet, network, rows: vec![] }, (100, 30));
+    app.on_event(Ev::Orders { wallet, network, rows: vec![], announced: vec![] }, (100, 30));
     assert!(matches!(&app.modal,Modal::Review(state) if state.review.op_id=="order-op"), "late observation must not hide approval");
     app.modal = Modal::None;
     review_probe_flow(&mut app);
@@ -3505,6 +3505,34 @@ fn the_autolock_warning_counts_down_and_goes_on_a_key() {
     app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), (100, 30));
     app.tick((100, 30));
     assert!(app.toasts.iter().all(|t| t.id != Some("autolock")), "a key keeps it open and the warning goes");
+}
+
+/// Choosing Qi on the swap card turns it into a conversion; Esc is the way back to the market
+/// swap, on the pair the swap card had. Esc while typing only leaves the field first.
+#[test]
+fn esc_leaves_a_conversion_for_the_swap_it_came_from() {
+    use super::super::eco::ExAsset;
+    use wallet_core::swap::SwapAsset;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.network_id = "mainnet".into();
+    app.config.features.trading = true;
+    let net = app.net().expect("mainnet profile");
+    let usdt = ExAsset::Swap(SwapAsset::Token {
+        address: net.ecosystem.usdt.as_ref().unwrap().address.to_lowercase(),
+        symbol: "USDT".into(),
+        decimals: 18,
+    });
+    app.switch(Screen::Swap);
+    app.pick_exchange(false, usdt.clone());
+    app.pick_exchange(false, ExAsset::Qi);
+    assert_eq!(app.screen, Screen::Convert);
+    assert!(app.input_focused(), "the conversion opens on its amount");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Convert, "the first Esc leaves the field");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Swap, "the second goes back to the swap");
+    assert_eq!(app.exchange_pair(), (ExAsset::Swap(SwapAsset::Quai), Some(usdt)), "on the pair it had");
+    assert_eq!(app.last_exchange, Screen::Swap, "and the Exchange tab opens on it from now on");
 }
 
 /// One exchange: whatever pair is chosen, the view that can carry it takes over. QUAI and Qi
@@ -3940,4 +3968,247 @@ fn the_phrase_closes_on_purpose_and_a_locked_away_review_is_said() {
     app.show_unlocked();
     let said = app.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
     assert!(said.contains("discarded") && said.contains("nothing was signed"), "{said}");
+}
+
+/// A collection is paged 48 at a time (the explorer refuses more). The next page comes once the
+/// selection nears the end of what is loaded, one request at a time, and a repeated or late
+/// answer never doubles or drops items.
+#[test]
+fn a_collection_loads_its_next_page_as_the_selection_nears_the_end() {
+    use super::super::data::{DataCmd, DataWorker};
+    use wallet_core::explorer::{COLLECTION_PAGE, CollectionPage, NftItem};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.config.features.nfts = true;
+    let (tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
+    let (_events, rx) = std::sync::mpsc::channel();
+    app.data = Some(DataWorker { tx, rx });
+    let c = "0x005dac5bdc0f2baf613187df241a7564de08ed74".to_string();
+    let page = |from: usize| CollectionPage {
+        items: (from..(from + COLLECTION_PAGE).min(237))
+            .map(|i| NftItem { contract: c.clone(), token_id: i.to_string(), name: format!("#{i}"), ..NftItem::default() })
+            .collect(),
+        total: Some(237),
+    };
+    let mut asked = || {
+        let mut offsets = Vec::new();
+        while let Ok(cmd) = sent.try_recv() {
+            if let DataCmd::CollectionItems { offset, .. } = cmd {
+                offsets.push(offset);
+            }
+        }
+        offsets
+    };
+    let loaded = |app: &App| app.eco.collection_items.get(&c).and_then(|r| r.as_ref().ok()).map_or(0, Vec::len);
+    app.push_detail(Detail::Collection(c.clone()));
+    assert_eq!(asked(), vec![0], "opening asks for the first page");
+    app.collection_page(c.clone(), 0, Ok(page(0)));
+    app.tick_eco();
+    assert!(asked().is_empty(), "nothing more while the selection is at the top");
+    app.detail_selected = 30;
+    app.tick_eco();
+    app.tick_eco();
+    assert_eq!(asked(), vec![48], "within half a page of the end: the next page, once");
+    app.collection_page(c.clone(), 48, Ok(page(48)));
+    assert_eq!(loaded(&app), 96);
+    app.collection_page(c.clone(), 48, Ok(page(48)));
+    assert_eq!(loaded(&app), 96, "a repeated answer is not added twice");
+    app.collection_page(c.clone(), 0, Ok(page(0)));
+    assert_eq!(loaded(&app), 96, "a fresh first page keeps the pages behind it");
+    // To the end: 237 in all, and nothing is asked past it.
+    for from in [96, 144, 192] {
+        app.detail_selected = loaded(&app) - 1;
+        app.tick_eco();
+        assert_eq!(asked(), vec![from]);
+        app.collection_page(c.clone(), from, Ok(page(from)));
+    }
+    assert_eq!(loaded(&app), 237);
+    app.detail_selected = 236;
+    app.tick_eco();
+    assert!(asked().is_empty(), "the whole collection is loaded");
+}
+
+/// The limit-order form opens from a quoted swap, names the pair, and explains itself: what an
+/// order is on Quai, what the typed target waits for and what it guarantees. Without a pair, an
+/// amount or a quote, it says what is missing instead.
+#[test]
+fn a_limit_order_opens_from_the_quoted_swap_and_explains_itself() {
+    use wallet_core::swap::{SwapAsset, SwapQuote};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.config.features.trading = true;
+    app.switch(Screen::Swap);
+    app.eco.swap.field = 5;
+    let usdt = SwapAsset::Token { address: "0x0000000000000000000000000000000000000002".into(), symbol: "USDT".into(), decimals: 6 };
+    app.eco.swap.from = SwapAsset::Quai;
+    app.eco.swap.to = None;
+    sheet(&mut app, 'o');
+    assert!(app.toasts.iter().any(|t| t.text.contains("choose what to receive")), "{:?}", app.toasts);
+    app.eco.swap.to = Some(usdt.clone());
+    app.eco.swap.amount.clear();
+    sheet(&mut app, 'o');
+    assert!(app.toasts.iter().any(|t| t.text.contains("type an amount")), "{:?}", app.toasts);
+    app.eco.swap.amount = "10".into();
+    sheet(&mut app, 'o');
+    assert!(app.toasts.iter().any(|t| t.text.contains("wait for the quote")), "{:?}", app.toasts);
+    app.eco.swap.quote = Some(Ok(SwapQuote {
+        from: SwapAsset::Quai,
+        to: usdt.clone(),
+        amount_in: "10000000000000000000".into(),
+        amount_out: "1000000000".into(),
+        minimum_out: "995000000".into(),
+        slippage_bps: 50,
+        path: vec![],
+        route: vec![],
+        pools: vec![],
+        impact_bps: 0,
+        fee_bps: 30,
+        router: "0x00".into(),
+        allowance: None,
+        approval_needed: false,
+        balance: None,
+        insufficient: false,
+        warnings: vec![],
+        observed_at: 0,
+        liquidity_at: None,
+        legs: vec![],
+    }));
+    app.eco.swap.slippage_bps = 50;
+    sheet(&mut app, 'o');
+    let Modal::Form(form) = &app.modal else { panic!("the order form opened: {:?}", app.toasts) };
+    assert_eq!(form.title, "Limit order · QUAI → USDT");
+    assert_eq!(form.fields[1].value, "+5%");
+    // Drawn, the note explains the order and what +5% means for this swap.
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 48)).unwrap();
+    term.draw(|f| super::super::ui::draw(f, &mut app)).unwrap();
+    let buf = term.backend().buffer();
+    let screen: String = (0..48).map(|y| (0..120).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
+    // Its paragraphs are drawn as paragraphs (the preview starts a line of its own), whatever
+    // the wrapping does to the words inside them.
+    let rows: Vec<&str> = screen.lines().collect();
+    assert!(rows.iter().any(|r| r.contains("Quai has no order book")), "{screen}");
+    assert!(
+        rows.iter().any(|r| r.trim_start_matches(|c: char| c != '│').trim_start_matches('│').trim_start().starts_with("Now 10 QUAI")),
+        "{screen}"
+    );
+    let words = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("Waits for 1,050 USDT"), "{screen}");
+    assert!(words.contains("at least 1,044.75 USDT after 0.5% slippage"), "{screen}");
+    // Typing a different target changes the preview on the next frame.
+    let Modal::Form(form) = &mut app.modal else { unreachable!() };
+    form.fields[1].value = "+10%".into();
+    term.draw(|f| super::super::ui::draw(f, &mut app)).unwrap();
+    let Modal::Form(form) = &app.modal else { unreachable!() };
+    assert!(form.note.as_deref().is_some_and(|n| n.contains("Waits for 1,100 USDT")), "{:?}", form.note);
+}
+
+/// The open terminal re-checks orders on its own: once at the start (which also loads them),
+/// then every 30 s while any is active, and not at all when none is.
+#[test]
+fn active_orders_are_rechecked_every_thirty_seconds() {
+    use super::super::order_ui::{Request, WATCH_EVERY};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.config.features.trading = true;
+    let (worker, mut sent) = Worker::capture();
+    app.worker = Some(worker);
+    while sent.try_recv().is_ok() {}
+    let mut watches = || {
+        let mut n = 0;
+        while let Ok(cmd) = sent.try_recv() {
+            if matches!(cmd, Cmd::Order(Request::Watch)) {
+                n += 1;
+            }
+        }
+        n
+    };
+    app.tick_orders();
+    assert_eq!(watches(), 1, "the first check loads the list");
+    app.tick_orders();
+    assert_eq!(watches(), 0, "not again within 30 s");
+    // No orders at all: nothing to watch.
+    app.eco.orders = Some(vec![]);
+    app.eco.orders_watched_at = Some(std::time::Instant::now() - WATCH_EVERY);
+    app.tick_orders();
+    assert_eq!(watches(), 0, "nothing active, nothing asked");
+    // Trading off: never.
+    app.config.features.trading = false;
+    app.eco.orders_watched_at = None;
+    app.tick_orders();
+    assert_eq!(watches(), 0);
+}
+
+/// A limit order as the worker lists it: QUAI for USDT, in the given state.
+fn order_plan(app: &App, state: wallet_core::orders::State, notified: Option<u64>) -> wallet_core::plans::TradePlan {
+    use wallet_core::orders::{Mode, Record, Spec};
+    let account = "0x002360bc8e2a359be7335b06de43f1c7f040f15a".to_string();
+    let network = app.dash.network_id.clone();
+    let spec = Spec {
+        network: network.clone(),
+        chain_id: 9,
+        genesis: "0x00".into(),
+        account: account.clone(),
+        from: "quai".into(),
+        to: "0x0000000000000000000000000000000000000002".into(),
+        input_decimals: 18,
+        output_decimals: 6,
+        input_atoms: "1000000000000000000".into(),
+        minimum_output_atoms: "995000".into(),
+        venue: wallet_core::markets::Venue::Main,
+        router: "0x0000000000000000000000000000000000000003".into(),
+        router_hash: String::new(),
+        factory_hash: String::new(),
+        slippage_bps: 50,
+        expires_at: wallet_core::registry::now() + 3600,
+        maximum_fee_atoms: "1".into(),
+        total_fee_budget_atoms: "3".into(),
+        max_attempts: 3,
+        mode: Mode::Trigger,
+        target_output_atoms: Some("1000000".into()),
+        from_symbol: Some("QUAI".into()),
+        to_symbol: Some("USDT".into()),
+    };
+    let record = Record {
+        version: 1,
+        spec,
+        state,
+        attempts: vec![],
+        fee_budget_used_atoms: "0".into(),
+        last_observed_at: None,
+        last_minimum_output_atoms: None,
+        last_expected_output_atoms: Some("1000000".into()),
+        notified_at: notified,
+    };
+    wallet_core::plans::TradePlan::new(network, account, "limit trigger".into(), serde_json::json!({"client": "order", "order": record}))
+        .unwrap()
+}
+
+/// Reachable is said on screen whoever found it; the desktop hears it once. The terminal puts its
+/// own find there only with no daemon running (a daemon forwards the notification itself), and
+/// an order the daemon announced is only toasted here.
+#[test]
+fn a_reachable_order_reaches_the_desktop_once() {
+    use wallet_core::orders::State;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.config.features.trading = true;
+    let wallet = app.meta.as_ref().unwrap().id.clone();
+    let network = app.dash.network_id.clone();
+    let armed = order_plan(&app, State::Armed, None);
+    app.on_event(Ev::Orders { wallet: wallet.clone(), network: network.clone(), rows: vec![armed.clone()], announced: vec![] }, (100, 30));
+    assert!(app.notices_out.is_empty() && app.toasts.iter().all(|t| !t.text.contains("reachable")));
+    // This terminal's check found it (no daemon in the test's data directory): toast and desktop.
+    let mut reachable = order_plan(&app, State::Triggered, Some(1));
+    reachable.id = armed.id.clone();
+    app.on_event(
+        Ev::Orders { wallet: wallet.clone(), network: network.clone(), rows: vec![reachable.clone()], announced: vec![armed.id.clone()] },
+        (100, 30),
+    );
+    assert!(app.toasts.iter().any(|t| t.text.contains("your limit on USDT is reachable")), "{:?}", app.toasts);
+    assert_eq!(app.notices_out.len(), 1);
+    assert_eq!(app.notices_out[0].0, "Limit order reachable");
+    assert!(app.notices_out[0].1.contains("QUAI → USDT"), "{:?}", app.notices_out);
+    // The daemon found another one between checks: on screen only; it did the desktop itself.
+    app.notices_out.clear();
+    app.toasts.clear();
+    let other = order_plan(&app, State::Triggered, Some(2));
+    app.on_event(Ev::Orders { wallet, network, rows: vec![reachable, other], announced: vec![] }, (100, 30));
+    assert!(app.toasts.iter().any(|t| t.text.contains("reachable")), "{:?}", app.toasts);
+    assert!(app.notices_out.is_empty(), "not on the desktop twice");
 }

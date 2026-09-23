@@ -50,11 +50,13 @@ impl App {
                     Some("The selected account's live LP or staked balance bounds execution. Each transaction is reviewed."),
                 )
             }
-            FormKind::OrderCreate { .. } => (
-                "Create limit order",
-                super::super::order_ui::fields(account("Account")),
-                Some("Fixed input from Swap. Creation signs nothing; each approval or swap requires a fresh review."),
-            ),
+            FormKind::OrderCreate { preview, .. } => {
+                let fees =
+                    self.net().and_then(|n| wallet_core::orders::default_fees(&n, 3).ok()).unwrap_or_else(|| ("25".into(), "75".into()));
+                built_title = Some(format!("Limit order · {} → {}", preview.from_symbol, preview.to_symbol));
+                // The note is written from the fields as they are typed (`order_ui::note`).
+                ("Limit order", super::super::order_ui::fields(account("Account"), preview, fees), None)
+            }
             FormKind::ExactOutput { from, to } => (
                 "Exact-output swap",
                 vec![

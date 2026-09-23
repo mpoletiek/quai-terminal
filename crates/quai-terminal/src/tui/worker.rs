@@ -422,6 +422,8 @@ pub enum Ev {
         wallet: String,
         network: String,
         rows: Vec<wallet_core::plans::TradePlan>,
+        /// Orders this check found reachable first, and announced (see `orders::observe`).
+        announced: Vec<String>,
     },
     SplitQuote {
         key: u64,
@@ -1430,12 +1432,19 @@ async fn run(
         );
         match cmd {
             Cmd::Order(request) => {
-                send(Ev::Busy(Some("checking limit orders…".into())));
+                // The background check says nothing unless an order becomes reachable.
+                let quiet = matches!(request, super::order_ui::Request::Watch);
+                if !quiet {
+                    send(Ev::Busy(Some("checking limit orders…".into())));
+                }
                 match super::order_ui::handle(&mut session, request).await {
                     Ok(event) => send(event),
-                    Err(e) => send(Ev::Error(e.to_string())),
+                    Err(e) if !quiet => send(Ev::Error(e.to_string())),
+                    Err(_) => {}
                 }
-                send(Ev::Busy(None));
+                if !quiet {
+                    send(Ev::Busy(None));
+                }
             }
             Cmd::Shutdown => {
                 session.lock();

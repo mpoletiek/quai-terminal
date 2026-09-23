@@ -124,7 +124,11 @@ pub enum DataCmd {
     Collections {
         query: Option<String>,
     },
-    CollectionItems(String),
+    /// One page of a collection's items, from `offset`.
+    CollectionItems {
+        contract: String,
+        offset: usize,
+    },
     /// Floors, volume, trades and listing counts for every collection (the marketplace indexer).
     CollectionStats,
     /// Filled sales across the marketplace, newest first.
@@ -209,7 +213,8 @@ pub enum DataEv {
     },
     CollectionItems {
         contract: String,
-        result: Result<Vec<NftItem>, String>,
+        offset: usize,
+        result: Result<wallet_core::explorer::CollectionPage, String>,
     },
     CollectionStats {
         result: Result<Vec<wallet_core::market::CollectionStats>, String>,
@@ -354,7 +359,7 @@ fn cache_pass(cmd: &DataCmd) -> Option<DataCmd> {
         DataCmd::BoardChannels { blocks } => DataCmd::BoardChannels { blocks: *blocks },
         DataCmd::Nfts { owners, refresh: false } => DataCmd::Nfts { owners: owners.clone(), refresh: false },
         DataCmd::Collections { query } => DataCmd::Collections { query: query.clone() },
-        DataCmd::CollectionItems(c) => DataCmd::CollectionItems(c.clone()),
+        DataCmd::CollectionItems { contract, offset } => DataCmd::CollectionItems { contract: contract.clone(), offset: *offset },
         DataCmd::CollectionStats => DataCmd::CollectionStats,
         DataCmd::NftTrades => DataCmd::NftTrades,
         DataCmd::Listings { collection } => DataCmd::Listings { collection: collection.clone() },
@@ -431,7 +436,7 @@ fn flight_key(cmd: &DataCmd) -> Option<String> {
         DataCmd::Markets => "markets".into(),
         DataCmd::Nfts { .. } => "nfts".into(),
         DataCmd::Collections { query } => format!("collections:{}", query.clone().unwrap_or_default()),
-        DataCmd::CollectionItems(c) => format!("items:{c}"),
+        DataCmd::CollectionItems { contract, offset } => format!("items:{contract}:{offset}"),
         DataCmd::CollectionStats => "collection_stats".into(),
         DataCmd::NftTrades => "nft_trades".into(),
         DataCmd::Listings { collection } => format!("listings:{}", collection.clone().unwrap_or_default()),
@@ -815,15 +820,15 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
             let _ = query;
             send(DataEv::Collections { result: r });
         }
-        DataCmd::CollectionItems(contract) => {
+        DataCmd::CollectionItems { contract, offset } => {
             let explorer = &ctx.explorer;
             let c = contract.clone();
             let r = ctx
-                .cached(&format!("collection_items:{c}"), 600, || explorer.collection_items(&c, 48))
+                .cached(&format!("collection_items:{c}:{offset}"), 600, || explorer.collection_items(&c, offset))
                 .await
                 .map(|c| c.value)
                 .map_err(|e| e.to_string());
-            send(DataEv::CollectionItems { contract, result: r });
+            send(DataEv::CollectionItems { contract, offset, result: r });
         }
         DataCmd::CollectionStats => {
             let r = wallet_core::market::collection_stats(ctx).await.map_err(|e| e.to_string());
@@ -847,7 +852,13 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
             let explorer = &ctx.explorer;
             let (c, id) = (contract.clone(), token_id.clone());
             let key = if public { format!("listing_nft:{c}:{id}") } else { format!("nft:{c}:{id}") };
-            let r = ctx.cached(&key, 86_400, || explorer.nft(&c, &id)).await.map(|c| Box::new(c.value)).map_err(|e| e.to_string());
+            let r = match ctx.cached(&key, 86_400, || explorer.nft(&c, &id)).await {
+                Ok(c) => {
+                    let kind = c.value.kind.unwrap_or(wallet_core::explorer::TokenKind::Erc721);
+                    Ok(Box::new(ctx.with_own_metadata(c.value, kind).await))
+                }
+                Err(e) => Err(e.to_string()),
+            };
             send(DataEv::Nft { contract, token_id, result: r });
         }
         DataCmd::CheckAsk { contract, token_id, buyer } => {
@@ -1077,7 +1088,7 @@ impl DataCmd {
             | DataCmd::Launches => Some(Feature::Trading),
             DataCmd::Nfts { .. }
             | DataCmd::Collections { .. }
-            | DataCmd::CollectionItems(_)
+            | DataCmd::CollectionItems { .. }
             | DataCmd::Listings { .. }
             | DataCmd::MyListings { .. }
             | DataCmd::Nft { .. }
@@ -1111,7 +1122,7 @@ fn cmd_name(cmd: &DataCmd) -> &'static str {
         DataCmd::LiquidityQuote { .. } => "liquidity_quote",
         DataCmd::Nfts { .. } => "nfts",
         DataCmd::Collections { .. } => "collections",
-        DataCmd::CollectionItems(_) => "collection_items",
+        DataCmd::CollectionItems { .. } => "collection_items",
         DataCmd::CollectionStats => "collection_stats",
         DataCmd::NftTrades => "nft_trades",
         DataCmd::Listings { .. } => "listings",

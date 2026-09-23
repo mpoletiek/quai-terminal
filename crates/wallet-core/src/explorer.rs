@@ -251,6 +251,19 @@ pub struct LockupSummary {
     pub head: u64,
 }
 
+/// How many items explorer.qu.ai returns per page of a collection: it refuses `limit` above 48
+/// (`bad_limit`), and pages by `offset`.
+pub const COLLECTION_PAGE: usize = 48;
+
+/// One page of a collection's items.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CollectionPage {
+    /// The items, in the explorer's order (token id).
+    pub items: Vec<NftItem>,
+    /// How many items the collection has, when the explorer says.
+    pub total: Option<u64>,
+}
+
 /// An NFT with metadata.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct NftItem {
@@ -739,12 +752,14 @@ impl Explorer {
         }
     }
 
-    /// Items of a collection (first page).
-    pub async fn collection_items(&self, contract: &str, limit: usize) -> Result<Vec<NftItem>> {
+    /// One page of a collection's items, from `offset`: [`COLLECTION_PAGE`] at a time, with how
+    /// many the collection has in all when the explorer says.
+    pub async fn collection_items(&self, contract: &str, offset: usize) -> Result<CollectionPage> {
         match self.backend {
             Backend::Quai => {
-                let v = self.get(&format!("/api/token/{}/instances?limit={}", contract.to_lowercase(), limit.min(100))).await?;
-                Ok(v["items"]
+                let v =
+                    self.get(&format!("/api/token/{}/instances?limit={COLLECTION_PAGE}&offset={offset}", contract.to_lowercase())).await?;
+                let items = v["items"]
                     .as_array()
                     .map(|a| {
                         a.iter()
@@ -755,14 +770,18 @@ impl Explorer {
                             })
                             .collect()
                     })
-                    .unwrap_or_default())
+                    .unwrap_or_default();
+                Ok(CollectionPage { items, total: v["total"].as_u64() })
             }
+            // Blockscout pages by cursor, not offset: its first page, and no more.
+            Backend::Blockscout if offset > 0 => Ok(CollectionPage::default()),
             Backend::Blockscout => {
                 let v = self.get(&format!("/api/v2/tokens/{contract}/instances")).await?;
-                Ok(v["items"]
+                let items = v["items"]
                     .as_array()
-                    .map(|a| a.iter().take(limit).map(|i| parse_blockscout_instance(i, self)).collect())
-                    .unwrap_or_default())
+                    .map(|a| a.iter().take(COLLECTION_PAGE).map(|i| parse_blockscout_instance(i, self)).collect())
+                    .unwrap_or_default();
+                Ok(CollectionPage { items, total: None })
             }
             Backend::ChainOnly => Err(self.unsupported("collection items")),
         }
@@ -1098,6 +1117,23 @@ pub fn parse_quai_instance(i: &Value, ex: &Explorer) -> NftItem {
         traits: traits(meta),
         owner: opt_s(&i["owner_address"]).map(|o| o.to_lowercase()),
         quantity: opt_s(&i["quantity"]).unwrap_or_else(|| "1".into()),
+    }
+}
+
+/// An item from its own metadata document (ERC-721 / ERC-1155 JSON), read without the explorer.
+/// Every field is cleaned and clipped as the explorer's are.
+pub fn item_from_metadata(meta: &Value, contract: &str, token_id: &str) -> NftItem {
+    NftItem {
+        contract: contract.to_lowercase(),
+        token_id: token_id.to_string(),
+        kind: None,
+        name: clip(opt_s(&meta["name"]).unwrap_or_else(|| format!("#{token_id}")), 80),
+        collection: String::new(),
+        description: clip(s(&meta["description"]), 600),
+        image: opt_s(&meta["image"]).or_else(|| opt_s(&meta["image_url"])),
+        traits: traits(meta),
+        owner: None,
+        quantity: "1".into(),
     }
 }
 

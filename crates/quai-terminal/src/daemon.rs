@@ -227,6 +227,39 @@ struct Watched {
     quiet: std::collections::HashSet<i64>,
     /// When the monitoring node was last tried, while it is not in use.
     monitor_checked: Option<std::time::Instant>,
+    /// When this wallet's limit orders were last re-checked.
+    orders_checked: Option<std::time::Instant>,
+}
+
+/// How often the daemon re-checks a wallet's limit orders: the open terminal's pace.
+const ORDER_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Re-check this wallet's active limit orders against fresh quotes. Reading only: the daemon
+/// never signs an order, locked or not. One found reachable for the first time writes a
+/// notification (`orders::observe`), which `notify_desktop` then puts on the desktop; the open
+/// terminal, if it saw it first, has already said so and this stays quiet.
+async fn check_orders(session: &mut wallet_core::session::Session) -> Vec<String> {
+    let name = session.meta.name.clone();
+    let plans = match wallet_core::orders::list(session) {
+        Ok(plans) => plans,
+        Err(e) => {
+            eprintln!("[{name}] orders: {e}");
+            return Vec::new();
+        }
+    };
+    let mut announced = Vec::new();
+    for plan in plans {
+        if !wallet_core::orders::details(&plan).is_ok_and(|v| v.state.active()) {
+            continue;
+        }
+        match wallet_core::orders::observe(session, &plan.id).await {
+            Ok(seen) if seen.announced => announced.push(plan.id),
+            Ok(_) => {}
+            // Another process holding the order's lease, a quote that failed: next poll.
+            Err(e) => eprintln!("[{name}] order {}: {e}", &plan.id[..8.min(plan.id.len())]),
+        }
+    }
+    announced
 }
 
 /// Channel posts already put on the desktop. A public channel reads the same from every wallet,
@@ -263,7 +296,7 @@ impl Watched {
     fn open(ctx: &Ctx, meta: wallet_core::registry::WalletMeta, network: &wallet_core::network::NetworkProfile) -> Result<Self> {
         let session = wallet_core::session::Session::open(ctx.registry.clone(), ctx.config.clone(), meta, network.clone())?;
         let last_notice = session.app.notifications(1)?.first().map_or(0, |n| n.id);
-        Ok(Self { session, last_notice, last_payment_sync: None, quiet: Default::default(), monitor_checked: None })
+        Ok(Self { session, last_notice, last_payment_sync: None, quiet: Default::default(), monitor_checked: None, orders_checked: None })
     }
 
     /// Every read goes to the monitoring node when one is configured and checks out; it is tried
@@ -325,6 +358,10 @@ impl Watched {
         // Balances one poll old for whenever this wallet is opened. Public reads, no keys.
         if let Err(e) = session.warm_dashboard_cache().await {
             eprintln!("[{name}] dashboard cache: {e}");
+        }
+        if features.trading && self.orders_checked.is_none_or(|t| t.elapsed() >= ORDER_CHECK) {
+            self.orders_checked = Some(std::time::Instant::now());
+            check_orders(&mut self.session).await;
         }
         let _ = ctx;
         channels

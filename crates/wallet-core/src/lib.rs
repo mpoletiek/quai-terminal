@@ -33,6 +33,7 @@ pub mod media;
 pub mod messages;
 pub mod multicall;
 pub mod network;
+pub mod nft_uri;
 pub mod ops;
 pub mod orders;
 pub mod paths;

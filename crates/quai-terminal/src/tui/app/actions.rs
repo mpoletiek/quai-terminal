@@ -212,6 +212,13 @@ impl App {
                 self.mouse_released = false;
                 Some(("Mouse".into(), format!("{:?}", self.config.mouse).to_lowercase()))
             }
+            Some("lock_loop") => {
+                self.config.lock_loop = !self.config.lock_loop;
+                Some((
+                    "Loop the lock screen animation".into(),
+                    if self.config.lock_loop { "on · one after another".into() } else { "off · one per lock, then still".into() },
+                ))
+            }
             Some("vim_keys") => {
                 self.config.vim_keys = !self.config.vim_keys;
                 Some((

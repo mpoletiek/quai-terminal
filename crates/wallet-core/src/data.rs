@@ -329,6 +329,56 @@ impl DataCtx {
         out.first().and_then(Value::as_str).map(str::to_lowercase).ok_or_else(|| CoreError::Network("ownerOf returned nothing".into()))
     }
 
+    /// Where an NFT's metadata lives, from the contract itself: `tokenURI` for ERC-721, `uri` for
+    /// ERC-1155.
+    pub async fn nft_metadata_uri(&self, contract: &str, token_id: &str, kind: crate::explorer::TokenKind) -> Result<String> {
+        self.online()?;
+        let address: QuaiAddress = contract.parse().map_err(|_| CoreError::Invalid("bad collection address".into()))?;
+        let caller: QuaiAddress = READ_CALLER.parse().map_err(|_| CoreError::Invalid("bad caller".into()))?;
+        let abi = quai_sdk::abi::AbiInterface::from_human_readable(NFT_URI_ABI).map_err(|e| CoreError::Invalid(format!("abi: {e}")))?;
+        let method = if kind == crate::explorer::TokenKind::Erc1155 { "uri" } else { "tokenURI" };
+        let out = Contract::new(address, abi, &self.node.provider).call(caller, method, &[json!(token_id)], BlockTag::Latest).await?;
+        out.first().and_then(Value::as_str).map(str::to_string).ok_or_else(|| CoreError::Network(format!("{method} returned nothing")))
+    }
+
+    /// An NFT the explorer knows nothing more about than its id, filled in from its own metadata
+    /// ([`crate::nft_uri`]). Only while pictures are on, since the gateway it asks is the one
+    /// pictures come through. What was found is written over the explorer's empty entry, so the
+    /// detail view and reviews name it too. Finding nothing usable is kept for a day, but a
+    /// network failure is not, so it is tried again on the next load.
+    pub async fn with_own_metadata(&self, item: crate::explorer::NftItem, kind: crate::explorer::TokenKind) -> crate::explorer::NftItem {
+        if !self.policy.images || !crate::nft_uri::needs_metadata(&item) {
+            return item;
+        }
+        let (contract, token_id) = (item.contract.to_lowercase(), item.token_id.clone());
+        let found = self
+            .cached(&format!("nft_uri:{contract}:{token_id}"), 86_400, || async {
+                let uri = self.nft_metadata_uri(&contract, &token_id, kind).await?;
+                match crate::nft_uri::fetch(&uri, &contract, &token_id).await {
+                    Ok(own) => Ok(Some(own)),
+                    Err(e @ (CoreError::Network(_) | CoreError::Timeout(_))) => Err(e),
+                    Err(_) => Ok(None),
+                }
+            })
+            .await;
+        let Ok(Cached { value: Some(own), .. }) = found else { return item };
+        let filled = crate::explorer::NftItem {
+            name: own.name,
+            description: own.description,
+            image: own.image,
+            traits: own.traits,
+            collection: if item.collection.is_empty() { own.collection } else { item.collection },
+            ..item
+        };
+        if self.trust.may_cache() {
+            let key = format!("nft:{contract}:{token_id}");
+            if let Ok(text) = serde_json::to_string(&filled) {
+                let _ = self.store(&key).cache_put(&format!("{}:{key}", self.network.id), &text);
+            }
+        }
+        filled
+    }
+
     /// ERC-1155 balance from the node.
     pub async fn erc1155_balance(&self, contract: &str, token_id: &str, owner: &str) -> Result<U256> {
         self.online()?;
@@ -479,6 +529,10 @@ pub const NFT_ABI: &[&str] = &[
     "function safeTransferFrom(address from, address to, uint256 tokenId)",
     "function tokenURI(uint256 tokenId) view returns (string)",
 ];
+
+/// Where an NFT's metadata is: ERC-721 `tokenURI`, ERC-1155 `uri`.
+pub const NFT_URI_ABI: &[&str] =
+    &["function tokenURI(uint256 tokenId) view returns (string)", "function uri(uint256 id) view returns (string)"];
 
 /// ERC-1155 transfer ABI (separate interface: its `safeTransferFrom` overload differs).
 pub const ERC1155_ABI: &[&str] = &[
