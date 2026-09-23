@@ -6,7 +6,7 @@
   2  Markets           ││ ▸ preview          watch-only              —              —          —             ││               cannot sign                      │
                        │└────────────────────────────────────────────────────────────────────────────────────┘│ holds         1 address watched                │
   3  Trade             │                                                                                      │ created       1m ago                           │
-                       │                                                                                      │ stored        <data>         /wallets/<id>     │
+                       │                                                                                      │ stored        <data>/wallets/<id>              │
   4  NFTs            ◧ │                                                                                      └────────────────────────────────────────────────┘
                        │
   5  People            │

@@ -8,7 +8,7 @@
 │ keys          none here · watch-only, it cannot sign                         │
 │ holds         1 address watched                                              │
 │ created       1m ago                                                         │
-│ stored        <data>         /wallets/<id>                                   │
+│ stored        <data>/wallets/<id>                                            │
 └──────────────────────────────────────────────────────────────────────────────┘
 
 

@@ -9,7 +9,7 @@
                       ││ keys          none here · watch-only, it cannot sign                      │
   4  NFTs           ◧ ││ holds         1 address watched                                           │
                       ││ created       1m ago                                                      │
-  5  People           ││ stored        <data>         /wallets/<id>                                │
+  5  People           ││ stored        <data>/wallets/<id>                                         │
                       │└───────────────────────────────────────────────────────────────────────────┘
   6  Activity         │
                       │

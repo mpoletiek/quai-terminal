@@ -1558,8 +1558,29 @@ fn every_screen_renders_at_every_size() {
 /// The temp data dir → `<data>`, as drawn: shortened past 40 characters (a macOS temp path is),
 /// and padded to the width it took so the border after it stays put whatever the path's length.
 fn mask_data_dir(s: &str, root: &std::path::Path) -> String {
+    // A wallet's directory is drawn as one path, shortened (`…`) when the temp dir is long, as it
+    // is on macOS. Mask the whole path whatever its length, keeping each line's width so the border
+    // after it stays put.
+    let s: String = s
+        .split_inclusive('\n')
+        .map(|line| {
+            let Some(at) = line.find("wallets/") else { return line.to_string() };
+            let id = line[at + "wallets/".len()..].chars().take_while(char::is_ascii_hexdigit).count();
+            if id == 0 {
+                return line.to_string();
+            }
+            let start = line[..at].rfind(' ').map_or(0, |i| i + 1);
+            let end = at + "wallets/".len() + id;
+            let (old, new) = (line[start..end].chars().count(), "<data>/wallets/<id>");
+            let tail = &line[end..];
+            let spaces = tail.chars().take_while(|c| *c == ' ').count();
+            // Pad or trim the spaces after the path by the difference.
+            let pad = (spaces + old).saturating_sub(new.len());
+            format!("{}{new}{}{}", &line[..start], " ".repeat(pad), &tail[spaces..])
+        })
+        .collect();
     let root = root.display().to_string();
-    let mut out = s.to_string();
+    let mut out = s;
     for shown in [super::super::app::short_path(&root), root] {
         let mask = format!("{:<1$}", "<data>", shown.chars().count());
         out = out.replace(&shown, &mask);
@@ -1571,7 +1592,9 @@ fn mask_data_dir(s: &str, root: &std::path::Path) -> String {
         let (head, tail) = rest.split_at(at + "/wallets/".len());
         masked.push_str(head);
         let id = tail.chars().take_while(char::is_ascii_hexdigit).count();
-        masked.push_str(&format!("{:<1$}", "<id>", id));
+        if id > 0 {
+            masked.push_str(&format!("{:<1$}", "<id>", id));
+        }
         rest = &tail[id..];
     }
     masked.push_str(rest);
