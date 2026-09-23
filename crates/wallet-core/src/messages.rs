@@ -190,7 +190,7 @@ async fn posts(ctx: &DataCtx, cache_key: &str, blocks: u64, tags: impl Fn(u64, u
         TopicMatch::AnyOf(tags(from, to).iter().filter_map(|t| tag_topic(t).parse().ok()).collect()),
     ];
     let filter =
-        LogFilter { zone: crate::network::ZONE, range: LogRange::Inclusive { from, to }, addresses: vec![contract.address()], topics };
+        LogFilter::new(crate::network::ZONE, LogRange::Inclusive { from, to }).with_addresses(vec![contract.address()]).with_topics(topics);
     let logs = ctx.node.provider.logs(&filter).await?;
     let mut times: std::collections::HashMap<u64, u64> = posts.iter().filter(|p| p.timed).map(|p| (p.block, p.at)).collect();
     times.insert(to, head_time);
@@ -257,17 +257,13 @@ pub async fn channels(ctx: &DataCtx, blocks: u64) -> Result<Vec<ChannelSummary>>
     let to = head.number;
     let from = to.saturating_sub(blocks.max(1));
     let kind_text = format!("0x{:0>64}", format!("{KIND_TEXT:x}"));
-    let filter = LogFilter {
-        zone: crate::network::ZONE,
-        range: LogRange::Inclusive { from, to },
-        addresses: vec![contract.address()],
-        topics: vec![
+    let filter =
+        LogFilter::new(crate::network::ZONE, LogRange::Inclusive { from, to }).with_addresses(vec![contract.address()]).with_topics(vec![
             TopicMatch::AnyOf([MESSAGE_TOPIC].iter().filter_map(|t| t.parse().ok()).collect()),
             TopicMatch::Any,
             TopicMatch::Any,
             TopicMatch::AnyOf([kind_text].iter().filter_map(|t| t.parse().ok()).collect()),
-        ],
-    };
+        ]);
     let logs = ctx.node.provider.logs(&filter).await?;
     let mut seen: std::collections::HashMap<String, (u32, u64, Vec<u64>)> = std::collections::HashMap::new();
     for log in logs.iter().filter(|l| !l.removed) {

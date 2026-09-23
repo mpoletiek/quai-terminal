@@ -145,6 +145,20 @@ fn receipt(h: u8, status: u8) -> Value {
         "type":"0x0", "from":"0x0000000000000000000000000000000000000001", "gasUsed":"0x5208", "cumulativeGasUsed":"0x5208",
         "effectiveGasPrice":"0x1", "status":format!("0x{status:x}"), "logsBloom":format!("0x{}","00".repeat(10240)), "logs":[]})
 }
+/// A log as a node returns it, for the receipt `onto`: the SDK's `Log` is `#[non_exhaustive]`, and
+/// `Log::try_from` builds one from its JSON.
+fn log_in(onto: &quai_sdk::provider::Receipt, address: &str, topics: Vec<Hash32>, data: Vec<u8>) -> quai_sdk::provider::Log {
+    let mut log = quai_sdk::provider::Log::try_from(json!({"address": address, "topics": [], "data": "0x", "blockNumber": "0xa",
+        "blockHash": hash(1).to_string(), "transactionHash": onto.transaction_hash.to_string(), "transactionIndex": "0x0",
+        "logIndex": "0x0", "removed": false}))
+    .unwrap();
+    log.topics = topics;
+    log.data = quai_sdk::provider::RpcData::new(data).unwrap();
+    log.transaction_hash = onto.transaction_hash;
+    log.inclusion = onto.inclusion;
+    log
+}
+
 #[tokio::test]
 async fn fee_and_output_receipt_cannot_change_after_candidate_observation() {
     for (r, headers, expected) in [
@@ -161,22 +175,17 @@ async fn fee_and_output_receipt_cannot_change_after_candidate_observation() {
 }
 
 fn credit() -> QiCreditObservation {
-    QiCreditObservation {
-        beneficiary: "0x0080000000000000000000000000000000000001".parse().unwrap(),
-        transaction_hash: hash(4),
-        creating_hash: hash(4),
-        execution: block(20, 2),
-        head: block(25, 5),
-        outputs: vec![AddressOutpoint {
-            outpoint: OutPoint { tx_hash: hash(4), index: 0 },
-            denomination: 6,
-            lock: U256::from(30),
-            extensions: Extensions::default(),
-        }],
-        locked_qits: U256::from(1000),
-        unlocked_qits: U256::ZERO,
-        unobserved_qits: U256::ZERO,
-    }
+    QiCreditObservation::new(
+        "0x0080000000000000000000000000000000000001".parse().unwrap(),
+        hash(4),
+        hash(4),
+        block(20, 2),
+        block(25, 5),
+        vec![AddressOutpoint::new(OutPoint { tx_hash: hash(4), index: 0 }, 6, U256::from(30), Extensions::default())],
+        U256::from(1000),
+        U256::ZERO,
+        U256::ZERO,
+    )
 }
 #[test]
 fn partial_delayed_and_previously_spent_outputs_never_become_complete_credit() {
@@ -211,12 +220,8 @@ fn account_conversion_effects_do_not_invent_operation_specific_maturity() {
         ConversionEffect::LegacyOutcome { etx_type: 2 },
         ConversionEffect::Locked { etx_type: 2 },
     ] {
-        let conversion = ConversionObservation {
-            origin: ConversionOriginObservation::Unavailable,
-            scan: None,
-            effect: Some(effect),
-            spendability: ConversionSpendability::Unverified,
-        };
+        let conversion =
+            ConversionObservation::new(ConversionOriginObservation::Unavailable, None, Some(effect), ConversionSpendability::Unverified);
         let (status, message, patch) =
             settle_result(&op, SettlementEvidence { conversion: Some(&conversion), external: None, qi_credit: None }).unwrap().unwrap();
         assert_ne!(status, OpStatus::Settled);
@@ -231,15 +236,12 @@ fn executed_destination() -> EtxScanResult {
         "blockNumber":"0x14", "transactionIndex":"0x0", "input":"0x", "gas":"0x0", "nonce":"0x0",
         "from":"0x0000000000000000000000000000000000000001", "to":"0x0000000000000000000000000000000000000002",
         "value":"0x1", "originatingTxHash":hash(3).to_string(), "etxIndex":"0x0", "etxType":"0x2"});
-    EtxScanResult {
-        coverage: ScanCoverage::Complete,
-        last_block: Some(block(25, 5)),
-        transactions_examined: 1,
-        execution: Some(EtxExecutionObservation {
-            transaction: Transaction::try_from(transaction).unwrap(),
-            receipt: Some(Receipt::try_from(receipt(2, 1)).unwrap()),
-        }),
-    }
+    EtxScanResult::new(
+        ScanCoverage::Complete,
+        Some(block(25, 5)),
+        1,
+        Some(EtxExecutionObservation::new(Transaction::try_from(transaction).unwrap(), Some(Receipt::try_from(receipt(2, 1)).unwrap()))),
+    )
 }
 
 /// Qi-to-Quai has no attributed credit observation to wait for, so a reported conversion with an
@@ -249,12 +251,12 @@ fn executed_destination() -> EtxScanResult {
 fn a_reported_account_conversion_rests_locked_without_claiming_a_spendable_credit() {
     let mut op = op(OpStatus::Settling);
     op.kind = "convert_qi_to_quai".into();
-    let conversion = ConversionObservation {
-        origin: ConversionOriginObservation::Unavailable,
-        scan: Some(executed_destination()),
-        effect: Some(ConversionEffect::ConversionReported),
-        spendability: ConversionSpendability::Unverified,
-    };
+    let conversion = ConversionObservation::new(
+        ConversionOriginObservation::Unavailable,
+        Some(executed_destination()),
+        Some(ConversionEffect::ConversionReported),
+        ConversionSpendability::Unverified,
+    );
     let (status, message, patch) =
         settle_result(&op, SettlementEvidence { conversion: Some(&conversion), external: None, qi_credit: None }).unwrap().unwrap();
     let patch = patch.unwrap();
@@ -271,7 +273,8 @@ fn a_reported_account_conversion_rests_locked_without_claiming_a_spendable_credi
     assert!(message.contains("conversion lockup"));
 
     // A locked destination receipt reaches the same resting state by the older path.
-    let locked = ConversionObservation { effect: Some(ConversionEffect::Locked { etx_type: 2 }), ..conversion.clone() };
+    let mut locked = conversion.clone();
+    locked.effect = Some(ConversionEffect::Locked { etx_type: 2 });
     let (status, _, patch) =
         settle_result(&op, SettlementEvidence { conversion: Some(&locked), external: None, qi_credit: None }).unwrap().unwrap();
     assert_eq!(status, OpStatus::Locked);
@@ -309,16 +312,12 @@ fn swap_receipt_output_requires_exact_token_recipient_and_router_withdrawal() {
     let token = "0x0000000000000000000000000000000000000002";
     let router = "0x0000000000000000000000000000000000000003";
     let topic = |address: &str| format!("0x{:0>64}", address.trim_start_matches("0x")).parse::<Hash32>().unwrap();
-    let mut log = quai_sdk::provider::Log {
-        address: token.parse().unwrap(),
-        topics: vec![TRANSFER_TOPIC.parse().unwrap(), topic(router), topic(recipient)],
-        data: quai_sdk::provider::RpcData::new(U256::from(1000).to_be_bytes::<32>().to_vec()).unwrap(),
-        transaction_hash: r.transaction_hash,
-        inclusion: r.inclusion,
-        log_index: 0,
-        removed: false,
-        extensions: Extensions::default(),
-    };
+    let mut log = log_in(
+        &r,
+        token,
+        vec![TRANSFER_TOPIC.parse().unwrap(), topic(router), topic(recipient)],
+        U256::from(1000).to_be_bytes::<32>().to_vec(),
+    );
     r.logs = vec![log.clone()];
     let detail = json!({"recipient":recipient,"to_token":token,"router":router});
     assert_eq!(swap_output(&r, &detail, None), Some(U256::from(1000)));
@@ -359,11 +358,8 @@ fn failed_redemption_records_partial_credit_without_success_or_loss_claims() {
     op.kind = "unwrap_wqi".into();
     let mut c = credit();
     c.unobserved_qits = U256::from(500);
-    let external = quai_sdk::provider::ExternalObservation {
-        origin: ConversionOriginObservation::Unavailable,
-        scan: None,
-        outcome: Some(ReceiptOutcome::Failed),
-    };
+    let external =
+        quai_sdk::provider::ExternalObservation::new(ConversionOriginObservation::Unavailable, None, Some(ReceiptOutcome::Failed));
     let (status, message, patch) =
         settle_result(&op, SettlementEvidence { conversion: None, external: Some(&external), qi_credit: Some(&c) }).unwrap().unwrap();
     assert_eq!(status, OpStatus::Failed);
@@ -383,16 +379,12 @@ fn hartii_native_fill_requires_the_verified_curve_and_exact_event_recipient() {
     let topic = |address: &str| format!("0x{:0>64}", address.trim_start_matches("0x")).parse::<Hash32>().unwrap();
     receipt.to = Some(curve.parse().unwrap());
     let data: Vec<u8> = [100u64, 500, 1].into_iter().flat_map(|n| U256::from(n).to_be_bytes::<32>()).collect();
-    let log = quai_sdk::provider::Log {
-        address: curve.parse().unwrap(),
-        topics: vec!["0x846c37eef631e0943682d87352ec117c20008eb7f425c9b85ac011a6d4774cc0".parse().unwrap(), topic(owner)],
-        data: quai_sdk::provider::RpcData::new(data).unwrap(),
-        transaction_hash: receipt.transaction_hash,
-        inclusion: receipt.inclusion,
-        log_index: 0,
-        removed: false,
-        extensions: Extensions::default(),
-    };
+    let log = log_in(
+        &receipt,
+        curve,
+        vec!["0x846c37eef631e0943682d87352ec117c20008eb7f425c9b85ac011a6d4774cc0".parse().unwrap(), topic(owner)],
+        data,
+    );
     receipt.logs = vec![log.clone()];
     let mut operation = op(OpStatus::Confirmed);
     operation.kind = "hartii_sell".into();

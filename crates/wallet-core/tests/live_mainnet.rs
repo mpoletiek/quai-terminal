@@ -1382,32 +1382,20 @@ fn a_wrap_aggregates_its_spend_outputs() {
             hash[2] = address.zone().byte();
             hash[8] = index;
             hash[9] = i as u8;
-            coins.push(CandidateCoin {
-                outpoint: quai_sdk::consensus::OutPoint {
-                    transaction_hash: quai_sdk::primitives::Hash32::from_bytes(hash),
-                    index: i as u16,
-                },
+            coins.push(CandidateCoin::new(
+                quai_sdk::consensus::OutPoint { transaction_hash: quai_sdk::primitives::Hash32::from_bytes(hash), index: i as u16 },
                 address,
-                denomination: Denomination::new(index).expect("a denomination"),
-                unlock_height: U256::ZERO,
-                expires_at: None,
-                reserved: false,
-            });
+                Denomination::new(index).expect("a denomination"),
+            ));
         }
     };
     push(7, 1, &mut coins); // 5000
     push(6, 12, &mut coins); // 1000 each
     push(5, 4, &mut coins); // 500 each
 
-    let request = SelectionRequest {
-        zone: address.zone(),
-        candidate_height: U256::from(1u64),
-        target: U256::from(15_000u64), // 15 Qi
-        fee: U256::from(78u64),
-        max_fee: U256::from(500u64),
-        max_inputs: 64,
-        max_outputs: 256,
-    };
+    // 15 Qi, paying a 78-qit fee capped at 500.
+    let request = SelectionRequest::new(address.zone(), U256::from(1u64), U256::from(15_000u64), 64, 256)
+        .with_fee(U256::from(78u64), U256::from(500u64));
 
     let wrap = select_fewest_converting(&coins, &request).expect("the wrap selects");
     let spend: Vec<u64> = wrap.spend_outputs.iter().map(|d| d.value()).collect();

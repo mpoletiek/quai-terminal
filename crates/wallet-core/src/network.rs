@@ -541,12 +541,12 @@ impl NetworkProfile {
     /// review for the user to decide. A fee cap the user typed (`explicit_cap`) stays hard.
     pub fn preparation_limits(&self, gas_hint: u64, explicit_cap: Option<U256>) -> Result<FeePolicy> {
         let policy = self.fee_policy(gas_hint)?;
-        Ok(FeePolicy {
-            max_gas: gas_hint.saturating_mul(4).clamp(1_000_000, 20_000_000),
-            max_gas_price: policy.max_gas_price.saturating_mul(U256::from(20)),
-            max_total_fee: explicit_cap.unwrap_or_else(|| policy.max_total_fee.saturating_mul(U256::from(40))),
-            gas_margin_bps: policy.gas_margin_bps,
-        })
+        Ok(FeePolicy::new(
+            gas_hint.saturating_mul(4).clamp(1_000_000, 20_000_000),
+            policy.max_gas_price.saturating_mul(U256::from(20)),
+            explicit_cap.unwrap_or_else(|| policy.max_total_fee.saturating_mul(U256::from(40))),
+        )
+        .with_gas_margin_bps(policy.gas_margin_bps))
     }
 
     /// Why a prepared fee is above the network fee policy, if it is (shown on the review).
@@ -572,12 +572,8 @@ impl NetworkProfile {
 
     /// The network fee policy (compared on reviews; see `preparation_limits`).
     pub fn fee_policy(&self, max_gas: u64) -> Result<FeePolicy> {
-        Ok(FeePolicy {
-            max_gas,
-            max_gas_price: parse_u256(&self.max_gas_price, "max_gas_price")?,
-            max_total_fee: parse_u256(&self.max_total_fee, "max_total_fee")?,
-            gas_margin_bps: 1000,
-        })
+        Ok(FeePolicy::new(max_gas, parse_u256(&self.max_gas_price, "max_gas_price")?, parse_u256(&self.max_total_fee, "max_total_fee")?)
+            .with_gas_margin_bps(1000))
     }
 
     /// Explorer URL for a transaction hash.

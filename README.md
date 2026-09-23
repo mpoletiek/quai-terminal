@@ -20,7 +20,7 @@ A self-custodial desktop wallet for both Quai ledgers (QUAI and Qi) on Cyprus-1.
 - a keyboard-first **TUI** (`quai-terminal` with no arguments), and
 - a scriptable **CLI** with JSON output and stable exit codes.
 
-It is built on [`quai-sdk 0.1.0-alpha.9`](https://crates.io/crates/quai-sdk). Feature scope follows Pelagus. **Not included yet:** offline signing, browser/dApp integration, and cross-zone sends or accounts.
+It is built on [`quai-sdk 0.1.0-alpha.11`](https://crates.io/crates/quai-sdk). Feature scope follows Pelagus. **Not included yet:** offline signing, browser/dApp integration, and cross-zone sends or accounts.
 
 It also connects to the Quai ecosystem: a USD **portfolio** with token prices, icons and value history (explorer.qu.ai), **token swaps** through Quainance, and **NFTs** (gallery, transfers, and buying Bazarr listings).
 

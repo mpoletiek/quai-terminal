@@ -1242,10 +1242,8 @@ impl Session {
             .with_observation_policy(self.network.observation_policy());
         let candidates = session.signed_candidates(id).map_err(map_account_error)?;
         let parent = candidates.last().ok_or_else(|| CoreError::Invalid("operation has no signed candidate".into()))?.hash()?;
-        let prepared = session
-            .prepare_replacement(id, parent, ReplacementPolicy { minimum_price_bump_percent: bump_percent, fees })
-            .await
-            .map_err(map_account_error)?;
+        let prepared =
+            session.prepare_replacement(id, parent, ReplacementPolicy::new(bump_percent, fees)).await.map_err(map_account_error)?;
         let tx = prepared.transaction();
         let mut commitments = crate::commitments::Commitments::from_operation(&op)?;
         let prior_fee =
@@ -1385,14 +1383,7 @@ impl Session {
 
         let special = !parent_tx.data.is_empty();
         let profile = (special && self.network.specialized_fee_estimation).then_some(QiFeeProfile::V056ShaAnchored);
-        let policy = QiPolicy {
-            initial_fee: U256::ZERO,
-            max_fee: most,
-            max_inputs: 1024,
-            max_outputs: 256,
-            max_fee_rounds: 12,
-            max_snapshot_age: 10,
-        };
+        let policy = QiPolicy::new(most, 1024, 256, 10).with_max_fee_rounds(12);
         let indexes: Vec<u16> = change.iter().map(|(i, _)| *i).collect();
 
         let mut stale = 0;
