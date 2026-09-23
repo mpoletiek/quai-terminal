@@ -101,3 +101,28 @@ jobs:
             --notes-file .github/RELEASE_NOTES.md \
             --prerelease \
             --verify-tag
+
+  # The one-line installer, run against the release just published on every platform it serves:
+  # the download, the checksum, the binary starting, and the uninstall that follows.
+  verify-install:
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install with the script
+        env:
+          QUAI_TERMINAL_VERSION: ${{ github.ref_name }}
+        run: sh install.sh
+      - name: The installed binary is this release
+        run: |
+          set -eu
+          "$HOME/.local/bin/quai-terminal" --version | tee /dev/stderr | grep -qx "quai-terminal ${GITHUB_REF_NAME#v}"
+      - name: Uninstall with the script
+        run: |
+          set -eu
+          sh uninstall.sh
+          test ! -e "$HOME/.local/bin/quai-terminal"

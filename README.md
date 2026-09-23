@@ -3,10 +3,11 @@
 > **Alpha.** Published to be tried, not relied on. It holds real keys: back up your recovery phrase
 > before funding anything, and start with an amount you are willing to lose.
 >
-> **No trading transaction from this wallet has ever been broadcast to Quai mainnet.** Trading is
-> qualified by simulation against the deployed contracts and by execution on a disposable local
-> chain. Sending and receiving are exercised; the trading write paths are not, on mainnet, by
-> anyone, yet.
+> **Only part of trading has run on Quai mainnet.** Swaps, bonding-curve buys, adding and removing
+> liquidity, staking, unstaking and harvesting have all confirmed there from this wallet. Curve
+> sells, Hartii trades, exact-output and split swaps, and the automatic wrap before a trade have
+> not: they are qualified by simulation against the deployed contracts and by execution on a
+> disposable local chain.
 >
 > **It has been reviewed, and not every finding is closed.** Several reviews have been run against
 > this code; some of what they raised is fixed and some is still open. Those reviews are not
@@ -24,6 +25,28 @@ It is built on [`quai-sdk 0.1.0-alpha.9`](https://crates.io/crates/quai-sdk). Fe
 It also connects to the Quai ecosystem: a USD **portfolio** with token prices, icons and value history (explorer.qu.ai), **token swaps** through Quainance, and **NFTs** (gallery, transfers, and buying Bazarr listings).
 
 > **Alpha software.** The SDK is alpha. Wrapper contracts, the payment mailbox, conversions, swaps and NFT purchases have been exercised end to end on a local dev chain; swap quotes, listing checks and purchase calls are also checked read-only against mainnet. Try small amounts first before using mainnet funds.
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mpoletiek/quai-terminal/main/install.sh | sh
+```
+
+This downloads the prebuilt binary for your computer from the newest release (Linux x86-64, or macOS
+on Apple Silicon or Intel), checks it against that release's `SHA256SUMS`, and puts `quai-terminal` in
+`~/.local/bin`. Nothing is compiled and nothing runs as root. If that directory is not on your `PATH`,
+the installer prints the line to add. To pin a release, put `QUAI_TERMINAL_VERSION=v0.1.0-alpha.2`
+before `sh`; `QUAI_TERMINAL_INSTALL_DIR` picks another directory. To read the script before running it,
+download [`install.sh`](install.sh) and run `sh install.sh`.
+
+To remove it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mpoletiek/quai-terminal/main/uninstall.sh | sh
+```
+
+This stops the background daemon and removes the binary. It never deletes your wallets: it prints
+where their data is, and how to delete it once you have your recovery phrases.
 
 ## Build
 

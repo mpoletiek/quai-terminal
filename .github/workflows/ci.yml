@@ -1,4 +1,5 @@
-# Every push and pull request: formatting, lints as errors, unit tests and a RustSec advisory scan.
+# Every push and pull request: formatting, lints as errors, unit tests, a RustSec advisory scan, and
+# the install scripts linted and parsed by the `sh` most users will pipe them into.
 # Live mainnet tests (`--ignored`) need the network and are run by hand before a release.
 name: ci
 
@@ -21,6 +22,14 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --lib --bins --tests --locked
+
+  # `curl … | sh` runs these under whatever /bin/sh is: dash on Debian and Ubuntu, so no bashisms.
+  install-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -s sh install.sh uninstall.sh
+      - run: dash -n install.sh && dash -n uninstall.sh
 
   audit:
     runs-on: ubuntu-latest

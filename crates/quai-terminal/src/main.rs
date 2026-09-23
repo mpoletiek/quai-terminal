@@ -162,7 +162,7 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
         Some(Command::Diagnostics(DiagnosticsCmd::Info)) => {
             let info = serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
-                "sdk": "quai-sdk 0.1.0-alpha.1",
+                "sdk": concat!("quai-sdk ", env!("QUAI_SDK_VERSION")),
                 "home": ctx.paths.root(),
                 "config": ctx.paths.config_file(),
                 "default_network": ctx.config.default_network,
