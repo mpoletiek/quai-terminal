@@ -3,10 +3,11 @@
 > **Alpha.** Published to be tried, not relied on. It holds real keys: back up your recovery phrase
 > before funding anything, and start with an amount you are willing to lose.
 >
-> **No trading transaction from this wallet has ever been broadcast to Quai mainnet.** Trading is
-> qualified by simulation against the deployed contracts and by execution on a disposable local
-> chain. Sending and receiving are exercised; the trading write paths are not, on mainnet, by
-> anyone, yet.
+> **Only part of trading has run on Quai mainnet.** Swaps, bonding-curve buys, adding and removing
+> liquidity, staking, unstaking and harvesting have all confirmed there from this wallet. Curve
+> sells, Hartii trades, exact-output and split swaps, and the automatic wrap before a trade have
+> not: they are qualified by simulation against the deployed contracts and by execution on a
+> disposable local chain.
 >
 > **It has been reviewed, and not every finding is closed.** Several reviews have been run against
 > this code; some of what they raised is fixed and some is still open. Those reviews are not
