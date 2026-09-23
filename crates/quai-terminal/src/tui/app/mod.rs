@@ -1894,14 +1894,13 @@ impl App {
         // A lock screen that isn't being drawn yet (no size) gets its first effect here. After it,
         // the next one follows once the last has dissolved, while looping is on, the window has
         // the focus and no password is being typed; otherwise the screen rests until the next lock.
-        let replay = self.config.lock_loop
-            && self.lock_rested
-            && self.lock_fade.is_none()
-            && self.focused
-            && self.lock_input.is_empty()
-            && !self.unlocking;
+        // The fade is judged by its age, not by whether a frame has cleared it: once it is over,
+        // nothing animates, so no frame is drawn to clear it.
+        let faded = self.lock_fade.as_ref().is_none_or(|(_, at)| at.elapsed().as_millis() >= super::ui::HANDOVER_MS);
+        let replay = self.config.lock_loop && self.lock_rested && faded && self.focused && self.lock_input.is_empty() && !self.unlocking;
         if self.locked && self.ambient.is_none() && (!self.lock_rested || replay) && self.meta.is_some() {
             self.lock_rested = false;
+            self.lock_fade = None;
             self.start_lock_ceremony(size);
         }
         if matches!(self.modal, Modal::Effects(_)) {

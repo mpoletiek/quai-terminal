@@ -2177,8 +2177,12 @@ fn the_lock_effect_loops_or_plays_once_then_rests() {
     assert!(app.config.lock_loop, "looping is the default");
     app.tick((120, 40));
     assert!(app.ambient.is_none(), "not while the last one is still dissolving");
-    app.lock_fade = None;
+    // As in the running terminal: the fade ages out with no frame drawn to clear it, because once
+    // it is over nothing animates. The next effect must follow anyway.
+    let (frame, _) = app.lock_fade.take().expect("still fading");
+    app.lock_fade = Some((frame, std::time::Instant::now() - std::time::Duration::from_millis(600)));
     app.focused = true;
+    assert!(!super::wants_animation(&app), "an aged fade asks for no frames");
     app.tick((120, 40));
     assert!(app.ambient.is_some() && !app.lock_rested, "the next effect follows");
     // Not while a password is being typed, nor in a background window.

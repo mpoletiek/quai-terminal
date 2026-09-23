@@ -41,6 +41,13 @@ pub fn restore_terminal() {
     term::modes::restore();
 }
 
+/// Whether the terminal puts a worker's notice on the desktop itself: with notifications on,
+/// only while the window is in the background (in front, the toast says it), and not when the
+/// notice is also in the wallet's list and a daemon is running, which forwards it once.
+fn desktop_notice(enabled: bool, focused: bool, listed: bool, daemon_running: bool) -> bool {
+    enabled && !focused && !(listed && daemon_running)
+}
+
 /// How long the loop may sleep: until the next thing that needs a frame (an animation step, the
 /// half-second tick, a resize settling), capped so a missed wake is never noticed for long.
 fn next_wait(app: &App, animating: bool, last_tick: Instant, resized_at: Option<Instant>) -> Duration {
@@ -224,12 +231,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                 }
             }
         }
+        // A running daemon forwards the wallet's notification list to the desktop, so a notice
+        // that is also in the list goes there once, through it. Asked only when there is one.
+        let daemon = events.iter().any(|ev| matches!(ev, Ev::Notify { listed: true, .. })) && crate::daemon::daemon_running(&app.paths);
         for ev in events {
             // A notice for the desktop only while the window is in the background: in front, the
             // toast on screen says it, and a second copy in the corner of the desktop is noise.
-            if let Ev::Notify { title, body } = &ev
-                && app.config.notifications
-                && !app.focused
+            if let Ev::Notify { title, body, listed } = &ev
+                && desktop_notice(app.config.notifications, app.focused, *listed, daemon)
             {
                 match crate::notify::detect_terminal() {
                     Some(backend) => term.queue(crate::notify::sequence(backend, title, body).as_bytes()),
@@ -596,3 +605,17 @@ pub async fn run(ctx: Ctx) -> Result<()> {
 /// TUI tests that read or change the process-wide IPFS gateway take this, so they do not race.
 #[cfg(test)]
 pub(crate) static IPFS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod notice_tests {
+    /// One event, one desktop notice: the daemon's copy of a listed notice is the one shown.
+    #[test]
+    fn a_listed_notice_reaches_the_desktop_once() {
+        use super::desktop_notice;
+        assert!(desktop_notice(true, false, true, false), "no daemon: the terminal says it");
+        assert!(!desktop_notice(true, false, true, true), "a daemon forwards the list: the terminal stays quiet");
+        assert!(desktop_notice(true, false, false, true), "not in the list: only the terminal can say it");
+        assert!(!desktop_notice(true, true, false, false), "in front, the toast is enough");
+        assert!(!desktop_notice(false, false, false, false), "notifications off");
+    }
+}

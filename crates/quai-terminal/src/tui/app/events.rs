@@ -456,7 +456,7 @@ impl App {
             // An arrival already said by name (`arrive`) is not said again in the worker's words.
             Ev::Notify { title, .. }
                 if title.starts_with("Incoming payment") && self.arrival_said.is_some_and(|at| at.elapsed().as_secs() < 60) => {}
-            Ev::Notify { title, body } => self.toast(format!("{title}: {body}"), false),
+            Ev::Notify { title, body, .. } => self.toast(format!("{title}: {body}"), false),
             Ev::Chat { subs, pin, note } => {
                 self.eco.board.subs = subs;
                 self.eco.board.pin = pin;
