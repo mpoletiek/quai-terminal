@@ -36,6 +36,151 @@ pub enum State {
     Stopped,
 }
 
+impl State {
+    /// The state in plain words.
+    pub fn label(self) -> &'static str {
+        match self {
+            State::Armed => "waiting for price",
+            State::Triggered => "ready to sign",
+            State::Review => "review open",
+            State::Waiting => "confirming",
+            State::Complete => "filled",
+            State::Cancelled => "cancelled",
+            State::Expired => "expired",
+            State::Stopped => "stopped",
+        }
+    }
+
+    /// Still watched: it may yet trigger or be signed.
+    pub fn active(self) -> bool {
+        matches!(self, State::Armed | State::Triggered | State::Review | State::Waiting)
+    }
+}
+
+/// The expected output an order should wait for, from what was typed: `+5%` or `-2%` against
+/// what the swap would return now, or a plain amount in receive units. More back is better, so
+/// `+5%` waits for a price 5% better than now.
+pub fn target_from_text(text: &str, current_out: U256, output_decimals: u8) -> Result<U256> {
+    let text = text.trim().replace(',', "");
+    if text.is_empty() {
+        return Err(CoreError::Invalid("type a target: +5% (better than now) or an amount to receive".into()));
+    }
+    let target = match text.strip_suffix('%') {
+        Some(pct) => {
+            let pct = pct.trim();
+            let (sign, magnitude) = match pct.strip_prefix('-') {
+                Some(m) => (-1i64, m),
+                None => (1, pct.strip_prefix('+').unwrap_or(pct)),
+            };
+            // Hundredths of a percent are basis points.
+            let bps = crate::amount::parse_amount(magnitude.trim(), 2)
+                .map_err(|_| CoreError::Invalid("a percentage is a number such as +5% or -2.5%".into()))?;
+            let bps = u64::try_from(bps).map_err(|_| CoreError::Invalid("that percentage is too large".into()))?;
+            if sign < 0 && bps >= 10_000 {
+                return Err(CoreError::Invalid("a target cannot be 100% or more below the price now".into()));
+            }
+            let factor = if sign < 0 { 10_000 - bps } else { 10_000 + bps };
+            crate::amount::mul_div(current_out, U256::from(factor), U256::from(10_000u64))
+                .ok_or_else(|| CoreError::Invalid("that percentage is too large".into()))?
+        }
+        None => crate::amount::parse_amount(&text, output_decimals)
+            .map_err(|_| CoreError::Invalid("a target is +5% (better than now) or an amount to receive".into()))?,
+    };
+    if target.is_zero() {
+        return Err(CoreError::Invalid("the target must be more than zero".into()));
+    }
+    Ok(target)
+}
+
+/// The least an order guarantees for a target: the target less the slippage allowance, rounded
+/// down as a swap's own minimum is. A quote meets it exactly when its expected output reaches
+/// the target, since both go through the same floor.
+pub fn minimum_for_target(target: U256, slippage_bps: u16) -> U256 {
+    crate::swap::minimum_out(target, slippage_bps)
+}
+
+/// How far the expected output has to move to reach the target, in basis points (positive: it
+/// has to rise; zero or less: met).
+pub fn distance_bps(current_out: U256, target: U256) -> Option<i64> {
+    if current_out.is_zero() {
+        return None;
+    }
+    let (hi, lo, sign) = if target >= current_out { (target, current_out, 1) } else { (current_out, target, -1) };
+    // Rounded to the nearest basis point, so +5% typed reads back as +5%, not +4.99%.
+    let scaled = (hi - lo).checked_mul(U256::from(10_000u64))?.checked_add(current_out / U256::from(2u64))?;
+    let diff = scaled / current_out;
+    i64::try_from(diff).ok().map(|d| sign * d)
+}
+
+/// Fee bounds for an order when none are typed: each attempt may cost up to the network's fee
+/// policy (the level a review starts warning at), and the whole order that times its attempts.
+/// Generous on purpose: a cap that refused a normal swap would stop the order at the moment its
+/// price arrived, and every attempt is still a review the user signs.
+pub fn default_fees(network: &crate::network::NetworkProfile, attempts: u8) -> Result<(String, String)> {
+    let per = network.fee_policy(0)?.max_total_fee;
+    let total = per.saturating_mul(U256::from(attempts.max(1)));
+    Ok((crate::amount::quai(per), crate::amount::quai(total)))
+}
+
+/// An order in plain words, one (label, text) row each: what it trades, what it waits for and
+/// how far that is, what it guarantees, where it stands, and what it may cost.
+pub fn describe(value: &Record, now: u64) -> Vec<(&'static str, String)> {
+    let spec = &value.spec;
+    let amount = |raw: &str, decimals: u8| {
+        U256::from_str_radix(raw, 10)
+            .map(|v| crate::amount::group_thousands(&crate::amount::format_amount_short(v, decimals, 6)))
+            .unwrap_or_else(|_| "?".into())
+    };
+    let name = |symbol: &Option<String>, id: &str| {
+        symbol.clone().unwrap_or_else(|| {
+            if id == "quai" { "QUAI".into() } else { format!("{}…{}", &id[..6.min(id.len())], &id[id.len().saturating_sub(4)..]) }
+        })
+    };
+    let (from, to) = (name(&spec.from_symbol, &spec.from), name(&spec.to_symbol, &spec.to));
+    let out = |raw: &str| format!("{} {to}", amount(raw, spec.output_decimals));
+    let pct = |bps: u16| format!("{}%", crate::amount::format_amount(U256::from(bps), 2));
+    let mut rows = vec![("trade", format!("{} {from} → {to}", amount(&spec.input_atoms, spec.input_decimals)))];
+    let now_out = value.last_expected_output_atoms.as_deref();
+    let waits = match (&spec.target_output_atoms, now_out) {
+        (Some(target), Some(current)) => {
+            let distance = distance_bps(atoms(current).unwrap_or_default(), atoms(target).unwrap_or_default());
+            let gap = match distance {
+                Some(d) if d > 0 => format!(" · needs +{}%", crate::amount::format_amount(U256::from(d as u64), 2)),
+                Some(_) => " · met now".into(),
+                None => String::new(),
+            };
+            format!("{} back (now {}{gap})", out(target), out(current))
+        }
+        (Some(target), None) => format!("{} back", out(target)),
+        (None, _) => format!("a quote of at least {} after slippage", out(&spec.minimum_output_atoms)),
+    };
+    rows.push(("waits for", waits));
+    rows.push(("guarantees", format!("at least {} ({} slippage)", out(&spec.minimum_output_atoms), pct(spec.slippage_bps))));
+    let checked = value
+        .last_observed_at
+        .map(|at| format!(" · checked {} ago", crate::track::human_duration(now.saturating_sub(at))))
+        .unwrap_or_default();
+    rows.push(("state", format!("{}{checked}", value.state.label())));
+    // A finished order has nothing left to expire.
+    if value.state.active() {
+        let left = spec.expires_at.saturating_sub(now);
+        rows.push(("expires", if left == 0 { "expired".to_string() } else { format!("in {}", crate::track::human_duration(left)) }));
+    }
+    rows.push(("attempts", format!("{} of {} used", value.attempts.len(), spec.max_attempts)));
+    rows.push((
+        "fees",
+        format!(
+            "up to {} QUAI an attempt · {} of {} QUAI budget used",
+            amount(&spec.maximum_fee_atoms, 18),
+            amount(&value.fee_budget_used_atoms, 18),
+            amount(&spec.total_fee_budget_atoms, 18)
+        ),
+    ));
+    rows.push(("signer", spec.account.clone()));
+    rows.push(("router", format!("{} (pinned)", spec.router)));
+    rows
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
@@ -59,6 +204,16 @@ pub struct Spec {
     pub total_fee_budget_atoms: String,
     pub max_attempts: u8,
     pub mode: Mode,
+    /// What the order waits for: the swap's expected output, before slippage. The minimum above
+    /// is this less the slippage allowance, which is what the trigger compares. Display only;
+    /// orders made before it existed have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_output_atoms: Option<String>,
+    /// Symbols of the two assets when the order was made (untrusted display text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_symbol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_symbol: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,6 +235,14 @@ pub struct Record {
     pub fee_budget_used_atoms: String,
     pub last_observed_at: Option<u64>,
     pub last_minimum_output_atoms: Option<String>,
+    /// The expected output at the last check, before slippage: what the target is compared with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_expected_output_atoms: Option<String>,
+    /// When the order was first found reachable and said so. Set once, under the order's lease,
+    /// by whichever process checked it first (the open terminal or the daemon), so it is
+    /// announced once and a price that wavers around the target does not announce it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notified_at: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +258,10 @@ pub struct Create {
     pub total_fee_budget: String,
     pub max_attempts: u8,
     pub mode: Mode,
+    /// What the order waits for, as typed: `+5%` against the fresh quote taken when the order is
+    /// made, or an amount to receive ([`target_from_text`]). The minimum above is then the target
+    /// less the slippage allowance; without a target, the minimum is taken as given.
+    pub target_output: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -103,8 +270,11 @@ pub struct Observation {
     pub state: State,
     pub triggered: bool,
     pub minimum_output_atoms: Option<String>,
+    pub expected_output_atoms: Option<String>,
     pub observed_at: Option<u64>,
     pub reason: String,
+    /// This check found the order reachable for the first time, and wrote the notification.
+    pub announced: bool,
 }
 
 fn atoms(value: &str) -> Result<U256> {
@@ -177,6 +347,14 @@ impl Spec {
         }
         if atoms(&self.maximum_fee_atoms)? > atoms(&self.total_fee_budget_atoms)? {
             return Err(CoreError::Invalid("total fee budget is smaller than one attempt".into()));
+        }
+        if let Some(target) = &self.target_output_atoms
+            && atoms(target)?.is_zero()
+        {
+            return Err(CoreError::Invalid("order target must be positive".into()));
+        }
+        if [&self.from_symbol, &self.to_symbol].into_iter().flatten().any(|s| s.chars().count() > 32) {
+            return Err(CoreError::Invalid("order symbol is too long".into()));
         }
         Ok(())
     }
@@ -258,6 +436,17 @@ impl Spec {
 }
 
 impl Record {
+    /// Whether this check is the one that says the order is reachable: the first that finds it
+    /// so. It stamps the order, so no later check (here or in another process) says it again,
+    /// even after the price has wandered away and back.
+    fn mark_reachable(&mut self, triggered: bool, now: u64) -> bool {
+        let first = triggered && self.notified_at.is_none();
+        if first {
+            self.notified_at = Some(now);
+        }
+        first
+    }
+
     fn charge(&mut self, now: u64) -> Result<()> {
         if now >= self.spec.expires_at || self.attempts.len() >= usize::from(self.spec.max_attempts) {
             return Err(CoreError::Rejected("order expired or attempt budget exhausted".into()));
@@ -289,6 +478,13 @@ pub async fn create(session: &mut Session, request: Create) -> Result<TradePlan>
         .find(|venue| crate::swap::venue_pins(&session.network, *venue).is_some_and(|(r, _)| r.address.eq_ignore_ascii_case(&q.router)))
         .ok_or_else(|| CoreError::Rejected("order router is not a configured venue".into()))?;
     let (router, factory) = crate::swap::venue_pins(&session.network, venue).unwrap();
+    // A target sets the minimum (less slippage); without one, the minimum is as typed.
+    let target = request.target_output.as_deref().map(|t| target_from_text(t, atoms(&q.amount_out)?, q.to.decimals())).transpose()?;
+    let minimum = match target {
+        Some(t) => minimum_for_target(t, request.slippage_bps),
+        None => crate::amount::parse_amount(&request.minimum_output, q.to.decimals())?,
+    };
+    let symbol = |s: &str| Some(crate::explorer::clean_text(s).chars().take(32).collect::<String>()).filter(|s| !s.is_empty());
     let spec = Spec {
         network: session.network.id.clone(),
         chain_id: session.network.chain_id,
@@ -299,7 +495,7 @@ pub async fn create(session: &mut Session, request: Create) -> Result<TradePlan>
         input_decimals: q.from.decimals(),
         output_decimals: q.to.decimals(),
         input_atoms: q.amount_in,
-        minimum_output_atoms: crate::amount::parse_amount(&request.minimum_output, q.to.decimals())?.to_string(),
+        minimum_output_atoms: minimum.to_string(),
         venue,
         router: q.router,
         router_hash: router.code_hash.clone().ok_or_else(|| CoreError::Rejected("orders require pinned routers".into()))?,
@@ -310,6 +506,9 @@ pub async fn create(session: &mut Session, request: Create) -> Result<TradePlan>
         total_fee_budget_atoms: crate::amount::parse_quai(&request.total_fee_budget)?.to_string(),
         max_attempts: request.max_attempts,
         mode: request.mode,
+        target_output_atoms: target.map(|t| t.to_string()),
+        from_symbol: symbol(q.from.symbol()),
+        to_symbol: symbol(q.to.symbol()),
     };
     spec.validate()?;
     let value = Record {
@@ -320,6 +519,8 @@ pub async fn create(session: &mut Session, request: Create) -> Result<TradePlan>
         fee_budget_used_atoms: "0".into(),
         last_observed_at: None,
         last_minimum_output_atoms: None,
+        last_expected_output_atoms: Some(q.amount_out.clone()),
+        notified_at: None,
     };
     let mut plan = TradePlan::new(session.network.id.clone(), account, "limit trigger".into(), json!({"client":CLIENT,"order":value}))?;
     let _lease = lease(session, &plan.id)?;
@@ -409,13 +610,34 @@ pub async fn observe(session: &mut Session, id: &str) -> Result<Observation> {
     value.state = if triggered { State::Triggered } else { State::Armed };
     value.last_observed_at = Some(q.observed_at);
     value.last_minimum_output_atoms = Some(q.minimum_out);
+    value.last_expected_output_atoms = Some(q.amount_out);
+    let announce = value.mark_reachable(triggered, now);
     let why = if triggered {
         "limit reached; awaiting an unlocked client and a fresh authorized review"
     } else {
         "waiting for limit, sufficient balance and the originally pinned router to remain the chosen route"
     };
     persist(session, &mut plan, &value, why)?;
-    Ok(observation(&plan, &value, triggered))
+    // Written once the stamp is saved, so a crash in between loses a notice rather than
+    // repeating one. The daemon puts this wallet's new notifications on the desktop.
+    if announce {
+        let (title, body) = reachable_notice(&value);
+        let _ = session.app.notify("alert", &title, &body);
+    }
+    let mut seen = observation(&plan, &value, triggered);
+    seen.announced = announce;
+    Ok(seen)
+}
+
+/// What a reachable order says: which trade, and where to sign it.
+pub fn reachable_notice(value: &Record) -> (String, String) {
+    let rows = describe(value, crate::registry::now());
+    let get = |k: &str| rows.iter().find(|(l, _)| *l == k).map(|(_, t)| t.clone()).unwrap_or_default();
+    let target = get("waits for").split(" (").next().unwrap_or_default().to_string();
+    (
+        "Limit order reachable".into(),
+        format!("{}: {target} is available now. Open Quai Terminal › Trade › Orders to review and sign.", get("trade")),
+    )
 }
 fn observation(plan: &TradePlan, value: &Record, triggered: bool) -> Observation {
     Observation {
@@ -423,8 +645,10 @@ fn observation(plan: &TradePlan, value: &Record, triggered: bool) -> Observation
         state: value.state,
         triggered,
         minimum_output_atoms: value.last_minimum_output_atoms.clone(),
+        expected_output_atoms: value.last_expected_output_atoms.clone(),
         observed_at: value.last_observed_at,
         reason: plan.reason.clone(),
+        announced: false,
     }
 }
 
@@ -572,6 +796,9 @@ mod tests {
             total_fee_budget_atoms: "20".into(),
             max_attempts: 3,
             mode: Mode::ExecuteOnce,
+            target_output_atoms: None,
+            from_symbol: None,
+            to_symbol: None,
         }
     }
     fn value(spec: Spec) -> Record {
@@ -583,7 +810,86 @@ mod tests {
             fee_budget_used_atoms: "0".into(),
             last_observed_at: None,
             last_minimum_output_atoms: None,
+            last_expected_output_atoms: None,
+            notified_at: None,
         }
+    }
+
+    /// `+5%` waits for 5% more back than now, a plain number is an amount, and the minimum a
+    /// target guarantees is exactly what the trigger compares a quote's minimum against.
+    #[test]
+    fn a_target_is_a_percentage_or_an_amount_and_meets_the_trigger_exactly() {
+        let now = U256::from(1_000_000u64);
+        assert_eq!(target_from_text("+5%", now, 6).unwrap(), U256::from(1_050_000u64));
+        assert_eq!(target_from_text("5%", now, 6).unwrap(), U256::from(1_050_000u64));
+        assert_eq!(target_from_text("-2.5%", now, 6).unwrap(), U256::from(975_000u64));
+        assert_eq!(target_from_text("1,234.5", now, 6).unwrap(), U256::from(1_234_500_000u64));
+        for bad in ["", "abc", "-100%", "0", "+x%"] {
+            assert!(target_from_text(bad, now, 6).is_err(), "{bad}");
+        }
+        // The real trigger rule: a quote whose expected output reaches the target triggers, one
+        // that falls short does not, at any slippage.
+        for (target, slippage) in [(1_050_000u64, 50u16), (999_999, 100), (20_000, 1)] {
+            let mut order = spec();
+            order.slippage_bps = slippage;
+            order.minimum_output_atoms = minimum_for_target(U256::from(target), slippage).to_string();
+            let at = |out: u64| {
+                let mut q = quote(&order);
+                q.slippage_bps = slippage;
+                q.amount_out = out.to_string();
+                q.minimum_out = crate::swap::minimum_out(U256::from(out), slippage).to_string();
+                order.matches_quote(&q, 100).unwrap()
+            };
+            assert!(at(target), "{target} at {slippage} bps: the target itself triggers");
+            assert!(at(target + target / 100), "better than the target triggers");
+            assert!(!at(target - target / 100), "1% short does not");
+        }
+        assert_eq!(distance_bps(now, U256::from(1_050_000u64)), Some(500));
+        assert_eq!(distance_bps(now, U256::from(990_000u64)), Some(-100));
+        assert_eq!(distance_bps(U256::ZERO, now), None);
+        assert_eq!(State::Triggered.label(), "ready to sign");
+        assert!(State::Armed.active() && !State::Complete.active());
+    }
+
+    /// Reachable is said once per order: the first check that finds it, and never again after
+    /// the price wanders away and back. The notice names the trade and where to sign it.
+    #[test]
+    fn a_reachable_order_is_announced_once() {
+        let mut spec = spec();
+        spec.from_symbol = Some("QUAI".into());
+        spec.to_symbol = Some("USD".into());
+        spec.target_output_atoms = Some("202".into());
+        let mut v = value(spec);
+        assert!(!v.mark_reachable(false, 10), "not reachable: nothing to say");
+        assert!(v.mark_reachable(true, 20), "the first reachable check says it");
+        assert_eq!(v.notified_at, Some(20));
+        assert!(!v.mark_reachable(true, 30), "the next check does not repeat it");
+        assert!(!v.mark_reachable(false, 40));
+        assert!(!v.mark_reachable(true, 50), "nor does reaching it again later");
+        // It survives a save and a reload (another process reading the same record).
+        let again: Record = serde_json::from_value(serde_json::to_value(&v).unwrap()).unwrap();
+        assert_eq!(again.notified_at, Some(20));
+        v.last_expected_output_atoms = Some("202".into());
+        let (title, body) = reachable_notice(&v);
+        assert_eq!(title, "Limit order reachable");
+        assert!(body.contains("QUAI → USD: 0.000202 USD back is available now"), "{body}");
+        assert!(body.contains("Trade › Orders"), "{body}");
+    }
+
+    /// Orders saved before targets and symbols existed still load, and still validate.
+    #[test]
+    fn an_order_saved_without_a_target_still_loads() {
+        let mut old = serde_json::to_value(value(spec())).unwrap();
+        for field in ["target_output_atoms", "from_symbol", "to_symbol"] {
+            assert!(old["spec"].as_object_mut().unwrap().remove(field).is_none(), "{field} is not written when unset");
+        }
+        old.as_object_mut().unwrap().remove("last_expected_output_atoms");
+        let back: Record = serde_json::from_value(old).unwrap();
+        assert!(back.spec.target_output_atoms.is_none());
+        back.spec.validate().unwrap();
+        let mut zero = spec();
+        zero.target_output_atoms = Some("0".into());
+        assert!(zero.validate().is_err());
     }
     fn op(spec: &Spec, id: &str, plan: &str, now: u64) -> Operation {
         Operation {

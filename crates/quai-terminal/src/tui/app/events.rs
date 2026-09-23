@@ -264,27 +264,41 @@ impl App {
                 self.preload();
             }
             // Results the worker produced before it saw a pending lock are dropped with the keys.
-            Ev::Orders { wallet, network, rows } => {
+            Ev::Orders { wallet, network, mut rows, announced } => {
                 if self.meta.as_ref().is_some_and(|m| m.id == wallet) && self.dash.network_id == network {
+                    // Active orders first; finished ones keep their order below them.
+                    rows.sort_by_key(|p| !wallet_core::orders::details(p).is_ok_and(|v| v.state.active()));
                     if self.screen == Screen::Orders {
                         self.selected = self.selected.min(rows.len().saturating_sub(1));
                     }
-                    // A limit that became reachable asks for the user: said once, in front and
-                    // (while the window is in the background) on the desktop. Never opened for them.
+                    // A limit that became reachable since the last look is said on screen, whoever
+                    // found it (this terminal, or the daemon between two of its checks).
                     let before = self.eco.orders.as_deref().map(super::super::order_ui::reachable).unwrap_or_default();
                     let fresh: Vec<String> = super::super::order_ui::reachable(&rows)
                         .into_iter()
                         .filter(|(id, _)| !before.iter().any(|(b, _)| b == id))
                         .map(|(_, to)| to)
                         .collect();
-                    self.eco.orders = Some(rows);
                     if let Some(to) = fresh.first() {
-                        let said = format!("your limit on {to} is reachable · open Trade › Orders to review it");
-                        self.toast_as(said.clone(), Severity::Attention, None);
-                        self.notices_out
-                            .push(("Limit reachable".into(), format!("Your limit on {to} is reachable. Open Quai Terminal to review.")));
+                        self.toast_as(
+                            format!("your limit on {to} is reachable · Trade › Orders, enter to review"),
+                            Severity::Attention,
+                            None,
+                        );
+                    }
+                    // The desktop and the bell, only for what this terminal announced: an order the
+                    // daemon found, it put on the desktop itself. With a daemon running, it also
+                    // forwards this terminal's notification, so the terminal leaves the desktop to it.
+                    if let Some(id) = announced.first()
+                        && let Some(plan) = rows.iter().find(|p| &p.id == id)
+                        && let Ok(value) = wallet_core::orders::details(plan)
+                    {
+                        if !crate::daemon::daemon_running(&self.paths) {
+                            self.notices_out.push(wallet_core::orders::reachable_notice(&value));
+                        }
                         self.ring();
                     }
+                    self.eco.orders = Some(rows);
                 }
             }
             Ev::OrderReview(r) => {

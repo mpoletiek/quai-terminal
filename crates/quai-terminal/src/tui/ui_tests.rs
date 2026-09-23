@@ -2145,7 +2145,7 @@ fn channel_offers_render_above_channels_with_their_answer_keys() {
 /// cross-fade (the finished frame thins away over the still wordmark), never a cut, and nothing
 /// starts again until the next lock.
 #[test]
-fn the_lock_effect_plays_once_then_rests() {
+fn the_lock_effect_loops_or_plays_once_then_rests() {
     use ratatui::{Terminal, backend::TestBackend};
     let dir = tempfile::tempdir().unwrap();
     let paths = wallet_core::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap();
@@ -2173,10 +2173,30 @@ fn the_lock_effect_plays_once_then_rests() {
     let buf = term.backend().buffer();
     let inked = (1..=h).any(|y| (0..w).any(|x| buf.cell((x, y)).is_some_and(|c| c.symbol().trim() != "")));
     assert!(inked, "the resting screen is never an empty canvas");
-    // Nothing brings it back until the next lock.
+    // Looping (the default): once the last frame has dissolved, the next effect starts.
+    assert!(app.config.lock_loop, "looping is the default");
+    app.tick((120, 40));
+    assert!(app.ambient.is_none(), "not while the last one is still dissolving");
+    app.lock_fade = None;
+    app.focused = true;
+    app.tick((120, 40));
+    assert!(app.ambient.is_some() && !app.lock_rested, "the next effect follows");
+    // Not while a password is being typed, nor in a background window.
+    app.ambient = None;
+    app.lock_rested = true;
+    app.lock_input.push('x');
+    app.tick((120, 40));
+    assert!(app.ambient.is_none(), "nothing starts near a password");
+    app.lock_input.clear();
+    app.focused = false;
+    app.tick((120, 40));
+    assert!(app.ambient.is_none(), "nor while the window is in the background");
+    app.focused = true;
+    // Played once: nothing brings it back until the next lock.
+    app.config.lock_loop = false;
     app.tick((120, 40));
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.ambient.is_none(), "the tick does not restart it either");
+    assert!(app.ambient.is_none(), "the tick does not restart it");
     app.locked = false;
     app.enter_lock(Some((120, 40)));
     assert!(app.ambient.is_some() && !app.lock_rested, "the next lock plays one again");

@@ -653,16 +653,29 @@ impl App {
                 SwapAsset::Quai => "quai".into(),
                 SwapAsset::Token { address, .. } => address.clone(),
             };
-            if let Some(to) = &self.eco.swap.to {
-                self.open_form(FormKind::OrderCreate {
-                    from: asset(&self.eco.swap.from),
-                    to: asset(to),
-                    input: self.eco.swap.amount.clone(),
-                    slippage: self.eco.swap.slippage_bps,
-                });
-            } else {
-                self.toast("choose a receive token and input amount first", true);
-            }
+            // The order is this swap, waited for: it needs the pair, the amount and the quote the
+            // card is showing, which is what the form measures a target against.
+            let quote = match (&self.eco.swap.to, &self.eco.swap.quote) {
+                (None, _) => return self.toast_and_consume("choose what to receive first"),
+                (_, _) if self.eco.swap.amount.trim().is_empty() => return self.toast_and_consume("type an amount to trade first"),
+                (Some(_), Some(Ok(q))) if q.from == self.eco.swap.from && Some(&q.to) == self.eco.swap.to.as_ref() => q.clone(),
+                _ => return self.toast_and_consume("wait for the quote, then create the order"),
+            };
+            let preview = super::super::order_ui::Preview {
+                from_symbol: quote.from.symbol().to_string(),
+                to_symbol: quote.to.symbol().to_string(),
+                from_decimals: quote.from.decimals(),
+                to_decimals: quote.to.decimals(),
+                input_atoms: quote.amount_in.clone(),
+                current_out: quote.amount_out.clone(),
+            };
+            self.open_form(FormKind::OrderCreate {
+                from: asset(&quote.from),
+                to: asset(&quote.to),
+                input: self.eco.swap.amount.clone(),
+                slippage: self.eco.swap.slippage_bps,
+                preview: Box::new(preview),
+            });
             return true;
         }
         if key.code == KeyCode::Char('P') {
@@ -978,6 +991,22 @@ impl App {
         card.routes = None;
         self.switch(Screen::Convert);
         self.eco.convert.field = 1;
+    }
+
+    /// Say why a key did nothing, and consume it.
+    fn toast_and_consume(&mut self, text: &str) -> bool {
+        self.toast(text, true);
+        true
+    }
+
+    /// Esc on Convert or Wrap: back to the swap card, on the pair it last had. Choosing Qi (or a
+    /// wrapped asset opposite its own) turns the exchange into a conversion or a wrap, and this is
+    /// the way back to a market swap.
+    pub(crate) fn exchange_back_to_swap(&mut self) {
+        // Without trading there is no swap card to go back to, and Esc says nothing.
+        if self.config.features.on(wallet_core::config::Feature::Trading) {
+            self.switch(Screen::Swap);
+        }
     }
 
     /// `/` on Convert and Wrap: the exchange's picker, for what to receive.

@@ -742,6 +742,8 @@ pub async fn nft(ctx: &mut Ctx, cmd: NftCmd) -> Result<()> {
             let s = ctx.session().await?;
             let data = s.data_ctx()?;
             let item = data.explorer.nft(&contract, &token_id).await?;
+            let kind = item.kind.unwrap_or(wallet_core::explorer::TokenKind::Erc721);
+            let item = data.with_own_metadata(item, kind).await;
             let owner = data.erc721_owner(&contract, &token_id, wallet_core::data::READ_CALLER).await.ok();
             let listing = wallet_core::market::listings(&data, Some(&contract))
                 .await

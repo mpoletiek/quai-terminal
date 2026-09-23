@@ -284,7 +284,7 @@ pub fn resolve(url: &str) -> Result<Source> {
 /// URLs it builds itself from a verified CID (`launches::logo`), never with one a token supplied.
 pub const MEDIA_HOSTS: [&str; 4] = ["explorer.qu.ai", "quaiscan.io", "ipfs.io", "www.quainance.com"];
 
-fn percent_decode(text: &str) -> Vec<u8> {
+pub(crate) fn percent_decode(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

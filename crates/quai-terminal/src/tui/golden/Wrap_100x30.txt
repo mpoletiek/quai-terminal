@@ -27,4 +27,4 @@
                       ││                                                                           │
                       ││                                                                           │
                       │└───────────────────────────────────────────────────────────────────────────┘
- N notifications  enter review  / pick asset  space actions  : palette  ? more
+ N notifications  enter review  / pick asset  esc back to swap  space actions  : palette  ? more

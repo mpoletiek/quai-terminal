@@ -168,9 +168,11 @@ const CONVERT: ViewKeys = ViewKeys {
         ov(Filter, "pick asset", Act(App::open_exchange_picker)),
         ov(Flip, "flip", V(ch('f'))),
         ov(ViewMode, "route", V(ch('r'))),
+        ov(Back, "back to swap", Act(App::exchange_back_to_swap)),
     ],
-    footer: &[Open, Filter, Flip, Sheet],
+    footer: &[Open, Filter, Flip, Back, Sheet],
     sheet: &[
+        tr('s', "back to a market swap", Act(App::exchange_back_to_swap)),
         it('p', "pick what to receive (any asset)", Act(App::open_exchange_picker)),
         it('m', "max", V(ch('m'))),
         it('r', "protocol or market route", V(ch('r'))),
@@ -183,9 +185,14 @@ const WRAP: ViewKeys = ViewKeys {
         ov(PanePrev, "edit", V(KeyCode::BackTab)),
         ov(Open, "review", V(KeyCode::Enter)),
         ov(Filter, "pick asset", Act(App::open_exchange_picker)),
+        ov(Back, "back to swap", Act(App::exchange_back_to_swap)),
     ],
-    footer: &[Open, Filter, Sheet],
-    sheet: &[it('p', "pick what to receive (any asset)", Act(App::open_exchange_picker)), it('m', "max", V(ch('m')))],
+    footer: &[Open, Filter, Back, Sheet],
+    sheet: &[
+        tr('s', "back to a market swap", Act(App::exchange_back_to_swap)),
+        it('p', "pick what to receive (any asset)", Act(App::open_exchange_picker)),
+        it('m', "max", V(ch('m'))),
+    ],
 };
 
 const POOLS: ViewKeys = ViewKeys {

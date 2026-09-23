@@ -868,6 +868,9 @@ pub async fn holdings(ctx: &DataCtx, owners: &[String], limit: usize, refresh: b
                     ..NftItem::default()
                 },
             };
+            // The explorer can fail to read a token's metadata and never retry; the contract still
+            // says where it is.
+            let item = ctx.with_own_metadata(item, kind).await;
             out.push(OwnedNft { item, owner: owner.to_lowercase(), kind, quantity, verified });
         }
     }

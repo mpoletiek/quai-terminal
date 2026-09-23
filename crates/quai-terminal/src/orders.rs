@@ -17,16 +17,22 @@ pub enum OrderCmd {
         from: String,
         to: String,
         amount: String,
+        /// What to wait for: `+5%` (5% more back than a swap gives now) or an amount to receive.
+        /// The order guarantees this less the slippage allowance.
+        #[arg(long, allow_hyphen_values = true, required_unless_present = "min_receive", conflicts_with = "min_receive")]
+        target: Option<String>,
+        /// The least to accept after slippage, instead of a target.
         #[arg(long)]
-        min_receive: String,
+        min_receive: Option<String>,
         #[arg(long)]
         account: Option<String>,
-        /// Maximum fee per approval or swap, in QUAI.
+        /// Maximum fee per approval or swap, in QUAI (default: the network's fee policy).
         #[arg(long)]
-        max_fee: String,
-        /// Total fee authorization; failed or declined attempts consume this budget too.
+        max_fee: Option<String>,
+        /// Total fee authorization; failed or declined attempts consume this budget too
+        /// (default: the per-attempt maximum times the attempts).
         #[arg(long)]
-        total_fee_budget: String,
+        total_fee_budget: Option<String>,
         #[arg(long, default_value_t = 3)]
         max_attempts: u8,
         #[arg(long, default_value_t = 50)]
@@ -69,20 +75,11 @@ fn show(ctx: &Ctx, plan: &wallet_core::plans::TradePlan) -> Result<()> {
         return Ok(());
     }
     let value = orders::details(plan)?;
-    println!("{}  {:?}  {:?}", plan.id, value.state, value.spec.mode);
-    println!("{}", plan.reason);
-    println!(
-        "input {} atoms ({}) → at least {} atoms ({})",
-        value.spec.input_atoms, value.spec.from, value.spec.minimum_output_atoms, value.spec.to
-    );
-    println!(
-        "router {} · expires {} · attempts {}/{}",
-        value.spec.router,
-        value.spec.expires_at,
-        value.attempts.len(),
-        value.spec.max_attempts
-    );
-    println!("fee authorization consumed {} / {} QUAI atoms", value.fee_budget_used_atoms, value.spec.total_fee_budget_atoms);
+    println!("{}  {}", ctx.out.bold(&plan.id), ctx.out.dim(&format!("{:?}", value.spec.mode).to_lowercase()));
+    for (label, text) in orders::describe(&value, wallet_core::registry::now()) {
+        println!("  {label:<11}{text}");
+    }
+    println!("{}", ctx.out.dim(&plan.reason));
     Ok(())
 }
 
@@ -102,6 +99,7 @@ pub async fn run(ctx: &mut Ctx, args: OrderArgs) -> Result<()> {
             from,
             to,
             amount,
+            target,
             min_receive,
             account,
             max_fee,
@@ -115,6 +113,9 @@ pub async fn run(ctx: &mut Ctx, args: OrderArgs) -> Result<()> {
                 return Err(CoreError::Invalid("expiry must be 61 seconds through 30 days".into()));
             }
             let mut session = ctx.session().await?;
+            let (default_fee, default_budget) = orders::default_fees(&session.network, max_attempts)?;
+            let max_fee = max_fee.unwrap_or(default_fee);
+            let total_fee_budget = total_fee_budget.unwrap_or(default_budget);
             let plan = orders::create(
                 &mut session,
                 orders::Create {
@@ -122,7 +123,8 @@ pub async fn run(ctx: &mut Ctx, args: OrderArgs) -> Result<()> {
                     from,
                     to,
                     input: amount,
-                    minimum_output: min_receive,
+                    minimum_output: min_receive.unwrap_or_default(),
+                    target_output: target,
                     slippage_bps: slippage,
                     expires_at: wallet_core::registry::now() + u64::from(expires_in),
                     maximum_fee: max_fee,
@@ -161,7 +163,7 @@ pub async fn run(ctx: &mut Ctx, args: OrderArgs) -> Result<()> {
                 if ctx.out.json() {
                     ctx.out.emit("order observe", &observation);
                 } else {
-                    println!("{}  {:?}  {}", observation.id, observation.state, observation.reason);
+                    println!("{}  {}  {}", observation.id, observation.state.label(), ctx.out.dim(&observation.reason));
                 }
                 if observation.triggered
                     || matches!(

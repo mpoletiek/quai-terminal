@@ -6,7 +6,7 @@ use super::data::{DataCmd, DataEv};
 use super::worker::{Cmd, Prepare};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wallet_core::amount;
@@ -709,6 +709,8 @@ pub struct Eco {
     pub flow_summary: Option<(String, Vec<String>)>,
     /// Limit orders (Trade › Orders), once read.
     pub orders: Option<Vec<wallet_core::plans::TradePlan>>,
+    /// When the open terminal last re-checked its active limit orders.
+    pub orders_watched_at: Option<std::time::Instant>,
     /// Explore's rows and trade windows, rebuilt when their inputs change.
     pub explore_index: RefCell<Option<ExploreIndex>>,
     /// Markets' row order (indices into the pool directory) and the fingerprint it was sorted for.
@@ -720,6 +722,12 @@ pub struct Eco {
     pub search: Option<String>,
     pub search_text: String,
     pub collection_items: HashMap<String, Result<Vec<NftItem>, String>>,
+    /// How many items each collection has in all, when the explorer said.
+    pub collection_total: HashMap<String, u64>,
+    /// Collections with a further page on its way, and those whose last one failed (not asked
+    /// again until the view is reopened).
+    pub collection_paging: HashSet<String>,
+    pub collection_more_failed: HashSet<String>,
     pub listings: HashMap<Option<String>, Result<Vec<Listing>, String>>,
     pub listings_loading: bool,
     /// Listings by this wallet's accounts (Bazarr indexer; re-checked on-chain before changes).
@@ -1179,8 +1187,10 @@ impl App {
             }
             Detail::Collection(c) => {
                 if !self.eco.collection_items.contains_key(c) {
-                    self.send_data(DataCmd::CollectionItems(c.clone()));
+                    self.send_data(DataCmd::CollectionItems { contract: c.clone(), offset: 0 });
                 }
+                // A page that failed last time is worth another try on a fresh visit.
+                self.eco.collection_more_failed.remove(c);
                 self.send_data(DataCmd::Listings { collection: Some(c.clone()) });
                 self.eco.collection_listings_focused = false;
                 self.eco.collection_listing = 0;
@@ -1219,6 +1229,70 @@ impl App {
                 .unwrap_or_else(|| wallet_core::session::short_address(c)),
             Detail::Activity(_) => "Detail".into(),
         }
+    }
+
+    /// A page of a collection's items arrived. The first replaces what was shown (keeping any
+    /// later pages already loaded behind it); a later one is added only where it continues the
+    /// list, so a repeated or late answer never doubles items.
+    pub(crate) fn collection_page(
+        &mut self,
+        contract: String,
+        offset: usize,
+        result: Result<wallet_core::explorer::CollectionPage, String>,
+    ) {
+        if offset > 0 {
+            self.eco.collection_paging.remove(&contract);
+        }
+        let page = match result {
+            Ok(page) => page,
+            Err(e) if offset == 0 => {
+                self.eco.collection_items.insert(contract, Err(e));
+                return;
+            }
+            Err(_) => {
+                self.eco.collection_more_failed.insert(contract);
+                return;
+            }
+        };
+        if let Some(total) = page.total {
+            self.eco.collection_total.insert(contract.clone(), total);
+        }
+        match self.eco.collection_items.get_mut(&contract) {
+            Some(Ok(items)) if offset > 0 => {
+                if items.len() == offset {
+                    items.extend(page.items);
+                }
+            }
+            _ if offset > 0 => {}
+            Some(Ok(items)) if items.len() > page.items.len() => {
+                let n = page.items.len();
+                items.splice(..n, page.items);
+            }
+            _ => {
+                self.eco.collection_items.insert(contract, Ok(page.items));
+            }
+        }
+    }
+
+    /// The next page of the open collection, once the selection comes within half a page of the
+    /// end of what is loaded. Pages come as they are needed: a collection of thousands is not
+    /// fetched whole to show its first screen.
+    pub(crate) fn page_collection(&mut self) {
+        let Some(Detail::Collection(c)) = self.detail.last() else { return };
+        let Some(Ok(items)) = self.eco.collection_items.get(c) else { return };
+        let (loaded, total) = (items.len(), self.eco.collection_total.get(c).copied().unwrap_or(0) as usize);
+        let page = wallet_core::explorer::COLLECTION_PAGE;
+        if loaded >= total
+            || loaded == 0
+            || self.detail_selected + page / 2 < loaded
+            || self.eco.collection_paging.contains(c)
+            || self.eco.collection_more_failed.contains(c)
+        {
+            return;
+        }
+        let c = c.clone();
+        self.eco.collection_paging.insert(c.clone());
+        self.send_data(DataCmd::CollectionItems { contract: c, offset: loaded });
     }
 
     /// Items selectable inside the top detail view.

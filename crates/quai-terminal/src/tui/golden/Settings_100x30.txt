@@ -14,14 +14,14 @@
   6  Activity         ││   Balance in the top bar         ● on · $ toggles it                      │
                       ││   Effects & celebrations         ● on                                     │
                       ││   Lock screen animation          random  ›                                │
-▌ 0  System           ││   Terminal bell on good news     ○ off                                    │
-                      ││                                                                           │
-   [ ] tabs           ││ Features                                                                  │
+▌ 0  System           ││   Loop the lock screen animation ● on · one after another                 │
+                      ││   Terminal bell on good news     ○ off                                    │
+   [ ] tabs           ││                                                                           │
+                      ││ Features                                                                  │
                       ││   Messaging                      ● on · board, sealed DMs, chat dock      │
                       ││   Trading                        ● on · markets, swap, pools, launches    │
                       ││   NFTs                           ● on · collected, explore, listings      │
-                      ││   Notifications                  ● on                                     │
-                      ││   ↓ 9 more                                                                │
+                      ││   ↓ 10 more                                                               │
                       │└───────────────────────────────────────────────────────────────────────────┘
                       │┌ environment ──────────────────────────────────────────────────────────────┐
                       ││ terminal      xterm-256color · block QR codes · 24-bit color              │

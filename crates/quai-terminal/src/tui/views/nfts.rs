@@ -489,14 +489,29 @@ pub(crate) fn draw_collection_detail(f: &mut Frame, app: &App, t: &Theme, area: 
         if let Some(h) = s.holders {
             parts.push(format!("{h} holders"));
         }
-        if let Some(supply) = s.total_supply {
+        if let Some(supply) = s.total_supply
+            && !app.eco.collection_total.contains_key(contract)
+        {
             parts.push(format!("{supply} items"));
         }
     }
     if sales7 > 0 {
         parts.insert(0, format!("{window_days}d {} QUAI over {sales7}", amount::group_thousands(&format!("{vol7:.0}"))));
     }
-    let title = if parts.is_empty() { "items".to_string() } else { format!("items · {}", parts.join(" · ")) };
+    // How far the pages have come: more load as the selection nears the end.
+    let loaded = match app.eco.collection_items.get(contract) {
+        Some(Ok(items)) => items.len(),
+        _ => 0,
+    };
+    let head = match app.eco.collection_total.get(contract).map(|t| *t as usize) {
+        Some(total) if loaded > 0 && loaded < total => {
+            let more = if app.eco.collection_paging.contains(contract) { " …" } else { "" };
+            format!("items {loaded} of {total}{more}")
+        }
+        Some(total) if total > 0 => format!("{total} items"),
+        _ => "items".to_string(),
+    };
+    let title = if parts.is_empty() { head } else { format!("{head} · {}", parts.join(" · ")) };
     let block = panel(t, &title, !focused);
     let inner = block.inner(grid_area);
     f.render_widget(block, grid_area);

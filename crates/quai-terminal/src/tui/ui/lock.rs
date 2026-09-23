@@ -15,10 +15,11 @@ pub(crate) fn draw_lock(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
     let [_, art, form, _] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(art_h), Constraint::Length(11), Constraint::Min(0)]).areas(area);
     let accent = t.accent_rgb.map(|(r, g, b)| Color::Rgb(r, g, b)).unwrap_or(t.focus);
-    // One effect plays when the wallet locks, then the screen rests: the lock screen is where an
-    // idle wallet spends most of its life, and effects chained forever held a core at a fifth.
-    // It also goes still the moment a password is being typed, and waits while the window is in
-    // the background (a frozen effect resumes where it was).
+    // An effect plays when the wallet locks. With `lock_loop` on (the default) the next follows
+    // once it has dissolved into the wordmark (`App::tick`); off, the screen rests after one,
+    // since effects chained forever hold about a fifth of a core. Either way it goes still the
+    // moment a password is being typed, and waits while the window is in the background (a
+    // frozen effect resumes where it was).
     let typing = !app.lock_input.is_empty() || app.unlocking;
     let rest = |app: &mut App| {
         app.lock_fade = app.ambient.as_ref().and_then(|c| c.frame()).map(|f| (f.to_string(), std::time::Instant::now()));

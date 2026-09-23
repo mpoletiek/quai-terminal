@@ -248,6 +248,9 @@ pub struct AppConfig {
     pub hold_to_sign: bool,
     /// h j k l move the cursor as well as the arrows. Off frees them for each view's own actions.
     pub vim_keys: bool,
+    /// The lock screen plays one animation after another. Off, it plays one per lock and then
+    /// rests on the still wordmark, which costs no CPU while the wallet sits locked.
+    pub lock_loop: bool,
     /// Large block digits for balances (off for screen readers / NO_COLOR).
     pub big_numbers: bool,
     /// Show the wallet's QUAI balance in the top bar (`$` hides it for a shoulder-surfer).
@@ -338,6 +341,7 @@ impl Default for AppConfig {
             sound: false,
             hold_to_sign: false,
             vim_keys: true,
+            lock_loop: true,
             big_numbers: true,
             balance_in_bar: true,
             layout: "auto".into(),

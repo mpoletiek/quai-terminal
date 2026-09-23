@@ -475,6 +475,8 @@ pub enum FormKind {
         to: String,
         input: String,
         slippage: u16,
+        /// The Swap card's quote when the form opened, for the live preview.
+        preview: Box<super::order_ui::Preview>,
     },
     ExactOutput {
         from: String,
@@ -1889,9 +1891,17 @@ impl App {
         if before != self.toasts.len() {
             self.dirty = true;
         }
-        // A lock screen that isn't being drawn yet (no size) gets its one effect here; once that
-        // has played, the screen rests until the next lock.
-        if self.locked && self.ambient.is_none() && !self.lock_rested && self.meta.is_some() {
+        // A lock screen that isn't being drawn yet (no size) gets its first effect here. After it,
+        // the next one follows once the last has dissolved, while looping is on, the window has
+        // the focus and no password is being typed; otherwise the screen rests until the next lock.
+        let replay = self.config.lock_loop
+            && self.lock_rested
+            && self.lock_fade.is_none()
+            && self.focused
+            && self.lock_input.is_empty()
+            && !self.unlocking;
+        if self.locked && self.ambient.is_none() && (!self.lock_rested || replay) && self.meta.is_some() {
+            self.lock_rested = false;
             self.start_lock_ceremony(size);
         }
         if matches!(self.modal, Modal::Effects(_)) {
@@ -2074,6 +2084,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("balance_in_bar", "Balance in the top bar"),
     ("ceremonies", "Effects & celebrations"),
     ("lock_effect", "Lock screen animation"),
+    ("lock_loop", "Loop the lock screen animation"),
     ("sound", "Terminal bell on good news"),
     // Features
     ("feature:messaging", "Messaging"),

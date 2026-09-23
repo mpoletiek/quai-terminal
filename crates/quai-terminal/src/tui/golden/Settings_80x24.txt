@@ -13,9 +13,9 @@
 │   Balance in the top bar         ● on · $ toggles it                         │
 │   Effects & celebrations         ● on                                        │
 │   Lock screen animation          random  ›                                   │
+│   Loop the lock screen animation ● on · one after another                    │
 │   Terminal bell on good news     ○ off                                       │
-│                                                                              │
-│   ↓ 14 more                                                                  │
+│   ↓ 15 more                                                                  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ environment ─────────────────────────────────────────────────────────────────┐
 │ terminal      xterm-256color · block QR codes · 24-bit color                 │

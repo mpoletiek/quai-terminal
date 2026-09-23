@@ -1514,6 +1514,13 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 "big_numbers" => on_off(c.big_numbers),
                 "balance_in_bar" => format!("{} · $ toggles it", on_off(c.balance_in_bar)),
                 "lock_effect" => format!("{}  {}", c.lock_effect, t.icon(Icon::Disclosure)),
+                "lock_loop" => {
+                    if c.lock_loop {
+                        format!("{} · one after another", on_off(true))
+                    } else {
+                        format!("{} · one per lock, then still", on_off(false))
+                    }
+                }
                 "notifications" => on_off(c.notifications),
                 "autolock" => {
                     if c.auto_lock_minutes == 0 {

@@ -521,7 +521,7 @@ impl App {
                             form.error = Some(msg);
                         }
                         Ok(()) if matches!(form.kind, FormKind::OrderCreate { .. }) => {
-                            let FormKind::OrderCreate { from, to, input, slippage } = &form.kind else { unreachable!() };
+                            let FormKind::OrderCreate { from, to, input, slippage, .. } = &form.kind else { unreachable!() };
                             let account = form.fields.first().map(|f| f.value.trim().to_string()).filter(|s| !s.is_empty());
                             match super::super::order_ui::create_request(
                                 account,

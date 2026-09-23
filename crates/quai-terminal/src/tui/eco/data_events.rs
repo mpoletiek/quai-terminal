@@ -150,7 +150,7 @@ impl App {
             Screen::Board => self.tick_board(),
             Screen::Launches => self.load_launches(false),
             Screen::Pnl => self.load_pnl(false),
-            Screen::Orders => self.orders_reload(),
+            Screen::Orders => self.orders_list(),
             Screen::Network => self.tick_chain_stats(),
             Screen::Wallets => self.load_wallets(),
             Screen::Explore => {
@@ -571,9 +571,7 @@ impl App {
                 self.eco.collections_loading = false;
                 self.eco.collections = Some(result);
             }
-            DataEv::CollectionItems { contract, result } => {
-                self.eco.collection_items.insert(contract, result);
-            }
+            DataEv::CollectionItems { contract, offset, result } => self.collection_page(contract, offset, result),
             DataEv::CollectionStats { result } => match result {
                 Ok(rows) => {
                     self.eco.nft_stats = rows.into_iter().map(|c| (c.address.clone(), c)).collect();
@@ -696,6 +694,8 @@ impl App {
         self.tick_chat();
         self.tick_alerts();
         self.tick_tx_cost();
+        self.page_collection();
+        self.tick_orders();
         if self.screen == Screen::Markets && !self.locked {
             self.tick_markets();
         }
