@@ -1842,16 +1842,13 @@ async fn read_chain_range(ctx: &DataCtx, pool: &Pool, from: u64, to: u64) -> Res
     use futures::StreamExt;
     use quai_sdk::provider::{LogFilter, LogRange, TopicMatch};
     let address: QuaiAddress = pool.address.parse().map_err(|_| CoreError::Invalid("pair address".into()))?;
-    let filter = LogFilter {
-        zone: crate::network::ZONE,
-        range: LogRange::Inclusive { from, to },
-        addresses: vec![address.address()],
-        topics: if pool.venue == Venue::Curve {
+    let filter = LogFilter::new(crate::network::ZONE, LogRange::Inclusive { from, to })
+        .with_addresses(vec![address.address()])
+        .with_topics(if pool.venue == Venue::Curve {
             Vec::new()
         } else {
             vec![TopicMatch::AnyOf([SWAP_TOPIC, SYNC_TOPIC].iter().filter_map(|t| t.parse().ok()).collect())]
-        },
-    };
+        });
     let logs = ctx.node.provider.logs(&filter).await?;
     let mut blocks: Vec<u64> = logs.iter().filter(|l| !l.removed).map(|l| l.inclusion.block_number).collect();
     blocks.sort_unstable();
@@ -2090,12 +2087,9 @@ async fn refresh_dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64) -> Result<
     // [`FLOW_FILTER_ADDRESSES`] pools. They cover disjoint pools over the same block range, so they
     // run together and their logs merge.
     let reads = addresses.chunks(FLOW_FILTER_ADDRESSES).map(|chunk| {
-        let filter = LogFilter {
-            zone: crate::network::ZONE,
-            range: LogRange::Inclusive { from, to },
-            addresses: chunk.to_vec(),
-            topics: vec![TopicMatch::AnyOf([SWAP_TOPIC].iter().filter_map(|t| t.parse().ok()).collect())],
-        };
+        let filter = LogFilter::new(crate::network::ZONE, LogRange::Inclusive { from, to })
+            .with_addresses(chunk.to_vec())
+            .with_topics(vec![TopicMatch::AnyOf([SWAP_TOPIC].iter().filter_map(|t| t.parse().ok()).collect())]);
         async move { ctx.node.provider.logs(&filter).await }
     });
     use futures::StreamExt;

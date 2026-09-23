@@ -26,12 +26,8 @@ struct Chain {
 }
 
 fn policy(gas: u64, margin_bps: u16) -> FeePolicy {
-    FeePolicy {
-        max_gas: gas,
-        max_gas_price: U256::from(100_000_000_000_000_000u64),
-        max_total_fee: U256::from(1_000_000_000_000_000_000_000_000u128),
-        gas_margin_bps: margin_bps,
-    }
+    FeePolicy::new(gas, U256::from(100_000_000_000_000_000u64), U256::from(1_000_000_000_000_000_000_000_000u128))
+        .with_gas_margin_bps(margin_bps)
 }
 
 fn new_id() -> Result<ReservationId, Err> {
@@ -123,7 +119,7 @@ impl Chain {
                 U256::from(1337),
                 nonce,
                 U256::ZERO,
-                DeploymentSearch { start_salt: 0, max_attempts: 10_000 },
+                DeploymentSearch::new(0, 10_000),
                 || false,
             )?;
             let address = deployment.address();

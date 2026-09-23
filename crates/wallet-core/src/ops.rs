@@ -382,12 +382,8 @@ impl Session {
         }
         self.prepare_account(AccountRequest {
             from,
-            intent: AccountIntent {
-                to: recipient,
-                value,
-                data: RpcData::new(vec![]).map_err(|_| CoreError::Invalid("calldata".into()))?,
-                access_list: vec![],
-            },
+            intent: AccountIntent::new(recipient, value)
+                .with_data(RpcData::new(vec![]).map_err(|_| CoreError::Invalid("calldata".into()))?),
             kind: "send_quai".into(),
             title: "Send QUAI".into(),
             asset: "QUAI".into(),
@@ -412,12 +408,7 @@ impl Session {
         };
         let me = Self::quai_address_of(&from)?;
         self.prepare_account(AccountRequest {
-            intent: AccountIntent {
-                to: me,
-                value: U256::ZERO,
-                data: RpcData::new(vec![]).map_err(|_| CoreError::Invalid("calldata".into()))?,
-                access_list: vec![],
-            },
+            intent: AccountIntent::new(me, U256::ZERO).with_data(RpcData::new(vec![]).map_err(|_| CoreError::Invalid("calldata".into()))?),
             kind: "fill_gap".into(),
             title: "Fill nonce gap".into(),
             asset: "QUAI".into(),
@@ -748,7 +739,7 @@ impl Session {
     }
 
     fn qi_policy(&self, max_fee: U256, max_inputs: usize) -> QiPolicy {
-        QiPolicy { initial_fee: U256::ZERO, max_fee, max_inputs, max_outputs: 256, max_fee_rounds: 12, max_snapshot_age: 10 }
+        QiPolicy::new(max_fee, max_inputs, 256, 10).with_max_fee_rounds(12)
     }
 
     /// Observe the largest verified exact-qit conversion or wrapping fill without consuming
@@ -902,15 +893,7 @@ impl Session {
         let height = checkpoint.height.saturating_add(U256::from(1u64));
         let mut most = 0usize;
         for fee in [U256::ZERO, max_fee / U256::from(2u64), max_fee] {
-            let request = quai_sdk::wallet::SelectionRequest {
-                zone: ZONE,
-                candidate_height: height,
-                target,
-                fee,
-                max_fee,
-                max_inputs: 64,
-                max_outputs: 256,
-            };
+            let request = quai_sdk::wallet::SelectionRequest::new(ZONE, height, target, 64, 256).with_fee(fee, max_fee);
             match quai_sdk::wallet::select_fewest(&snapshot.coins, &request) {
                 Ok(selection) => most = most.max(selection.change_outputs.len()),
                 Err(e) => return Err(CoreError::Insufficient(format!("Qi selection: {e}"))),
@@ -1055,9 +1038,9 @@ impl Session {
                 self.ensure_channel(code)?;
                 let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
                 let destinations = allocate_payment_destinations(&mut self.qi_store, payment, code, qits, needed.max(1))?;
-                (QiIntent { amount: qits, destinations }, code.to_base58(), Some(code.clone()))
+                (QiIntent::new(qits, destinations), code.to_base58(), Some(code.clone()))
             }
-            Recipient::Qi(address) => (QiIntent { amount: qits, destinations: vec![*address] }, address.to_string(), None),
+            Recipient::Qi(address) => (QiIntent::new(qits, vec![*address]), address.to_string(), None),
             Recipient::Quai(_) => {
                 return Err(CoreError::Invalid("that is a Quai address; use `send quai` or `convert qi-to-quai`".into()));
             }
@@ -1080,8 +1063,7 @@ impl Session {
                 .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                 .qi_keyring_with_channels(&self.qi_store)?;
             trace("send_qi: preparing");
-            let policy =
-                QiPolicy { initial_fee: U256::ZERO, max_fee, max_inputs: 64, max_outputs: 256, max_fee_rounds: 12, max_snapshot_age: 10 };
+            let policy = QiPolicy::new(max_fee, 64, 256, 10).with_max_fee_rounds(12);
             let result = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store)
                 .prepare(id, intent.clone(), policy, pool.as_mut().ok_or_else(|| CoreError::Storage("no change pool".into()))?)
                 .await;
@@ -1798,12 +1780,7 @@ impl Session {
         let own = Self::quai_address_of(&from)?;
         let req = AccountRequest {
             from,
-            intent: AccountIntent {
-                to: own,
-                value: its,
-                data: RpcData::new(vec![]).map_err(|_| CoreError::Invalid("data".into()))?,
-                access_list: vec![],
-            },
+            intent: AccountIntent::new(own, its).with_data(RpcData::new(vec![]).map_err(|_| CoreError::Invalid("data".into()))?),
             kind: "convert_quai_to_qi".into(),
             title: "Convert QUAI → Qi".into(),
             asset: "QUAI".into(),
@@ -1899,14 +1876,7 @@ impl Session {
                 .as_ref()
                 .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                 .qi_keyring_with_channels(&self.qi_store)?;
-            let policy = QiPolicy {
-                initial_fee: U256::ZERO,
-                max_fee: cap.unwrap_or(U256::from(500u64)),
-                max_inputs: 64,
-                max_outputs: 256,
-                max_fee_rounds: 12,
-                max_snapshot_age: 10,
-            };
+            let policy = QiPolicy::new(cap.unwrap_or(U256::from(500u64)), 64, 256, 10).with_max_fee_rounds(12);
             let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
             let change = pool.as_mut().ok_or_else(|| CoreError::Storage("no change pool".into()))?;
             let result = if estimated {

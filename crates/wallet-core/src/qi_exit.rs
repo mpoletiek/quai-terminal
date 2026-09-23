@@ -89,7 +89,7 @@ fn source(store: &mut SqliteStore) -> Result<(QiSource, u64)> {
     let snapshot = store.snapshot()?;
     let checkpoint = snapshot.checkpoint.ok_or_else(|| CoreError::Invalid("refresh Qi outputs before planning an exit".into()))?;
     let owners: Vec<PublicAddress> = store.addresses()?;
-    Ok((QiSource { scope: snapshot.scope, checkpoint, coins: snapshot.coins, owners }, snapshot.generation))
+    Ok((QiSource::new(snapshot.scope, checkpoint, snapshot.coins, owners), snapshot.generation))
 }
 
 async fn quote_at<T: Transport>(
@@ -100,13 +100,13 @@ async fn quote_at<T: Transport>(
 ) -> Result<QiQuote> {
     quote_qi(
         provider,
-        QiQuoteRequest {
+        QiQuoteRequest::new(
             source,
-            intent: QiOperationIntent::Sweep { destinations, mode: SweepMode::PreserveDenominations },
+            QiOperationIntent::Sweep { destinations, mode: SweepMode::PreserveDenominations },
             policy,
-            fees: QiFeeMode::Node,
-            change: &[],
-        },
+            QiFeeMode::Node,
+            &[],
+        ),
     )
     .await
     .map_err(|e| CoreError::Invalid(format!("Qi sweep cannot be prepared: {e}")))
@@ -166,13 +166,13 @@ pub async fn quote_special_max<T: Transport>(
             deadline,
             quote_qi(
                 provider,
-                QiQuoteRequest {
-                    source: &source,
-                    intent: operation,
+                QiQuoteRequest::new(
+                    &source,
+                    operation,
                     policy,
-                    fees: QiFeeMode::Profile(quai_sdk::provider::QiFeeProfile::V056ShaAnchored),
+                    QiFeeMode::Profile(quai_sdk::provider::QiFeeProfile::V056ShaAnchored),
                     change,
-                },
+                ),
             ),
         )
         .await
@@ -278,14 +278,7 @@ mod tests {
         (1..=32).map(|n| format!("0x0080{n:036x}").parse().unwrap()).collect()
     }
     fn policy() -> QiPolicy {
-        QiPolicy {
-            initial_fee: U256::ZERO,
-            max_fee: U256::from(20),
-            max_inputs: 64,
-            max_outputs: 256,
-            max_fee_rounds: 12,
-            max_snapshot_age: 10,
-        }
+        QiPolicy::new(U256::from(20), 64, 256, 10).with_max_fee_rounds(12)
     }
     fn setup() -> (tempfile::TempDir, SqliteStore, Provider<Mock>, Mock) {
         let dir = tempfile::tempdir().unwrap();
@@ -298,14 +291,11 @@ mod tests {
         let mut tx_hash = [0; 32];
         tx_hash[3] = 0x80;
         tx_hash[31] = 1;
-        snapshot.coins = vec![CandidateCoin {
-            outpoint: OutPoint { transaction_hash: Hash32::from_bytes(tx_hash), index: 0 },
-            address: owner.address().try_into().unwrap(),
-            denomination: Denomination::new(6).unwrap(),
-            unlock_height: U256::ZERO,
-            expires_at: None,
-            reserved: false,
-        }];
+        snapshot.coins = vec![CandidateCoin::new(
+            OutPoint { transaction_hash: Hash32::from_bytes(tx_hash), index: 0 },
+            owner.address().try_into().unwrap(),
+            Denomination::new(6).unwrap(),
+        )];
         store.replace_snapshot(&snapshot).unwrap();
         let mock = Mock::default();
         let provider =
@@ -370,13 +360,13 @@ mod tests {
                 matches!(
                     quote_qi(
                         &provider,
-                        QiQuoteRequest {
-                            source: &source(&mut store).unwrap().0,
-                            intent: larger,
-                            policy: bounds,
-                            fees: QiFeeMode::Profile(quai_sdk::provider::QiFeeProfile::V056ShaAnchored),
-                            change: &change,
-                        }
+                        QiQuoteRequest::new(
+                            &source(&mut store).unwrap().0,
+                            larger,
+                            bounds,
+                            QiFeeMode::Profile(quai_sdk::provider::QiFeeProfile::V056ShaAnchored),
+                            &change,
+                        )
                     )
                     .await,
                     Err(quai_sdk::qi_preflight::QiPreflightError::Selection(_))

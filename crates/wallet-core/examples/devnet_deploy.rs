@@ -50,16 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scope.chain_id,
         nonce,
         U256::ZERO,
-        DeploymentSearch { start_salt: 0, max_attempts: 10_000 },
+        DeploymentSearch::new(0, 10_000),
         || false,
     )?;
     let address = deployment.address();
-    let policy = FeePolicy {
-        max_gas: 8_000_000,
-        max_gas_price: U256::from(10_000_000_000_000_000u64),
-        max_total_fee: U256::from(100_000_000_000_000_000_000_000u128),
-        gas_margin_bps: 2000,
-    };
+    let policy = FeePolicy::new(8_000_000, U256::from(10_000_000_000_000_000u64), U256::from(100_000_000_000_000_000_000_000u128))
+        .with_gas_margin_bps(2000);
     let prepared = session.prepare_deployment(id, deployment, policy).await?;
     let signed = session.sign(&prepared)?;
     session.broadcast(id).await?;

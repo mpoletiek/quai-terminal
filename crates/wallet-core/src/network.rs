@@ -4,7 +4,7 @@ use crate::error::{CoreError, Result};
 use quai_sdk::accounts::{AccountObservationPolicy, FeePolicy};
 use quai_sdk::primitives::Hash32;
 use quai_sdk::wallet::storage::NetworkScope;
-use quai_sdk::{HttpConfig, HttpTransport, Provider, Routing, U256, Zone};
+use quai_sdk::{HttpConfig, HttpProxy, HttpTransport, Provider, Routing, U256, Zone};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -512,10 +512,11 @@ impl NetworkProfile {
 
     /// Build a provider plus raw transport access for diagnostics.
     pub fn node(&self) -> Result<Node> {
-        let transport = WalletTransport::new(
-            HttpTransport::new(HttpConfig::default().with_timeout(Duration::from_secs(20)))
-                .map_err(|e| CoreError::Network(format!("http transport: {e}")))?,
-        );
+        let mut config = HttpConfig::default().with_timeout(Duration::from_secs(20));
+        if let Some(proxy) = rpc_proxy(&self.rpc_url, crate::http::proxy()) {
+            config = config.with_proxy(Some(HttpProxy::parse(proxy).map_err(|e| CoreError::Invalid(format!("proxy for node RPC: {e}")))?));
+        }
+        let transport = WalletTransport::new(HttpTransport::new(config).map_err(|e| CoreError::Network(format!("http transport: {e}")))?);
         let routing = Routing::with_pathing(&self.rpc_url, ZONE.into(), self.use_pathing)?;
         let endpoint = routing.endpoint(ZONE.into())?.clone();
         Ok(Node { provider: Provider::new(transport.clone(), routing, U256::from(self.chain_id)), transport, endpoint })
@@ -541,12 +542,12 @@ impl NetworkProfile {
     /// review for the user to decide. A fee cap the user typed (`explicit_cap`) stays hard.
     pub fn preparation_limits(&self, gas_hint: u64, explicit_cap: Option<U256>) -> Result<FeePolicy> {
         let policy = self.fee_policy(gas_hint)?;
-        Ok(FeePolicy {
-            max_gas: gas_hint.saturating_mul(4).clamp(1_000_000, 20_000_000),
-            max_gas_price: policy.max_gas_price.saturating_mul(U256::from(20)),
-            max_total_fee: explicit_cap.unwrap_or_else(|| policy.max_total_fee.saturating_mul(U256::from(40))),
-            gas_margin_bps: policy.gas_margin_bps,
-        })
+        Ok(FeePolicy::new(
+            gas_hint.saturating_mul(4).clamp(1_000_000, 20_000_000),
+            policy.max_gas_price.saturating_mul(U256::from(20)),
+            explicit_cap.unwrap_or_else(|| policy.max_total_fee.saturating_mul(U256::from(40))),
+        )
+        .with_gas_margin_bps(policy.gas_margin_bps))
     }
 
     /// Why a prepared fee is above the network fee policy, if it is (shown on the review).
@@ -572,12 +573,8 @@ impl NetworkProfile {
 
     /// The network fee policy (compared on reviews; see `preparation_limits`).
     pub fn fee_policy(&self, max_gas: u64) -> Result<FeePolicy> {
-        Ok(FeePolicy {
-            max_gas,
-            max_gas_price: parse_u256(&self.max_gas_price, "max_gas_price")?,
-            max_total_fee: parse_u256(&self.max_total_fee, "max_total_fee")?,
-            gas_margin_bps: 1000,
-        })
+        Ok(FeePolicy::new(max_gas, parse_u256(&self.max_gas_price, "max_gas_price")?, parse_u256(&self.max_total_fee, "max_total_fee")?)
+            .with_gas_margin_bps(1000))
     }
 
     /// Explorer URL for a transaction hash.
@@ -607,6 +604,18 @@ impl NetworkProfile {
         Routing::with_pathing(&self.rpc_url, ZONE.into(), self.use_pathing)?;
         Ok(())
     }
+}
+
+/// The proxy node RPC to `rpc_url` goes through: the wallet's proxy (`config set proxy`), except for
+/// a node on this machine or the LAN, which is reached directly as the IPFS gateway is — a Tor
+/// circuit cannot reach a private address, and a node there reveals nothing to hide.
+///
+/// With a proxy set and a public node, nothing reaches the node directly: a proxy that is down
+/// fails the request rather than revealing the address it was hiding.
+pub fn rpc_proxy<'a>(rpc_url: &str, proxy: Option<&'a str>) -> Option<&'a str> {
+    let proxy = proxy?;
+    let host = reqwest::Url::parse(rpc_url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    (!crate::ipfs::is_local(&host)).then_some(proxy)
 }
 
 /// A credential-free origin for review provenance. Paths, query strings and user info may
@@ -786,6 +795,25 @@ fn head_timestamp(header: &quai_sdk::provider::ZoneHeader) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    /// Node RPC takes the wallet's proxy to a public node and goes direct to one on this machine
+    /// or the LAN; with no proxy set it is always direct.
+    #[test]
+    fn node_rpc_goes_through_the_proxy_unless_the_node_is_local() {
+        let tor = Some("socks5h://127.0.0.1:9050");
+        assert_eq!(rpc_proxy("https://rpc.quai.network/cyprus1", tor), tor);
+        assert_eq!(rpc_proxy("https://203.0.113.9:9200", tor), tor, "a public address is proxied too");
+        for local in
+            ["http://127.0.0.1:9200", "http://localhost:9200", "http://10.0.0.12:9200", "http://192.168.1.5:9200", "http://[::1]:9200"]
+        {
+            assert_eq!(rpc_proxy(local, tor), None, "{local} is reached directly");
+        }
+        assert_eq!(rpc_proxy("https://rpc.quai.network/cyprus1", None), None);
+        // A proxy the SDK accepts for every scheme the wallet's setting allows.
+        for scheme in ["socks5h", "socks5", "http", "https"] {
+            assert!(HttpProxy::parse(&format!("{scheme}://127.0.0.1:9050")).is_ok(), "{scheme}");
+        }
+    }
+
     use super::*;
 
     #[tokio::test]

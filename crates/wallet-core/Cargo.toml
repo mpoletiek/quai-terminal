@@ -29,6 +29,9 @@ hmac = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
+# Constructors for the SDK's observation outputs, so settlement tests can state what a tracker saw.
+# Tests only: production code must never make up an observation.
+quai-sdk = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true
