@@ -1,5 +1,5 @@
- ◆  PREVIEW │ 1 Home 2 3 4 5 0  │ Home › Qi coins │ ● Local dev   ● 1 unread N
- Home · Portfolio  ▸ Qi coins  Accounts  Locks  [ ]
+ ◆  PREVIEW │ 1 Home 2 3 4 5 6 0 │ ● Local dev │ watch-only       ● 1 unread N
+ Home ·  Portfolio   Qi coins   Accounts   [ ]
 ┌ qi balance ──────────────────────────────────────────────────────────────────┐
 │ ◉  ■ spendable 240   ■ locked 5   ■ reserved 5   · checkpoint #1,234,560     │
 │ ████████████████████████████████████████████████████████████████████████████ │
@@ -8,9 +8,9 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ ▸ coins ─────────────────────────────────────────────────────────────────────┐
 │     Qi           state      origin                             address       │
-│ 0 ◉        0.001 ○ reserved payment from PM8TJ…                0x00F4…804B   │
-│ 1 ◉         0.01 ✓          payment from PM8TJ…                0x00F4…804B   │
-│ 2 ◉          0.1 ✓          payment from PM8TJ…                0x00F4…804B   │
+│ 0 ◉        0.001 ◌ reserved payment from PM8TJ…                0x00F4…804B   ┃
+│ 1 ◉         0.01 ✓          payment from PM8TJ…                0x00F4…804B   ┃
+│ 2 ◉          0.1 ✓          payment from PM8TJ…                0x00F4…804B   ┃
 │ 3 ◉            1 ✓          payment from PM8TJ…                0x00F4…804B   │
 │ 4 ◉           10 ✓          payment from PM8TJ…                0x00F4…804B   │
 │ 5 ◉        0.001 ✓          payment from PM8TJ…                0x00F4…804B   │
@@ -19,6 +19,6 @@
 │ 8 ◉            1 ✓          payment from PM8TJ…                0x00F4…804B   │
 │ 9 ◉           10 ✓          payment from PM8TJ…                0x00F4…804B   │
 │ a ◉        0.001 ✓          payment from PM8TJ…                0x00F4…804B   │
-│ b ◉         0.01 ○ reserved payment from PM8TJ…                0x00F4…804B   │
+│ b ◉         0.01 ◌ reserved payment from PM8TJ…                0x00F4…804B   │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  s send  r receive  a new address  S scan  : palette  ? more
+ N notifications  s send Qi  r receive Qi  space actions  : palette  ? more

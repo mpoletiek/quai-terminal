@@ -333,9 +333,20 @@ pub(crate) mod u256_string {
 /// Untrusted text made safe to show: control characters (C0 and C1, so no terminal escapes),
 /// bidirectional overrides and zero-width characters removed, at most `max_chars` kept. The one
 /// sanitizer every display path uses.
+///
+/// Also removed: what makes a terminal and a width table disagree about how wide the text is,
+/// which would shift everything after it on the row (a column, a border). Variation selectors
+/// (`❤️` is one cell by the table and two on screen), tag characters, skin-tone modifiers,
+/// regional indicators (flags) and the keycap mark. Plain emoji stay: both agree they are two.
 pub fn clean(text: &str, max_chars: usize) -> String {
     text.chars()
-        .filter(|c| !c.is_control() && !matches!(*c, '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}'))
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(*c,
+                    '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}'
+                    // Width: variation selectors, the keycap mark, flags, skin tones, tags.
+                    | '\u{FE00}'..='\u{FE0F}' | '\u{20E3}' | '\u{1F1E6}'..='\u{1F1FF}' | '\u{1F3FB}'..='\u{1F3FF}' | '\u{E0000}'..='\u{E007F}' | '\u{E0100}'..='\u{E01EF}')
+        })
         .take(max_chars)
         .collect()
 }
@@ -1143,6 +1154,18 @@ mod tests {
     }
 
     use super::*;
+
+    /// What would make a terminal draw a name wider than the layout measured it is removed; plain
+    /// emoji, which both count as two cells, stay.
+    #[test]
+    fn untrusted_text_keeps_its_measured_width() {
+        assert_eq!(clean("Love\u{2764}\u{FE0F}", 64), "Love\u{2764}");
+        assert_eq!(clean("GM \u{1F44B}\u{1F3FD}", 64), "GM \u{1F44B}", "the skin tone goes, the hand stays");
+        assert_eq!(clean("\u{1F1FA}\u{1F1F8} DAO", 64), " DAO", "flags are two cells on screen and one each in the table");
+        assert_eq!(clean("1\u{FE0F}\u{20E3}", 64), "1");
+        assert_eq!(clean("tag\u{E0067}\u{E0062}\u{E007F}", 64), "tag");
+        assert_eq!(clean("Pepe \u{1F438}", 64), "Pepe \u{1F438}", "plain emoji stay");
+    }
 
     fn fixture(name: &str) -> Value {
         let text = match name {

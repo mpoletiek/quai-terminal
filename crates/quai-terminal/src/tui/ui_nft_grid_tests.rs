@@ -48,8 +48,18 @@ fn every_collected_tile_gets_its_picture() {
     app.eco.nfts = Some(Ok(items));
     app.switch(Screen::Collected);
     let mut term = Terminal::new(TestBackend::new(160, 48)).unwrap();
-    term.draw(|f| draw(f, &mut app)).unwrap();
-    let placed = super::super::images::kitty_items(&app);
-    let tiles: Vec<_> = placed.iter().filter(|p| p.rows > 2).map(|p| (p.x, p.y, p.cols, p.rows)).collect();
+    // Pictures are fitted and encoded off the UI thread: the first frame reserves their cells, and
+    // they are placed on the frame after their encode lands.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let tiles = loop {
+        super::super::images::poll_fitted(&app);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let placed = super::super::images::kitty_items(&app);
+        let tiles: Vec<_> = placed.iter().filter(|p| p.rows > 2).map(|p| (p.x, p.y, p.cols, p.rows)).collect();
+        if tiles.len() == 3 || std::time::Instant::now() > deadline {
+            break tiles;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(tiles.len(), 3, "placements: {tiles:?}");
 }

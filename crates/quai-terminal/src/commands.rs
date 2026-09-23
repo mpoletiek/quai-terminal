@@ -273,7 +273,7 @@ pub async fn wallet(ctx: &mut Ctx, cmd: WalletCmd) -> Result<()> {
                 let mut s = ctx.session().await?;
                 let added = s.discover_quai_accounts(5).await?;
                 if !ctx.out.json() {
-                    println!("discovered {} additional account(s)", added.len());
+                    println!("discovered {}", wallet_core::amount::count(added.len(), "additional account"));
                 }
                 s.scan_qi(None).await.ok();
             }
@@ -441,7 +441,11 @@ pub async fn wallet(ctx: &mut Ctx, cmd: WalletCmd) -> Result<()> {
                 ctx,
                 "wallet backup",
                 &info,
-                &format!("encrypted backup written to {} ({} network state(s))", out.display(), info.networks.len()),
+                &format!(
+                    "encrypted backup written to {} ({})",
+                    out.display(),
+                    wallet_core::amount::count(info.networks.len(), "network state")
+                ),
             )
         }
         WalletCmd::Restore { file } => {
@@ -456,7 +460,12 @@ pub async fn wallet(ctx: &mut Ctx, cmd: WalletCmd) -> Result<()> {
                 ctx,
                 "wallet verify-backup",
                 &info,
-                &format!("backup OK: wallet `{}`, {} account(s), networks: {}", info.wallet, info.accounts, info.networks.join(", ")),
+                &format!(
+                    "backup OK: wallet `{}`, {}, networks: {}",
+                    info.wallet,
+                    wallet_core::amount::count(info.accounts, "account"),
+                    info.networks.join(", ")
+                ),
             )
         }
         WalletCmd::VerifyPhrase => {
@@ -645,7 +654,7 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
         AccountCmd::Discover { gap } => {
             let mut s = ctx.session().await?;
             let added = s.discover_quai_accounts(gap).await?;
-            done(ctx, "account discover", &added, &format!("found {} new account(s)", added.len()))
+            done(ctx, "account discover", &added, &format!("found {}", wallet_core::amount::count(added.len(), "new account")))
         }
     }
 }
@@ -697,7 +706,10 @@ pub async fn balance(ctx: &Ctx, args: BalanceArgs) -> Result<()> {
     println!("{}    {}", ctx.out.magenta("Qi"), ctx.out.bold(&qi(bal.total)));
     println!("  spendable {}   locked {}   reserved {}", qi(bal.spendable), qi(bal.locked), qi(bal.reserved));
     match qi_summary.checkpoint_height {
-        Some(h) => println!("  {}", ctx.out.dim(&format!("snapshot at block {h} · {} coins", qi_summary.coins.len()))),
+        Some(h) => println!(
+            "  {}",
+            ctx.out.dim(&format!("snapshot at block {h} · {}", wallet_core::amount::count(qi_summary.coins.len(), "coin")))
+        ),
         None if s.meta.qi_xpub.is_some() || !s.meta.qi_imported.is_empty() => {
             println!("  {}", ctx.out.dim("not scanned yet — run `quai-terminal qi scan`"))
         }
@@ -928,9 +940,9 @@ pub async fn qi_cmd(ctx: &Ctx, cmd: QiCmd) -> Result<()> {
                 "qi scan",
                 json!({"height": height, "balance": summary.balance, "coins": summary.coins.len()}),
                 &format!(
-                    "scanned at block {height}: {} Qi in {} coin(s){}",
+                    "scanned at block {height}: {} Qi in {}{}",
                     qi(summary.balance.total),
-                    summary.coins.len(),
+                    wallet_core::amount::count(summary.coins.len(), "coin"),
                     if deep.is_some() { " (deep scan)" } else { "" }
                 ),
             )
@@ -1081,10 +1093,13 @@ pub async fn payment(ctx: &Ctx, cmd: PaymentCmd) -> Result<()> {
         PaymentCmd::Discover => {
             let mut s = ctx.unlocked().await?;
             let summary = s.discover_mailbox().await?;
-            let mut line =
-                format!("{} sender(s) announced · {} registered channel(s) rescanned", summary.senders.len(), summary.registered.len());
+            let mut line = format!(
+                "{} announced · {} rescanned",
+                wallet_core::amount::count(summary.senders.len(), "sender"),
+                wallet_core::amount::count(summary.registered.len(), "registered channel")
+            );
             if summary.pending > 0 {
-                line.push_str(&format!(" · {} offer(s) waiting: payment offers", summary.pending));
+                line.push_str(&format!(" · {} waiting: payment offers", wallet_core::amount::count(summary.pending, "offer")));
             }
             if summary.refused > 0 {
                 line.push_str(&format!(" · {} refused (no room for more channels)", summary.refused));
@@ -1135,9 +1150,9 @@ pub async fn payment(ctx: &Ctx, cmd: PaymentCmd) -> Result<()> {
                 "payment sync",
                 json!({"channels_scanned": sync.scanned, "new_offers": sync.new_offers, "deferred": sync.deferred, "new_qits": found.to_string()}),
                 &format!(
-                    "scanned {} channel(s), {} new channel offer(s), {} Qi newly found",
-                    sync.scanned,
-                    sync.new_offers.len(),
+                    "scanned {}, {}, {} Qi newly found",
+                    wallet_core::amount::count(sync.scanned, "channel"),
+                    wallet_core::amount::count(sync.new_offers.len(), "new channel offer"),
                     wallet_core::amount::qi(found)
                 ),
             )
@@ -1561,7 +1576,7 @@ pub async fn locks(ctx: &Ctx) -> Result<()> {
                 i.source.clone(),
                 format!("{} {}", i.amount, i.asset),
                 i.unlock_height.map(|h| h.to_string()).unwrap_or_else(|| "—".into()),
-                i.blocks_remaining.map(|b| format!("{b} blocks")).unwrap_or_default(),
+                i.blocks_remaining.map(|b| wallet_core::amount::count(b, "block")).unwrap_or_default(),
                 i.eta_secs.map(|e| format!("~{}", human_duration(e))).unwrap_or_default(),
             ]
         })
@@ -2282,9 +2297,10 @@ pub async fn contract(ctx: &Ctx, cmd: crate::args::ContractCmd) -> Result<()> {
             }
             if !found.undeclared.is_empty() {
                 println!(
-                    "  {}  {} function(s) the code dispatches on are missing from the ABI: {}",
+                    "  {}  {} the code dispatches on {} missing from the ABI: {}",
                     ctx.out.yellow("!"),
-                    found.undeclared.len(),
+                    wallet_core::amount::count(found.undeclared.len(), "function"),
+                    if found.undeclared.len() == 1 { "is" } else { "are" },
                     found.undeclared.join(" ")
                 );
             }

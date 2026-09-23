@@ -1,24 +1,24 @@
- ◆  PREVIEW │ 1 2 3 4 5 0 System  │ System › Wallets │ ● Local de ● 1 unread N
- System · ▸ Wallets  Network  Settings  Data sources  [ ]
+ ◆  PREVIEW │ 1 2 3 4 5 6 0 System │ ● Local dev │ watch-only     ● 1 unread N
+ System ·  Wallets   Network   Settings   Data sources   [ ]
 ┌ ▸ wallets on this computer ──────────────────────────────────────────────────┐
 │   wallet           keys         value        QUAI           Qi               │
 │ ▸ preview          watch-only              —              —          —       │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter open wallet  a new wallet  : palette  ? more
+┌ wallet · preview · open ─────────────────────────────────────────────────────┐
+│ keys          none here · watch-only, it cannot sign                         │
+│ holds         1 address watched                                              │
+│ created       1m ago                                                         │
+│ stored        <data>         /wallets/<id>                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+ N notifications  enter actions  a new wallet  space actions  : palette  ? more

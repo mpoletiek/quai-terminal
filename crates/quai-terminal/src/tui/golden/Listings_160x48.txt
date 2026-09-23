@@ -1,48 +1,48 @@
- ◆  PREVIEW  179,071.75 QUAI │ NFTs › Listings │ ● Local dev  #1,234,567 │ watch-only                                                             ● 1 unread N
-                     NFTs · Collected  Explore  ▸ Listings  [ ]
- 1 Home         •  │┌ ▸ listings · Bazarr · all collections · cheapest first ──────────────────────────────────────────────────────────────────────────────────┐
- 2 Trade           ││      price                       item                                                             collection   market          listed    │
-▌3 NFTs         ◧  ││ ▀▀▀▀     ◆  1,000 QUAI $8.81     Quai Pepe #212                                                   0x0046…410d  zora            20714d 4h │
-      Collected    ││ ▀▀▀▀                             Quai Pepes                                                                                              │
-      Explore      ││          ◆  1,000 QUAI $8.81     Quai Pepe #212                                                   0x0046…410d  seaport · view  20714d 4h │
-    › Listings     ││  QU                              Quai Pepes                                                                                              │
- 4 People          ││                                                                                                                                          │
- 5 Activity        ││                                                                                                                                          │
-                   ││                                                                                                                                          │
- 0 System          ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-  [ ] tabs         ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   ││                                                                                                                                          │
-                   │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter detail  b buy  m yours  S sort  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                                                                               ● 1 unread N
+                         NFTs ·  Collected   Explore   Listings   [ ]
+                        ──────────────────────────────━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────
+  1  Home            • │┌ ▸ listings · Bazarr · all collections · cheapest first ──────────────────────────────────────────────────────────────────────────────┐
+                       ││      price                       item                                                         collection   market          listed    │
+  2  Markets           ││ ▀▀▀▀     ◆  1,000 QUAI $8.81     Quai Pepe #212                                               0x0046…410d  zora            4h        │
+                       ││ ▀▀▀▀                             Quai Pepes                                                                                          │
+  3  Trade             ││          ◆  1,000 QUAI $8.81     Quai Pepe #212                                               0x0046…410d  seaport · view  4h        │
+                       ││  QU                              Quai Pepes                                                                                          │
+▌ 4  NFTs            ◧ ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+  5  People            ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+  6  Activity          ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+  0  System            ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+   [ ] tabs            ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ N notifications  b buy  . mine · all  , sort  space actions  : palette  ? more

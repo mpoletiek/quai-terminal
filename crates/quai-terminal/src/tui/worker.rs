@@ -445,9 +445,14 @@ pub enum Ev {
     Quote(Box<ConversionQuote>),
     Info(String),
     Error(String),
+    /// Preparing a transaction failed: nothing was signed or sent.
+    PrepareError(String),
     CommitError {
         op_id: String,
         message: String,
+        /// The node may have the transaction: the outcome is unknown until the journal is
+        /// reconciled. When false, nothing left this wallet.
+        ambiguous: bool,
     },
     Unlocked,
     Locked,
@@ -456,6 +461,9 @@ pub enum Ev {
     KeysRefused,
     Secret(Zeroizing<String>),
     Busy(Option<String>),
+    /// The signing lane's own status. The worker's `Busy(None)` at the end of a sync must not
+    /// take "preparing transaction…" off the screen while the review is still being built.
+    SignBusy(Option<String>),
     /// A user-initiated command finished successfully (closes its form).
     Ack(String),
     /// Background status change worth a terminal/desktop notification.
@@ -514,6 +522,7 @@ impl Worker {
                 Ok(rt) => rt,
                 Err(e) => {
                     let _ = ev_tx.send(Ev::Error(format!("runtime: {e}")));
+                    super::term::wake();
                     return;
                 }
             };
@@ -584,6 +593,26 @@ impl Worker {
         let (sign, _) = std::sync::mpsc::channel::<SignJob>();
         let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
         (Worker { tx, rx, sign, pending }, rx_cmd)
+    }
+
+    /// A worker whose preparations land in the returned receiver; everything else goes nowhere.
+    pub(crate) fn capture_prepares() -> (Worker, std::sync::mpsc::Receiver<Prepare>) {
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
+        let (_ev, rx) = std::sync::mpsc::channel::<Ev>();
+        let (sign, jobs) = std::sync::mpsc::channel::<SignJob>();
+        let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
+        let (prepares, out) = std::sync::mpsc::channel::<Prepare>();
+        // Keep only the preparations, in order; the rest of the signing lane is dropped.
+        std::thread::spawn(move || {
+            for job in jobs {
+                if let SignJob::Prepare(p) = job
+                    && prepares.send(p).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        (Worker { tx, rx, sign, pending }, out)
     }
 }
 
@@ -670,9 +699,11 @@ impl PendingLane {
                 let at = ops_stamp();
                 if let Ok(ops) = s.app.operations(&s.network.id, 200) {
                     let _ = events.send(Ev::Ops { wallet: s.meta.id.clone(), network: s.network.id.clone(), ops, at });
+                    super::term::wake();
                 }
                 for c in report.changes {
                     let _ = events.send(Ev::Notify { title: format!("Transaction {}", c.to.as_str()), body: c.message });
+                    super::term::wake();
                 }
                 // Balances moved with it: a refresh, in the background, merged with any queued.
                 let _ = worker.send(Cmd::Refresh { full: false });
@@ -747,6 +778,7 @@ impl SignLane {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
             let send = |ev: Ev| {
                 let _ = events.send(ev);
+                super::term::wake();
             };
             let open = |wallet: &str, network: &str| -> Option<Session> {
                 let meta = registry.resolve(Some(wallet), None).ok()?;
@@ -806,24 +838,29 @@ impl SignLane {
                             continue;
                         };
                         let t = std::time::Instant::now();
-                        send(Ev::Busy(Some("preparing transaction…".into())));
+                        send(Ev::SignBusy(Some("preparing transaction…".into())));
                         let order = matches!(req, Prepare::OrderRun { .. });
                         let result = runtime.block_on(prepare(s, req));
                         wallet_core::diag::timing("sign.prepare", t);
-                        send(Ev::Busy(None));
+                        send(Ev::SignBusy(None));
                         match result {
                             Ok(r) => send(if order { Ev::OrderReview(Box::new(r)) } else { Ev::Review(Box::new(r)) }),
-                            Err(e) => send(Ev::Error(e.to_string())),
+                            // Nothing was signed: preparing is reading and building only.
+                            Err(e) => send(Ev::PrepareError(e.to_string())),
                         }
                     }
                     SignJob::Commit(id) => {
                         let Some(s) = session.as_mut() else { continue };
-                        send(Ev::Busy(Some("signing and broadcasting…".into())));
+                        send(Ev::SignBusy(Some("signing and broadcasting…".into())));
                         let result = runtime.block_on(s.commit(&id));
-                        send(Ev::Busy(None));
+                        send(Ev::SignBusy(None));
                         match result {
                             Ok(sub) => send(Ev::Submitted(sub)),
-                            Err(e) => send(Ev::CommitError { op_id: id, message: e.to_string() }),
+                            Err(e) => {
+                                let ambiguous =
+                                    matches!(e, wallet_core::error::CoreError::Ambiguous(_) | wallet_core::error::CoreError::Timeout(_));
+                                send(Ev::CommitError { op_id: id, message: e.to_string(), ambiguous })
+                            }
                         }
                         let _ = worker.send(Cmd::Committed);
                     }
@@ -1315,6 +1352,7 @@ async fn run(
 ) {
     let send = |ev: Ev| {
         let _ = events.send(ev);
+        super::term::wake();
         wake();
     };
     let mut meta = meta;
@@ -1751,7 +1789,7 @@ fn refresh_local(session: &mut Session, dash: &mut Dashboard) {
     }
 }
 
-fn incoming_amount(a: &Activity) -> String {
+pub(crate) fn incoming_amount(a: &Activity) -> String {
     let v: U256 = a.amount.parse().unwrap_or_default();
     match a.asset.as_str() {
         "QI" => wallet_core::amount::qi(v),
@@ -1762,9 +1800,10 @@ fn incoming_amount(a: &Activity) -> String {
 
 /// What a mailbox read found, in a line.
 fn mailbox_note(s: &wallet_core::ops::MailboxSummary) -> String {
-    let mut note = format!("{} announced sender(s) · {} channel(s)", s.senders.len(), s.registered.len());
+    use wallet_core::amount::count;
+    let mut note = format!("{} announced · {}", count(s.senders.len(), "sender"), count(s.registered.len(), "channel"));
     if s.pending > 0 {
-        note.push_str(&format!(" · {} offer(s) waiting for you", s.pending));
+        note.push_str(&format!(" · {} waiting for you", count(s.pending, "offer")));
     }
     if s.refused > 0 {
         note.push_str(&format!(" · {} refused: no room for more channels", s.refused));

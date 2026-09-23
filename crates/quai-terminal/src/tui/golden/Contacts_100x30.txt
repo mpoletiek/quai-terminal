@@ -1,30 +1,30 @@
- ◆  PREVIEW │ People › Contacts │ ● Local dev  #1,234,567 │ watch-only                ● 1 unread N
-                     People · ▸ Contacts  Channels  Board  [ ]
- 1 Home         •  │┌ you ─────────────────────────────────────────────────────────────────────────┐
- 2 Trade           ││ This wallet has no payment code (import a recovery phrase to get one).       │
- 3 NFTs         ◧  ││                                                                              │
-▌4 People          │└──────────────────────────────────────────────────────────────────────────────┘
-    › Contacts     │┌ ▸ contacts · 1 ──────────────────────────────────────────────────────────────┐
-      Channels     ││    name              address              payment code      note             │
-      Board        ││ 0  bob               —                    PM8TJcZE…D1SWDD                    │
- 5 Activity        ││                                                                              │
-                   ││                                                                              │
- 0 System          ││                                                                              │
-                   ││                                                                              │
-  [ ] tabs         ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter pay  a add  e edit  n notify  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        People ·  Contacts   Channels   Board   [ ]
+                       ──────────━━━━━━━━━━─────────────────────────────────────────────────────────
+  1  Home           • │┌ you ──────────────────────────────────────────────────────────────────────┐
+                      ││ This wallet has no payment code (import a recovery phrase to get one).    │
+  2  Markets          ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+  3  Trade            │┌ ▸ contacts · 1 ───────────────────────────────────────────────────────────┐
+                      ││    name              address              payment code      note          │
+  4  NFTs           ◧ ││ 0  bob               —                    PM8TJcZE…D1SWDD                 │
+                      ││                                                                           │
+▌ 5  People           ││                                                                           │
+                      ││                                                                           │
+  6  Activity         ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+  0  System           ││                                                                           │
+                      ││                                                                           │
+   [ ] tabs           ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  s pay  a add contact  e edit  space actions  : palette  ? more

@@ -1,5 +1,5 @@
- ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › Launches │ ● Local dev ● 1 unread N
- Trade · Markets  Swap  Pools  Convert  Wrap  ▸ Launches  PnL  [ ]
+ ◆  PREVIEW │ 1 2 Markets 3 4 5 6 0 │ ● Local dev │ watch-only    ● 1 unread N
+ Markets ·  Pairs   Launches   Pools   [ ]
 ┌ ▸ launch zone · 3 tokens ────────────────────────────────────────────────────┐
 │      token     stage               price QUAI           USD  trades          │
 │ ▌ CH CHEEZ     ■■■■■■□□□□  51%        0.0₄517     $0.0₆4555      64          │
@@ -21,4 +21,4 @@
 │                                        ▲ here · 12.8k QUAI raised            │
 │ launch                                               graduates at 25.0k QUAI │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  j/k move  b buy  S sell  c claim  : palette  ? more
+ N notifications  b buy  S sell  space actions  : palette  ? more

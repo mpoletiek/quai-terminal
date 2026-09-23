@@ -1,30 +1,30 @@
- ◆  PREVIEW │ System › Network │ ● Local dev  #1,234,567 │ watch-only                 ● 1 unread N
-                     System · Wallets  ▸ Network  Settings  Data sources  [ ]
- 1 Home         •  │┌ node health ─────────────────────────────────────────────────────────────────┐
- 2 Trade           ││ network       Local dev (local)                                              │
- 3 NFTs         ◧  ││ identity      ✓ chain id and genesis match                                   │
- 4 People          ││ chain id      1337                                                           │
- 5 Activity        ││ genesis       0xff                                                           │
-                   ││ height        1,234,567                                                      │
-▌0 System          ││ head age      3s                                                             │
-      Wallets      ││ gas price     1 gwei                                                         │
-    › Network      ││ client        —                                                              │
-      Settings     │└──────────────────────────────────────────────────────────────────────────────┘
-      Data sources │┌ latency 11 ms · min 9 · max 30 ──────┐┌ blocks per refresh · last 4 ─────────┐
-                   ││                                   █  ││                                    █ │
-  [ ] tabs         ││                                   █  ││                                  ▄ █ │
-                   ││                                ▂▄▁█▃ ││                                  █▆█ │
-                   │└──────────────────────────────────────┘└──────────────────────────────────────┘
-                   │┌ ▸ networks · enter to switch ────────────────────────────────────────────────┐
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter switch network  m monitoring endpoint  R refresh  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        System ·  Wallets   Network   Settings   Data sources   [ ]
+                       ────────────────────━━━━━━━━━────────────────────────────────────────────────
+  1  Home           • │┌ node health ──────────────────────────────────────────────────────────────┐
+                      ││ network       Local dev (local)                                           │
+  2  Markets          ││ identity      ✓ chain id and genesis match                                │
+                      ││ chain id      1337                                                        │
+  3  Trade            ││ genesis       0xff                                                        │
+                      ││ height        1,234,567                                                   │
+  4  NFTs           ◧ ││ head age      3s                                                          │
+                      ││ gas price     1 gwei                                                      │
+  5  People           ││ client        —                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+  6  Activity         │┌ latency 11 ms · min 9 · max 30 ─────┐┌ blocks per refresh · last 4 ───────┐
+                      ││                                  █  ││                                  █ │
+                      ││                                  █  ││                                ▄ █ │
+▌ 0  System           ││                               ▂▄▁█▃ ││                                █▆█ │
+                      │└─────────────────────────────────────┘└────────────────────────────────────┘
+   [ ] tabs           │┌ ▸ networks · enter to switch ─────────────────────────────────────────────┐
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter actions  R reload  space actions  : palette  ? more

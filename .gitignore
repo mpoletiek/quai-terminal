@@ -1,3 +1,5 @@
 /target
 *.swp
 __pycache__/
+# Golden snapshot mismatches written by the TUI tests
+*.actual

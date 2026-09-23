@@ -136,7 +136,7 @@ impl App {
             out.push(Entry {
                 tag: "go",
                 label: format!("Go to {} › {}", s.section().title(), s.title()),
-                hint: format!("{} ]", s.section().key()),
+                hint: super::keymap::chord(s),
                 cli: String::new(),
                 run: Run::Go(s),
             });
@@ -462,5 +462,54 @@ enum SendAsset {
 }
 
 fn action_entry(a: &'static Action) -> Entry {
-    Entry { tag: "action", label: a.label.to_string(), hint: a.key.to_string(), cli: a.cli.to_string(), run: Run::Action(a.id) }
+    Entry { tag: "action", label: a.label.to_string(), hint: keys_for(a.id), cli: a.cli.to_string(), run: Run::Action(a.id) }
+}
+
+/// The keys that reach an action, worked out from the keymap: a verb's own key when the action
+/// is that verb anywhere, else the chord to the screen whose table runs it and the key there
+/// ("g q space s"), else the chord to the screen it is. Empty when only the palette reaches it.
+pub fn keys_for(id: &str) -> String {
+    use super::app::verbs::{Do, view_keys};
+    use super::keymap::{self, Verb};
+    let verb = match id {
+        "send_quai" => Some(Verb::Send),
+        "receive_quai" => Some(Verb::Receive),
+        "trade" | "swap" => Some(Verb::Trade),
+        "convert_quai_qi" => Some(Verb::Convert),
+        "lock" => Some(Verb::Lock),
+        "notifications" => Some(Verb::Notifications),
+        "help" => Some(Verb::Help),
+        "quit" => Some(Verb::Quit),
+        "refresh" => Some(Verb::RefreshAll),
+        _ => None,
+    };
+    if let Some(v) = verb {
+        return keymap::key_of(v);
+    }
+    for screen in super::app::Screen::ALL_SCREENS {
+        let keys = view_keys(screen, None);
+        let chord = keymap::chord(screen);
+        if let Some(o) = keys.overrides.iter().find(|o| matches!(o.how, Do::Run(r) if r == id)) {
+            return format!("{chord} {}", keymap::key_of(o.verb));
+        }
+        if let Some(item) = keys.sheet.iter().find(|i| matches!(i.how, Do::Run(r) if r == id)) {
+            return format!("{chord} space {}", item.key);
+        }
+    }
+    let screen = match id {
+        "portfolio" | "home" => Some(super::app::Screen::Home),
+        "nfts" => Some(super::app::Screen::Collected),
+        "explore" => Some(super::app::Screen::Explore),
+        "listings" => Some(super::app::Screen::Listings),
+        "locks" => Some(super::app::Screen::Accounts),
+        "launches" => Some(super::app::Screen::Launches),
+        "pnl" => Some(super::app::Screen::Pnl),
+        "contacts" => Some(super::app::Screen::Contacts),
+        "data_sources" => Some(super::app::Screen::DataSources),
+        "network" => Some(super::app::Screen::Network),
+        "wrap_qi" | "claim_wqi" | "unwrap_wqi" | "wrap_quai" | "unwrap_quai" => Some(super::app::Screen::Wrap),
+        "quote" | "convert_qi_quai" => Some(super::app::Screen::Convert),
+        _ => None,
+    };
+    screen.map(keymap::chord).unwrap_or_default()
 }

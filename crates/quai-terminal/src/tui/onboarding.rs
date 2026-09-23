@@ -1,8 +1,9 @@
-//! First-run onboarding: 1 look (theme showroom) · 2 privacy · 3 connections · 4 wallet
-//! (create/import/watch) · 5 protect.
+//! First-run onboarding: a welcome, then 1 look (theme showroom and motion) · 2 privacy ·
+//! 3 connections · 4 wallet (create/import/watch) · 5 protect.
 
 use super::app::{App, Field, OnboardKind, Onboarding, Picker, PickerOutcome};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use wallet_core::config::Motion;
 use wallet_core::registry::WalletKind;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -11,6 +12,14 @@ pub const CHOICES: [(&str, &str); 4] = [
     ("Import a recovery phrase", "from Pelagus or any BIP39 wallet"),
     ("Import a private key", "a single Quai account"),
     ("Watch addresses", "read-only · no keys on this computer"),
+];
+
+/// The motion choice, most to least. Each one previews as the cursor lands on it.
+pub const MOTIONS: [(Motion, &str, &str); 4] = [
+    (Motion::Vivid, "Vivid", "light turns along the edges while you work, and rests when you stop"),
+    (Motion::Full, "Full", "screens slide and moments land · nothing moves on its own"),
+    (Motion::Reduced, "Reduced", "only small, quick transitions"),
+    (Motion::Off, "Off", "nothing moves"),
 ];
 
 /// The privacy choice: private first, because it is the default and the one that tells nobody
@@ -23,7 +32,8 @@ pub const PRIVACY: [(&str, &str, bool); 2] = [
 /// Step number shown in the onboarding header.
 pub fn step(ob: &Onboarding) -> usize {
     match ob {
-        Onboarding::Theme(_) => 1,
+        Onboarding::Welcome => 0,
+        Onboarding::Theme(_) | Onboarding::Motion { .. } => 1,
         Onboarding::Privacy { .. } => 2,
         Onboarding::Connections { .. } => 3,
         Onboarding::Choose { .. } => 4,
@@ -39,12 +49,12 @@ pub const CONNECTIONS: [(&str, &str); 3] = [
         "A read-only Quai node you run. Without one, the public RPC sees every address you ask about — with one, nobody learns them, and reads get much faster. It is checked the first time it is used (same chain, same genesis) and quietly left alone if it does not answer, so a typo costs you the privacy, not the wallet. Leave empty to use the public RPC.",
     ),
     (
-        "ABI gateway",
-        "Where a contract's published ABI is fetched from, so the wallet can show you what a contract call actually does. ipfs.qu.ai is what Quai's own tooling pins to; change it only if you pin Quai contract metadata yourself.",
+        "Contract details",
+        "Where the wallet looks up what a contract is, so a review can say what a call will do instead of showing raw bytes. ipfs.qu.ai is where Quai's own tools publish these; change it only if you publish them yourself.",
     ),
     (
-        "Images gateway",
-        "Where NFT images and token metadata come from. This is the bulk of the fetching and the most revealing — point it at your own IPFS node and none of it leaves your network.",
+        "Pictures",
+        "Where NFT pictures, token logos and their descriptions come from. This is the bulk of the fetching and the most revealing — point it at your own IPFS node and none of it leaves your network.",
     ),
 ];
 
@@ -53,10 +63,10 @@ pub fn connection_fields(app: &App) -> Vec<Field> {
     let monitor = app.config.monitor_endpoints.get(&app.network_id).map(|m| m.rpc_url.clone()).unwrap_or_default();
     vec![
         Field::new("Your own node", "e.g. http://10.0.0.12:9200").with(monitor).optional(),
-        Field::new("ABI gateway", wallet_core::ipfs::DEFAULT_ABI_GATEWAY)
+        Field::new("Contract details", wallet_core::ipfs::DEFAULT_ABI_GATEWAY)
             .with(app.config.abi_ipfs_gateway.clone().unwrap_or_default())
             .optional(),
-        Field::new("Images gateway", wallet_core::ipfs::DEFAULT_MEDIA_GATEWAY)
+        Field::new("Pictures", wallet_core::ipfs::DEFAULT_MEDIA_GATEWAY)
             .with(app.config.ipfs_gateway.clone().unwrap_or_default())
             .optional(),
     ]
@@ -175,6 +185,19 @@ fn next_network(app: &mut App) {
     }
 }
 
+/// Where Esc goes from the first step of making a wallet: the choice of kind on first run, and
+/// straight out when a wallet is already open (adding another from System › Wallets). That path
+/// used to walk back into the first-run setup and loop there with no way out but finishing.
+fn back_to_choose(app: &App) -> Option<Onboarding> {
+    if app.meta.is_some() { None } else { Some(Onboarding::Choose { selected: 0 }) }
+}
+
+/// The motion step, with the cursor on what is set now.
+fn motion_step(app: &App) -> Onboarding {
+    let from = app.config.motion;
+    Onboarding::Motion { selected: MOTIONS.iter().position(|m| m.0 == from).unwrap_or(0), from }
+}
+
 pub fn on_key(app: &mut App, key: KeyEvent) {
     if app.creating.is_some() {
         return;
@@ -183,6 +206,10 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
     app.dirty = true;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     app.onboarding = match state {
+        Onboarding::Welcome => match key.code {
+            KeyCode::Enter | KeyCode::Char(' ') => Some(Onboarding::Theme(Picker::new(app))),
+            _ => Some(Onboarding::Welcome),
+        },
         Onboarding::Theme(mut picker) => match picker.on_key(key, &mut app.theme) {
             PickerOutcome::Open => Some(Onboarding::Theme(picker)),
             PickerOutcome::Applied => {
@@ -191,14 +218,40 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
                     app.pending_theme_reload = true;
                     app.save_config();
                 }
-                Some(Onboarding::Privacy { selected: 0 })
+                Some(motion_step(app))
             }
-            PickerOutcome::Cancelled => Some(Onboarding::Privacy { selected: 0 }),
+            PickerOutcome::Cancelled => Some(motion_step(app)),
         },
+        Onboarding::Motion { selected, from } => {
+            let moved = match key.code {
+                KeyCode::Up | KeyCode::Char('k') => Some(selected.saturating_sub(1)),
+                KeyCode::Down | KeyCode::Char('j') => Some((selected + 1).min(MOTIONS.len() - 1)),
+                _ => None,
+            };
+            match (moved, key.code) {
+                (Some(selected), _) => {
+                    // A preview only, written on enter: the frame draws itself in again, as a
+                    // screen does, for the choices that animate, and Vivid turns its light.
+                    app.config.motion = MOTIONS[selected].0;
+                    app.edge_intro = Some(std::time::Instant::now());
+                    Some(Onboarding::Motion { selected, from })
+                }
+                (None, KeyCode::Enter) => {
+                    app.config.motion = MOTIONS[selected].0;
+                    app.save_config();
+                    Some(Onboarding::Privacy { selected: 0 })
+                }
+                (None, KeyCode::Esc) => {
+                    app.config.motion = from;
+                    Some(Onboarding::Theme(Picker::new(app)))
+                }
+                _ => Some(Onboarding::Motion { selected, from }),
+            }
+        }
         Onboarding::Privacy { selected } => match key.code {
             KeyCode::Up | KeyCode::Char('k') => Some(Onboarding::Privacy { selected: selected.saturating_sub(1) }),
             KeyCode::Down | KeyCode::Char('j') => Some(Onboarding::Privacy { selected: (selected + 1).min(PRIVACY.len() - 1) }),
-            KeyCode::Esc => Some(Onboarding::Theme(Picker::new(app))),
+            KeyCode::Esc => Some(motion_step(app)),
             KeyCode::Enter => {
                 apply_privacy(app, PRIVACY[selected].2);
                 Some(Onboarding::Connections { fields: connection_fields(app), focus: 0 })
@@ -249,6 +302,8 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
                 Some(Onboarding::Choose { selected })
             }
             KeyCode::Char('t') => Some(Onboarding::Theme(Picker::new(app))),
+            // First run walks back through setup; adding a wallet from System › Wallets leaves.
+            KeyCode::Esc if app.meta.is_some() => None,
             KeyCode::Esc => Some(Onboarding::Connections { fields: connection_fields(app), focus: 0 }),
             KeyCode::Enter => match selected {
                 0 => match wallet_core::identity::generate_phrase(24, "english") {
@@ -270,7 +325,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
                 Some(Onboarding::Quiz { indexes: quiz_indexes(n), phrase, answers: Default::default(), focus: 0 })
             }
             // Leaving discards this phrase; nothing was saved yet.
-            KeyCode::Esc => Some(Onboarding::Choose { selected: 0 }),
+            KeyCode::Esc => back_to_choose(app),
             _ => Some(Onboarding::ShowPhrase { phrase }),
         },
         Onboarding::Quiz { phrase, indexes, mut answers, mut focus } => match key.code {
@@ -324,7 +379,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
                 }
                 match (kind, phrase) {
                     (OnboardKind::Create, Some(phrase)) => Some(Onboarding::ShowPhrase { phrase }),
-                    _ => Some(Onboarding::Choose { selected: 0 }),
+                    _ => back_to_choose(app),
                 }
             }
             KeyCode::Tab | KeyCode::Down => {

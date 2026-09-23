@@ -22,6 +22,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --lib --bins --tests --locked
+      # The frame budget: every screen's render time on the golden fixture, in a release build.
+      - run: cargo test --release --locked -p quai-terminal-cli frame_budget -- --ignored
 
   # `curl … | sh` runs these under whatever /bin/sh is: dash on Debian and Ubuntu, so no bashisms.
   install-scripts:

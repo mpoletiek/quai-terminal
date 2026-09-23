@@ -33,9 +33,9 @@ pub const TERMS: &[Term] = &[
     term!(
         "conversion",
         "Changing QUAI into Qi (or back) at the protocol's own rate, in one transaction. What you receive is locked for a period before it can be spent.",
-        [Convert, Locks]
+        [Convert, Accounts]
     ),
-    term!("lock", "Coins that exist but cannot be spent until a set block; the wallet counts down to it.", [Locks, Qi, Convert]),
+    term!("lock", "Coins that exist but cannot be spent until a set block; the wallet counts down to it.", [Accounts, Qi, Convert]),
     term!(
         "payment code",
         "A reusable code (BIP47) you can share instead of an address. Each payment to it lands on a new address only you can find.",

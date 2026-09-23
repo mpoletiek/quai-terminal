@@ -1,13 +1,13 @@
- ◆  PREVIEW │ 1 2 Trade 3 4 5 0  │ Trade › Swap │ ● Local dev  #1 ● 1 unread N
- Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  PnL  [ ]
-┌ ▸ swap · Quainance ──────────────────────────────────────────────────────────┐
+ ◆  PREVIEW │ 1 2 3 Trade 4 5 6 0 │ ● Local dev │ watch-only      ● 1 unread N
+ Trade ·  Exchange   Orders   PnL   [ ]
+┌ ▸ exchange · swap on Quainance ──────────────────────────────────────────────┐
 │ you pay                                                                      │
 │   token       WQ [WQI ✓▾]                                                    │
 │   amount      50   available 171.4                                           │
 │                25%   50%   75%   max    % · f ↕                              │
 │ you receive                                                                  │
 │   token       US [USDT ✓▾]                                                   │
-│   amount      ⠋ quoting…                                                     │
+│   amount      ◌ quoting…                                                     │
 │                                                                              │
 │   slippage    0.50% ‹›                                                       │
 │   deadline    10 min ‹›                                                      │
@@ -21,4 +21,4 @@
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  tab edit  / pick token  % 25·50·75%  : palette  ? more
+ N notifications  enter edit · review  space actions  : palette  ? more

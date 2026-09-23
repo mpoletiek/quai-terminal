@@ -188,11 +188,11 @@ pub async fn pnl(ctx: &Ctx, args: PnlArgs) -> Result<()> {
         ctx.out.bold("pnl"),
         tint(pnl.net, format!("{} QUAI", signed_text(pnl.net))),
         ctx.out.dim(&format!(
-            "realized {} · unrealized {} · fees {} · {} trades",
+            "realized {} · unrealized {} · fees {} · {}",
             signed_text(pnl.realized),
             signed_text(pnl.unrealized),
             quai_text(pnl.fees),
-            pnl.fills.len()
+            wallet_core::amount::count(pnl.fills.len(), "trade")
         ))
     );
     let rows = pnl
@@ -218,7 +218,12 @@ pub async fn pnl(ctx: &Ctx, args: PnlArgs) -> Result<()> {
         notes.push("~ some figures come from the review; the receipt did not record them".to_string());
     }
     if pnl.unmarked > 0 {
-        notes.push(format!("{} open position(s) have no WQUAI pool or curve to price them; they count at cost", pnl.unmarked));
+        let (have, they) = if pnl.unmarked == 1 { ("has", "it counts") } else { ("have", "they count") };
+        notes.push(format!(
+            "{} {have} no WQUAI pool or curve to price {}; {they} at cost",
+            wallet_core::amount::count(pnl.unmarked, "open position"),
+            if pnl.unmarked == 1 { "it" } else { "them" }
+        ));
     }
     for p in &pnl.positions {
         if p.unmatched_sold > 0.0 {
@@ -308,8 +313,9 @@ pub async fn portfolio(ctx: &mut Ctx, args: PortfolioArgs) -> Result<()> {
         println!(
             "{}",
             ctx.out.dim(&format!(
-                "NFTs: {} items in {} collections (not in the total) — `quai-terminal nft list`",
-                p.nfts.items, p.nfts.collections
+                "NFTs: {} in {} (not in the total) — `quai-terminal nft list`",
+                wallet_core::amount::count(p.nfts.items, "item"),
+                wallet_core::amount::count(p.nfts.collections, "collection")
             ))
         );
     }
@@ -1036,7 +1042,7 @@ pub async fn data(ctx: &Ctx, cmd: DataCmd) -> Result<()> {
                 let t = std::time::Instant::now();
                 let r = wallet_core::http::get_json(&format!("{}/listings", base.trim_end_matches('/')))
                     .await
-                    .map(|v| format!("{} listings", wallet_core::market::parse_listings(&v).len()));
+                    .map(|v| wallet_core::amount::count(wallet_core::market::parse_listings(&v).len(), "listing"));
                 results.push(("marketplace indexer".to_string(), r, t.elapsed().as_millis()));
             }
             let t = std::time::Instant::now();
@@ -1178,7 +1184,7 @@ pub async fn markets(ctx: &Ctx, args: MarketsArgs) -> Result<()> {
     if let (Some(h), Some(l)) = (stats.high_24h, stats.low_24h) {
         println!("  24h high   {}  low {}", price_text(h), price_text(l));
     }
-    println!("  24h volume {:.4} {qs} · {} trades", stats.volume_24h, stats.trades_24h);
+    println!("  24h volume {:.4} {qs} · {}", stats.volume_24h, wallet_core::amount::count(stats.trades_24h, "trade"));
     println!("  TVL        {}", pool.tvl_usd.map(amount::usd).unwrap_or_else(|| "—".into()));
     println!("  pool       {}", pool.address);
     let closes: Vec<f64> = cs.iter().map(|c| c.close).collect();
@@ -1227,7 +1233,7 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
                 return Ok(());
             }
             if posts.is_empty() {
-                println!("no messages in #{name} over the last {blocks} blocks");
+                println!("no messages in #{name} over the last {}", wallet_core::amount::count(blocks, "block"));
                 return Ok(());
             }
             let rows: Vec<Vec<String>> = posts
@@ -1243,7 +1249,7 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
                 })
                 .collect();
             ctx.out.table(&["age", "from", "message"], &rows);
-            println!("{} message(s) in #{name}", posts.len());
+            println!("{} in #{name}", wallet_core::amount::count(posts.len(), "message"));
             Ok(())
         }
         BoardCmd::Subscribe { chat, dm } => {
@@ -1303,7 +1309,7 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
                 return Ok(());
             }
             if found.is_empty() {
-                println!("no channel has a message in the last {blocks} blocks");
+                println!("no channel has a message in the last {}", wallet_core::amount::count(blocks, "block"));
                 return Ok(());
             }
             let rows: Vec<Vec<String>> = found
@@ -1331,7 +1337,7 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
                 return Ok(());
             }
             if lines.is_empty() {
-                println!("no sealed messages with {} over the last {blocks} blocks", short_address(&peer));
+                println!("no sealed messages with {} over the last {}", short_address(&peer), wallet_core::amount::count(blocks, "block"));
                 return Ok(());
             }
             let rows: Vec<Vec<String>> = lines
@@ -1343,7 +1349,7 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
                 })
                 .collect();
             ctx.out.table(&["age", "from", "message"], &rows);
-            println!("{} message(s) · sealed: the text is private, the transactions are not", rows.len());
+            println!("{} · sealed: the text is private, the transactions are not", wallet_core::amount::count(rows.len(), "message"));
             Ok(())
         }
         BoardCmd::Post { channel: name, text, from, fee } => {

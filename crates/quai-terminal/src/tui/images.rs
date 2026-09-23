@@ -6,7 +6,7 @@
 //! finished frame finds those badges and places the icon bitmap over them.
 
 use super::app::App;
-use super::eco::KittyPng;
+use super::eco::{FittedKey, KittyPng};
 use super::terminal::Tier;
 use super::theme::Theme;
 use ratatui::buffer::Buffer;
@@ -17,6 +17,12 @@ use wallet_core::media::{ICON, ICON_LARGE, Rendition, THUMB, is_native_icon, mon
 
 /// Most bitmaps placed in one frame.
 const MAX_PLACEMENTS: usize = 128;
+
+/// What a picture's cells hold under its bitmap: a blank no widget draws. A row restyled after
+/// the picture was reserved (the selection passing over it) keeps it, so the picture stays; a
+/// popup drawn over the cells replaces it, so the picture is taken down (`place_inline_icons`).
+/// Reserving plain spaces on the page color dropped a logo whenever its row was selected.
+pub const RESERVED: &str = super::term::backend::BIG_TEXT_CELL;
 
 fn rgb_of(c: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
     match c {
@@ -221,10 +227,7 @@ pub fn native_span(app: &App, t: &Theme, asset: &str) -> ratatui::text::Span<'st
 /// Whether kitty bitmaps are placed for the current frame: the pixels tier, and no modal that
 /// would sit under them (reviews, receive and the token picker place their own).
 pub fn bitmaps(app: &App) -> bool {
-    use super::app::Modal;
-    app.caps.tier == Tier::Pixels
-        && !app.plain
-        && matches!(app.modal, Modal::None | Modal::Receive { .. } | Modal::Review(_) | Modal::TokenPicker { .. })
+    app.caps.tier == Tier::Pixels && !app.plain
 }
 
 /// Place icon bitmaps over the inline badges that survived into the finished frame (pixels
@@ -236,11 +239,18 @@ pub fn place_inline_icons(app: &App, buf: &mut Buffer, t: &Theme) {
         app.eco.kitty.borrow_mut().clear();
         return;
     }
-    // Picture placements whose reserved cells were drawn over (a modal, a popup) are dropped.
+    // Picture placements whose reserved cells were drawn over (a modal, a popup) are dropped,
+    // and so is every picture behind the glass while a modal is open: a bitmap can't be dimmed
+    // with the page, and a bright one over a dimmed page looks like it floats above the modal.
+    // The header's stay (the header is not dimmed), and so do those inside the modal itself.
+    let modal = !matches!(app.modal, super::app::Modal::None);
     app.eco.kitty.borrow_mut().retain(|(rect, _, z)| {
+        if modal && rect.y > buf.area.y && !super::ui::inside_a_frame(*rect) {
+            return false;
+        }
         *z < 0
             || (rect.top()..rect.bottom())
-                .all(|y| (rect.left()..rect.right()).all(|x| buf.cell((x, y)).is_some_and(|c| c.symbol() == " " && c.bg == t.surface)))
+                .all(|y| (rect.left()..rect.right()).all(|x| buf.cell((x, y)).is_some_and(|c| c.symbol() == RESERVED)))
     });
     if icons.is_empty() {
         return;
@@ -318,12 +328,39 @@ pub fn place_inline_icons(app: &App, buf: &mut Buffer, t: &Theme) {
 }
 
 /// Queue a bitmap for `area`, padded to the area's pixel aspect so kitty does not stretch it.
-fn push_kitty(app: &App, area: Rect, r: &Rendition, art: bool) {
-    let png = fitted_png(app, r, area.width, area.height, art);
+/// A picture whose fitted PNG is still being encoded is skipped this frame; the encoder wakes
+/// the loop when it is ready.
+fn push_kitty(app: &App, area: Rect, r: &Arc<Rendition>, art: bool) {
+    let Some(png) = fitted_png(app, r, area.width, area.height, art) else { return };
     let mut kitty = app.eco.kitty.borrow_mut();
     if kitty.len() < MAX_PLACEMENTS {
         kitty.push((area, png, 0));
     }
+}
+
+/// Fitted PNGs encoded off the UI thread, waiting to be taken into the cache, and the keys still
+/// being encoded.
+struct Fitting {
+    /// Encodes that finished, waiting to be taken into the cache.
+    done: Vec<(FittedKey, KittyPng)>,
+    /// Keys being encoded now.
+    running: Vec<FittedKey>,
+}
+
+static FITTED: std::sync::Mutex<Fitting> = std::sync::Mutex::new(Fitting { done: Vec::new(), running: Vec::new() });
+
+/// Take finished encodes into the cache; true when any arrived (a frame is due).
+pub fn poll_fitted(app: &App) -> bool {
+    let done: Vec<(FittedKey, KittyPng)> = FITTED.lock().map(|mut f| std::mem::take(&mut f.done)).unwrap_or_default();
+    if done.is_empty() {
+        return false;
+    }
+    let mut cache = app.eco.fitted.borrow_mut();
+    if cache.len() > 512 {
+        cache.clear();
+    }
+    cache.extend(done);
+    true
 }
 
 /// PNG-encode straight-alpha RGBA pixels.
@@ -351,7 +388,7 @@ pub fn png_key(bytes: &[u8]) -> u64 {
 /// The rendition's PNG centered on a transparent canvas with the aspect of `cols × rows` cells.
 /// `art`: an NFT picture, which may get a light card (see [`matte`]); token icons never do.
 /// Encoded once per rendition, canvas and theme; later frames reuse it.
-fn fitted_png(app: &App, r: &Rendition, cols: u16, rows: u16, art: bool) -> KittyPng {
+fn fitted_png(app: &App, r: &Arc<Rendition>, cols: u16, rows: u16, art: bool) -> Option<KittyPng> {
     let (cw, ch) = (f64::from(app.caps.cell_px.0.max(1)), f64::from(app.caps.cell_px.1.max(1)));
     let aspect = (f64::from(cols.max(1)) * cw) / (f64::from(rows.max(1)) * ch);
     let (w, h) = (r.width.max(1), r.height.max(1));
@@ -365,12 +402,44 @@ fn fitted_png(app: &App, r: &Rendition, cols: u16, rows: u16, art: bool) -> Kitt
     let content = r.hash.get(..16).and_then(|h| u64::from_str_radix(h, 16).ok()).unwrap_or_else(|| png_key(r.hash.as_bytes()));
     let key = (content, art, canvas_w, canvas_h, theme);
     if let Some(png) = app.eco.fitted.borrow().get(&key) {
-        return png.clone();
+        return Some(png.clone());
     }
     let card = if art { matte(r, t) } else { None };
-    let encoded = if r.rgba.len() != (w * h * 4) as usize || ((canvas_w, canvas_h) == (w, h) && card.is_none()) {
-        None
-    } else {
+    // Nothing to fit: the rendition's own PNG, at once.
+    if r.rgba.len() != (w * h * 4) as usize || ((canvas_w, canvas_h) == (w, h) && card.is_none()) {
+        let entry = (Arc::new(r.png.clone()), png_key(&r.png));
+        app.eco.fitted.borrow_mut().insert(key, entry.clone());
+        return Some(entry);
+    }
+    // A canvas and an encode: tens of milliseconds for a large picture, so not on this thread.
+    let started = FITTED.lock().is_ok_and(|mut f| {
+        let new = !f.running.contains(&key);
+        if new {
+            f.running.push(key);
+        }
+        new
+    });
+    if !started {
+        return None;
+    }
+    let r = r.clone();
+    std::thread::spawn(move || {
+        let png = fit_and_encode(&r, canvas_w, canvas_h, card).unwrap_or_else(|| r.png.clone());
+        let entry = (Arc::new(png.clone()), png_key(&png));
+        if let Ok(mut f) = FITTED.lock() {
+            f.running.retain(|k| *k != key);
+            f.done.push((key, entry));
+        }
+        super::term::wake();
+    });
+    None
+}
+
+/// The picture centered on a transparent `canvas_w × canvas_h` canvas (on a light card when
+/// `card`), PNG-encoded.
+fn fit_and_encode(r: &Rendition, canvas_w: u32, canvas_h: u32, card: Option<(u8, u8, u8)>) -> Option<Vec<u8>> {
+    let (w, h) = (r.width.max(1), r.height.max(1));
+    {
         let mut canvas = vec![0u8; (canvas_w * canvas_h * 4) as usize];
         let (ox, oy) = ((canvas_w - w) / 2, (canvas_h - h) / 2);
         for row in 0..h {
@@ -386,16 +455,7 @@ fn fitted_png(app: &App, r: &Rendition, cols: u16, rows: u16, art: bool) -> Kitt
             }
         }
         encode_rgba(canvas_w, canvas_h, &canvas)
-    };
-    let png = encoded.unwrap_or_else(|| r.png.clone());
-    let key_of = png_key(&png);
-    let entry = (Arc::new(png), key_of);
-    let mut cache = app.eco.fitted.borrow_mut();
-    if cache.len() > 512 {
-        cache.clear();
     }
-    cache.insert(key, entry.clone());
-    entry
 }
 
 /// Monogram badge filling `area` (letters centered on a stable color).
@@ -452,7 +512,7 @@ pub fn picture(app: &App, buf: &mut Buffer, area: Rect, t: &Theme, url: Option<&
             for y in area.top()..area.bottom() {
                 for x in area.left()..area.right() {
                     if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_char(' ').set_bg(t.surface);
+                        cell.set_symbol(RESERVED).set_bg(t.surface);
                     }
                 }
             }

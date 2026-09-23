@@ -1,5 +1,5 @@
- ◆  PREVIEW │ 1 2 3 NFTs 4 5 0  │ NFTs › Collected │ ● Local dev  ● 1 unread N
- NFTs · ▸ Collected  Explore  Listings  [ ]
+ ◆  PREVIEW │ 1 2 3 4 NFTs 5 6 0 │ ● Local dev │ watch-only       ● 1 unread N
+ NFTs ·  Collected   Explore   Listings   [ ]
 ┌ ▸ collected · 2 ─────────────────────────────────────────────────────────────┐
 │ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                             │
 │ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                             │
@@ -21,4 +21,4 @@
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  hjkl move  enter detail  L list for sale  : palette  ? more
+ N notifications  enter detail  s transfer  space actions  : palette  ? more

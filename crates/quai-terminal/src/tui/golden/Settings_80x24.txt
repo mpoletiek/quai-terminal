@@ -1,24 +1,24 @@
- ◆  PREVIEW │ 1 2 3 4 5 0 System  │ System › Settings │ ● Local d ● 1 unread N
- System · Wallets  Network  ▸ Settings  Data sources  [ ]
+ ◆  PREVIEW │ 1 2 3 4 5 6 0 System │ ● Local dev │ watch-only     ● 1 unread N
+ System ·  Wallets   Network   Settings   Data sources   [ ]
 ┌ ▸ settings ──────────────────────────────────────────────────────────────────┐
-│ Theme                          terminal  ›                                   │
-│ Motion                         off                                           │
-│ Layout                         auto · trader from 200 columns                │
-│ Messaging                      ● on · board, sealed DMs, chat dock           │
-│ Trading                        ● on · markets, swap, pools, launches         │
-│ NFTs                           ● on · collected, explore, listings           │
-│ Background daemon              ● starts with the terminal · not running      │
-│ Unlock the daemon too          ● each unlock here unlocks it in the daemon   │
-│ Effects & celebrations         ● on                                          │
-│ Lock screen animation          random  ›                                     │
-│ Terminal bell on good news     ○ off                                         │
-│ Big balance digits             ● on                                          │
-│ Balance in the top bar         ● on · $ toggles it                           │
-│ Notifications                  ● on                                          │
-│ Auto-lock                      10 min                                        │
+│ Appearance                                                                   │
+│   Theme                          terminal  ›                                 │
+│   Motion                         off                                         │
+│   Background                     auto · the theme's, solid                   │
+│   Icons                          auto · unicode                              │
+│   Layout                         auto · trader from 200 columns              │
+│   Mouse                          auto · clicks, wheel and hover · shift-drag │
+│   Move with h j k l              ● on · the arrows always move               │
+│   Big balance digits             ● on                                        │
+│   Balance in the top bar         ● on · $ toggles it                         │
+│   Effects & celebrations         ● on                                        │
+│   Lock screen animation          random  ›                                   │
+│   Terminal bell on good news     ○ off                                       │
+│                                                                              │
+│   ↓ 14 more                                                                  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ environment ─────────────────────────────────────────────────────────────────┐
 │ terminal      xterm-256color · block QR codes · 24-bit color                 │
 │ theme         terminal · terminal palette                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter change  T theme showroom  : palette  ? more
+ N notifications  enter change · open  h step back  : palette  ? more

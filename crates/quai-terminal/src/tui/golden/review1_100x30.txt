@@ -1,14 +1,14 @@
- ◆  PREVIEW │ Home › Portfolio │ ● Local dev  #1,234,567 │ watch-only                 ● 1 unread N
-                     Home · ▸ Portfolio  Qi coins  Accounts  Locks  [ ]
-▌┌ review · Buy Quai Pepe #212 ───────────────────────────────────────────────────────────────────┐┐
- │                                                                                                ││
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        Home ·  Portfolio   Qi coins   Accounts   [ ]
+ ┌ review · Buy Quai Pepe #212 ───────────────────────────────────────────────────────────────────┐─
+▌│                                                                                                │┐
  │                    Quai Pepe #212                                                              ││
  │                    token #212                                                                  ││
  │                    0x004d…eaa4                                                                 ││
  │                                                                                                ││
- │         QU                                                                                     │┘
+ │         QU                                                                                     ││
+ │                                                                                                │┘
  │                                                                                                │┐
- │                                                                                                ││
  │                                                                                                ││
  │  balance changes                                                                               ││
  │    − 1,000 QUAI                                                                                ││
@@ -22,9 +22,9 @@
  │  max fee         0.1 QUAI                                                                      ││
  │                                                                                                ││
  │  what happens                                                                                  │┘
- │    → signed and broadcast; included within a few blocks and tracked on activity (3)            │┐
+ │    → signed and broadcast; included within a few blocks and tracked in Activity (g a)          │┐
  │                                                                                                ││
- │    Reject · enter       Approve & sign · tab     read ████████████░░  space reads              ││
+ │    Reject · enter       Approve & sign · read to enable     read ███████████░░░  space reads   ││
  └────────────────────────────────────────────────────────────────────────────────────────────────┘│
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- N notifications  enter detail  t swap  s send  r receive  : palette  ? more
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ tab reject · approve  enter the focused button  y copy as a command  esc reject

@@ -1,0 +1,30 @@
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        Trade ·  Exchange   Orders   PnL   [ ]
+                       ────────────────────━━━━━━━━─────────────────────────────────────────────────
+  1  Home           • │┌ ▸ limit orders · 0 ───────────────────────────────────────────────────────┐
+                      ││                                                                           │
+  2  Markets          ││                                                                           │
+                      ││                                                                           │
+▌ 3  Trade            ││                                                                           │
+                      ││                                                                           │
+  4  NFTs           ◧ ││                                                                           │
+                      ││                                                                           │
+  5  People           ││                                                                           │
+                      ││                                                                           │
+  6  Activity         ││                                                                           │
+                      ││                                                                           │
+                      ││                          ◌  Reading your orders…                          │
+  0  System           ││                                                                           │
+                      ││                                                                           │
+   [ ] tabs           ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter review  x cancel order  R reload  space actions  : palette  ? more

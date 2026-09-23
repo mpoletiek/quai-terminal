@@ -1,30 +1,30 @@
- ◆  PREVIEW │ Trade › Swap │ ● Local dev  #1,234,567 │ watch-only                     ● 1 unread N
-                     Trade · Markets  ▸ Swap  Pools  Convert  Wrap  Launches  PnL  [ ]
- 1 Home         •  │┌ ▸ swap · Quainance ──────────────────────────────────────────────────────────┐
-▌2 Trade           ││ you pay                                                                      │
-      Markets      ││   token       WQ [WQI ✓▾]                                                    │
-    › Swap         ││   amount      50   available 171.4                                           │
-      Pools        ││                25%   50%   75%   max    % · f ↕                              │
-      Convert      ││ you receive                                                                  │
-      Wrap         ││   token       US [USDT ✓▾]                                                   │
-      Launches     ││   amount      ⠋ quoting…                                                     │
-      PnL          ││                                                                              │
- 3 NFTs         ◧  ││   slippage    0.50% ‹›                                                       │
- 4 People          ││   deadline    10 min ‹›                                                      │
- 5 Activity        │└──────────────────────────────────────────────────────────────────────────────┘
-                   │┌ quote ───────────────────────────────────────────────────────────────────────┐
- 0 System          ││ Type an amount; the quote updates as you type.                               │
-                   ││                                                                              │
-  [ ] tabs         ││ Quotes read the Quainance router and pools on-chain.                         │
-                   ││ Token inputs need an exact approval first; each step is its own review.      │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   ││                                                                              │
-                   │└──────────────────────────────────────────────────────────────────────────────┘
- N notifications  tab edit  / pick token  % 25·50·75%  f flip  : palette  ? more
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                        Trade ·  Exchange   Orders   PnL   [ ]
+                       ─────────━━━━━━━━━━──────────────────────────────────────────────────────────
+  1  Home           • │┌ ▸ exchange · swap on Quainance ───────────────────────────────────────────┐
+                      ││ you pay                                                                   │
+  2  Markets          ││   token       WQ [WQI ✓▾]                                                 │
+                      ││   amount      50   available 171.4                                        │
+▌ 3  Trade            ││                25%   50%   75%   max    % · f ↕                           │
+                      ││ you receive                                                               │
+  4  NFTs           ◧ ││   token       US [USDT ✓▾]                                                │
+                      ││   amount      ◌ quoting…                                                  │
+  5  People           ││                                                                           │
+                      ││   slippage    0.50% ‹›                                                    │
+  6  Activity         ││   deadline    10 min ‹›                                                   │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+                      │┌ quote ────────────────────────────────────────────────────────────────────┐
+  0  System           ││ Type an amount; the quote updates as you type.                            │
+                      ││                                                                           │
+   [ ] tabs           ││ Quotes read the Quainance router and pools on-chain.                      │
+                      ││ Token inputs need an exact approval first; each step is its own review.   │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter edit · review  / pick token  f flip  space actions  : palette  ? more

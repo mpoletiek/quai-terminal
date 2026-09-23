@@ -18,9 +18,11 @@ use wallet_core::swap::{SwapAsset, SwapQuote};
 #[derive(Clone, Debug)]
 pub enum AlertOp {
     Load,
-    /// Check them; pair alerts only with trading on (`pairs`), gas alerts always.
+    /// Check them; pair alerts only with trading on (`pairs`), gas alerts always. With
+    /// `unless_daemon`, skipped while the background daemon reports it checked them lately.
     Check {
         pairs: bool,
+        unless_daemon: bool,
     },
     Add(Box<wallet_core::alerts::Alert>),
     Remove(u64),
@@ -629,6 +631,7 @@ async fn run(
                 let send = |ev: DataEv| {
                     if generation.get() == born {
                         let _ = events.send(ev);
+                        super::term::wake();
                     }
                 };
                 if let Some(first) = cache_pass(&cmd) {
@@ -670,73 +673,75 @@ async fn run(
                     false => (None, false),
                 };
                 let _ = events.send(DataEv::Image { url, edge, rendition: rendition.map(Arc::new), transient });
+                super::term::wake();
                 (IMAGES, key)
             }));
         }
 
         tokio::select! {
-            c = cmds.recv() => match c {
-                Some(DataCmd::Focus(names)) => focus = names,
-                Some(c) => queue.push(c),
-                None => return,
-            },
-            _ = &mut prune, if !pruned => {
-                pruned = true;
-                let started = std::time::Instant::now();
-                let _ = ctx.app.prune(30 * 86_400);
-                // The shared feeds age out on the same schedule, and a wallet opened before the
-                // shared cache existed drops its own copies of them once.
-                if let Some(shared) = &ctx.shared {
-                    let _ = shared.prune(30 * 86_400);
-                }
-                let _ = ctx.app.drop_shared_feeds();
-                wallet_core::diag::timing("data.prune", started);
-            }
-            _ = monitor_tick.tick(), if current.0.monitor.is_some() && monitor_job.is_none() => {
-                ticks += 1;
-                let (observed, paths, profile, policy, born) = (ctx.clone(), path.clone(), current.0.clone(), current.1, generation.get());
-                monitor_job = Some(Box::pin(async move {
-                    let switched = if observed.monitoring() && !observed.node_answers(std::time::Duration::from_secs(3)).await {
-                        open(&paths, profile, policy)
-                    } else if !observed.monitoring() && (ticks == 1 || ticks.is_multiple_of(3)) {
-                        if let Some(mut next) = open(&paths, profile, policy) {
-                            if next.use_monitor().await.is_none() { Some(next) } else { None }
-                        } else { None }
-                    } else { None };
-                    (born, switched)
-                }));
-            }
-            (born, switched) = async { monitor_job.as_mut().expect("guarded monitor job").await }, if monitor_job.is_some() => {
-                monitor_job = None;
-                if born == generation.get()
-                    && let Some(next) = switched
-                    && let Some(mut cached) = open_cache(&path, current.0.clone(), current.1)
-                {
-                    if next.monitoring() != ctx.monitoring() {
-                        let note = if next.monitoring() { "monitoring endpoint available for public reads" } else { "monitoring endpoint stopped answering; public reads use the primary RPC" };
-                        let _ = events.send(DataEv::Notice(note.into()));
+                    c = cmds.recv() => match c {
+                        Some(DataCmd::Focus(names)) => focus = names,
+                        Some(c) => queue.push(c),
+                        None => return,
+                    },
+                    _ = &mut prune, if !pruned => {
+                        pruned = true;
+                        let started = std::time::Instant::now();
+                        let _ = ctx.app.prune(30 * 86_400);
+                        // The shared feeds age out on the same schedule, and a wallet opened before the
+                        // shared cache existed drops its own copies of them once.
+                        if let Some(shared) = &ctx.shared {
+                            let _ = shared.prune(30 * 86_400);
+                        }
+                        let _ = ctx.app.drop_shared_feeds();
+                        wallet_core::diag::timing("data.prune", started);
                     }
-                    follow(&mut cached, &next);
-                    ctx = Rc::new(next);
-                    cache = Rc::new(cached);
-                }
-            }
-            Some((l, key)) = running.next(), if !running.is_empty() => {
-                busy[l] -= 1;
-                match key {
-                    Some(k) if l == IMAGES => {
-                        if let Some(n) = image_hosts.get_mut(k.trim_start_matches("image:")) {
-                            *n = n.saturating_sub(1);
+                    _ = monitor_tick.tick(), if current.0.monitor.is_some() && monitor_job.is_none() => {
+                        ticks += 1;
+                        let (observed, paths, profile, policy, born) = (ctx.clone(), path.clone(), current.0.clone(), current.1, generation.get());
+                        monitor_job = Some(Box::pin(async move {
+                            let switched = if observed.monitoring() && !observed.node_answers(std::time::Duration::from_secs(3)).await {
+                                open(&paths, profile, policy)
+                            } else if !observed.monitoring() && (ticks == 1 || ticks.is_multiple_of(3)) {
+                                if let Some(mut next) = open(&paths, profile, policy) {
+                                    if next.use_monitor().await.is_none() { Some(next) } else { None }
+                                } else { None }
+                            } else { None };
+                            (born, switched)
+                        }));
+                    }
+                    (born, switched) = async { monitor_job.as_mut().expect("guarded monitor job").await }, if monitor_job.is_some() => {
+                        monitor_job = None;
+                        if born == generation.get()
+                            && let Some(next) = switched
+                            && let Some(mut cached) = open_cache(&path, current.0.clone(), current.1)
+                        {
+                            if next.monitoring() != ctx.monitoring() {
+                                let note = if next.monitoring() { "monitoring endpoint available for public reads" } else { "monitoring endpoint stopped answering; public reads use the primary RPC" };
+                                let _ = events.send(DataEv::Notice(note.into()));
+        super::term::wake();
+                            }
+                            follow(&mut cached, &next);
+                            ctx = Rc::new(next);
+                            cache = Rc::new(cached);
                         }
                     }
-                    Some(k) => {
-                        flying.remove(&k);
-                        previews.remove(&k);
+                    Some((l, key)) = running.next(), if !running.is_empty() => {
+                        busy[l] -= 1;
+                        match key {
+                            Some(k) if l == IMAGES => {
+                                if let Some(n) = image_hosts.get_mut(k.trim_start_matches("image:")) {
+                                    *n = n.saturating_sub(1);
+                                }
+                            }
+                            Some(k) => {
+                                flying.remove(&k);
+                                previews.remove(&k);
+                            }
+                            None => {}
+                        }
                     }
-                    None => {}
                 }
-            }
-        }
     }
 }
 
@@ -916,8 +921,25 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
             let mut fired = Vec::new();
             let note = match op {
                 AlertOp::Load => None,
-                AlertOp::Check { pairs } => {
-                    fired = alerts::run(ctx, pairs).await.unwrap_or_default();
+                AlertOp::Check { pairs, unless_daemon } => {
+                    // The daemon checks alerts for every wallet; when its heartbeat is fresh and
+                    // clean, checking here too would only fire them twice.
+                    let daemon_checked = unless_daemon
+                        && ctx
+                            .app
+                            .kv(&format!("alerts_heartbeat:{network}"))
+                            .ok()
+                            .flatten()
+                            .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
+                            .is_some_and(|value| {
+                                value["error"].is_null()
+                                    && value["completed_at"]
+                                        .as_u64()
+                                        .is_some_and(|at| wallet_core::registry::now().saturating_sub(at) < 180)
+                            });
+                    if !daemon_checked {
+                        fired = alerts::run(ctx, pairs).await.unwrap_or_default();
+                    }
                     None
                 }
                 AlertOp::Add(a) => {
@@ -1016,7 +1038,7 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
                 let t = std::time::Instant::now();
                 let r = wallet_core::http::get_json(&format!("{}/listings", base.trim_end_matches('/')))
                     .await
-                    .map(|v| format!("{} listings", wallet_core::market::parse_listings(&v).len()));
+                    .map(|v| wallet_core::amount::count(wallet_core::market::parse_listings(&v).len(), "listing"));
                 results.push(("marketplace indexer".into(), r.map_err(|e| e.to_string()), t.elapsed().as_millis()));
             }
             let t = std::time::Instant::now();

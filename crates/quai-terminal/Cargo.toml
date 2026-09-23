@@ -20,6 +20,10 @@ zeroize.workspace = true
 toml.workspace = true
 base64.workspace = true
 ratatui = "0.30.2"
+# The TUI's terminal I/O: typed escape sequences, and an input parser that reads the replies to
+# the capability queries (colors, modes, kitty keyboard, device attributes) instead of typing them
+# into the UI. crossterm stays for its key types, which the app and its tests are written in.
+termina = "0.3"
 crossterm = { version = "0.29", features = ["event-stream"] }
 tachyonfx = "0.25"
 ttfx = { git = "https://github.com/omacom/ttfx", rev = "7203e35" }
@@ -37,7 +41,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Marking the process non-dumpable and asking the kernel for our user id (already in the
 # dependency tree, through crossterm).
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1", default-features = false, features = ["process", "std", "fs"] }
+rustix = { version = "1.1", default-features = false, features = ["process", "std", "fs", "termios", "event"] }
+# SIGTERM/SIGHUP/SIGCONT, so the terminal is restored however the wallet is stopped.
+signal-hook = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,52 +1,75 @@
 //! Terminal UI: a synchronous render/input loop on the main thread, with all wallet I/O
-//! on a background worker thread (see `worker`).
+//! on background threads (see `worker`, `data`). The terminal itself is owned by `term`.
 
 pub mod app;
+pub mod clipboard;
 pub mod data;
 pub mod eco;
 pub mod edge;
 pub mod fx;
 pub mod glossary;
+pub mod hit;
+pub mod icons;
 pub mod images;
+pub mod keymap;
+pub mod links;
+pub mod num;
 pub mod onboarding;
 pub mod order_ui;
 pub mod palette;
+pub mod persist;
+pub mod placeholders;
+pub mod pointer;
+pub mod term;
 pub mod terminal;
 pub mod theme;
 pub mod themes;
 pub mod ui;
 pub mod views;
+pub mod widgets;
 pub mod worker;
 
 use crate::commands::Ctx;
 use app::App;
-use crossterm::event::{self, Event};
-use crossterm::execute;
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crossterm::event::Event;
 use std::time::{Duration, Instant};
 use wallet_core::{CoreError, Result};
 use worker::{Cmd, Ev, Worker};
 
-static ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Leave raw mode / alternate screen (safe to call when not in the TUI).
+/// Give the terminal back as it was found (safe to call when not in the TUI, and from a panic).
 pub fn restore_terminal() {
-    if ACTIVE.swap(false, Ordering::SeqCst) {
-        let _ = disable_raw_mode();
-        let mut out = std::io::stdout();
-        let _ = execute!(out, event::DisableBracketedPaste, event::DisableFocusChange, LeaveAlternateScreen, crossterm::cursor::Show);
-    }
+    term::modes::restore();
 }
 
-struct Guard;
-impl Drop for Guard {
-    fn drop(&mut self) {
-        restore_terminal();
+/// How long the loop may sleep: until the next thing that needs a frame (an animation step, the
+/// half-second tick, a resize settling), capped so a missed wake is never noticed for long.
+fn next_wait(app: &App, animating: bool, last_tick: Instant, resized_at: Option<Instant>) -> Duration {
+    const IDLE: Duration = Duration::from_millis(500);
+    let mut wait = IDLE.saturating_sub(last_tick.elapsed()).max(Duration::from_millis(1));
+    if animating {
+        wait = wait.min(Duration::from_millis(33));
     }
+    if ui::spinning(app) {
+        wait = wait.min(ui::until_next_spinner_step());
+    }
+    if let Some(beat) = app.beat
+        && beat.elapsed() < ui::BEAT_PULSE
+    {
+        wait = wait.min(ui::BEAT_PULSE - beat.elapsed());
+    }
+    if let Some(step) = app.eco.anim_step.get().filter(|_| app.focused) {
+        wait = wait.min(Duration::from_millis(step - app.eco.anim_ms % step).max(Duration::from_millis(15)));
+    }
+    if let Some(at) = resized_at {
+        wait = wait.min(RESEND_AFTER_RESIZE.saturating_sub(at.elapsed()).max(Duration::from_millis(1)));
+    }
+    wait
 }
+
+/// A resize destroys the terminal's placements, and the pictures behind them may go with them.
+/// Re-sending costs a screenful, so it waits until the size stops changing rather than paying it
+/// for every step of a drag.
+const RESEND_AFTER_RESIZE: Duration = Duration::from_millis(180);
 
 fn theme_signature(path: &Option<std::path::PathBuf>) -> Option<(std::path::PathBuf, std::time::SystemTime)> {
     let p = path.as_ref()?;
@@ -76,23 +99,18 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         && meta.is_some()
         && ctx.global.network.is_none()
         && std::env::var_os("QUAI_TERMINAL_NO_DAEMON").is_none()
-        && let Err(e) = crate::daemon::ensure_current(&ctx.paths, 20)
     {
-        wallet_core::diag::mark(&format!("daemon.autostart_failed {e}"));
+        crate::daemon::ensure_current_soon(ctx.paths.clone(), 20);
     }
 
-    enable_raw_mode().map_err(|e| CoreError::Invalid(format!("terminal: {e}")))?;
-    ACTIVE.store(true, Ordering::SeqCst);
-    let _guard = Guard;
     wallet_core::diag::timing("startup.registry+caps", startup);
-    let mut input = terminal::Input::probe_background(Duration::from_millis(150));
-    let light = input.light_background();
+    let mut term = term::Term::start(caps.truecolor, ctx.global.no_color).map_err(|e| CoreError::Invalid(format!("terminal: {e}")))?;
+    let light = term.answers.light();
     wallet_core::diag::timing("startup.probe_background", startup);
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, event::EnableBracketedPaste, event::EnableFocusChange)
-        .map_err(|e| CoreError::Invalid(format!("terminal: {e}")))?;
-    let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout())).map_err(|e| CoreError::Invalid(format!("terminal: {e}")))?;
-    term.clear().ok();
+    if wallet_core::diag::enabled() {
+        wallet_core::diag::mark(&format!("startup.probe answered={} took_us={}", term.answers.answered, term.answers.took.as_micros()));
+    }
+    term::signals::listen(term::wake);
     wallet_core::diag::timing("startup.terminal", startup);
 
     let no_color = ctx.global.no_color;
@@ -110,35 +128,50 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     let mut omarchy_sig = theme_signature(&theme::omarchy_colors());
     let mut caps = caps;
     caps.light_background = light;
+    // What the terminal said beats what the environment suggested.
+    caps.truecolor |= term.answers.truecolor;
+    caps.kitty_keyboard = term.answers.kitty_keyboard;
+    // A multiplexer draws its own screen and passes none of this through.
+    caps.text_sizing = term.answers.text_sizing && !caps.tmux;
+    caps.ansi8 = term.answers.ansi8;
+    // Pointer shapes (OSC 22) where sequences it doesn't know are ignored, outside a multiplexer.
+    term.shapes = caps.hyperlinks && !caps.tmux;
+    let mut theme = theme;
+    theme.fit_to_terminal(term.answers.background, caps.ansi8, caps.truecolor);
     let mut app = App::new(ctx.paths.clone(), network_id.clone(), config, theme, caps, meta);
+    // Large pictures go to the terminal as files it reads and deletes, when it is on this machine.
+    app.kitty.file_dir = terminal::picture_dir(app.caps.ssh);
     wallet_core::diag::timing("startup.app_new", startup);
     app.light_hint = light.unwrap_or(false);
     app.no_color = no_color;
     app.theme_override = theme_override;
     // Block digits are glyph noise for screen readers and the Linux console. This is a
     // session fallback only: it must never be written back into the saved preferences.
-    app.plain = no_color || std::env::var("TERM").is_ok_and(|t| t == "linux");
+    app.plain = ctx.global.plain || no_color || std::env::var("TERM").is_ok_and(|t| t == "linux");
     fx::probe_fonts();
+    icons::probe();
     app.start_onboarding();
     wallet_core::diag::timing("startup.app", startup);
     let mut first_frame = true;
+    // What the window's title and taskbar last showed.
+    let mut shown_title = String::new();
+    let mut shown_progress = 0u8;
     let mut input_started: Option<Instant> = None;
     let mut qr_cache: Option<(String, u64, std::sync::Arc<Vec<u8>>)> = None;
     let mut last_theme_check = Instant::now();
+    // The spinner glyph and the minute last drawn (see the tick and the redraw rules below).
+    let mut spinner_drawn = 0u128;
+    let mut ages_minute = 0u64;
     let mut last_tick = Instant::now();
-    let mut last_size = term.size().map(|s| (s.width, s.height)).unwrap_or((0, 0));
-    // A resize destroys the terminal's placements, and the pictures behind them may go with
-    // them. Re-sending costs a screenful, so it waits until the size stops changing rather than
-    // paying it for every step of a drag.
+    let mut last_size = term.ui.size().map(|s| (s.width, s.height)).unwrap_or((0, 0));
     let mut resized_at: Option<Instant> = None;
-    const RESEND_AFTER_RESIZE: Duration = Duration::from_millis(180);
 
     let result = loop {
         // Start the worker once a wallet exists (immediately, or after onboarding).
         if app.worker.is_none()
             && let Some(meta) = app.meta.clone()
         {
-            match Worker::spawn(app.registry.clone(), app.config.clone(), meta, app.network_id.clone(), || {}) {
+            match Worker::spawn(app.registry.clone(), app.config.clone(), meta, app.network_id.clone(), term::wake) {
                 Ok(w) => {
                     app.worker = Some(w);
                     app.start_data_worker();
@@ -153,25 +186,54 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         }
 
         app.poll_creation();
+        app.poll_copy();
+        app.poll_persist();
+        // Pictures fitted and encoded off this thread: placed on the next frame.
+        if images::poll_fitted(&app) {
+            app.dirty = true;
+        }
         app.poll_unlock();
         app.poll_monitor_check();
         app.poll_ipfs_check();
 
+        // Stopped from outside (SIGTERM, SIGHUP): leave as a quit does.
+        if term::signals::stop_requested() {
+            break Ok(());
+        }
+        // Continued after an outside stop: the screen may be anything now.
+        if term::signals::take_continued() {
+            let _ = term.repaint();
+            app.kitty.forget_images(app.caps.tmux);
+            app.dirty = true;
+        }
+
         // Drain worker events.
-        let size = term.size().map(|s| (s.width, s.height)).unwrap_or((80, 24));
+        let size = term.ui.size().map(|s| (s.width, s.height)).unwrap_or((80, 24));
         let mut events = Vec::new();
         if let Some(w) = &app.worker {
             while let Ok(ev) = w.rx.try_recv() {
                 events.push(ev);
             }
         }
+        // Notices the UI raised itself go the same way as the worker's.
+        for (title, body) in std::mem::take(&mut app.notices_out) {
+            if app.config.notifications && !app.focused {
+                match crate::notify::detect_terminal() {
+                    Some(backend) => term.queue(crate::notify::sequence(backend, &title, &body).as_bytes()),
+                    None => crate::notify::desktop(&title, &body),
+                }
+            }
+        }
         for ev in events {
+            // A notice for the desktop only while the window is in the background: in front, the
+            // toast on screen says it, and a second copy in the corner of the desktop is noise.
             if let Ev::Notify { title, body } = &ev
                 && app.config.notifications
+                && !app.focused
             {
-                // Terminal notification between frames (no cursor movement), desktop as fallback.
-                if !crate::notify::terminal(title, body) {
-                    crate::notify::desktop(title, body);
+                match crate::notify::detect_terminal() {
+                    Some(backend) => term.queue(crate::notify::sequence(backend, title, body).as_bytes()),
+                    None => crate::notify::desktop(title, body),
                 }
             }
             app.on_event(ev, size);
@@ -214,7 +276,8 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             omarchy_sig = system;
             if app.pending_theme_reload || sig != theme_sig || system_changed {
                 let setting = app.theme_override.clone().unwrap_or_else(|| app.config.theme.clone());
-                let (t, file) = theme::resolve(app.paths.root(), &setting, light.unwrap_or(false), no_color);
+                let (mut t, file) = theme::resolve(app.paths.root(), &setting, light.unwrap_or(false), no_color);
+                t.fit_to_terminal(term.answers.background, app.caps.ansi8, app.caps.truecolor);
                 app.theme = t;
                 theme_file = file;
                 theme_sig = theme_signature(&theme_file);
@@ -223,17 +286,25 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                 // Clearing the screen deletes kitty image placements, and a terminal that
                 // re-themed with the system has dropped the image data as well: send both again.
                 app.kitty.forget_images(app.caps.tmux);
-                term.clear().ok();
+                term.ui.clear().ok();
             }
         }
 
         if last_tick.elapsed() >= Duration::from_millis(500) {
             last_tick = Instant::now();
             app.tick(size);
-            if app.busy.is_some() || app.unlocking || !app.toasts.is_empty() {
+            if app.unlocking {
                 app.dirty = true;
             }
-            if matches!(app.screen, app::Screen::Swap | app::Screen::Home) || app.eco.testing {
+            // Ages on screen redraw when they can have changed: Home's are in minutes, a quote's
+            // freshness on Swap in seconds.
+            let minute = wallet_core::registry::now() / 60;
+            let ages_moved = match app.screen {
+                app::Screen::Home => std::mem::replace(&mut ages_minute, minute) != minute,
+                app::Screen::Swap => app.eco.swap.quoted_at.is_some(),
+                _ => false,
+            };
+            if app.focused && ages_moved || app.eco.testing {
                 app.dirty = true;
             }
         }
@@ -245,8 +316,16 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             app.eco.anim_ms += now.saturating_duration_since(last).as_millis() as u64;
         }
         app.eco.anim_last = Some(now);
-        if let Some(step) = step
-            && app.eco.anim_ms / step != app.eco.anim_drawn.get()
+        // A new step of the edge light alone is a decoration frame, not a redraw.
+        let edge_due = step.is_some_and(|step| app.eco.anim_ms / step != app.eco.anim_drawn.get());
+        // A spinner is content, redrawn when its glyph changes (every 80 ms), not at the frame
+        // rate; the block heartbeat's pulse is two frames, on and off.
+        if ui::spinning(&app) && ui::spinner_step() != spinner_drawn {
+            app.dirty = true;
+        }
+        if let Some(beat) = app.beat
+            && beat.elapsed() >= ui::BEAT_PULSE
+            && app.last_frame < beat + ui::BEAT_PULSE
         {
             app.dirty = true;
         }
@@ -260,7 +339,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         let animating = ui::wants_animation(&app);
         // A size change ratatui notices on its own (no resize event) clears the screen, which
         // deletes kitty placements: reset ours before drawing.
-        if let Ok(now_size) = term.size() {
+        if let Ok(now_size) = term.ui.size() {
             let now_size = (now_size.width, now_size.height);
             if now_size != last_size {
                 last_size = now_size;
@@ -269,11 +348,31 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                 app.dirty = true;
             }
         }
-        if app.dirty || animating {
+        // Whether the terminal's own background shows through the page: a change repaints
+        // everything, since cells already sent carry the old background.
+        app.terminal_background = term.answers.background;
+        let see_through = app.see_through();
+        if term.ui.backend().see_through != see_through {
+            term.ui.backend_mut().see_through = see_through;
+            app.kitty.forget_images(app.caps.tmux);
+            term.ui.clear().ok();
+            app.dirty = true;
+        }
+        if app.dirty || animating || edge_due {
+            let edges_only = !app.dirty && !animating;
             let mut drawn = (0u16, 0u16);
-            let res = term.draw(|f| {
+            let frame_started = Instant::now();
+            let mut render_us = 0u64;
+            term.ui.backend_mut().begin();
+            let res = term.ui.draw(|f| {
                 drawn = (f.area().width, f.area().height);
-                ui::draw(f, &mut app)
+                let t0 = Instant::now();
+                if edges_only {
+                    ui::draw_edges(f, &mut app);
+                } else {
+                    ui::draw(f, &mut app);
+                }
+                render_us = t0.elapsed().as_micros() as u64;
             });
             if std::mem::take(&mut first_frame) {
                 wallet_core::diag::timing("startup.first_frame", startup);
@@ -281,7 +380,23 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             if let Err(e) = res {
                 break Err(CoreError::Invalid(format!("draw: {e}")));
             }
+            // Headline text drawn larger than a cell goes over the cells that hold its place. A
+            // decoration frame keeps the last full frame's.
+            term.ui.backend_mut().big_text(&app.big_text.borrow());
+            // The hidden cursor waits at the focus, for magnifiers and screen readers.
+            if let Some((x, y)) = app.focus_at {
+                term.queue(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
+            }
             if wallet_core::diag::enabled() {
+                // Render (our drawing) and the frame through ratatui's diff, in microseconds, per
+                // screen: the budget is render ≤ 2 ms and frame ≤ 4 ms at p99.
+                let place = match (app.locked, edges_only) {
+                    (true, _) => "Lock".to_string(),
+                    (false, true) => "Edges".to_string(),
+                    (false, false) => format!("{:?}", app.screen),
+                };
+                wallet_core::diag::count(&format!("perf.render_us.{place}"), render_us);
+                wallet_core::diag::count(&format!("perf.frame_us.{place}"), frame_started.elapsed().as_micros() as u64);
                 wallet_core::diag::count(&format!("frame.screen.{:?}", app.screen), app.selected as u64);
                 if app.screen == app::Screen::Markets
                     && let Some(pool) = app.selected_pool()
@@ -302,71 +417,115 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                 resized_at = Some(Instant::now());
             }
             app.last_frame = Instant::now();
+            spinner_drawn = ui::spinner_step();
             app.dirty = false;
-            if let Some(text) = app.clipboard.take() {
-                // OSC 52: the terminal puts the text on the system clipboard (works over SSH/tmux too).
-                use base64::Engine;
-                use std::io::Write;
-                let seq = format!("\x1b]52;c;{}\x07", base64::engine::general_purpose::STANDARD.encode(text.as_bytes()));
-                let seq = if app.caps.tmux { format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b")) } else { seq };
-                let mut out = std::io::stdout();
-                let _ = out.write_all(seq.as_bytes());
-                let _ = out.flush();
+            if let Some(req) = app.clipboard.take() {
+                // The desktop's own tool here, read back; OSC 52 over SSH (see `clipboard`).
+                let (seq, rx) = clipboard::start(req, app.caps.tmux);
+                if let Some(seq) = seq {
+                    term.queue(seq.as_bytes());
+                }
+                app.copying = Some(rx);
             }
             if std::mem::take(&mut app.bell) {
-                use std::io::Write;
-                let mut out = std::io::stdout();
-                let _ = out.write_all(if app.caps.tmux { b"\x1bPtmux;\x07\x1b\\" } else { b"\x07" });
-                let _ = out.flush();
+                term.queue(if app.caps.tmux { b"\x1bPtmux;\x07\x1b\\" } else { b"\x07" });
             }
-            // Kitty bitmap placement after the cell frame is flushed.
-            let mut placements = images::kitty_items(&app);
-            // The QR bitmap is encoded once per address, not every frame.
-            if let Some((_, data)) = &app.qr_rect
-                && app.caps.tier == terminal::Tier::Pixels
-                && qr_cache.as_ref().is_none_or(|(d, _, _)| d != data)
-                && let Some(png) = terminal::qr_png(data, 8)
-            {
-                qr_cache = Some((data.clone(), images::png_key(&png), std::sync::Arc::new(png)));
+            // Kitty bitmap placement after the cell frame is flushed. A decoration frame moved no
+            // content, so the pictures placed last frame stay exactly where they are.
+            if !edges_only {
+                let mut placements = images::kitty_items(&app);
+                // The QR bitmap is encoded once per address, not every frame.
+                if let Some((_, data)) = &app.qr_rect
+                    && app.caps.tier == terminal::Tier::Pixels
+                    && qr_cache.as_ref().is_none_or(|(d, _, _)| d != data)
+                    && let Some(png) = terminal::qr_png(data, 8)
+                {
+                    qr_cache = Some((data.clone(), images::png_key(&png), std::sync::Arc::new(png)));
+                }
+                if let (Some((rect, data)), Some((cached, key, png))) = (app.qr_rect.clone(), qr_cache.as_ref())
+                    && app.caps.tier == terminal::Tier::Pixels
+                    && *cached == data
+                {
+                    placements.push(terminal::Placement {
+                        png: png.clone(),
+                        key: *key,
+                        x: rect.x,
+                        y: rect.y,
+                        cols: rect.width,
+                        rows: rect.height,
+                        z: 0,
+                    });
+                }
+                if images::bitmaps(&app) && !placements.is_empty() {
+                    app.kitty.place_all(&placements, app.caps.tmux);
+                } else {
+                    app.kitty.clear(app.caps.tmux);
+                }
+                app.flush_image_wants();
+                // Pictures go out with the cells they sit among, in the same synchronized frame.
             }
-            if let (Some((rect, data)), Some((cached, key, png))) = (app.qr_rect.clone(), qr_cache.as_ref())
-                && app.caps.tier == terminal::Tier::Pixels
-                && *cached == data
-            {
-                placements.push(terminal::Placement {
-                    png: png.clone(),
-                    key: *key,
-                    x: rect.x,
-                    y: rect.y,
-                    cols: rect.width,
-                    rows: rect.height,
-                    z: 0,
-                });
+            let images = app.kitty.take_output();
+            term.queue(&images);
+            if let Err(e) = term.ui.backend_mut().end() {
+                break Err(CoreError::Invalid(format!("draw: {e}")));
             }
-            if images::bitmaps(&app) && !placements.is_empty() {
-                app.kitty.place_all(&placements, app.caps.tmux);
-            } else {
-                app.kitty.clear(app.caps.tmux);
+            // What the terminal had to take in for it (the budget at idle is ≤ 5 KB/s).
+            wallet_core::diag::count(
+                if edges_only { "perf.bytes.Edges" } else { "perf.bytes.Full" },
+                term.ui.backend().last_frame_bytes as u64,
+            );
+        } else {
+            // Placements cleared between frames (a detail closed, a screen left) still go out.
+            let images = app.kitty.take_output();
+            if !images.is_empty() {
+                term.queue(&images);
             }
-            app.flush_image_wants();
         }
 
         if app.quit {
             break Ok(());
         }
 
-        let mut timeout = if animating { Duration::from_millis(33) } else { Duration::from_millis(100) };
-        if let Some(step) = app.eco.anim_step.get().filter(|_| app.focused) {
-            timeout = timeout.min(Duration::from_millis(step - app.eco.anim_ms % step).max(Duration::from_millis(15)));
+        // The mouse follows the setting (and the session's release) from one frame to the next.
+        let _ = term.set_pointer(app.pointer_mode());
+        term.set_shape(app.pointer_shape());
+        // The window's title and taskbar say what the wallet is doing (see `window_title`).
+        let title = app.window_title();
+        if title != shown_title {
+            term.queue(format!("\x1b]2;{title}\x1b\\").as_bytes());
+            shown_title = title;
         }
-        match input.poll(timeout) {
-            Ok(true) => match input.read() {
-                Ok(Event::Key(key)) => {
+        let progress = if app.caps.taskbar_progress { app.taskbar_state() } else { 0 };
+        if progress != shown_progress {
+            term.queue(format!("\x1b]9;4;{progress};0\x1b\\").as_bytes());
+            shown_progress = progress;
+        }
+        let wait = next_wait(&app, animating, last_tick, resized_at);
+        let events = match term.events(wait) {
+            Ok(events) => events,
+            Err(e) => break Err(CoreError::Invalid(format!("input: {e}"))),
+        };
+        for event in events {
+            match event {
+                Event::Key(key) => {
                     if key.kind != crossterm::event::KeyEventKind::Release && wallet_core::diag::enabled() {
                         input_started.get_or_insert_with(Instant::now);
                     }
-                    let ctrl_c =
-                        key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && key.code == crossterm::event::KeyCode::Char('c');
+                    let ctrl = key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
+                    let ctrl_c = ctrl && key.code == crossterm::event::KeyCode::Char('c');
+                    // Ctrl-Z, as in any shell program: the wallet locks first (a suspended
+                    // wallet is out of sight, not out of reach), then gives the terminal back.
+                    if ctrl && key.code == crossterm::event::KeyCode::Char('z') && key.kind == crossterm::event::KeyEventKind::Press {
+                        app.suspend_lock();
+                        app.kitty.clear(app.caps.tmux);
+                        let images = app.kitty.take_output();
+                        term.queue(&images);
+                        if term.suspend().is_ok() {
+                            app.kitty.forget_images(app.caps.tmux);
+                        }
+                        app.dirty = true;
+                        continue;
+                    }
                     if app.onboarding.is_some() {
                         if ctrl_c {
                             app.quit = true;
@@ -377,44 +536,57 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                         app.on_key(key, size);
                     }
                 }
-                Ok(Event::Mouse(m)) => app.on_mouse(m),
-                Ok(Event::Resize(..)) => {
+                Event::Mouse(m) => app.on_mouse(m, size),
+                Event::Resize(..) => {
                     app.kitty.clear(app.caps.tmux);
                     resized_at = Some(Instant::now());
                     app.dirty = true;
+                    // The effect was built for the old canvas; the lock screen rests rather than
+                    // replaying it every time a tiling window manager moves the window.
                     if app.locked && app.motion().effects() {
                         app.ambient = None;
+                        app.lock_rested = true;
                     }
                 }
-                Ok(Event::Paste(text)) => app.on_paste(&text),
-                // Animations keep playing in the background; just repaint on return.
-                Ok(Event::FocusGained) => {
+                Event::Paste(text) => app.on_paste(&text),
+                // Motion waits while the window is in the background; repaint on return. Kitty
+                // keeps image placements across focus changes (a resize is what drops them, and
+                // has its own path above), so they are left alone: clearing them here made every
+                // icon blink on each alt-tab.
+                Event::FocusGained => {
                     app.focused = true;
+                    app.focus_gained_at = Some(Instant::now());
                     app.dirty = true;
-                    // The terminal may have redrawn or resized while away; place bitmaps afresh.
-                    app.kitty.clear(app.caps.tmux);
                 }
-                // Ambient light freezes; ceremonies keep playing.
-                Ok(Event::FocusLost) => app.focused = false,
-                Err(e) => break Err(CoreError::Invalid(format!("input: {e}"))),
-            },
-            Ok(false) => {}
-            Err(e) => break Err(CoreError::Invalid(format!("input: {e}"))),
+                Event::FocusLost => app.focused = false,
+            }
         }
     };
 
     app.kitty.free_all(app.caps.tmux);
+    let images = app.kitty.take_output();
+    term.queue(&images);
+    if shown_progress != 0 {
+        term.queue(b"\x1b]9;4;0;0\x1b\\");
+    }
     if let Some(w) = &app.worker {
         w.send(Cmd::Shutdown);
     }
     app.send_data(data::DataCmd::Shutdown);
+    // Preferences saved in the last moments reach the disk before the process ends.
+    app.flush_config();
+    if let Some(dir) = &app.kitty.file_dir {
+        terminal::clean_picture_files(dir);
+    }
     drop(term);
-    restore_terminal();
+    if let Some(line) = app.quit_receipt() {
+        println!("{line}");
+    }
     if let Some(state) = crate::daemon::state(&ctx.paths) {
         let unlocked = state.wallets.iter().filter(|w| w.2).count();
         println!(
-            "Quai Terminal keeps watching your {} wallet(s) in the background{} · to stop: quai-terminal daemon stop",
-            state.wallets.len(),
+            "Quai Terminal keeps watching your {} in the background{} · to stop: quai-terminal daemon stop",
+            wallet_core::amount::count(state.wallets.len(), "wallet"),
             if unlocked > 0 { format!(" ({unlocked} unlocked, for sealed chats and private payments)") } else { String::new() }
         );
     }
