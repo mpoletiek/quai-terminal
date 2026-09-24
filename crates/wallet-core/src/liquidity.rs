@@ -681,24 +681,65 @@ fn verify_pair_membership(requested: &str, factory_pair: &str) -> Result<()> {
 async fn pair_state(ctx: &DataCtx, pool: &Pool) -> Result<(U256, U256, U256)> {
     let anchor = ReadAnchor::capture(ctx).await?;
     let state = pair_state_at(ctx, pool, anchor.block()).await?;
+    anchor.prove_pair(ctx, &pool.address, state, None).await?;
     anchor.check(ctx).await?;
     Ok(state)
 }
 
+/// A UniswapV2 pair's `totalSupply` and `balanceOf` mapping: slots 0 and 1 on every venue here.
+const PAIR_SUPPLY_SLOT: u64 = 0;
+const PAIR_BALANCE_SLOT: u64 = 1;
+
 struct ReadAnchor {
     height: u64,
     hash: String,
+    /// On a review, the node's state anchor: every read is made at its block, and what can be is
+    /// proven there as well, so the two must agree exactly.
+    proven: Option<crate::anchor::Anchored>,
 }
 impl ReadAnchor {
     async fn capture(ctx: &DataCtx) -> Result<Self> {
         ctx.online()?;
+        // A network whose exchanges carry no bytecode pin is a custom or development chain; its
+        // reads stay as they were, since nothing here says its headers are go-quai's.
+        let pinned = ctx.network.ecosystem.quainance_factory.as_ref().is_some_and(|f| f.code_hash.is_some());
+        if !ctx.trust.may_cache()
+            && pinned
+            && let Some(anchored) = crate::anchor::review_anchor(&ctx.node, &ctx.network, "the pool").await?
+        {
+            let block = anchored.anchor.block;
+            return Ok(Self { height: block.number, hash: block.hash.to_string(), proven: Some(anchored) });
+        }
         let head = ctx
             .node
             .provider
             .latest_header(crate::network::ZONE)
             .await?
             .ok_or_else(|| CoreError::Network("missing LP observation header".into()))?;
-        Ok(Self { height: head.number, hash: head.hash.to_string() })
+        Ok(Self { height: head.number, hash: head.hash.to_string(), proven: None })
+    }
+
+    /// On a review, hold what was read at this block to what the pair's storage proves there:
+    /// `totalSupply` (slot 0), the packed reserves (slot 8) and, for a position, the owner's LP
+    /// balance (`balanceOf`, a mapping at slot 1). Any difference is the node's answer and its own
+    /// state disagreeing.
+    async fn prove_pair(&self, ctx: &DataCtx, pair: &str, state: (U256, U256, U256), holding: Option<(&str, U256)>) -> Result<()> {
+        let Some(anchored) = &self.proven else { return Ok(()) };
+        let pair = addr(pair)?;
+        let mut slots = vec![crate::anchor::slot(PAIR_SUPPLY_SLOT), crate::anchor::slot(crate::swap::PAIR_RESERVES_SLOT)];
+        if let Some((owner, _)) = holding {
+            slots.push(crate::anchor::mapping_field_slot(addr(owner)?, PAIR_BALANCE_SLOT, 0));
+        }
+        let proven = crate::anchor::prove_at(&ctx.node, &ctx.network, anchored, &[(pair, &slots)], "the pool").await?;
+        let value = |i: usize| proven[0].storage_value(slots[i]).unwrap_or_default();
+        let (r0, r1) = crate::swap::unpack_reserves(value(1));
+        let agrees = value(0) == state.2 && (r0, r1) == (state.0, state.1) && holding.is_none_or(|(_, held)| value(2) == held);
+        if !agrees {
+            return Err(CoreError::Rejected(
+                "the node's reading of this pool does not match the pool's own state at the same block; refusing to review it".into(),
+            ));
+        }
+        Ok(())
     }
     fn block(&self) -> BlockTag {
         BlockTag::Number(U256::from(self.height))
@@ -735,6 +776,7 @@ async fn position_for_review(ctx: &DataCtx, owner: &str, pool: &Pool) -> Result<
     let erc = quai_sdk::contracts::Erc20::new(addr(&pool.address)?, &ctx.node.provider)?;
     let wallet = erc.balance_of(addr(READ_CALLER)?, addr(owner)?, anchor.block()).await?;
     let staked = crate::gauge::staked_for_pair_at(ctx, owner, &pool.address, anchor.block()).await?;
+    anchor.prove_pair(ctx, &pool.address, (r0, r1, total), Some((owner, wallet))).await?;
     anchor.check(ctx).await?;
     let position = build_position(&authenticated, (r0, r1), wallet, staked, total, None, None)
         .ok_or_else(|| CoreError::Invalid("LP position cannot be valued".into()))?;
@@ -758,6 +800,7 @@ pub async fn quote(
     let anchor = ReadAnchor::capture(ctx).await?;
     let pool = pool_by_address_at(ctx, pair, anchor.block()).await?;
     let (r0, r1, total) = pair_state_at(ctx, &pool, anchor.block()).await?;
+    anchor.prove_pair(ctx, &pool.address, (r0, r1, total), None).await?;
     let side = Side::of(&pool, token)?;
     let typed = amount::parse_amount(value, side.token(&pool).decimals)?;
     if typed.is_zero() {

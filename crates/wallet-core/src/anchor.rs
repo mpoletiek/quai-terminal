@@ -136,6 +136,33 @@ pub async fn prove_state(
     }
 }
 
+/// Prove accounts and slots at an anchor the caller already holds, so that reads made at its block
+/// and the proofs describe the same state and must agree exactly.
+pub async fn prove_at(
+    node: &Node,
+    network: &NetworkProfile,
+    anchored: &Anchored,
+    targets: &[(quai_sdk::QuaiAddress, &[quai_sdk::primitives::Hash32])],
+    what: &str,
+) -> std::result::Result<Vec<quai_sdk::provider::ProvenAccount>, CoreError> {
+    node.provider.prove_accounts_at(&anchored.anchor, targets).await.map_err(|e| explain(&e, what, network))
+}
+
+/// The node's anchor for a review, or `None` when its header carries a field this SDK cannot hash
+/// (the review then reads as it did before proofs).
+pub async fn review_anchor(node: &Node, network: &NetworkProfile, what: &str) -> std::result::Result<Option<Anchored>, CoreError> {
+    match anchor(node, network).await {
+        Ok(anchored) => Ok(Some(anchored)),
+        Err(e) if unknown_header(&e) => Ok(None),
+        Err(e) => Err(explain(&e, what, network)),
+    }
+}
+
+/// A storage slot given as a plain index, as a proof request names it.
+pub fn slot(index: u64) -> quai_sdk::primitives::Hash32 {
+    quai_sdk::primitives::Hash32::from_bytes(U256::from(index).to_be_bytes::<32>())
+}
+
 /// The address a proven storage word holds: its low 20 bytes.
 pub fn word_address(word: U256) -> String {
     let bytes = word.to_be_bytes::<32>();

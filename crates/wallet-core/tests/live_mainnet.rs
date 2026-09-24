@@ -168,10 +168,8 @@ async fn a_route_s_output_is_proven_from_its_pools() {
             .await
             .unwrap()
             .unwrap_or_else(|| panic!("{venue:?}: not provable"));
-        let anchor = ctx.node.anchor_confirmation();
-        assert!(anchor.is_some(), "an anchor was read");
         let (router, _) = wallet_core::swap::venue_pins(&ctx.network, venue).unwrap();
-        let block = wallet_core::anchor::anchor(&ctx.node, &ctx.network).await.unwrap().anchor.block.number;
+        let block = proven.block;
         let contract = wallet_core::sdk::contracts::Contract::new(
             router.address.parse().unwrap(),
             wallet_core::sdk::abi::AbiInterface::from_human_readable(wallet_core::swap::ROUTER_ABI).unwrap(),
@@ -189,6 +187,45 @@ async fn a_route_s_output_is_proven_from_its_pools() {
         let last = quoted[0].as_array().and_then(|a| a.last()).and_then(|v| v.as_str()).unwrap().to_string();
         eprintln!("{venue:?} {}: proven {} router {last}", other.symbol, proven.amount_out);
         assert_eq!(proven.amount_out.to_string(), last, "{venue:?}: the proven pools and the router disagree");
+
+        // Exact output: what the proven pools need for the router's own output, against its
+        // `getAmountsIn`, both at the anchor's block.
+        let (reserves, anchored) = wallet_core::swap::prove_path_reserves(&ctx.node, &ctx.network, venue, &path).await.unwrap().unwrap();
+        let out = U256::from_str_radix(&last, 10).unwrap() / U256::from(2u64);
+        let needed = wallet_core::swap::input_for_output(out, &reserves).unwrap();
+        let block = anchored.anchor.block.number;
+        let quoted = contract
+            .call(
+                wallet_core::data::READ_CALLER.parse().unwrap(),
+                "getAmountsIn",
+                &[serde_json::json!(out.to_string()), serde_json::json!(path)],
+                BlockTag::Number(U256::from(block)),
+            )
+            .await
+            .unwrap();
+        let first = quoted[0].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()).unwrap().to_string();
+        assert_eq!(needed.to_string(), first, "{venue:?}: exact-output input from the proven pools and the router disagree");
+
+        // LP: a review's quote reads the pool at the anchor and proves supply and reserves there.
+        let review = mainnet().for_review();
+        wallet_core::liquidity::quote(&review, &pool.address, "1", None, 50, None)
+            .await
+            .unwrap_or_else(|e| panic!("{venue:?}: a first-hand LP quote failed: {e}"));
+        // And the LP balance slot, read for address zero: every UniswapV2 pair mints its minimum
+        // liquidity there (and the launch AMM locks graduated liquidity there too), so it is never
+        // empty. The proven word must be the pair's own `balanceOf` at the same block.
+        let zero: wallet_core::sdk::QuaiAddress = "0x0000000000000000000000000000000000000000".parse().unwrap();
+        let pair: wallet_core::sdk::QuaiAddress = pool.address.parse().unwrap();
+        let slot = wallet_core::anchor::mapping_field_slot(zero, 1, 0);
+        let (proven, _) = wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(pair, &[slot])], "pair").await.unwrap().unwrap();
+        let at = BlockTag::Number(U256::from(proven[0].block.number));
+        let called = wallet_core::sdk::contracts::Erc20::new(pair, &ctx.node.provider)
+            .unwrap()
+            .balance_of(wallet_core::data::READ_CALLER.parse().unwrap(), zero, at)
+            .await
+            .unwrap();
+        assert!(!called.is_zero(), "{venue:?}: address zero holds no LP");
+        assert_eq!(proven[0].storage_value(slot), Some(called), "{venue:?}: balanceOf is not the mapping at slot 1");
     }
 }
 
