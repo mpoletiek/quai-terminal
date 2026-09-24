@@ -360,6 +360,8 @@ pub enum Cmd {
     ReadConversation {
         peer: String,
         blocks: u64,
+        /// [`App::private_epoch`] when asked; the answer carries it back.
+        epoch: u64,
     },
     MarkRead,
     /// The signing lane broadcast a transaction: refresh now so it shows.
@@ -511,6 +513,8 @@ pub enum Ev {
     Conversation {
         peer: String,
         result: Result<Vec<wallet_core::ops::SealedLine>, String>,
+        /// The generation the read was asked in; a lock or a switch since makes it stale.
+        epoch: u64,
     },
 }
 
@@ -1800,9 +1804,9 @@ async fn run(
                     }
                 }
             }
-            Cmd::ReadConversation { peer, blocks } => {
+            Cmd::ReadConversation { peer, blocks, epoch } => {
                 let result = session.read_conversation(&peer, blocks).await.map_err(|e| e.to_string());
-                send(Ev::Conversation { peer, result });
+                send(Ev::Conversation { peer, result, epoch });
             }
             Cmd::MarkRead => {
                 let _ = session.app.mark_notifications_read();
@@ -2326,7 +2330,7 @@ mod tests {
         assert!(matches!(inbox.next(wait).await, Ok(None)), "nothing queued");
         tx.send(Cmd::Refresh { full: false }).unwrap();
         tx.send(Cmd::Refresh { full: true }).unwrap();
-        tx.send(Cmd::ReadConversation { peer: "code".into(), blocks: 1 }).unwrap();
+        tx.send(Cmd::ReadConversation { peer: "code".into(), blocks: 1, epoch: 0 }).unwrap();
         // A Qi pass finishing is background too: it must never cut a refresh short, or every
         // 30 s the lane would restart the worker's sync.
         let key = QiKey { wallet: "w".into(), network: "mainnet".into() };

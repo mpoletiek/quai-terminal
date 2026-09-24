@@ -27,6 +27,19 @@ impl App {
         }
     }
 
+    /// Forget every decrypted conversation and private draft, and make any read still in flight
+    /// stale. Called at lock and whenever the wallet or network changes.
+    pub(crate) fn forget_private(&mut self) {
+        self.private_epoch += 1;
+        let board = &mut self.eco.board;
+        board.dms.clear();
+        board.dm_at.clear();
+        board.dm_loading = None;
+        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("dm:")) {
+            self.dock_draft.clear();
+        }
+    }
+
     /// Switch the UI to the lock screen. Idempotent: the worker's `Locked` confirmation after a
     /// local lock changes nothing (and doesn't restart the animation).
     pub(crate) fn enter_lock(&mut self, size: Option<(u16, u16)>) {
@@ -39,14 +52,17 @@ impl App {
         if let Modal::Review(r) = &self.modal {
             self.dropped_review = Some(r.review.title.clone());
         }
-        // Keep a half-filled, non-secret form; everything else is dropped with the keys.
+        // Keep a half-filled, non-secret form; everything else is dropped with the keys. A
+        // private message is dropped too: it is exactly what a lock is meant to hide.
         if let Modal::Form(form) = std::mem::replace(&mut self.modal, Modal::None)
             && !form.fields.iter().any(|f| f.is_secret())
+            && !form.kind.is_private()
         {
             let mut form = form;
             form.pending = false;
             self.parked = Some(form);
         }
+        self.forget_private();
         self.dash.unlocked = false;
         self.dash.peers.clear();
         self.dash.offers.clear();
@@ -445,7 +461,9 @@ impl App {
             Ev::Secret(text) => {
                 self.modal = Modal::Secret { text, title: "Anyone with these words controls your funds".into() };
             }
-            Ev::Conversation { peer, result } => {
+            // Asked before a lock or a switch: whatever it says is no longer this screen's to show.
+            Ev::Conversation { epoch, .. } if self.locked || epoch != self.private_epoch => {}
+            Ev::Conversation { peer, result, .. } => {
                 if self.eco.board.dm_loading.as_deref() == Some(peer.as_str()) {
                     self.eco.board.dm_loading = None;
                 }

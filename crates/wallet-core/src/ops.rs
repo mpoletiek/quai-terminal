@@ -1707,6 +1707,7 @@ impl Session {
             vec![field("To", who), field("Message", text.to_string()), field("Sealed", "only the two of you can read it")],
             vec![
                 "the message is encrypted, but this transaction is not hidden: your address and the time are public, and its size to within a bucket".into(),
+                "anyone watching the chain can see who you are writing to: both of you post under the same tag".into(),
                 "anyone holding either side's notification key can read the whole conversation".into(),
                 "it cannot be taken back once it is mined".into(),
             ],

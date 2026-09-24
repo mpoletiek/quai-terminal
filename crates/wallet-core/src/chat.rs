@@ -1,7 +1,9 @@
 //! Chat subscriptions and the pinned chat.
 //!
 //! A subscription asks to be told when someone else says something in a board channel or a sealed
-//! conversation: each new message becomes a notification carrying who said it and what. The pin is
+//! conversation. A channel's notification carries who said what, since the channel is public
+//! anyway; a sealed conversation's says only who wrote and how many times, because notifications
+//! are stored in plain text and reach the desktop. The pin is
 //! the one chat the TUI docks beside every screen. Both belong to this wallet (a conversation is
 //! with its payment code), so they live in its database, per network.
 //!
@@ -34,6 +36,18 @@ fn seen_key(network: &str, target: &str) -> String {
 
 /// Most messages one chat puts in a single notification; the rest are counted.
 const PER_NOTICE: usize = 3;
+
+/// What replaced the text of sealed messages that older versions stored in notifications.
+pub const REDACTED_NOTICE: &str = "(message text removed)";
+
+/// A sealed conversation's notification: how many arrived, never what they said.
+pub fn private_summary(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 new message".into()),
+        n => Some(format!("{n} new messages")),
+    }
+}
 
 /// One message in a chat's news.
 #[derive(Clone, Debug)]
@@ -164,16 +178,11 @@ impl Session {
                     .find(|c| c.payment_code.as_deref() == Some(code))
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| crate::session::short_code(code));
+                // Counted, never quoted: the text stays in the conversation.
                 let lines = read
                     .iter()
                     .filter(|l| !l.mine)
-                    .map(|l| ChatLine {
-                        at: l.at,
-                        id: String::new(),
-                        from: l.from.to_lowercase(),
-                        who: who(&l.from),
-                        text: l.text.clone().unwrap_or_else(|| "<cannot read>".into()),
-                    })
+                    .map(|l| ChatLine { at: l.at, id: String::new(), from: l.from.to_lowercase(), who: who(&l.from), text: String::new() })
                     .collect();
                 (format!("{name} · sealed"), lines)
             } else {
@@ -191,7 +200,8 @@ impl Session {
                 } else {
                     title
                 };
-                if let Some(body) = summarize(&fresh) {
+                let body = if target.starts_with('#') { summarize(&fresh) } else { private_summary(fresh.len()) };
+                if let Some(body) = body {
                     let notice = self.app.notify("chat", &title, &body).ok();
                     news.push(ChatNews { target: target.clone(), title, body, fresh, notice });
                 }
@@ -229,6 +239,14 @@ mod tests {
         assert_eq!(summarize(&[line(20, "bob", "wen")]).as_deref(), Some("bob: wen"));
         let many: Vec<_> = (1..=5).map(|i| line(i, &format!("p{i}"), &format!("m{i}"))).collect();
         assert_eq!(summarize(&many).as_deref(), Some("p3: m3 · p4: m4 · p5: m5 (+2 more)"), "newest kept, rest counted");
+    }
+
+    /// A sealed conversation's notice counts; it never quotes.
+    #[test]
+    fn a_private_summary_counts_and_never_quotes() {
+        assert_eq!(private_summary(0), None);
+        assert_eq!(private_summary(1).as_deref(), Some("1 new message"));
+        assert_eq!(private_summary(4).as_deref(), Some("4 new messages"));
     }
 
     /// A new wallet is subscribed to nothing: a public channel's posts reach the desktop only

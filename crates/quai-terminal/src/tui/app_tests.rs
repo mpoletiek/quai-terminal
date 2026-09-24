@@ -4806,3 +4806,30 @@ fn a_new_block_refreshes_what_is_on_screen_at_once() {
     // Nothing a block-triggered ask reads is cached for as long as a block.
     const { assert!(wallet_core::launches::TRADES_TTL < 5 && wallet_core::markets::HISTORY_SHARE_SECS < 5) };
 }
+
+/// Locking forgets every decrypted conversation, the draft of a private message and a private
+/// form, and a conversation read that was already in flight is dropped when it lands.
+#[test]
+fn locking_forgets_private_messages_and_drops_reads_still_in_flight() {
+    use wallet_core::ops::SealedLine;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let size = (120, 40);
+    let line = |text: &str| SealedLine { at: 1, from: "0xabc".into(), mine: false, text: Some(text.into()), new_address: false };
+    let asked = app.private_epoch;
+    app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
+    assert!(app.eco.board.dms.contains_key("PM8code"), "a read in the current generation is shown");
+    app.eco.board.pin = Some("dm:PM8code".into());
+    app.dock_draft = "half a secret".into();
+    app.open_form(FormKind::BoardDm { peer: "PM8code".into(), name: None });
+    assert!(matches!(app.modal, Modal::Form(_)), "the message form is open when the lock comes");
+    app.enter_lock(None);
+    assert!(app.eco.board.dms.is_empty(), "decrypted conversations are gone");
+    assert!(app.dock_draft.is_empty(), "the private draft is gone");
+    assert!(app.parked.is_none(), "a private message form is not kept for after the unlock");
+    // The worker answers a read asked before the lock: it must not bring the text back.
+    app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
+    assert!(app.eco.board.dms.is_empty(), "a stale read is dropped while locked");
+    app.show_unlocked();
+    app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
+    assert!(app.eco.board.dms.is_empty(), "and still dropped after unlocking, since it was asked before the lock");
+}

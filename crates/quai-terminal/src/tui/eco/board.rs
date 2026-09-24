@@ -195,7 +195,7 @@ impl App {
                     return;
                 }
                 self.eco.board.dm_loading = Some(code.clone());
-                self.send(Cmd::ReadConversation { peer: code, blocks });
+                self.send(Cmd::ReadConversation { peer: code, blocks, epoch: self.private_epoch });
             }
             None => {}
         }
@@ -438,7 +438,7 @@ impl App {
                     let b = &self.eco.board;
                     if b.dm_loading.is_none() && b.dm_at.get(code).is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
                         self.eco.board.dm_loading = Some(code.to_string());
-                        self.send(Cmd::ReadConversation { peer: code.to_string(), blocks });
+                        self.send(Cmd::ReadConversation { peer: code.to_string(), blocks, epoch: self.private_epoch });
                     }
                 }
                 None => {

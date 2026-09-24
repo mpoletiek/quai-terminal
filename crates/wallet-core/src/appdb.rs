@@ -14,7 +14,7 @@ use std::path::Path;
 /// 5: leases name their process (`fetch_leases`), so one left by a process that died is taken over
 ///    at once rather than after [`FETCH_LEASE`].
 /// 6: interval conversion schedules are gone; a wallet file drops their tables.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Tables and indexes `SCHEMA` creates.
 fn schema_objects(schema: &str) -> Vec<&str> {
@@ -578,9 +578,22 @@ impl AppDb {
         if schema_objects(schema).contains(&"operations") {
             // Interval conversion schedules were removed (version 6); nothing reads their tables.
             tx.execute_batch("DROP TABLE IF EXISTS schedule_runs; DROP TABLE IF EXISTS schedules;")?;
+            // Version 8: notifications no longer carry what a sealed message said. Older builds
+            // stored it; `secure_delete` zeroes the old text's pages instead of leaving them free.
+            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            if version < 8 {
+                tx.pragma_update(None, "secure_delete", "ON")?;
+                tx.execute(
+                    "UPDATE notifications SET body=?1 WHERE level='chat' AND title NOT LIKE '#%' AND body<>?1",
+                    [crate::chat::REDACTED_NOTICE],
+                )?;
+            }
         }
         tx.pragma_update(None, "user_version", target)?;
         tx.commit()?;
+        // The redaction above went through the WAL; fold it into the file so the old text does
+        // not linger in the log.
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         Ok(())
     }
 
@@ -1559,6 +1572,42 @@ mod tests {
         assert_eq!((schedules, version), (0, SCHEMA_VERSION), "the old table is gone and the version bumped");
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Older builds stored what a sealed message said in its notification. Opening such a
+    /// database removes that text, leaves public channel notices alone, and leaves no copy of
+    /// the old text in the file or its log.
+    #[test]
+    fn opening_an_old_database_removes_sealed_message_text_from_notifications() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.sqlite");
+        let secret = "meet at the usual place at nine";
+        {
+            let db = AppDb::open(&path).unwrap();
+            db.notify("chat", "Bob · sealed", &format!("bob: {secret}")).unwrap();
+            db.notify("chat", "#general", "alice: gm").unwrap();
+            db.notify("info", "Payment offer", "0.1 Qi waiting").unwrap();
+            db.conn.pragma_update(None, "user_version", 7).unwrap();
+            db.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        }
+        let db = AppDb::open(&path).unwrap();
+        let bodies: Vec<(String, String)> =
+            db.notifications(10).unwrap().into_iter().rev().map(|n| (n.title, n.body)).collect();
+        assert_eq!(
+            bodies,
+            [
+                ("Bob · sealed".to_string(), crate::chat::REDACTED_NOTICE.to_string()),
+                ("#general".to_string(), "alice: gm".to_string()),
+                ("Payment offer".to_string(), "0.1 Qi waiting".to_string()),
+            ]
+        );
+        // Checked while the database is still open, as it is under a running TUI or daemon:
+        // closing the last connection would checkpoint on its own and hide a missing step.
+        for file in ["app.sqlite", "app.sqlite-wal"] {
+            let bytes = std::fs::read(dir.path().join(file)).unwrap_or_default();
+            assert!(!bytes.windows(secret.len()).any(|w| w == secret.as_bytes()), "{file} still holds the old text");
+        }
+        drop(db);
     }
 
     #[test]

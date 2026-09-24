@@ -42,6 +42,7 @@ impl App {
 
     /// Clear network-bound ecosystem data (after a network switch).
     pub fn reset_eco_for_network(&mut self) {
+        self.forget_private();
         let swap_prefs = (self.eco.swap.slippage_bps, self.eco.swap.deadline_minutes);
         let images = std::mem::take(&mut self.eco.images);
         self.eco = super::super::eco::Eco::default();
@@ -66,6 +67,7 @@ impl App {
         self.save_config();
         self.busy = Some(format!("opening {name}…"));
         self.send(Cmd::SwitchWallet(meta.id.clone()));
+        self.forget_private();
         // Images are keyed by URL, not by wallet, but everything else is this wallet's.
         self.eco = super::super::eco::Eco::default();
         // The screen stays where it is, so nothing re-opens it to ask for the new wallet's data.

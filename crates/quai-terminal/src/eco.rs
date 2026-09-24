@@ -1349,7 +1349,8 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
             ctx.out.table(&["channel", "messages", "last"], &rows);
             Ok(())
         }
-        BoardCmd::Dm { peer, text, from, fee } => {
+        BoardCmd::Dm { peer, text_file, from, fee } => {
+            let text = crate::prompt::message(text_file.as_deref())?;
             let mut s = ctx.unlocked().await?;
             let review = s.review_dm(from.as_deref(), &peer, &text, fee.max_fee.as_deref()).await?;
             let submitted = ctx.authorize(&mut s, review).await?;

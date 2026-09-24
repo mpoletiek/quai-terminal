@@ -455,6 +455,13 @@ impl Field {
     }
 }
 
+impl FormKind {
+    /// A form whose text is a private message: dropped at lock rather than kept for later.
+    pub fn is_private(&self) -> bool {
+        matches!(self, FormKind::BoardDm { .. })
+    }
+}
+
 /// Form purposes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormKind {
@@ -1257,6 +1264,10 @@ pub struct App {
     pub dock_focus: bool,
     /// What is being written in the pinned chat, kept while focus is elsewhere.
     pub dock_draft: String,
+    /// Moves on at every lock and every wallet or network switch. A decrypted conversation that
+    /// was asked for under an older value is dropped when it arrives, so nothing private
+    /// reappears after the wallet locked or changed.
+    pub private_epoch: u64,
     /// A password on its way to the daemon: the answer (wallet name, or why not).
     pub handoff: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
     /// Palette entries chosen lately, newest first (`palette::Entry::key`).
@@ -1411,6 +1422,7 @@ impl App {
             dock_shown: false,
             dock_focus: false,
             dock_draft: String::new(),
+            private_epoch: 0,
             handoff: None,
             palette_recent: Vec::new(),
             activity_filter: ActivityFilter::All,

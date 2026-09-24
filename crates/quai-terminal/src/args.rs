@@ -685,12 +685,14 @@ pub enum BoardCmd {
         #[arg(long, default_value_t = 720)]
         blocks: u64,
     },
-    /// Send a sealed message to one peer. Only the two of you can read it.
+    /// Send a sealed message to one peer. Only the two of you can read it. The text is typed at
+    /// the prompt or piped on stdin, never given as an argument.
     Dm {
         /// Payment code, or a contact who has one.
         peer: String,
-        /// The message.
-        text: String,
+        /// Read the message from this file instead of the prompt.
+        #[arg(long)]
+        text_file: Option<std::path::PathBuf>,
         /// Account to send from.
         #[arg(long)]
         from: Option<String>,
