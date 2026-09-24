@@ -466,8 +466,23 @@ pub fn draw_convert_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         2,
         card.field,
         "slippage",
-        [cycler(t, format!("{:.2}%", f64::from(slippage) / 100.0), card.field == 2), vec![Span::styled(" (conversion)", t.dim_style())]]
-            .concat(),
+        // Not chosen and not yet suggested: say so, rather than show a placeholder as a setting.
+        [
+            cycler(
+                t,
+                if card.slippage_bps == 0 && card.quote.is_none() {
+                    "auto".to_string()
+                } else {
+                    format!("{:.2}%", f64::from(slippage) / 100.0)
+                },
+                card.field == 2,
+            ),
+            vec![Span::styled(
+                if card.slippage_bps == 0 { " (conversion · suggested by the quote)" } else { " (conversion)" },
+                t.dim_style(),
+            )],
+        ]
+        .concat(),
     );
     c.field(t, 3, card.field, "route", cycler(t, route_name.to_string(), card.field == 3));
     c.line(Line::from(""));

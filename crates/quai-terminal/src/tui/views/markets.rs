@@ -227,7 +227,8 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 Venue::LaunchAmm => Span::styled(format!(" {}", t.icon(Icon::Launch)), Style::default().fg(t.link)),
                 Venue::Curve => Span::styled(format!(" {}", t.icon(Icon::Curve)), Style::default().fg(t.attention)),
                 Venue::Legacy => Span::styled(format!(" {}", t.icon(Icon::Legacy)), Style::default().fg(t.attention)),
-                Venue::HartiiAmm => Span::styled(format!(" {}", t.icon(Icon::Hartii)), Style::default().fg(t.link)),
+                // Quainance's revenue AMM: a launch exchange like the other, not HartiiLabs'.
+                Venue::HartiiAmm => Span::styled(format!(" {}", t.icon(Icon::Launch)), Style::default().fg(t.link)),
                 Venue::Main => Span::raw(""),
             };
             // Watched pairs sit at the top, marked.

@@ -49,7 +49,10 @@ pub enum Venue {
     /// symbols appear on it twice at different addresses, and a directory that cannot tell those
     /// apart is worse than one that admits it is a shortlist.
     Legacy,
-    /// Hartii separate UniswapV2 router/factory, independently pinned.
+    /// Quainance's second curve system (its frontend's `revenueCurveSystem`): a UniswapV2 factory
+    /// and router that the revenue launcher's curves graduate into, independently pinned. Named
+    /// `HartiiAmm` because it was first found through HartiiLabs, whose treasury seeded a QAXE pool
+    /// on it and whose docs call it "Quainance V2"; it is Quainance's, and says so on screen.
     HartiiAmm,
 }
 
@@ -61,7 +64,7 @@ impl Venue {
             Venue::LaunchAmm => "launch AMM",
             Venue::Curve => "bonding curve",
             Venue::Legacy => "QuaiSwap",
-            Venue::HartiiAmm => "Hartii AMM",
+            Venue::HartiiAmm => "revenue AMM",
         }
     }
 
@@ -72,7 +75,7 @@ impl Venue {
             Venue::LaunchAmm => "on the launch AMM",
             Venue::Curve => "on its bonding curve",
             Venue::Legacy => "on QuaiSwap",
-            Venue::HartiiAmm => "on Hartii AMM",
+            Venue::HartiiAmm => "on Quainance's revenue AMM",
         }
     }
 
@@ -927,7 +930,7 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
     for (venue, name, configured, result) in [
         (Venue::LaunchAmm, "launch AMM factory", ctx.network.ecosystem.launch_amm_factory.is_some(), launch),
         (Venue::Legacy, "QuaiSwap factory", ctx.network.ecosystem.legacy_factory.is_some(), legacy),
-        (Venue::HartiiAmm, "Hartii AMM factory", ctx.network.ecosystem.hartii_amm_factory.is_some(), hartii_amm),
+        (Venue::HartiiAmm, "revenue AMM factory", ctx.network.ecosystem.hartii_amm_factory.is_some(), hartii_amm),
     ] {
         if !configured {
             continue;
@@ -1098,13 +1101,18 @@ pub async fn legacy_pools(ctx: &DataCtx) -> Result<Directory> {
     Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
 }
 
-/// Hartii AMM directory comes only from its authenticated factory, independent of launch labels.
+/// The revenue AMM's directory comes only from its authenticated factory, independent of launch labels.
 pub async fn hartii_amm_pools(ctx: &DataCtx) -> Result<Directory> {
-    let factory =
-        ctx.network.ecosystem.hartii_amm_factory.clone().ok_or_else(|| CoreError::NotFound("Hartii AMM is not configured".into()))?;
+    let factory = ctx
+        .network
+        .ecosystem
+        .hartii_amm_factory
+        .clone()
+        .ok_or_else(|| CoreError::NotFound("Quainance's revenue AMM is not configured".into()))?;
     let key = directory_key("hartii_amm_pools", &factory, &[]);
-    let cached =
-        ctx.cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "Hartii AMM factory", Venue::HartiiAmm).await }).await?;
+    let cached = ctx
+        .cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "revenue AMM factory", Venue::HartiiAmm).await })
+        .await?;
     Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
 }
 

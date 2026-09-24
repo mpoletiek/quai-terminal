@@ -4,7 +4,7 @@
   1  Home            • │┌ ▸ exchange · convert QUAI ↔ Qi ─────────────────────────────┐┌ both markets ─────────────────────────────────────────────────────────┐
                        ││   pair        ◆  QUAI → ◉  Qi ‹›                            ││ ▌◊ PROTOCOL protocol conversion                                       │
   2  Markets           ││   you pay     5,000 QUAI   available 179,071.7533 QUAI      ││ ▌  ▀█    █ █ ▀▀█ ▀▀█                                                  │
-                       ││   slippage    3.00% ‹› (conversion)                         ││ ▌   █    ▀▀█  ▀█ █▀▀                                                  │
+                       ││   slippage    auto ‹› (conversion · suggested by the quote) ││ ▌   █    ▀▀█  ▀█ █▀▀                                                  │
 ▌ 3  Trade             ││   route       protocol conversion ‹›                        ││ ▌  ▀▀▀ ▌   ▀ ▀▀▀ ▀▀▀.118 Qi                                           │
                        ││                                                             ││ ▌  convert QUAI → Qi                                                  │
   4  NFTs            ◧ ││ enter quote the conversion   r route   f flip               ││ ▌  spendable locked by the protocol (weeks)   no LP fee or price      │

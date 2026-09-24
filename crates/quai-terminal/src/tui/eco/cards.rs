@@ -277,9 +277,14 @@ impl App {
                     _ if curated.contains(&m.address) => 18,
                     _ => UNKNOWN_DECIMALS,
                 };
+                // WQUAI is QUAI, priced as the rest of the app prices it; the token market list
+                // carries no price for it.
+                let price = m.price_usd.or_else(|| {
+                    self.token_usd(&wallet_core::markets::PoolToken { address: m.address.clone(), symbol: m.symbol.clone(), decimals })
+                });
                 out.push(row(
                     SwapAsset::Token { address: m.address.clone(), symbol: m.symbol.clone(), decimals },
-                    m.price_usd.map(amount::usd_price).unwrap_or_else(|| "unpriced".into()),
+                    price.map(amount::usd_price).unwrap_or_else(|| "unpriced".into()),
                     curated.contains(&m.address),
                     m.holders,
                     m.icon_url.clone(),

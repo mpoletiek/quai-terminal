@@ -322,10 +322,23 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
             .filter(|d| d.len() >= 32)
             .map(|d| word(d, 0))
             .unwrap_or(U256::ZERO);
-        // A bonded curve reads 100% by construction: it sold its whole supply.
+        let quotable_now = !per_quai.is_zero() && (bonded || per_quai < supply.saturating_sub(sold));
+        let reserves_now = quotable_now
+            .then(|| live_reserves(bonded, virtual_quai, virtual_token, real_quai, sold, pool_quai, pool_token, nets[n], per_quai))
+            .flatten();
+        // How far toward graduation, as the curve card and Quainance's own launches say it: the QUAI
+        // raised against what the curve raises by selling out. Counting tokens sold instead put
+        // ART at 87% in the list beside "64.5% to graduation" on its card. A bonded curve reads
+        // 100%; a curve whose reserves do not reproduce its quote falls back to tokens sold.
         let progress_bps = (!supply.is_zero()).then(|| {
-            let bps = sold.saturating_mul(U256::from(10_000u64)) / supply;
-            u64::try_from(bps).unwrap_or(10_000).min(10_000)
+            if bonded {
+                return 10_000;
+            }
+            let target = reserves_now
+                .and_then(|(q, t)| launch_reserves(q, t, real_quai, sold))
+                .and_then(|(q0, t0)| raise_at_sellout(q0, t0, supply))
+                .unwrap_or(U256::ZERO);
+            progress_bps(real_quai, target, sold, supply).min(10_000)
         });
         // The price is the reserve ratio the curve trades against, as HartiiLabs' own pricing
         // defines it: (virtualQuai + raised) / (virtualToken - sold) while selling, and

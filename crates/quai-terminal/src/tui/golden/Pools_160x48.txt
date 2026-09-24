@@ -3,8 +3,8 @@
                         ──────────────────────────────━━━━━━━───────────────────────────────────────────────────────────────────────────────────────────────────
   1  Home            • │┌ ▸ your liquidity · $435.32 ─────────────────────────────────────────┐┌ all pools · tab to switch · a to add ─────────────────────────┐
                        ││  WQ WQ WQI/WQUAI        0.40%     $284.10       —                   ││       pair                  TVL     apr                       │
-▌ 2  Markets           ││     └ 18 WQI + 2,214 WQUAI ■ staked  ● rewards                      ││  US ◆  USDT/WQUAI         $3.33k                              │
-                       ││ ▌US WQ USDT/WQUAI       0.22%     $151.22       —                   ││  QO ◆  QOGE/WQUAI        $997.60                              │
+▌ 2  Markets           ││     └ 18 WQI + 2,214 WQUAI ■ staked  ● rewards                      ││  ◆  US QUAI/USDT          $3.33k                              │
+                       ││ ▌US WQ USDT/WQUAI       0.22%     $151.22       —                   ││  QO ◆  QOGE/QUAI         $997.60                              │
   3  Trade             ││     └ 51 USDT + 5,920 WQUAI ■ staked  ● rewards                     ││                                                               │
                        ││       ◈ launch-zone campaign · live  ·  — APR                       ││                                                               │
   4  NFTs            ◧ ││         297,619/day · 18.3M SMOL left                               ││                                                               │

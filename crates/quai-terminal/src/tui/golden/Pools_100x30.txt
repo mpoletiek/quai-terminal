@@ -16,8 +16,8 @@
                       │└───────────────────────────────────────────────────────────────────────────┘
   0  System           │┌ all pools · tab to switch · a to add ─────────────────────────────────────┐
                       ││       pair                  TVL     apr                                   │
-   [ ] tabs           ││  US ◆  USDT/WQUAI         $3.33k                                          │
-                      ││  QO ◆  QOGE/WQUAI        $997.60                                          │
+   [ ] tabs           ││  ◆  US QUAI/USDT          $3.33k                                          │
+                      ││  QO ◆  QOGE/QUAI         $997.60                                          │
                       ││                                                                           │
                       ││                                                                           │
                       ││                                                                           │

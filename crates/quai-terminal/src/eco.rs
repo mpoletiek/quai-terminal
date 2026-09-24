@@ -1150,18 +1150,34 @@ pub async fn markets(ctx: &Ctx, args: MarketsArgs) -> Result<()> {
         return Ok(());
     };
     let w = wanted.trim().to_lowercase();
-    let pool = pools
-        .iter()
-        .find(|p| {
-            p.address == w || name(p).to_lowercase() == w || {
-                let parts: Vec<&str> = w.split('/').collect();
-                parts.len() == 2 && name(p).to_lowercase() == format!("{}/{}", parts[1], parts[0])
+    let exact = pools.iter().find(|p| {
+        p.address == w || name(p).to_lowercase() == w || {
+            let parts: Vec<&str> = w.split('/').collect();
+            parts.len() == 2 && name(p).to_lowercase() == format!("{}/{}", parts[1], parts[0])
+        }
+    });
+    // A lone symbol names a pair when exactly one market's base is that token (`markets PUNK`);
+    // several are listed, so the caller can pick one by its full name or address.
+    let pool = match exact {
+        Some(p) => p,
+        None if !w.contains('/') => {
+            let base = |p: &&wallet_core::markets::Pool| name(p).to_lowercase().split('/').next() == Some(w.as_str());
+            let found: Vec<&wallet_core::markets::Pool> = pools.iter().filter(base).collect();
+            match found.as_slice() {
+                [one] => *one,
+                [] => return Err(CoreError::NotFound(format!("no pool matches `{wanted}` (run `markets` to list pairs)"))),
+                many => {
+                    let names: Vec<String> = many.iter().map(|p| format!("{} ({})", name(p), short_address(&p.address))).collect();
+                    return Err(CoreError::Invalid(format!("`{wanted}` trades in several markets: {}; name one", names.join(", "))));
+                }
             }
-        })
-        .ok_or_else(|| CoreError::NotFound(format!("no pool matches `{wanted}` (run `markets` to list pairs)")))?;
+        }
+        None => return Err(CoreError::NotFound(format!("no pool matches `{wanted}` (run `markets` to list pairs)"))),
+    };
     // `B/A` for a pool listed as `A/B` flips the orientation.
     let listed = name(pool).to_lowercase();
-    let base0 = if listed == w || pool.address == w { orient(pool) } else { !orient(pool) };
+    // A lone symbol is the base, as the list names it.
+    let base0 = if listed == w || pool.address == w || !w.contains('/') { orient(pool) } else { !orient(pool) };
     let (base, quote) = if base0 { (&pool.token0, &pool.token1) } else { (&pool.token1, &pool.token0) };
     let bucket = TIMEFRAMES
         .iter()
