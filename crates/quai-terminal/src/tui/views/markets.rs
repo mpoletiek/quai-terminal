@@ -310,7 +310,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Span::raw(" "),
         Span::styled(format!("{} {quote_sym}", price.map(fmt_price).unwrap_or_else(|| "—".into())), t.strong_style()),
         Span::raw("  "),
-        pct_span(t, stats.change_24h),
+        pct_span(t, app.row_change(pool, now)),
         Span::styled("  24h", t.dim_style()),
     ];
     let covered = app.eco.markets_view.history_coverage.get(&pool.address).is_some_and(|c| {

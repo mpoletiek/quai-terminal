@@ -1171,7 +1171,12 @@ pub async fn markets(ctx: &Ctx, args: MarketsArgs) -> Result<()> {
     let now = now();
     let since = now.saturating_sub((bucket * 49).max(86_400)).max(now.saturating_sub(30 * 86_400));
     let events = pool_events(&data, pool, since, 10).await?;
-    let stats = pair_stats(&events, pool, base0, now);
+    let mut stats = pair_stats(&events, pool, base0, now);
+    // Logs that do not reach a day back give no 24h change; the indexer's day-ago price does,
+    // turned round when the pair is named the other way (as the TUI's rows read it).
+    if stats.change_24h.is_none() {
+        stats.change_24h = pool.change_24h().map(|c| if base0 { c } else { (100.0 / (100.0 + c) - 1.0) * 100.0 });
+    }
     let offset = i64::from(chrono::Local::now().offset().local_minus_utc());
     let cs = wallet_core::markets::candles_in_zone(&events, pool, base0, bucket, offset, now, 48);
     let tr = trades(&events, pool, base0);

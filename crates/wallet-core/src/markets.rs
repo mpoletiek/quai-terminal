@@ -512,7 +512,14 @@ pub fn pair_stats(events: &[PoolEvent], pool: &Pool, base0: bool, now: u64) -> P
     if let (Some(first), Some(last)) = (day.first(), day.last())
         && first.open > 0.0
     {
-        stats.change_24h = Some((last.close / first.open - 1.0) * 100.0);
+        // A change is only a day's when the price a day ago is known: the window's first hour
+        // has a candle only when the history reaches back past it. History that starts later
+        // (a pool whose logs are still loading) measured from its first trade, and overrode the
+        // indexer's real day-ago figure with a partial one (+84% for a pair up 249%).
+        let window_start = last.start.saturating_sub(3600 * 23);
+        if first.start == window_start {
+            stats.change_24h = Some((last.close / first.open - 1.0) * 100.0);
+        }
         stats.high_24h = day.iter().map(|c| c.high).reduce(f64::max);
         stats.low_24h = day.iter().map(|c| c.low).reduce(f64::min);
     }
@@ -2836,7 +2843,7 @@ mod tests {
             to: "0x00aa".into(),
         };
         let events = vec![
-            sync(90 * hour, 1000.0, 100_000.0), // 0.01 before the window
+            sync(70 * hour, 1000.0, 100_000.0), // 0.01 before both windows (the 4h and the 24h)
             swap_buy_base(98 * hour + 10, 10.0, 980.0),
             sync(98 * hour + 10, 1010.0, 99_020.0), // ≈0.0102
             swap_buy_base(100 * hour + 5, 20.0, 1900.0),
@@ -2862,6 +2869,11 @@ mod tests {
         assert_eq!(s.trades_24h, 2);
         assert!(s.change_24h.unwrap() > 5.0, "{s:?}");
         assert!((s.volume_24h - 30.0).abs() < 1e-6);
+        // Without the price from before the window, the history does not reach a day back: no
+        // 24h change is claimed from the first trade it has (the indexer's day-ago price answers).
+        let partial = pair_stats(&events[1..], &p, false, now);
+        assert_eq!(partial.change_24h, None, "{partial:?}");
+        assert_eq!(partial.trades_24h, 2, "the trades it has still count");
     }
 
     #[test]
