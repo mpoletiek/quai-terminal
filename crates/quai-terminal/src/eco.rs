@@ -1119,6 +1119,8 @@ pub async fn markets(ctx: &Ctx, args: MarketsArgs) -> Result<()> {
                 // Price in the orientation the pair is named: token1 per token0, inverted when token1 is the base.
                 let price = p.spot_price().map(|v| if orient(p) { v } else { 1.0 / v });
                 let venue = match (p.venue, &p.curve) {
+                    // A bonded curve trades against its own locked pool; its depth is that pool.
+                    (Venue::Curve, Some(c)) if c.locked_quai.is_some() => "curve, locked".to_string(),
                     (Venue::Curve, Some(c)) => format!("curve {}%", c.progress_bps.unwrap_or(0) / 100),
                     (v, _) => v.label().to_string(),
                 };

@@ -68,8 +68,8 @@ fn token_info(
 /// in USD when QUAI has a price and in QUAI when it does not.
 fn locked_tvl(app: &App, pool: &wallet_core::markets::Pool, curve: &wallet_core::markets::CurveMark) -> String {
     let quai = 2.0 * curve.locked_quai.unwrap_or(0.0);
-    match app.token_usd(&pool.token1) {
-        Some(usd) => wallet_core::swap::usd_compact(quai * usd),
+    match pool.tvl_usd.or_else(|| app.token_usd(&pool.token1).map(|usd| quai * usd)) {
+        Some(usd) => wallet_core::swap::usd_compact(usd),
         None => format!("{}Q", compact(quai)),
     }
 }
@@ -206,7 +206,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let name = format!("{}/{}", app.market_symbol(base), app.market_symbol(quote));
             let stats = matches!(mv.events.get(&p.address), Some(Ok(_))).then(|| app.market_stats(p, base0, now));
             let price = match &stats {
-                Some(stats) => stats.price,
+                Some(stats) if !reserve_priced(p) => stats.price,
                 _ => listed_price(p, base0),
             };
             // The pool's own trades when they are loaded; otherwise the indexer's day-ago price, so
@@ -297,7 +297,9 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let stats = events.map(|_| app.market_stats(pool, base0, now)).unwrap_or_default();
     let quote_usd = app.token_usd(quote);
     let usd = |q: f64| quote_usd.map(|p| format!(" ({})", amount::usd(q * p))).unwrap_or_default();
-    let price = stats.price.or_else(|| listed_price(pool, base0));
+    // A curve priced from its reserves shows that live spot, as its basis label says; its last
+    // trade paid the fee and the impact on top.
+    let price = if reserve_priced(pool) { listed_price(pool, base0) } else { stats.price.or_else(|| listed_price(pool, base0)) };
     let mut line1 = vec![
         images::asset_span(app, t, &app.pool_icon_contract(base), &base_sym),
         Span::raw(" "),
@@ -402,6 +404,11 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 /// A market's price before its history loads, base-per-quote as the list shows it: from the pool's
 /// reserves, or a curve's own mark.
+/// A market whose listed price is a reserve spot the directory keeps live, not a last trade.
+fn reserve_priced(pool: &wallet_core::markets::Pool) -> bool {
+    pool.curve.as_ref().is_some_and(|c| c.price_basis == wallet_core::markets::PriceBasis::ReserveSpot)
+}
+
 pub(crate) fn listed_price(pool: &wallet_core::markets::Pool, base0: bool) -> Option<f64> {
     pool.spot_price().map(|p| if base0 { p } else { 1.0 / p })
 }

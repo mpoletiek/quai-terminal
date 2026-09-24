@@ -960,6 +960,9 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
             if let Ok(changes) = &hartii_changes {
                 crate::hartii::apply_changes(&mut curves, changes);
             }
+            for c in &mut curves {
+                c.tvl_usd = amm_tvl(c, Some(wquai), usd);
+            }
             markets.extend(curves);
         }
         overview.sources.push(MarketSource {
@@ -1046,6 +1049,10 @@ pub fn wquai_usd(pools: &[Pool], wquai: Option<&str>, usdt: Option<&str>) -> Opt
 
 /// A WQUAI pool's TVL: twice its WQUAI side.
 fn amm_tvl(pool: &Pool, wquai: Option<&str>, usd_per_wquai: Option<f64>) -> Option<f64> {
+    // A bonded curve's locked pool: both sides, the token side at the pool's own price.
+    if let Some(locked) = pool.curve.as_ref().and_then(|c| c.locked_quai) {
+        return usd_per_wquai.map(|usd| 2.0 * locked * usd);
+    }
     let (wquai, usd) = (wquai?, usd_per_wquai?);
     let side = if pool.token0.address.eq_ignore_ascii_case(wquai) {
         pool.reserve0
@@ -1359,6 +1366,9 @@ pub fn apply_reserves(pools: &mut [Pool], fresh: &[(String, f64, f64)], wquai: O
                     mark.price_quai = Some(r1 / r0);
                     mark.locked_quai = Some(*r1);
                     hit += 1;
+                }
+                if let Some(tvl) = amm_tvl(p, wquai, usd_per_quai) {
+                    p.tvl_usd = Some(tvl);
                 }
                 continue;
             }
