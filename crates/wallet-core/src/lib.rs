@@ -32,6 +32,7 @@ pub mod market;
 pub mod markets;
 pub mod media;
 pub mod messages;
+pub mod messaging;
 pub mod multicall;
 pub mod network;
 pub mod nft_uri;

@@ -310,6 +310,9 @@ impl App {
                         ConfirmAction::SwitchNetwork(id) => self.switch_network(id),
                         ConfirmAction::AcceptOffer(code) => self.send(Cmd::AcceptOffer(code)),
                         ConfirmAction::DeclineOffer(code) => self.send(Cmd::DeclineOffer(code)),
+                        ConfirmAction::BlockPeer(address) => self.messaging_op(super::super::worker::MsgOp::Block(address)),
+                        ConfirmAction::TrustPeer(address) => self.messaging_op(super::super::worker::MsgOp::Trust(address)),
+                        ConfirmAction::VerifyPeer(address) => self.messaging_op(super::super::worker::MsgOp::Verify(address)),
                         ConfirmAction::Unfollow(name) => {
                             self.config.board_channels.retain(|c| *c != name);
                             self.save_config();

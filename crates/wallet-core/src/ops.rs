@@ -1629,11 +1629,14 @@ impl Session {
 
     /// Review posting a message to the on-chain board. Every message is public and permanent:
     /// the review says so, because nothing can take one back once it is mined.
-    pub async fn review_post(&mut self, account: Option<&str>, channel: &str, text: &str, max_fee: Option<&str>) -> Result<Review> {
+    /// Review a public post. It goes from the messaging account, never the main one: a post is
+    /// signed by the account it comes from, and ties everything that account holds to what it says.
+    pub async fn review_post(&mut self, channel: &str, text: &str, max_fee: Option<&str>) -> Result<Review> {
+        let account = self.require_messaging_account()?;
         let tag = crate::messages::channel_tag(channel)?;
         let body = text.as_bytes().to_vec();
         self.review_board(
-            account,
+            Some(&account),
             &tag,
             crate::messages::KIND_TEXT,
             body,
@@ -1641,7 +1644,7 @@ impl Session {
             vec![field("Channel", format!("#{channel}")), field("Message", text.to_string())],
             vec![
                 "messages are public and permanent: anyone can read this, and nothing can take it back".into(),
-                "it is signed by this account, which links the message to your address".into(),
+                "it is posted from your messaging account, which links the message to that address".into(),
             ],
             serde_json::json!({"channel": channel}),
             max_fee,
@@ -1692,35 +1695,10 @@ impl Session {
         contacts.into_iter().find(|c| c.payment_code.as_deref() == Some(code.as_str()))
     }
 
-    /// Review a sealed message to one peer. The body is encrypted before it is shown, and the
-    /// review says exactly how far that protection goes.
-    pub async fn review_dm(&mut self, account: Option<&str>, peer: &str, text: &str, max_fee: Option<&str>) -> Result<Review> {
-        let conversation = self.conversation_with(peer)?;
-        let (tag, body) = crate::messages::seal(&conversation, text, self.head().await?)?;
-        let who = crate::session::short_code(peer);
-        self.review_board(
-            account,
-            &tag,
-            crate::messages::KIND_SEALED,
-            body,
-            who.clone(),
-            vec![field("To", who), field("Message", text.to_string()), field("Sealed", "only the two of you can read it")],
-            vec![
-                "the message is encrypted, but this transaction is not hidden: your address and the time are public, and its size to within a bucket".into(),
-                "anyone watching the chain can see who you are writing to: both of you post under the same tag".into(),
-                "anyone holding either side's notification key can read the whole conversation".into(),
-                "it cannot be taken back once it is mined".into(),
-            ],
-            serde_json::json!({"sealed": true}),
-            max_fee,
-        )
-        .await
-    }
-
     /// Post one body to the board. Shared by public channels and sealed conversations, so both
     /// go through the same review and the same checks the contract makes.
     #[allow(clippy::too_many_arguments)]
-    async fn review_board(
+    pub(crate) async fn review_board(
         &mut self,
         account: Option<&str>,
         tag: &[u8; 32],

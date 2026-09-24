@@ -26,6 +26,10 @@ hkdf.workspace = true
 chacha20poly1305.workspace = true
 futures = "0.3"
 hmac = "0.12"
+# Sealed messages v3 (docs/MESSAGING_V3.md): HPKE (RFC 9180) with X25519 and ChaCha20-Poly1305,
+# and Ed25519 for signed key announcements. Only the features that suite needs.
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
 
 [dev-dependencies]
 tempfile = "3"

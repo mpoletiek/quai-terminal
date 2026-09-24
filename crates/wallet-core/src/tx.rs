@@ -349,6 +349,22 @@ pub struct AccountRequest {
     pub max_fee: Option<U256>,
 }
 
+/// What the journal keeps when a review field is private (a sealed message's text).
+pub const PRIVATE_FIELD: &str = "(private: shown in the review, never stored)";
+
+/// The review as the operation journal keeps it. The journal is plain text in the wallet's
+/// database, which backups copy, so a field the request names in `detail.private_fields` is shown
+/// to the user once and stored as [`PRIVATE_FIELD`].
+fn journaled_review(review: &Review, detail: &serde_json::Value) -> Review {
+    let private: Vec<&str> =
+        detail.get("private_fields").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+    let mut kept = review.clone();
+    for f in kept.fields.iter_mut().filter(|f| private.contains(&f.label.as_str())) {
+        f.value = PRIVATE_FIELD.into();
+    }
+    kept
+}
+
 pub(crate) fn field(label: &str, value: impl Into<String>) -> Field {
     Field { label: label.into(), value: value.into() }
 }
@@ -696,7 +712,7 @@ impl Session {
             }
         }
         op.detail["review_version"] = serde_json::json!(1);
-        op.detail["review"] = serde_json::to_value(&review)?;
+        op.detail["review"] = serde_json::to_value(journaled_review(&review, &op.detail))?;
         self.journal(op.clone())?;
         self.pending.insert(review.op_id.clone(), Pending::Account { prepared, from: req.from, op });
         Ok(review)

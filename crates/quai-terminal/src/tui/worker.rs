@@ -211,14 +211,20 @@ pub enum Prepare {
         peer: String,
     },
     BoardPost {
-        from: Option<String>,
         channel: String,
         text: String,
     },
-    BoardDm {
-        from: Option<String>,
+    /// A private message (v3) to a messaging address.
+    Message {
         peer: String,
         text: String,
+    },
+    /// This week's messaging key.
+    MessagingKeys,
+    /// QUAI to the messaging account.
+    MessagingFund {
+        from: Option<String>,
+        amount: String,
     },
     Consolidate {
         aggregate: bool,
@@ -269,6 +275,26 @@ pub enum ChatOp {
     Load,
     Toggle { target: String, label: String },
     Pin { target: Option<String>, label: String },
+}
+
+/// Private messages (v3), on the wallet worker: its keys are sealed under the messaging account's.
+#[derive(Clone, Debug)]
+pub enum MsgOp {
+    /// Where messaging stands, conversations and requests, and `open`'s messages (marked read).
+    /// `sync` reads the chain for new ones first.
+    Refresh {
+        open: Option<String>,
+        sync: bool,
+    },
+    /// Choose the messaging account; `None` derives a new one first.
+    Setup {
+        account: Option<String>,
+    },
+    Accept(String),
+    Block(String),
+    Trust(String),
+    /// Record that the fingerprints matched.
+    Verify(String),
 }
 
 /// Commands from the UI.
@@ -375,6 +401,11 @@ pub enum Cmd {
     ChatNews {
         dms_only: bool,
     },
+    /// Private messages; `epoch` is [`App::private_epoch`] when asked, carried back.
+    Messaging {
+        op: MsgOp,
+        epoch: u64,
+    },
     /// The Qi lane finished a pass (see [`QiLane`]). Background: it never cuts a refresh short.
     QiSynced(QiDone),
     ExportPhrase(Zeroizing<String>),
@@ -421,6 +452,7 @@ impl Cmd {
             Cmd::ReadConversation { .. } => "read_conversation",
             Cmd::Chat(_) => "chat",
             Cmd::ChatNews { .. } => "chat_news",
+            Cmd::Messaging { .. } => "messaging",
             Cmd::MarkRead => "mark_read",
             Cmd::Committed => "committed",
             Cmd::Journal => "journal",
@@ -501,6 +533,14 @@ pub enum Ev {
     },
     /// Subscribed chats with news, as (title, body); each is already a notification.
     ChatNews(Vec<(String, String)>),
+    /// Private messages: the whole view, `open`'s messages when one was asked for, and what to
+    /// say. Stale when `epoch` is not the app's any more.
+    Messaging {
+        epoch: u64,
+        view: Result<super::eco::MessagingView, String>,
+        open: Option<(String, Result<Vec<wallet_core::messaging::service::Line>, String>)>,
+        note: Option<String>,
+    },
     /// The journal after the pending lane saw a sent transaction mined, read at `at`
     /// ([`ops_stamp`]), for the wallet and network it watches.
     Ops {
@@ -1039,7 +1079,7 @@ impl QiLane {
 /// repeats on its own is background: refreshing, and the Board re-reading an open conversation
 /// every few seconds — which, urgent, would cut every refresh short before it could finish.
 fn urgent(cmd: &Cmd) -> bool {
-    !matches!(cmd, Cmd::Refresh { .. } | Cmd::ReadConversation { .. } | Cmd::QiSynced(_) | Cmd::ChatNews { .. })
+    !matches!(cmd, Cmd::Refresh { .. } | Cmd::ReadConversation { .. } | Cmd::QiSynced(_) | Cmd::ChatNews { .. } | Cmd::Messaging { .. })
 }
 
 /// Prepare the review a request asks for (the signing lane's work).
@@ -1145,8 +1185,10 @@ async fn prepare(session: &mut Session, req: Prepare) -> wallet_core::Result<wal
         Prepare::WrapQuai { account, amount } => session.review_wrap_quai(account.as_deref(), &amount, None).await,
         Prepare::UnwrapQuai { account, amount } => session.review_unwrap_quai(account.as_deref(), &amount, None).await,
         Prepare::Notify { from, peer } => session.review_notify(from.as_deref(), &peer, None).await,
-        Prepare::BoardPost { from, channel, text } => session.review_post(from.as_deref(), &channel, &text, None).await,
-        Prepare::BoardDm { from, peer, text } => session.review_dm(from.as_deref(), &peer, &text, None).await,
+        Prepare::BoardPost { channel, text } => session.review_post(&channel, &text, None).await,
+        Prepare::Message { peer, text } => session.review_message(&peer, &text, None).await,
+        Prepare::MessagingKeys => session.review_messaging_keys(None).await,
+        Prepare::MessagingFund { from, amount } => session.review_messaging_fund(from.as_deref(), &amount, None).await,
         Prepare::Consolidate { aggregate } => session.review_consolidate(aggregate, None).await,
         Prepare::SpeedUp { op } => session.prepare_speed_up(&op, 20).await,
         Prepare::FillGap { from } => session.review_fill_gap(from.as_deref()).await,
@@ -1468,6 +1510,7 @@ async fn run(
         let mutates = matches!(
             cmd,
             Cmd::AddAccount(_)
+                | Cmd::Messaging { op: MsgOp::Setup { .. }, .. }
                 | Cmd::ImportKey { .. }
                 | Cmd::WatchAddress { .. }
                 | Cmd::RenameAccount { .. }
@@ -1810,6 +1853,18 @@ async fn run(
             }
             Cmd::MarkRead => {
                 let _ = session.app.mark_notifications_read();
+            }
+            Cmd::Messaging { op, epoch } => {
+                let (open, sync, note) = messaging_op(&mut session, op).await;
+                let view = messaging_view(&session, sync).await;
+                let open = match (&view, open) {
+                    (Ok(_), Some(peer)) => {
+                        let lines = session.messaging_read(&peer, true).map_err(|e| e.to_string());
+                        Some((peer, lines))
+                    }
+                    _ => None,
+                };
+                send(Ev::Messaging { epoch, view, open, note });
             }
             Cmd::Chat(op) => {
                 let note = match op {
@@ -2240,6 +2295,58 @@ async fn refresh(
     remember_dashboard(session, dash);
     wallet_core::diag::mark("startup.dashboard_complete");
     true
+}
+
+/// Carry out a messaging change; returns the conversation to show, whether to read the chain,
+/// and what to say about it.
+async fn messaging_op(session: &mut Session, op: MsgOp) -> (Option<String>, bool, Option<String>) {
+    let said = |r: wallet_core::Result<String>| Some(r.unwrap_or_else(|e| e.to_string()));
+    match op {
+        MsgOp::Refresh { open, sync } => (open, sync, None),
+        MsgOp::Setup { account } => {
+            let account = match account {
+                Some(a) => Ok(a),
+                None => session.add_account(Some("messaging")).map(|a| a.address),
+            };
+            let note = match account {
+                Ok(a) => said(session.messaging_setup(&a, false).await.map(|s| {
+                    format!(
+                        "private messages from {} · fingerprint {} · fund it (F), then publish this week's key (K)",
+                        wallet_core::session::short_address(s.account.as_deref().unwrap_or(&a)),
+                        s.fingerprint.unwrap_or_default()
+                    )
+                })),
+                Err(e) => Some(e.to_string()),
+            };
+            (None, false, note)
+        }
+        MsgOp::Accept(peer) => (Some(peer.clone()), false, said(session.messaging_accept(&peer, None).map(|_| "accepted".into()))),
+        MsgOp::Block(peer) => {
+            (None, false, said(session.messaging_block(&peer, true).map(|_| "blocked: their messages are dropped unread".into())))
+        }
+        MsgOp::Trust(peer) => (
+            Some(peer.clone()),
+            false,
+            said(session.messaging_trust(&peer).map(|f| format!("their new identity is accepted · compare fingerprints again: {f}"))),
+        ),
+        MsgOp::Verify(peer) => {
+            (Some(peer.clone()), false, said(session.messaging_verify(&peer, true).await.map(|_| "fingerprints match: verified".into())))
+        }
+    }
+}
+
+/// Where private messages stand, reading the chain first when asked.
+async fn messaging_view(session: &Session, sync: bool) -> Result<super::eco::MessagingView, String> {
+    let status = session.messaging_status().await.map_err(|e| e.to_string())?;
+    if !matches!(status.need, wallet_core::messaging::service::KeyNeed::NotSetUp | wallet_core::messaging::service::KeyNeed::NoKeys) {
+        if sync && let Err(e) = session.messaging_sync().await {
+            return Err(e.to_string());
+        }
+        let conversations = session.messaging_conversations(false).map_err(|e| e.to_string())?;
+        let requests = session.messaging_conversations(true).map_err(|e| e.to_string())?;
+        return Ok(super::eco::MessagingView { status, conversations, requests });
+    }
+    Ok(super::eco::MessagingView { status, conversations: Vec::new(), requests: Vec::new() })
 }
 
 #[cfg(test)]

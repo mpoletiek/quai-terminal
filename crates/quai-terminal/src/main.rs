@@ -4,6 +4,7 @@ mod args;
 mod commands;
 mod daemon;
 mod eco;
+mod message;
 mod notify;
 mod orders;
 mod output;
@@ -36,6 +37,7 @@ fn command_name(cmd: &Option<Command>) -> &'static str {
         Some(Command::Market(_)) => "market",
         Some(Command::Markets(_)) => "markets",
         Some(Command::Board(_)) => "board",
+        Some(Command::Message(_)) => "message",
         Some(Command::Data(_)) => "data",
         Some(Command::Qi(_)) => "qi",
         Some(Command::Mining(_)) => "mining",
@@ -64,7 +66,7 @@ fn command_name(cmd: &Option<Command>) -> &'static str {
 /// The optional feature a command belongs to: it refuses to run while that feature is off.
 fn required_feature(cmd: &Option<Command>) -> Option<Feature> {
     match cmd {
-        Some(Command::Board(_)) => Some(Feature::Messaging),
+        Some(Command::Board(_) | Command::Message(_)) => Some(Feature::Messaging),
         Some(
             Command::Swap(_)
             | Command::Markets(_)
@@ -127,6 +129,7 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
         Some(Command::Market(c)) => eco::market(&mut ctx, c).await,
         Some(Command::Markets(a)) => eco::markets(&ctx, a).await,
         Some(Command::Board(c)) => eco::board(&ctx, c).await,
+        Some(Command::Message(c)) => message::run(&ctx, c).await,
         Some(Command::Data(c)) => eco::data(&ctx, c).await,
         Some(Command::Qi(c)) => commands::qi_cmd(&ctx, c).await,
         Some(Command::Mining(c)) => commands::mining(&ctx, c).await,

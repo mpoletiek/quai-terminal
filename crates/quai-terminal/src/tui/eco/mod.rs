@@ -421,6 +421,23 @@ pub struct BoardView {
     pub chat_loaded: bool,
     /// When this window last checked subscribed chats (only when no daemon does).
     pub news_checked: Option<Instant>,
+    /// Private messages (v3): where messaging stands, conversations and requests. Decrypted, so
+    /// it goes at every lock and switch ([`App::forget_private`]).
+    pub msg: Option<Result<MessagingView, String>>,
+    /// One conversation's messages by peer address, oldest first.
+    pub msg_lines: HashMap<String, Result<Vec<wallet_core::messaging::service::Line>, String>>,
+    pub msg_loading: bool,
+    pub msg_at: Option<Instant>,
+    /// The unlock already offered this week's key, so it is said once.
+    pub msg_offered: bool,
+}
+
+/// What the wallet worker says about private messages.
+#[derive(Clone, Debug)]
+pub struct MessagingView {
+    pub status: wallet_core::messaging::service::Status,
+    pub conversations: Vec<wallet_core::messaging::service::Conversation>,
+    pub requests: Vec<wallet_core::messaging::service::Conversation>,
 }
 
 /// What the board's left column lists: a public channel, or a person to write to in private.
@@ -429,8 +446,14 @@ pub enum BoardRow {
     Channel(String),
     /// A channel seen on the board that this wallet does not follow, and how many messages it has.
     Unfollowed(String, u32),
-    /// Payment code, and the contact name when there is one.
+    /// An old (v1/v2) payment-code conversation, read-only: code, and the contact name.
     Peer(String, Option<String>),
+    /// Private messages are not set up on this network yet.
+    Setup,
+    /// A private conversation: messaging address, and the contact name.
+    Chat(String, Option<String>),
+    /// Someone who wrote first and waits to be accepted: messaging address.
+    Request(String),
 }
 
 /// Candles shown on the chart.

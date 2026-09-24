@@ -1349,14 +1349,6 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
             ctx.out.table(&["channel", "messages", "last"], &rows);
             Ok(())
         }
-        BoardCmd::Dm { peer, text_file, from, fee } => {
-            let text = crate::prompt::message(text_file.as_deref())?;
-            let mut s = ctx.unlocked().await?;
-            let review = s.review_dm(from.as_deref(), &peer, &text, fee.max_fee.as_deref()).await?;
-            let submitted = ctx.authorize(&mut s, review).await?;
-            ctx.print_submitted("board dm", &submitted);
-            Ok(())
-        }
         BoardCmd::Inbox { peer, blocks } => {
             let s = ctx.unlocked().await?;
             let lines = s.read_conversation(&peer, blocks).await?;
@@ -1380,9 +1372,9 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
             println!("{} · sealed: the text is private, the transactions are not", wallet_core::amount::count(rows.len(), "message"));
             Ok(())
         }
-        BoardCmd::Post { channel: name, text, from, fee } => {
+        BoardCmd::Post { channel: name, text, fee } => {
             let mut s = ctx.unlocked().await?;
-            let review = s.review_post(from.as_deref(), &name, &text, fee.max_fee.as_deref()).await?;
+            let review = s.review_post(&name, &text, fee.max_fee.as_deref()).await?;
             let submitted = ctx.authorize(&mut s, review).await?;
             ctx.print_submitted("board post", &submitted);
             Ok(())

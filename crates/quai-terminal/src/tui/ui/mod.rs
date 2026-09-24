@@ -283,20 +283,25 @@ pub(crate) fn empty(f: &mut Frame, area: Rect, t: &Theme, icon: Icon, text: &str
     empty_state(f, area, t, glyph, text, hints)
 }
 
+/// Keys and what they do, on one line: `a accept  ·  B block`.
+pub(crate) fn hint_line(t: &Theme, hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (k, v)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", t.dim_style()));
+        }
+        spans.push(Span::styled(k.to_string(), t.strong_style().fg(t.focus)));
+        spans.push(Span::styled(format!(" {v}"), t.dim_style()));
+    }
+    Line::from(spans)
+}
+
 /// Centered empty state: glyph, one line, key hints.
 pub(crate) fn empty_state(f: &mut Frame, area: Rect, t: &Theme, glyph: &str, text: &str, hints: &[(&str, &str)]) {
     let mut lines = vec![Line::from(Span::styled(format!("{glyph}  {text}"), t.dim_style()))];
     if !hints.is_empty() {
-        let mut spans = Vec::new();
-        for (i, (k, v)) in hints.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled("  ·  ", t.dim_style()));
-            }
-            spans.push(Span::styled(*k, t.strong_style().fg(t.focus)));
-            spans.push(Span::styled(format!(" {v}"), t.dim_style()));
-        }
         lines.push(Line::from(""));
-        lines.push(Line::from(spans));
+        lines.push(hint_line(t, hints));
     }
     let w = lines.iter().map(|line| line.width()).max().unwrap_or(1).min(area.width as usize).max(1) as u16;
     let h = lines.iter().map(|line| line.width().max(1).div_ceil(w as usize)).sum::<usize>().min(area.height as usize) as u16;

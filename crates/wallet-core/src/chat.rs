@@ -128,7 +128,9 @@ impl Session {
     /// daemon already reads the channels but cannot open this wallet's conversations.
     pub async fn chat_news_where(&self, dms_only: bool) -> Result<Vec<ChatNews>> {
         let subs: Vec<String> = self.chat_subscriptions().into_iter().filter(|t| !dms_only || t.starts_with("dm:")).collect();
-        if subs.is_empty() || self.network.ecosystem.messages.is_none() {
+        // Private conversations are read even with no subscription, so only a network without a
+        // board has nothing to say.
+        if self.network.ecosystem.messages.is_none() || (subs.is_empty() && self.messaging_account().is_none()) {
             return Ok(Vec::new());
         }
         let ctx = self.data_ctx()?;
@@ -208,6 +210,25 @@ impl Session {
             }
             if seen.is_none_or(|s| newest > s) {
                 self.app.set_kv(&key, &newest.max(seen.unwrap_or(0)).to_string())?;
+            }
+        }
+        // Private conversations notify without a subscription: who wrote and how many times.
+        if self.is_unlocked() && self.messaging_account().is_some() {
+            match self.messaging_news().await {
+                Ok(fresh) => {
+                    for (peer, n) in fresh {
+                        let name = contacts
+                            .iter()
+                            .find(|c| c.address.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(&peer)))
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| crate::session::short_address(&peer));
+                        let title = format!("{name} · private");
+                        let Some(body) = private_summary(n) else { continue };
+                        let notice = self.app.notify("chat", &title, &body).ok();
+                        news.push(ChatNews { target: format!("msg:{peer}"), title, body, fresh: Vec::new(), notice });
+                    }
+                }
+                Err(e) => crate::ops::trace(format!("private messages: {e}")),
             }
         }
         Ok(news)

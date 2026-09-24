@@ -2057,3 +2057,63 @@ where
         }
     }
 }
+
+/// Private messages (v3) against the real board, without sending anything: the pinned contract
+/// is the deployed one; the exact bodies v3 posts (an announcement and a longest DM) are accepted
+/// by a simulated `post`, and one byte more is refused; and a full 10,000-block page of DM logs is
+/// served, which is what every sync reads.
+#[tokio::test]
+#[ignore = "network"]
+async fn private_messages_speak_to_the_mainnet_board() {
+    use quai_sdk::provider::{LogFilter, LogRange, TopicMatch};
+    use quai_sdk::{BlockTag, U256, contracts::Contract};
+    use wallet_core::messaging::wire;
+    let ctx = mainnet();
+    let pin = ctx.network.ecosystem.messages.clone().expect("mainnet has a board");
+    let board = ctx.verify_pinned(&pin, "messages").await.expect("the pinned board is the deployed one");
+    let contract = wire::Context { chain_id: ctx.network.chain_id, contract: wire::address_bytes(&board.to_string()).unwrap() };
+    // Any account can simulate a call; none of these is signed or sent.
+    let from = wallet_core::data::READ_CALLER;
+    let owner = wire::address_bytes(from).unwrap();
+    let identity = wire::IdentitySecret::generate().unwrap();
+    let (mine, theirs) = (wire::WeeklySecret::generate().unwrap(), wire::WeeklySecret::generate().unwrap());
+    let announcement =
+        wire::Announcement::sign(&contract, &owner, &identity, wire::week_of(wallet_core::registry::now()), 1, mine.public()).encode();
+    let tag = wire::random_tag().unwrap();
+    let recipient = [0x00u8; 20];
+    let envelope = wire::Envelope { ctx: &contract, sender: &owner, recipient: &recipient, tag: &tag };
+    let longest = wire::seal(&envelope, &mine, &theirs.public(), wire::CONTENT_TEXT, &vec![b'x'; wire::MAX_CONTENT]).unwrap();
+    assert_eq!(longest.len(), wire::MAX_BODY);
+    let messages = Contract::new(board, wallet_core::messages::interface().unwrap(), &ctx.node.provider);
+    let simulate = |tag: [u8; 32], kind: u8, body: Vec<u8>| {
+        let args = vec![
+            serde_json::json!(wallet_core::messages::tag_topic(&tag)),
+            serde_json::json!(kind.to_string()),
+            serde_json::json!(format!("0x{}", hex::encode(&body))),
+        ];
+        let messages = &messages;
+        async move {
+            let call = messages.prepare("post", &args, U256::ZERO).unwrap();
+            messages.simulate(from.parse().unwrap(), &call, BlockTag::Latest, Some(400_000)).await
+        }
+    };
+    simulate(wire::keys_tag(), wire::KIND_KEYS, announcement).await.expect("an announcement is accepted");
+    simulate(tag, wire::KIND_DM, longest.clone()).await.expect("the longest DM is accepted");
+    let mut too_long = longest;
+    too_long.push(0);
+    assert!(simulate(tag, wire::KIND_DM, too_long).await.is_err(), "one byte more is refused");
+    // A sync's page: every kind-3 log in 10,000 blocks, from a node that must have served them all.
+    let head = ctx.node.provider.latest_header(wallet_core::network::ZONE).await.unwrap().unwrap().number;
+    let from_block = head - (wallet_core::messaging::service::LOG_PAGE - 1);
+    let kind = format!("0x{:064x}", wire::KIND_DM);
+    let filter = LogFilter::new(wallet_core::network::ZONE, LogRange::Inclusive { from: from_block, to: head })
+        .with_addresses(vec![board.into()])
+        .with_topics(vec![
+            TopicMatch::AnyOf(wallet_core::messages::MESSAGE_TOPIC.parse().into_iter().collect()),
+            TopicMatch::Any,
+            TopicMatch::Any,
+            TopicMatch::AnyOf(kind.parse().into_iter().collect()),
+        ]);
+    let logs = ctx.node.provider.logs_served_through(&filter).await.expect("a full page is served");
+    eprintln!("kind-3 logs in the last {} blocks: {}", wallet_core::messaging::service::LOG_PAGE, logs.len());
+}

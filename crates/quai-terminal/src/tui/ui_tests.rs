@@ -2706,3 +2706,84 @@ fn the_cursor_waits_at_the_focus_and_off_means_still() {
     assert!(rows[0].contains("◌ syncing"), "a still mark: {:?}", rows[0]);
     assert!(!app.spun, "and no frames asked for it");
 }
+
+fn messaging_view(need: wallet_core::messaging::service::KeyNeed) -> super::super::eco::MessagingView {
+    use wallet_core::messaging::service::{Conversation, Status};
+    use wallet_core::messaging::store::PeerState;
+    let convo = |peer: &str, name: Option<&str>, state| Conversation {
+        peer: peer.into(),
+        name: name.map(Into::into),
+        state,
+        fingerprint: Some("69ed b347 a6c4 4850 1a6a 92f6 c6c4 fd75".into()),
+        verified: false,
+        identity_changed: false,
+        messages: 2,
+        unread: 1,
+        last_at: 1,
+    };
+    super::super::eco::MessagingView {
+        status: Status {
+            account: Some("0x00a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1".into()),
+            need,
+            fingerprint: Some("aaaa bbbb cccc dddd eeee ffff 0000 1111".into()),
+            key: Some((1, 2959, true)),
+            keys_held: 1,
+            scanned_to: Some(100),
+        },
+        conversations: vec![convo("0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", Some("bob"), PeerState::Accepted)],
+        requests: vec![convo("0x00cacacacacacacacacacacacacacacacacacaca", None, PeerState::Request)],
+    }
+}
+
+/// Private messages sit between the public channels and the old read-only conversations:
+/// a set-up row until there is an account, then conversations, then requests. Each draws what
+/// it is: what was said, and what needs deciding first.
+#[test]
+fn private_conversations_and_requests_are_listed_and_drawn() {
+    use super::super::eco::BoardRow;
+    use wallet_core::messaging::service::{KeyNeed, Line};
+    let (_dir, mut app) = drawable_app();
+    app.meta.as_mut().unwrap().kind = wallet_core::registry::WalletKind::Hd;
+    app.config.board_channels = vec!["general".into()];
+    app.eco.board.msg = Some(Ok(messaging_view(KeyNeed::NotSetUp)));
+    assert_eq!(app.board_rows(), vec![BoardRow::Channel("general".into()), BoardRow::Setup]);
+    app.switch(Screen::Board);
+    app.selected = 1;
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert!(text.contains("never backed up") && text.contains("never your main"), "{text}");
+
+    app.eco.board.msg = Some(Ok(messaging_view(KeyNeed::Ready)));
+    let bob = "0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".to_string();
+    let carol = "0x00cacacacacacacacacacacacacacacacacacaca".to_string();
+    assert_eq!(
+        app.board_rows(),
+        vec![BoardRow::Channel("general".into()), BoardRow::Chat(bob.clone(), Some("bob".into())), BoardRow::Request(carol.clone())]
+    );
+    let line = |outgoing, text: &str, status: &str| Line {
+        at: 1,
+        outgoing,
+        text: text.into(),
+        status: status.into(),
+        unverified: false,
+        tx: String::new(),
+    };
+    app.eco.board.msg_lines.insert(bob.clone(), Ok(vec![line(false, "meet at nine", "received"), line(true, "see you there", "pending")]));
+    app.selected = 1;
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert!(text.contains("bob · private"), "{text}");
+    assert!(text.contains("meet at nine") && text.contains("see you there   · pending"), "{text}");
+    assert!(text.contains("Not verified yet"), "{text}");
+    assert!(text.contains("◉ private") && text.contains("◉ requests"), "the groups are headed: {text}");
+
+    app.eco.board.msg_lines.insert(carol.clone(), Ok(vec![line(false, "hello?", "received")]));
+    app.selected = 2;
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert!(text.contains("request") && text.contains("a accept") && text.contains("Wrote to you first"), "{text}");
+
+    if let Some(Ok(v)) = &mut app.eco.board.msg {
+        v.conversations[0].identity_changed = true;
+    }
+    app.selected = 1;
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert!(text.contains("Their identity key changed"), "{text}");
+}

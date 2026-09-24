@@ -320,6 +320,7 @@ const AEAD_TAG: usize = 16;
 const LEN_PREFIX: usize = 2;
 /// Every v2 plaintext is padded to one of these sizes (length prefix included), or to the largest
 /// body the contract takes: a sealed message's size says which bucket it fell in, not its length.
+#[cfg(test)]
 const BUCKETS: [usize; 4] = [64, 128, 256, 512];
 const MAX_PADDED: usize = MAX_BODY - 1 - NONCE - AEAD_TAG;
 /// The longest message that fits the contract's body once sealed.
@@ -393,15 +394,20 @@ pub fn conversation(mine: &quai_sdk::payments::PrivatePaymentCode, theirs: &quai
 }
 
 /// The padded size for a plaintext of `len` bytes (length prefix included).
+#[cfg(test)]
 fn bucket(len: usize) -> usize {
     BUCKETS.iter().copied().find(|b| *b >= len).unwrap_or(MAX_PADDED)
 }
 
-/// Seal a message posted at `block` (the head when it is prepared): returns the tag to file it
+/// Seal a v2 message posted at `block`. Nothing writes v2 any more ([`crate::messaging`] replaced
+/// it); this stays so tests can make the bodies older wallets wrote.
+///
+/// Returns the tag to file it
 /// under and the body `2 || nonce || ciphertext || mac`. The plaintext is length-prefixed and
 /// padded to a bucket, and the tag is authenticated with it, so a body cannot be moved to another
 /// conversation or epoch.
-pub fn seal(c: &Conversation, text: &str, block: u64) -> Result<([u8; 32], Vec<u8>)> {
+#[cfg(test)]
+pub(crate) fn seal(c: &Conversation, text: &str, block: u64) -> Result<([u8; 32], Vec<u8>)> {
     let bytes = text.as_bytes();
     if bytes.is_empty() {
         return Err(CoreError::Invalid("the message is empty".into()));
@@ -417,6 +423,7 @@ pub fn seal(c: &Conversation, text: &str, block: u64) -> Result<([u8; 32], Vec<u
 }
 
 /// Encrypt `plain` in place under the conversation key with `aad`, and frame it.
+#[cfg(test)]
 fn seal_with(c: &Conversation, version: u8, aad: &[u8; 32], plain: &mut [u8]) -> Result<Vec<u8>> {
     use chacha20poly1305::{AeadInOut, KeyInit, XChaCha20Poly1305, XNonce};
     let mut nonce = [0u8; NONCE];

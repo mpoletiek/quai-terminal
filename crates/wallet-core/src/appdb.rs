@@ -587,6 +587,8 @@ impl AppDb {
                     "UPDATE notifications SET body=?1 WHERE level='chat' AND title NOT LIKE '#%' AND body<>?1",
                     [crate::chat::REDACTED_NOTICE],
                 )?;
+                // A sealed message's review, text included, was journaled with its operation.
+                Self::redact_journaled_messages(&tx)?;
             }
         }
         tx.pragma_update(None, "user_version", target)?;
@@ -594,6 +596,24 @@ impl AppDb {
         // The redaction above went through the WAL; fold it into the file so the old text does
         // not linger in the log.
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        Ok(())
+    }
+
+    /// Replace the text of every journaled sealed-message review with [`crate::tx::PRIVATE_FIELD`].
+    fn redact_journaled_messages(tx: &Connection) -> Result<()> {
+        let mut stmt = tx.prepare("SELECT id, detail FROM operations WHERE kind='board_post' AND json_extract(detail, '$.sealed')=1")?;
+        let rows =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        for (id, detail) in rows {
+            let Ok(mut detail) = serde_json::from_str::<serde_json::Value>(&detail) else { continue };
+            if let Some(fields) = detail.pointer_mut("/review/fields").and_then(|f| f.as_array_mut()) {
+                for f in fields.iter_mut().filter(|f| f["label"] == "Message") {
+                    f["value"] = serde_json::json!(crate::tx::PRIVATE_FIELD);
+                }
+            }
+            detail["private_fields"] = serde_json::json!(["Message"]);
+            tx.execute("UPDATE operations SET detail=?1 WHERE id=?2", params![detail.to_string(), id])?;
+        }
         Ok(())
     }
 
@@ -1587,12 +1607,21 @@ mod tests {
             db.notify("chat", "Bob · sealed", &format!("bob: {secret}")).unwrap();
             db.notify("chat", "#general", "alice: gm").unwrap();
             db.notify("info", "Payment offer", "0.1 Qi waiting").unwrap();
+            // The sealed message's review, journaled with its operation, text and all.
+            let mut dm = op("dm1", OpStatus::Confirmed);
+            dm.kind = "board_post".into();
+            dm.detail = serde_json::json!({"sealed": true, "review": {"fields": [
+                {"label": "To", "value": "PM8T…abcd"}, {"label": "Message", "value": secret}]}});
+            db.insert_operation(&dm).unwrap();
+            let mut post = op("post1", OpStatus::Confirmed);
+            post.kind = "board_post".into();
+            post.detail = serde_json::json!({"channel": "general", "review": {"fields": [{"label": "Message", "value": "gm all"}]}});
+            db.insert_operation(&post).unwrap();
             db.conn.pragma_update(None, "user_version", 7).unwrap();
             db.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
         }
         let db = AppDb::open(&path).unwrap();
-        let bodies: Vec<(String, String)> =
-            db.notifications(10).unwrap().into_iter().rev().map(|n| (n.title, n.body)).collect();
+        let bodies: Vec<(String, String)> = db.notifications(10).unwrap().into_iter().rev().map(|n| (n.title, n.body)).collect();
         assert_eq!(
             bodies,
             [
@@ -1601,6 +1630,10 @@ mod tests {
                 ("Payment offer".to_string(), "0.1 Qi waiting".to_string()),
             ]
         );
+        let fields = |id: &str| db.operation(id).unwrap().unwrap().detail["review"]["fields"].clone();
+        assert_eq!(fields("dm1")[1]["value"], crate::tx::PRIVATE_FIELD, "the sealed message's text is gone from its operation");
+        assert_eq!(fields("dm1")[0]["value"], "PM8T…abcd", "the rest of the review stays");
+        assert_eq!(fields("post1")[0]["value"], "gm all", "a public post is public anyway");
         // Checked while the database is still open, as it is under a running TUI or daemon:
         // closing the last connection would checkpoint on its own and hide a missing step.
         for file in ["app.sqlite", "app.sqlite-wal"] {

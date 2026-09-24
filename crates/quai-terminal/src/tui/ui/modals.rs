@@ -967,7 +967,11 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         }
         Modal::Confirm { title, body, .. } => {
             let width = 64u16.min(area.width.saturating_sub(4));
-            let wrapped = textwrap(body, width.saturating_sub(4) as usize);
+            // Line breaks in the body are kept (two fingerprints read one above the other).
+            let wrapped: Vec<String> = body
+                .split('\n')
+                .flat_map(|p| if p.trim().is_empty() { vec![String::new()] } else { textwrap(p, width.saturating_sub(4) as usize) })
+                .collect();
             let rect = centered(area, width, wrapped.len() as u16 + 5);
             let title = title.clone();
             let inner = modal_frame(f, rect, t, &title);

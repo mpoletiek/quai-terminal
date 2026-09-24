@@ -179,19 +179,39 @@ impl App {
             ),
             FormKind::BoardPost { channel } => (
                 "Post a message",
-                vec![account("Post from"), Field::new(&format!("Message to #{channel}"), "up to 1024 bytes")],
-                Some("Public and permanent: anyone can read it, it cannot be taken back, and it is signed by this account."),
+                vec![Field::new(&format!("Message to #{channel}"), "up to 1024 bytes")],
+                Some("Public and permanent: anyone can read it, it cannot be taken back, and it goes from your messaging account."),
             ),
-            FormKind::BoardDm { peer, name } => (
-                "Send a sealed message",
-                vec![
-                    account("Send from"),
-                    Field::new(
-                        &format!("Message to {}", name.clone().unwrap_or_else(|| wallet_core::session::short_code(peer))),
-                        "only you two can read it",
+            FormKind::Message { peer, name } => (
+                "Send a private message",
+                vec![Field::new(
+                    &format!("Message to {}", name.clone().unwrap_or_else(|| wallet_core::session::short_address(peer))),
+                    "only they can read it",
+                )],
+                Some("Encrypted to them alone. On chain anyone sees your messaging address, the time and the size, not who it is for."),
+            ),
+            FormKind::MessageNew => (
+                "New private message",
+                vec![Field::new("To", "messaging address or contact"), Field::new("Message", "only they can read it")],
+                Some("Encrypted to them alone. On chain anyone sees your messaging address, the time and the size, not who it is for."),
+            ),
+            FormKind::MessagingSetup => {
+                // Never the main account: messages would be tied to everything it holds.
+                let mut choices: Vec<(String, String)> = accounts.iter().skip(1).cloned().collect();
+                choices.push(("new".into(), "a new account, just for messaging".into()));
+                (
+                    "Set up private messages",
+                    vec![Field::new("Messaging account", "").choice(choices)],
+                    Some(
+                        "Messages and board posts go from this account, not your main one. Its keys stay on this computer and are \
+                         never backed up: a restore starts a new messaging identity.",
                     ),
-                ],
-                Some("Encrypted, but not hidden: your address, the time and the size are public, and it cannot be taken back."),
+                )
+            }
+            FormKind::MessagingFund => (
+                "Fund the messaging account",
+                vec![account("From"), Field::new("Amount", "QUAI for its fees").amount("QUAI")],
+                Some("An ordinary send. Anyone can see which account funds your messaging address."),
             ),
             FormKind::FollowChannel => (
                 "Follow a channel",
@@ -608,8 +628,14 @@ impl App {
             FormKind::WrapQuai => Cmd::Prepare(Prepare::WrapQuai { account: opt(0), amount: v(1) }),
             FormKind::UnwrapQuai => Cmd::Prepare(Prepare::UnwrapQuai { account: opt(0), amount: v(1) }),
             FormKind::Notify => Cmd::Prepare(Prepare::Notify { from: opt(0), peer: v(1) }),
-            FormKind::BoardPost { channel } => Cmd::Prepare(Prepare::BoardPost { from: opt(0), channel: channel.clone(), text: v(1) }),
-            FormKind::BoardDm { peer, .. } => Cmd::Prepare(Prepare::BoardDm { from: opt(0), peer: peer.clone(), text: v(1) }),
+            FormKind::BoardPost { channel } => Cmd::Prepare(Prepare::BoardPost { channel: channel.clone(), text: v(0) }),
+            FormKind::Message { peer, .. } => Cmd::Prepare(Prepare::Message { peer: peer.clone(), text: v(0) }),
+            FormKind::MessageNew => Cmd::Prepare(Prepare::Message { peer: v(0), text: v(1) }),
+            FormKind::MessagingFund => Cmd::Prepare(Prepare::MessagingFund { from: opt(0), amount: v(1) }),
+            FormKind::MessagingSetup => {
+                let account = Some(v(0)).filter(|a| a != "new" && !a.is_empty());
+                Cmd::Messaging { op: super::super::worker::MsgOp::Setup { account }, epoch: self.private_epoch }
+            }
             FormKind::OrderCreate { .. } | FormKind::FollowChannel | FormKind::RenameWallet(_) => unreachable!("handled above"),
             FormKind::AddAccount => Cmd::AddAccount(opt(0)),
             // Moved straight into wiped buffers; the form's own copies are wiped when it drops.

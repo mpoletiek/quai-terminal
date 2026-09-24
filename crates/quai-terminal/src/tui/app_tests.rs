@@ -4820,7 +4820,7 @@ fn locking_forgets_private_messages_and_drops_reads_still_in_flight() {
     assert!(app.eco.board.dms.contains_key("PM8code"), "a read in the current generation is shown");
     app.eco.board.pin = Some("dm:PM8code".into());
     app.dock_draft = "half a secret".into();
-    app.open_form(FormKind::BoardDm { peer: "PM8code".into(), name: None });
+    app.open_form(FormKind::Message { peer: "0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".into(), name: None });
     assert!(matches!(app.modal, Modal::Form(_)), "the message form is open when the lock comes");
     app.enter_lock(None);
     assert!(app.eco.board.dms.is_empty(), "decrypted conversations are gone");
@@ -4832,4 +4832,76 @@ fn locking_forgets_private_messages_and_drops_reads_still_in_flight() {
     app.show_unlocked();
     app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
     assert!(app.eco.board.dms.is_empty(), "and still dropped after unlocking, since it was asked before the lock");
+}
+
+/// Private messages (v3) are forgotten at lock like everything else decrypted, and an answer
+/// asked for before the lock never brings them back.
+#[test]
+fn locking_forgets_private_messages_v3_and_drops_answers_asked_before() {
+    use super::super::eco::MessagingView;
+    use wallet_core::messaging::service::{KeyNeed, Line, Status};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let size = (120, 40);
+    let status =
+        Status { account: Some("0xabc".into()), need: KeyNeed::Ready, fingerprint: None, key: None, keys_held: 1, scanned_to: None };
+    let view = || MessagingView { status: status.clone(), conversations: vec![], requests: vec![] };
+    let lines = || {
+        Some((
+            "0xb0b".to_string(),
+            Ok(vec![Line {
+                at: 1,
+                outgoing: false,
+                text: "secret".into(),
+                status: "received".into(),
+                unverified: false,
+                tx: String::new(),
+            }]),
+        ))
+    };
+    let asked = app.private_epoch;
+    app.on_event(Ev::Messaging { epoch: asked, view: Ok(view()), open: lines(), note: None }, size);
+    assert!(app.eco.board.msg_lines.contains_key("0xb0b") && app.eco.board.msg.is_some());
+    app.enter_lock(None);
+    assert!(app.eco.board.msg.is_none() && app.eco.board.msg_lines.is_empty(), "gone at lock");
+    app.on_event(Ev::Messaging { epoch: asked, view: Ok(view()), open: lines(), note: None }, size);
+    assert!(app.eco.board.msg_lines.is_empty(), "an answer landing while locked is dropped");
+    app.show_unlocked();
+    app.on_event(Ev::Messaging { epoch: asked, view: Ok(view()), open: lines(), note: None }, size);
+    assert!(app.eco.board.msg_lines.is_empty(), "and after the unlock, since it was asked before the lock");
+    app.on_event(Ev::Messaging { epoch: app.private_epoch, view: Ok(view()), open: lines(), note: None }, size);
+    assert!(app.eco.board.msg_lines.contains_key("0xb0b"), "a fresh answer is shown");
+}
+
+/// Writing to a private conversation publishes this week's key first when it is due; once it is
+/// on its way, the message form opens.
+#[test]
+fn writing_privately_publishes_the_week_s_key_first_when_it_is_due() {
+    use super::super::eco::MessagingView;
+    use wallet_core::messaging::service::{Conversation, KeyNeed, Status};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let bob = "0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".to_string();
+    let convo = Conversation {
+        peer: bob.clone(),
+        name: Some("bob".into()),
+        state: wallet_core::messaging::store::PeerState::Accepted,
+        fingerprint: None,
+        verified: false,
+        identity_changed: false,
+        messages: 0,
+        unread: 0,
+        last_at: 0,
+    };
+    let view = |need| MessagingView {
+        status: Status { account: Some("0xabc".into()), need, fingerprint: None, key: None, keys_held: 1, scanned_to: None },
+        conversations: vec![convo.clone()],
+        requests: vec![],
+    };
+    app.eco.board.msg = Some(Ok(view(KeyNeed::Publish)));
+    app.write_private(bob.clone(), Some("bob".into()));
+    assert!(!matches!(app.modal, Modal::Form(_)), "no form while the key is due");
+    assert!(app.toasts.last().is_some_and(|t| t.text.contains("goes first")), "the key is said to go first");
+    app.eco.board.msg = Some(Ok(view(KeyNeed::Publishing)));
+    app.write_private(bob.clone(), Some("bob".into()));
+    assert!(matches!(&app.modal, Modal::Form(f) if f.kind == FormKind::Message { peer: bob.clone(), name: Some("bob".into()) }));
+    assert!(matches!(&app.modal, Modal::Form(f) if f.kind.is_private()), "a private form, dropped at lock");
 }

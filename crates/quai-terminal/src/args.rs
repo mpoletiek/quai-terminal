@@ -107,6 +107,9 @@ pub enum Command {
     /// The on-chain message board: read a channel.
     #[command(subcommand)]
     Board(BoardCmd),
+    /// Private messages: set up a messaging account, publish your weekly key, send and read.
+    #[command(subcommand, visible_alias = "msg")]
+    Message(MessageCmd),
     /// Third-party data sources: status and connection test.
     #[command(subcommand)]
     Data(DataCmd),
@@ -685,21 +688,8 @@ pub enum BoardCmd {
         #[arg(long, default_value_t = 720)]
         blocks: u64,
     },
-    /// Send a sealed message to one peer. Only the two of you can read it. The text is typed at
-    /// the prompt or piped on stdin, never given as an argument.
-    Dm {
-        /// Payment code, or a contact who has one.
-        peer: String,
-        /// Read the message from this file instead of the prompt.
-        #[arg(long)]
-        text_file: Option<std::path::PathBuf>,
-        /// Account to send from.
-        #[arg(long)]
-        from: Option<String>,
-        #[command(flatten)]
-        fee: FeeArgs,
-    },
-    /// The sealed conversation with one peer, oldest first.
+    /// An old (v1/v2) sealed conversation with a payment-code peer, oldest first. Read-only:
+    /// private messages are `message send` now.
     Inbox {
         /// Payment code, or a contact who has one.
         peer: String,
@@ -707,18 +697,89 @@ pub enum BoardCmd {
         #[arg(long, default_value_t = 720)]
         blocks: u64,
     },
-    /// Post a message. It is public and permanent.
+    /// Post a message from your messaging account. It is public and permanent.
     Post {
         /// Channel name, up to 32 bytes.
         channel: String,
         /// The message, up to 1024 bytes.
         text: String,
-        /// Account to post from.
+        #[command(flatten)]
+        fee: FeeArgs,
+    },
+}
+
+/// `message` subcommands.
+#[derive(Subcommand, Debug)]
+pub enum MessageCmd {
+    /// Choose the messaging account (not your main one) and make this wallet's messaging identity.
+    Setup {
+        /// Account: label, number or address.
+        account: String,
+        /// Move to another account, or start over: the old keys and history are deleted and your
+        /// contacts see a new identity.
+        #[arg(long)]
+        new_identity: bool,
+    },
+    /// Messaging account, fingerprint, and whether this week's key is published.
+    Status,
+    /// Move QUAI to the messaging account for its fees. This links the two accounts on chain.
+    Fund {
+        /// Amount of QUAI.
+        amount: String,
+        /// Account to send from (default: the first).
         #[arg(long)]
         from: Option<String>,
         #[command(flatten)]
         fee: FeeArgs,
     },
+    /// Publish this week's key. `send` does it for you when it is due.
+    Keys {
+        #[command(flatten)]
+        fee: FeeArgs,
+    },
+    /// Send a private message to a messaging address or a contact. The text is typed at the
+    /// prompt or piped on stdin, never given as an argument.
+    Send {
+        peer: String,
+        /// Read the message from this file instead.
+        #[arg(long)]
+        text_file: Option<std::path::PathBuf>,
+        #[command(flatten)]
+        fee: FeeArgs,
+    },
+    /// Read the chain for new messages.
+    Sync,
+    /// Conversations, newest first.
+    List,
+    /// People who wrote first and are waiting to be accepted.
+    Requests,
+    /// One conversation, oldest first (syncs first).
+    Read {
+        peer: String,
+        /// Leave it unread.
+        #[arg(long)]
+        keep_unread: bool,
+    },
+    /// Accept someone who wrote first.
+    Accept {
+        peer: String,
+        /// Also add them to the address book under this name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Drop everything from an address from now on.
+    Block { peer: String },
+    /// Stop blocking an address; its messages arrive as requests again.
+    Unblock { peer: String },
+    /// Show both fingerprints to compare with them in person or over another channel.
+    Verify {
+        peer: String,
+        /// They matched: remember it.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Accept a peer's new identity key after their identity changed.
+    Trust { peer: String },
 }
 
 #[derive(Args, Debug)]

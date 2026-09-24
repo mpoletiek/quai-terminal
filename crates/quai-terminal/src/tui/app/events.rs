@@ -35,7 +35,12 @@ impl App {
         board.dms.clear();
         board.dm_at.clear();
         board.dm_loading = None;
-        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("dm:")) {
+        board.msg = None;
+        board.msg_lines.clear();
+        board.msg_loading = false;
+        board.msg_at = None;
+        board.msg_offered = false;
+        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("dm:") || p.starts_with("msg:")) {
             self.dock_draft.clear();
         }
     }
@@ -463,6 +468,34 @@ impl App {
             }
             // Asked before a lock or a switch: whatever it says is no longer this screen's to show.
             Ev::Conversation { epoch, .. } if self.locked || epoch != self.private_epoch => {}
+            Ev::Messaging { epoch, .. } if self.locked || epoch != self.private_epoch => {}
+            Ev::Messaging { view, open, note, .. } => {
+                use wallet_core::messaging::service::KeyNeed;
+                let board = &mut self.eco.board;
+                board.msg_loading = false;
+                // This week's key is offered once per unlock, where the user will see it.
+                let offer = matches!(&view, Ok(v) if v.status.need == KeyNeed::Publish) && !board.msg_offered;
+                if offer {
+                    board.msg_offered = true;
+                }
+                // A failed read keeps what was already shown and says so; the first one shows the error.
+                if view.is_ok() || !matches!(board.msg, Some(Ok(_))) {
+                    board.msg = Some(view);
+                } else if let Err(e) = view {
+                    self.toast(format!("private messages: {}", super::friendly_error(&e)), true);
+                }
+                if let Some((peer, lines)) = open
+                    && (lines.is_ok() || !matches!(self.eco.board.msg_lines.get(&peer), Some(Ok(_))))
+                {
+                    self.eco.board.msg_lines.insert(peer, lines);
+                }
+                if let Some(note) = note {
+                    self.toast(note, false);
+                }
+                if offer {
+                    self.toast("this week's messaging key is not published yet: Board › K", false);
+                }
+            }
             Ev::Conversation { peer, result, .. } => {
                 if self.eco.board.dm_loading.as_deref() == Some(peer.as_str()) {
                     self.eco.board.dm_loading = None;

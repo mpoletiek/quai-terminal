@@ -1219,6 +1219,16 @@ pub fn describe(op: &Operation) -> String {
     if op.kind == "approve" && op.detail["operator"].is_string() {
         return "marketplace collection approval".into();
     }
+    // Board posts: a private message says neither who it was for nor what it said.
+    if op.kind == "board_post" {
+        return match (op.detail["messaging"].as_str(), op.detail["channel"].as_str()) {
+            (Some("dm"), _) => "private message".into(),
+            (Some("keys"), _) => "messaging key published".into(),
+            (_, Some(channel)) => format!("post in #{channel}"),
+            _ if op.detail["sealed"] == true => "sealed message (old format)".into(),
+            _ => "board post".into(),
+        };
+    }
     match op.kind.as_str() {
         "notify" => format!("{verb} to {}", crate::session::short_code(&op.counterparty)),
         "fill_gap" => verb.to_string(),
@@ -1444,6 +1454,31 @@ mod incoming_wording {
 
 #[cfg(test)]
 mod tests {
+    /// A board operation reads as what it was, and a private one names nobody.
+    #[test]
+    fn board_operations_are_described_without_their_content() {
+        let op = |detail: serde_json::Value| crate::appdb::Operation {
+            id: "x".into(),
+            network: "local".into(),
+            kind: "board_post".into(),
+            store: "quai".into(),
+            account: "0xabc".into(),
+            status: crate::appdb::OpStatus::Confirmed,
+            tx_hash: None,
+            asset: "QUAI".into(),
+            amount: "0".into(),
+            counterparty: "sealed message".into(),
+            fee: String::new(),
+            detail,
+            created: 0,
+            updated: 0,
+        };
+        assert_eq!(describe(&op(serde_json::json!({"messaging": "dm"}))), "private message");
+        assert_eq!(describe(&op(serde_json::json!({"messaging": "keys"}))), "messaging key published");
+        assert_eq!(describe(&op(serde_json::json!({"channel": "general"}))), "post in #general");
+        assert_eq!(describe(&op(serde_json::json!({"sealed": true}))), "sealed message (old format)");
+    }
+
     use super::*;
 
     /// The pending lane watches exactly what the worker's pass leaves out, so between them every

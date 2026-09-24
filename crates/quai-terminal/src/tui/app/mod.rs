@@ -458,7 +458,7 @@ impl Field {
 impl FormKind {
     /// A form whose text is a private message: dropped at lock rather than kept for later.
     pub fn is_private(&self) -> bool {
-        matches!(self, FormKind::BoardDm { .. })
+        matches!(self, FormKind::Message { .. } | FormKind::MessageNew)
     }
 }
 
@@ -535,11 +535,17 @@ pub enum FormKind {
     BoardPost {
         channel: String,
     },
-    /// Send a sealed message to one peer.
-    BoardDm {
+    /// Send a private message (v3) to a messaging address.
+    Message {
         peer: String,
         name: Option<String>,
     },
+    /// A private message to someone not in the list yet: address or contact, and the text.
+    MessageNew,
+    /// Choose the messaging account (never the main one).
+    MessagingSetup,
+    /// QUAI to the messaging account for its fees.
+    MessagingFund,
     /// Follow another channel.
     FollowChannel,
     /// Call a function on a contract, chosen from the ABI the contract publishes itself.
@@ -834,6 +840,12 @@ pub enum ConfirmAction {
     DeclineOffer(String),
     /// Stop following a Board channel.
     Unfollow(String),
+    /// Drop a messaging address's messages unread from now on.
+    BlockPeer(String),
+    /// Accept a peer's new identity key.
+    TrustPeer(String),
+    /// Record that a peer's fingerprint matched.
+    VerifyPeer(String),
 }
 
 pub enum Modal {
