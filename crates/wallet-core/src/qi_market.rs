@@ -171,14 +171,7 @@ pub async fn compare(ctx: &DataCtx, direction: Direction, amount: U256, owner: O
         futures_pair(protocol_route(ctx, direction, amount), market_route(ctx, direction, amount, owner, slippage_bps)).await;
     let protocol = protocol.unwrap_or_else(|e| unavailable_route("protocol conversion", "one transaction", &e.to_string()));
     let market = market.unwrap_or_else(|e| unavailable_route("market route (Quainance)", "several transactions", &e.to_string()));
-    let market_advantage_bps = match (protocol.amount(), market.amount()) {
-        (Some(p), Some(m)) if !p.is_zero() => {
-            let scale = |v: U256| v.to_string().parse::<f64>().unwrap_or(0.0);
-            let (p, m) = (scale(p), scale(m));
-            (p > 0.0).then(|| ((m - p) / p * 10_000.0).clamp(-1_000_000.0, 1_000_000.0) as i64)
-        }
-        _ => None,
-    };
+    let market_advantage_bps = advantage_bps(&protocol, &market);
     Ok(Comparison {
         direction,
         amount: amount.to_string(),
@@ -209,6 +202,18 @@ async fn futures_pair<A: std::future::Future, B: std::future::Future>(a: A, b: B
     })
     .await;
     (ra.expect("polled to ready"), rb.expect("polled to ready"))
+}
+
+/// How much more the market route pays than the protocol conversion, in basis points (negative:
+/// less). Only when both can run: a market route that buys less than one whole Qi redeems nothing,
+/// and "the protocol conversion pays 100% more" than a route that cannot be taken says nothing.
+fn advantage_bps(protocol: &Route, market: &Route) -> Option<i64> {
+    if !protocol.usable() || !market.usable() {
+        return None;
+    }
+    let scale = |v: U256| v.to_string().parse::<f64>().unwrap_or(0.0);
+    let (p, m) = (scale(protocol.amount()?), scale(market.amount()?));
+    (p > 0.0).then(|| ((m - p) / p * 10_000.0).clamp(-1_000_000.0, 1_000_000.0) as i64)
 }
 
 fn unavailable_route(name: &str, wait: &str, why: &str) -> Route {
@@ -377,6 +382,27 @@ pub async fn market_quote(ctx: &DataCtx, direction: Direction, amount: U256, own
 
 #[cfg(test)]
 mod tests {
+    /// Routes are compared only when both can be taken: a market route too small to redeem a whole
+    /// Qi receives nothing, and is not "100% worse".
+    #[test]
+    fn routes_are_compared_only_when_both_can_run() {
+        let route = |receives: Option<&str>| super::Route {
+            name: "r".into(),
+            receives: receives.map(str::to_string),
+            receives_display: None,
+            legs: Vec::new(),
+            wait: String::new(),
+            costs: Vec::new(),
+            unavailable: None,
+            warnings: Vec::new(),
+        };
+        assert_eq!(super::advantage_bps(&route(Some("1000")), &route(Some("1100"))), Some(1_000), "the market pays 10% more");
+        assert_eq!(super::advantage_bps(&route(Some("1000")), &route(Some("0"))), None, "a market route that redeems nothing");
+        assert_eq!(super::advantage_bps(&route(Some("1000")), &route(None)), None);
+        let closed = super::unavailable_route("market", "", "no pool");
+        assert_eq!(super::advantage_bps(&route(Some("1000")), &closed), None);
+    }
+
     use super::*;
 
     #[test]
