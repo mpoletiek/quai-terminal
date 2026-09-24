@@ -22,12 +22,64 @@ pub const MOTIONS: [(Motion, &str, &str); 4] = [
     (Motion::Off, "Off", "nothing moves"),
 ];
 
-/// The privacy choice: private first, because it is the default and the one that tells nobody
-/// anything. `true` turns address-linked explorer lookups (and the images they bring) on.
-pub const PRIVACY: [(&str, &str, bool); 2] = [
-    ("Private", "balances and history from the chain only · no third party learns your addresses", false),
-    ("Connected", "explorer.qu.ai finds your tokens and NFTs, value history and images · it sees your addresses and IP", true),
+/// Above the privacy answers: what the question is about, and the part it is not about.
+pub const PRIVACY_INTRO: &str = "This is only about the explorer, an indexer a third party runs. Balances, sends and reviews always come from a Quai node: your own if you set one next, otherwise rpc.quai.network, and that node sees the addresses it is asked about whichever you pick here.";
+
+/// One answer to the privacy question: what it is, what it gets you, and what it costs.
+pub struct PrivacyChoice {
+    pub label: &'static str,
+    pub says: &'static str,
+    pub gets: &'static str,
+    pub costs: &'static str,
+    /// Address-linked explorer lookups (and the pictures and icons that come with them) on.
+    pub connected: bool,
+}
+
+/// The privacy choice, private first: it is the default and it tells the explorer nothing. It is
+/// only about the explorer; which node answers balances and reviews is the next step, and the
+/// screen says so, because that is the part people take it to mean.
+pub const PRIVACY: [PrivacyChoice; 2] = [
+    PrivacyChoice {
+        label: "Private",
+        says: "explorer.qu.ai is never told your addresses",
+        gets: "balances, your own transactions, tokens you add, prices and markets (no address sent)",
+        costs: "tokens and NFTs sent to you stay hidden until you add them · no value history or pictures",
+        connected: false,
+    },
+    PrivacyChoice {
+        label: "Connected",
+        says: "explorer.qu.ai looks up each of your addresses",
+        gets: "tokens and NFTs sent to you, token transfers, value history, verified contracts, pictures",
+        costs: "a third party learns your addresses and IP, and can link them · slow explorer, slow lists",
+        connected: true,
+    },
 ];
+
+/// Where each kind of request goes with these settings: the "what goes where" the connections
+/// step shows under its fields, so the node, the RPC and the explorer are not a guess.
+/// `node` is the node URL as typed (empty: none).
+pub fn routes(node: &str, connected: bool, rpc_url: &str) -> Vec<(&'static str, String, &'static str)> {
+    let rpc = wallet_core::http::host_of(rpc_url).unwrap_or_else(|_| "the network's RPC".into());
+    let node = node.trim();
+    let reads = if node.is_empty() {
+        (rpc.clone(), "balances, quotes, every review · sees each address asked about, and your IP")
+    } else {
+        (
+            node.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string(),
+            "every read, reviews too · the RPC stands in if it stops answering · warns at 3+ blocks behind",
+        )
+    };
+    vec![
+        ("reads", reads.0, reads.1),
+        ("sends", rpc, "every transaction goes here, whichever node reads · sees what you send, and your IP"),
+        (
+            "address lookups",
+            if connected { "explorer.qu.ai".into() } else { "none".into() },
+            if connected { "finds what was sent to you · sees your addresses and IP" } else { "the explorer is told nothing about you" },
+        ),
+        ("prices, markets", "explorer.qu.ai · graph.quai.network · hartiilabs.com".into(), "no address is ever sent"),
+    ]
+}
 
 /// Step number shown in the onboarding header.
 pub fn step(ob: &Onboarding) -> usize {
@@ -46,7 +98,7 @@ pub fn step(ob: &Onboarding) -> usize {
 pub const CONNECTIONS: [(&str, &str); 3] = [
     (
         "Your own node",
-        "A read-only Quai node you run. Without one, the public RPC sees every address you ask about — with one, nobody learns them, and reads get much faster. It is checked the first time it is used (same chain, same genesis) and quietly left alone if it does not answer, so a typo costs you the privacy, not the wallet. Leave empty to use the public RPC.",
+        "A Quai node you run. Every read goes to it, reviews too, so it is what you take a review's numbers from, and nobody else learns the addresses you ask about. It must prove the same chain and genesis first, the public RPC stands in if it stops answering, and over the internet it must be https. Empty: read from the public RPC.",
     ),
     (
         "Contract details",
@@ -83,6 +135,12 @@ pub fn apply_connections(app: &mut App, fields: &[Field]) -> Result<(), (usize, 
     let monitor = value(0);
     if !monitor.is_empty() && !(monitor.starts_with("http://") || monitor.starts_with("https://")) {
         return Err((0, "a node URL starts with http:// or https://".into()));
+    }
+    // Reviews read from this node, so a stranger on the path must not be able to answer for it.
+    if !monitor.is_empty()
+        && wallet_core::network::require_secure_rpc(&monitor, app.config.allow_insecure_rpc.contains(&app.network_id)).is_err()
+    {
+        return Err((0, "a node over the internet needs https; plain http is for this machine or your own network".into()));
     }
     let mut gateways = Vec::new();
     for (i, content) in [(1, wallet_core::ipfs::Content::Abi), (2, wallet_core::ipfs::Content::Media)] {
@@ -253,7 +311,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
             KeyCode::Down | KeyCode::Char('j') => Some(Onboarding::Privacy { selected: (selected + 1).min(PRIVACY.len() - 1) }),
             KeyCode::Esc => Some(motion_step(app)),
             KeyCode::Enter => {
-                apply_privacy(app, PRIVACY[selected].2);
+                apply_privacy(app, PRIVACY[selected].connected);
                 Some(Onboarding::Connections { fields: connection_fields(app), focus: 0 })
             }
             _ => Some(Onboarding::Privacy { selected }),

@@ -249,52 +249,110 @@ pub(crate) fn draw_onboarding(f: &mut Frame, app: &mut App, t: &Theme, area: Rec
             draw_showroom(f, inner, t, picker, None);
         }
         Onboarding::Privacy { selected } => {
-            let rect = centered(body, 90, 14);
-            let inner = lit_frame(f, rect, t, "privacy");
-            let mut lines = vec![
-                Line::from(Span::styled("Who should learn which addresses are yours?", t.strong_style())),
-                Line::from(Span::styled(
-                    "Your node always sees the addresses it is asked about. Run your own, and nobody else does.",
-                    t.dim_style(),
-                )),
-                Line::from(""),
-            ];
-            for (i, (label, sub, _)) in super::super::onboarding::PRIVACY.iter().enumerate() {
-                let active = i == *selected;
-                lines.push(Line::from(vec![
-                    Span::styled(if active { "▌ " } else { "  " }, Style::default().fg(t.focus)),
-                    Span::styled(format!("{label:<11}"), if active { t.strong_style().fg(t.focus) } else { t.text_style() }),
-                    Span::styled(*sub, t.dim_style()),
-                ]));
-                lines.push(Line::from(""));
-            }
-            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).style(Style::default().bg(t.raised)), inner);
+            let rect = centered(body, 100, 22);
+            let inner = lit_frame(f, rect, t, "privacy · the explorer");
+            let width = usize::from(inner.width).max(20);
+            let wrap = super::super::views::board::wrap_words;
+            // Every answer's cost stays on screen whatever the size: the spacing goes first.
+            let build = |spaced: bool| {
+                let mut lines = vec![Line::from(Span::styled("Should explorer.qu.ai look up your addresses?", t.strong_style()))];
+                for part in wrap(super::super::onboarding::PRIVACY_INTRO, width, width) {
+                    lines.push(Line::from(Span::styled(part, t.dim_style())));
+                }
+                if spaced {
+                    lines.push(Line::from(""));
+                }
+                let room = width.saturating_sub(20).max(20);
+                for (i, choice) in super::super::onboarding::PRIVACY.iter().enumerate() {
+                    let active = i == *selected;
+                    let body = if active { t.text_style() } else { t.dim_style() };
+                    lines.push(Line::from(vec![
+                        Span::styled(if active { "▌ " } else { "  " }, Style::default().fg(t.focus)),
+                        Span::styled(format!("{:<11}", choice.label), if active { t.strong_style().fg(t.focus) } else { t.text_style() }),
+                        Span::styled(choice.says, body),
+                    ]));
+                    // Wrapped under their own column, not back at the margin.
+                    for (tag, text) in [("gets", choice.gets), ("costs", choice.costs)] {
+                        for (n, part) in wrap(text, room, room).into_iter().enumerate() {
+                            let tag = if n == 0 { tag } else { "" };
+                            lines.push(Line::from(vec![
+                                Span::styled(format!("{:13}{tag:<7}", ""), t.dim_style()),
+                                Span::styled(part, body),
+                            ]));
+                        }
+                    }
+                    if spaced {
+                        lines.push(Line::from(""));
+                    }
+                }
+                lines
+            };
+            let full = build(true);
+            let lines = if full.len() <= usize::from(inner.height) { full } else { build(false) };
+            f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
         }
         Onboarding::Connections { fields, focus } => {
-            let rect = centered(body, 96, 17);
+            let rect = centered(body, 104, 32);
             let inner = lit_frame(f, rect, t, "connections · every one of these has a default that works");
-            let mut lines = vec![
-                Line::from(Span::styled("Where this wallet reads from.", t.strong_style())),
-                Line::from(Span::styled("Press enter through them all to take the defaults.", t.dim_style())),
-                Line::from(""),
-            ];
-            for (i, field) in fields.iter().enumerate() {
-                let active = i == *focus;
-                let shown = if field.value.is_empty() { field.hint.clone() } else { field.value.clone() };
-                let style = if field.value.is_empty() { t.dim_style() } else { t.text_style() };
-                lines.push(Line::from(vec![
-                    Span::styled(if active { "▌ " } else { "  " }, Style::default().fg(t.focus)),
-                    Span::styled(format!("{:<18}", field.label), if active { t.strong_style().fg(t.focus) } else { t.text_style() }),
-                    Span::styled(shown, style),
-                    Span::styled(if active { "▏" } else { "" }, Style::default().fg(t.focus)),
-                ]));
-            }
-            lines.push(Line::from(""));
-            // Why the field under the cursor is worth setting, in front of the person deciding.
-            if let Some((_, why)) = super::super::onboarding::CONNECTIONS.get(*focus) {
-                lines.push(Line::from(Span::styled(*why, t.dim_style())));
-            }
-            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).style(Style::default().bg(t.raised)), inner);
+            let width = usize::from(inner.width).max(20);
+            let wrap = super::super::views::board::wrap_words;
+            let node = fields.first().map(|f| f.value.as_str()).unwrap_or_default();
+            let rpc = app.config.network(&app.network_id).map(|n| n.rpc_url).unwrap_or_default();
+            let routes = super::super::onboarding::routes(node, app.config.explorer_lookups, &rpc);
+            // Where every request goes stays on screen whatever the size: spacing goes first, then
+            // the notes under each host.
+            let build = |spaced: bool, notes: bool| {
+                let mut lines = vec![Line::from(Span::styled("Where this wallet reads from.", t.strong_style()))];
+                if spaced {
+                    lines.push(Line::from(Span::styled("Press enter through them all to take the defaults.", t.dim_style())));
+                    lines.push(Line::from(""));
+                }
+                for (i, field) in fields.iter().enumerate() {
+                    let active = i == *focus;
+                    let shown = if field.value.is_empty() { field.hint.clone() } else { field.value.clone() };
+                    let style = if field.value.is_empty() { t.dim_style() } else { t.text_style() };
+                    lines.push(Line::from(vec![
+                        Span::styled(if active { "▌ " } else { "  " }, Style::default().fg(t.focus)),
+                        Span::styled(format!("{:<18}", field.label), if active { t.strong_style().fg(t.focus) } else { t.text_style() }),
+                        Span::styled(shown, style),
+                        Span::styled(if active { "▏" } else { "" }, Style::default().fg(t.focus)),
+                    ]));
+                }
+                if spaced {
+                    lines.push(Line::from(""));
+                }
+                // Why the field under the cursor is worth setting, in front of the person deciding.
+                if let Some((_, why)) = super::super::onboarding::CONNECTIONS.get(*focus) {
+                    for part in wrap(why, width, width) {
+                        lines.push(Line::from(Span::styled(part, t.dim_style())));
+                    }
+                }
+                // What these settings add up to, as they are typed: which host gets which request.
+                if spaced {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled("what goes where", t.strong_style())));
+                let room = width.saturating_sub(20).max(20);
+                for (what, host, note) in &routes {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {what:<17}"), t.dim_style()),
+                        Span::styled(host.clone(), t.text_style()),
+                    ]));
+                    if notes {
+                        for part in wrap(note, room, room) {
+                            lines.push(Line::from(Span::styled(format!("  {:<17}{part}", ""), t.dim_style())));
+                        }
+                    }
+                }
+                lines
+            };
+            let height = usize::from(inner.height);
+            let lines = [(true, true), (false, true), (false, false)]
+                .into_iter()
+                .map(|(spaced, notes)| build(spaced, notes))
+                .find(|lines| lines.len() <= height)
+                .unwrap_or_else(|| build(false, false));
+            f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
         }
         Onboarding::Choose { selected } => {
             let rect = centered(body, 86, 18);

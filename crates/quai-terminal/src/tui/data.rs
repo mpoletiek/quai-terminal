@@ -722,7 +722,7 @@ async fn run(
                             && let Some(mut cached) = open_cache(&path, current.0.clone(), current.1)
                         {
                             if next.monitoring() != ctx.monitoring() {
-                                let note = if next.monitoring() { "monitoring endpoint available for public reads" } else { "monitoring endpoint stopped answering; public reads use the primary RPC" };
+                                let note = if next.monitoring() { "your node is answering again; reads use it" } else { "your node stopped answering; reads use the network RPC until it is back" };
                                 let _ = events.send(DataEv::Notice(note.into()));
         super::term::wake();
                             }

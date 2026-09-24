@@ -306,7 +306,7 @@ impl App {
                     ]
                 },
                 Some(
-                    "Market data, charts and balance re-reads use it; reviews, signing and broadcasting always use the network's main RPC. The endpoint must report this network's chain id and genesis.",
+                    "Every read uses it, reviews included, once it reports this network's chain id and genesis; transactions are always broadcast through the network's main RPC, and a review warns when this node is 3 or more blocks behind it. Over the internet it must be https.",
                 ),
             ),
             FormKind::DaemonUnlock => (

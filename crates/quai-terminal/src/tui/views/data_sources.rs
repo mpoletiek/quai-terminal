@@ -49,6 +49,28 @@ pub fn draw_data_sources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     if let Some(n) = &network {
         let ex = wallet_core::explorer::Explorer::for_network(n);
         lines.push(kv(t, "network", Span::raw(n.name.clone())));
+        // Node traffic first: it is the part every setting on this screen leaves alone.
+        let host = |url: &str| wallet_core::http::host_of(url).unwrap_or_else(|_| url.to_string());
+        lines.push(kv(
+            t,
+            "reads",
+            match &n.monitor {
+                Some(m) => Span::styled(
+                    format!(
+                        "{} · your node: every read, reviews too · {} stands in when it does not answer · reviews warn at {}+ blocks behind",
+                        host(&m.rpc_url),
+                        host(&n.rpc_url),
+                        wallet_core::network::MONITOR_LAG_WARN
+                    ),
+                    Style::default().fg(t.ok),
+                ),
+                None => Span::raw(format!(
+                    "{} · balances, quotes and reviews; it sees the addresses asked about · System › Settings sets your own node",
+                    host(&n.rpc_url)
+                )),
+            },
+        ));
+        lines.push(kv(t, "sends", Span::raw(format!("{} · every transaction is broadcast here", host(&n.rpc_url)))));
         lines.push(kv(
             t,
             "backend",
@@ -96,13 +118,16 @@ pub fn draw_data_sources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             t,
             "proxy",
             match wallet_core::http::proxy() {
-                Some(p) => Span::styled(format!("{p} · lookups only; node RPC goes direct"), Style::default().fg(t.ok)),
+                Some(p) => Span::styled(
+                    format!("{p} · lookups and node RPC; a node on this machine or your network is reached directly"),
+                    Style::default().fg(t.ok),
+                ),
                 None => Span::styled("none · `config set proxy socks5h://127.0.0.1:9050` for Tor", t.dim_style()),
             },
         ));
     }
     lines.push(Line::from(Span::styled(
-        "Explorer lookups send your addresses (and IP) to the explorer. Market data and images do not include your addresses.",
+        "Explorer lookups send your addresses (and IP) to the explorer. Market data and images do not include your addresses. None of these switches changes which node reads or sends.",
         t.dim_style(),
     )));
     lines.push(Line::from(""));
