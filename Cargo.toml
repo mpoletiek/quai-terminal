@@ -10,7 +10,7 @@ license = "MIT"
 repository = "https://github.com/mpoletiek/quai-rust-cli-wallet"
 
 [workspace.dependencies]
-quai-sdk = { version = "=0.1.0-alpha.12", features = ["sqlite", "ws", "abi", "payments", "keystore", "backup"] }
+quai-sdk = { version = "=0.1.0-alpha.14", features = ["sqlite", "ws", "abi", "payments", "keystore", "backup"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "fs", "net", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

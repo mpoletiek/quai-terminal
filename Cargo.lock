@@ -566,6 +566,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
+dependencies = [
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures 0.3.1",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -867,6 +880,12 @@ dependencies = [
  "quote",
  "unicode-xid",
 ]
+
+[[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "convert_case"
@@ -2966,9 +2985,9 @@ checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quai-abi"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86c96392563efce773a238520e5ce46fef4eba3d5ca800674e17c223f0b67a30"
+checksum = "3322f38199d3fda25caacd360736006c912a1c6f1c79b15e022b4849e9cd2eb0"
 dependencies = [
  "quai-primitives",
  "ruint",
@@ -2981,9 +3000,9 @@ dependencies = [
 
 [[package]]
 name = "quai-consensus"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3389d71f6f496dc7f055c93c9bdd8cf9f501879d49954e65b11b3d61e45f853a"
+checksum = "4626a3d0be7436afaaa33f4683d5ebd6675a8ca515c9a68e2a21d3c7e6de3e5b"
 dependencies = [
  "prost",
  "quai-crypto",
@@ -2995,9 +3014,9 @@ dependencies = [
 
 [[package]]
 name = "quai-crypto"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92446c7a1825e23a0a37ff320d3b5202d55e6334e434db0015ab3cd726bccbde"
+checksum = "b812b3c7bb3080462d2598b7e2a27acabc472d1899ea5015db448ac58b7c7a4c"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.4.3",
@@ -3014,9 +3033,9 @@ dependencies = [
 
 [[package]]
 name = "quai-keystore"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1a8bd31987aded907da0dd3e06325a6b9998ec75b9656e001d34e1a8aabf13"
+checksum = "bce8aacd62e22a29af82a74fd3c7c6ca2e6cfb7ba878a589179c6fdf4f73cf7d"
 dependencies = [
  "aes",
  "ctr",
@@ -3035,9 +3054,9 @@ dependencies = [
 
 [[package]]
 name = "quai-payments"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8479019863a6dc4e2d54610fb7d16b67a06b5048b979b4e136b94d8b176af5d9"
+checksum = "8779c77c7fb6deca241db2ba65091e623dd8a1d2868904968fe66ccccb5a621c"
 dependencies = [
  "bip32",
  "bs58",
@@ -3051,9 +3070,9 @@ dependencies = [
 
 [[package]]
 name = "quai-primitives"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fca1f7dba7de3eb39d1908af57425f778b200280ec1d47f79aa524b8f4977e0d"
+checksum = "ece1996f1cd0fbe34959ea3698cef78e139b3c4a8537e224299a72c4a73b719e"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -3065,10 +3084,11 @@ dependencies = [
 
 [[package]]
 name = "quai-provider"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dc7da0990a0745f161620c643a3748f3d2a05d135ec7a692638d5a8edb9bb8f"
+checksum = "a50fe35bf798c284371b936b18941e10e75b276f391569daa37f1b12b8970d7d"
 dependencies = [
+ "blake3",
  "futures-util",
  "quai-consensus",
  "quai-crypto",
@@ -3081,9 +3101,9 @@ dependencies = [
 
 [[package]]
 name = "quai-rpc"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "170ee16aed4d1e4638435d172ed6d21d03c01a24e6c8a96537b7cb1289d7caff"
+checksum = "e846844f715758f19032c0cdff6cc0971ea7734484ad597496e37dc46cdcca4d"
 dependencies = [
  "flate2",
  "futures-util",
@@ -3101,9 +3121,9 @@ dependencies = [
 
 [[package]]
 name = "quai-sdk"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84dad103480430b38828e341cbfdb26b7d3606df07ed6d5f888f32870b613263"
+checksum = "ea20837374f685108a17f28e7977576d52a191a6ea38f4c2246cdbb481738164"
 dependencies = [
  "futures-util",
  "quai-abi",
@@ -3122,9 +3142,9 @@ dependencies = [
 
 [[package]]
 name = "quai-signer"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86a828fdf28c1b94ac78441aa4772b3e5335a8ad83f1fa71f931cebc723d8b67"
+checksum = "6a3841df36d4d55c1c2ca799b86d2028c8e623be817e570ec1e389472a5bac4c"
 dependencies = [
  "quai-abi",
  "quai-consensus",
@@ -3167,9 +3187,9 @@ dependencies = [
 
 [[package]]
 name = "quai-wallet"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4e1d6735fe4035467121d9cc2309b499ff576da7786a5290a7949fcfb9b29b5"
+checksum = "3aed7d5ee309ec7e456e1146a8133197a506edfdbff2f3c8a362265690bf24cb"
 dependencies = [
  "argon2",
  "bip32",
