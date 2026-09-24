@@ -934,6 +934,28 @@ fn with_pools(app: &mut App) {
     app.eco.markets_view.pools = Some(Ok((pool_shape(), wallet_core::markets::DexOverview::default())));
 }
 
+/// What was typed decides the order before route quality does: `qi` puts Qi first, not WQI above
+/// it because WQI has a pool route, and an exact symbol comes before one that merely contains the
+/// text. A token no route reaches still sinks below every one that can be reached.
+#[test]
+fn the_token_picker_ranks_what_was_typed_first() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.network_id = "mainnet".into();
+    let first = |app: &App, q: &str| {
+        let e = app.picker_entries(q, false).into_iter().next().expect("an entry");
+        if e.qi { "Qi".to_string() } else { e.asset.symbol().to_string() }
+    };
+    assert_eq!(first(&app, "qi"), "Qi", "the exact match, though WQI has a pool route");
+    assert_eq!(first(&app, "WQI"), "WQI");
+    // Every reachable entry comes before any dead one, whatever the text matched.
+    let entries = app.picker_entries("", false);
+    let dead = entries.iter().position(|e| matches!(e.route, super::super::eco::RouteState::Dead));
+    if let Some(d) = dead {
+        assert!(entries[d..].iter().all(|e| matches!(e.route, super::super::eco::RouteState::Dead)), "dead routes sink");
+    }
+}
+
 /// A pair that needs two hubs is offered, and one with no pool at all is refused rather than
 /// let through to fail as "no Quainance pool route".
 #[test]

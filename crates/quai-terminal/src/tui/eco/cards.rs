@@ -328,13 +328,30 @@ impl App {
                 || (!e.qi && e.asset.symbol().to_lowercase().contains(&q))
                 || matches!(&e.asset, SwapAsset::Token { address, .. } if address.contains(&q))
         });
-        // Fillable first, then unknown, then dead — a token that cannot be reached is still listed
+        // What was typed ranks first: the exact symbol, then one that starts with it, then one that
+        // contains it, then an address. Typing `qi` used to put WQI above Qi, and enter took it.
+        // Within that, fillable first, then unknown; a token that cannot be reached is still listed
         // (so search finds it and says why) but never sits above one that can.
-        out.sort_by_key(|e| match &e.route {
-            RouteState::Fillable(info) if !info.thin() => 0,
-            RouteState::Fillable(_) => 1,
-            RouteState::Unknown => 2,
-            RouteState::Dead => 3,
+        let matched = |e: &PickerEntry| {
+            let symbol = if e.qi { "qi".to_string() } else { e.asset.symbol().to_lowercase() };
+            if q.is_empty() || symbol == q {
+                0
+            } else if symbol.starts_with(&q) {
+                1
+            } else if symbol.contains(&q) {
+                2
+            } else {
+                3
+            }
+        };
+        out.sort_by_key(|e| {
+            let route = match &e.route {
+                RouteState::Fillable(info) if !info.thin() => 0,
+                RouteState::Fillable(_) => 1,
+                RouteState::Unknown => 2,
+                RouteState::Dead => 3,
+            };
+            (route == 3, matched(e), route)
         });
         out
     }
