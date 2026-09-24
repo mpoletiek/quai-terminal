@@ -270,7 +270,7 @@ fn merge_hartii(rows: &mut [Launch], onchain: &[crate::hartii::HartiiLaunch]) {
         row.progress_bps = found.progress_bps.or(row.progress_bps);
         row.raised_quai = found.raised_quai;
         row.price_quai = found.price_quai;
-        row.price_basis = crate::markets::PriceBasis::OneQuaiBuyQuote;
+        row.price_basis = found.price_basis;
     }
 }
 
@@ -427,6 +427,7 @@ mod tests {
             curve: "0x0022".into(),
             progress_bps: Some(30),
             price_quai: Some(2.0),
+            price_basis: crate::markets::PriceBasis::OneQuaiBuyQuote,
             ..Default::default()
         };
         merge_hartii(std::slice::from_mut(&mut launch), std::slice::from_ref(&source));

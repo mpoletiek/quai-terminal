@@ -35,6 +35,26 @@ pub fn fmt_qty(v: f64) -> String {
     }
 }
 
+/// A bonded curve's TVL: both sides of its locked pool, the token side at the pool's own price,
+/// in USD when QUAI has a price and in QUAI when it does not.
+fn locked_tvl(app: &App, pool: &wallet_core::markets::Pool, curve: &wallet_core::markets::CurveMark) -> String {
+    let quai = 2.0 * curve.locked_quai.unwrap_or(0.0);
+    match app.token_usd(&pool.token1) {
+        Some(usd) => wallet_core::swap::usd_compact(quai * usd),
+        None => format!("{}Q", compact(quai)),
+    }
+}
+
+fn compact(v: f64) -> String {
+    if v >= 1e6 {
+        format!("{:.1}M", v / 1e6)
+    } else if v >= 1e3 {
+        format!("{:.1}k", v / 1e3)
+    } else {
+        format!("{v:.0}")
+    }
+}
+
 pub(crate) fn pct_span(t: &Theme, pct: Option<f64>) -> Span<'static> {
     // The arrow carries the sign, so the number never needs a minus; it fits seven cells up to
     // ±999% and a flat pair reads as flat, not as a green arrow.
@@ -183,6 +203,8 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let watch =
                 Span::styled(if watched { format!(" {}", t.icon(Icon::On)) } else { String::new() }, Style::default().fg(t.attention));
             let depth = match &p.curve {
+                // A bonded curve's pool is locked for good, so its depth is its TVL, not "100%".
+                Some(c) if c.locked_quai.is_some() => Span::styled(locked_tvl(app, p, c), t.dim_style()),
                 Some(c) => Span::styled(format!("{}%", c.progress_bps.unwrap_or(0) / 100), Style::default().fg(t.attention)),
                 None => Span::styled(p.tvl_usd.map(wallet_core::swap::usd_compact).unwrap_or_default(), t.dim_style()),
             };
@@ -274,8 +296,12 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         line1.push(Span::styled(format!("  H {}  L {}", fmt_price(h), fmt_price(l)), t.dim_style()));
     }
     let holdings = holding_line(app, base, quote, &base_sym, &quote_sym);
-    // A curve has no pool to measure: it has what it raised toward graduation.
+    // A curve still selling has no pool to measure: it has what it raised toward graduation. A
+    // bonded one trades against a pool its graduation seeded and locked, and that is its depth.
     let depth = match &pool.curve {
+        Some(c) if let Some(locked) = c.locked_quai => {
+            format!(" · locked {} QUAI · TVL {} · no LP token", fmt_qty(locked), locked_tvl(app, pool, c))
+        }
         Some(c) => format!(
             " · raised {} of {} QUAI ({}%)",
             fmt_qty(c.raised_quai),

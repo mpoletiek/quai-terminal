@@ -401,12 +401,15 @@ impl DataCtx {
         let caller: QuaiAddress = caller.parse().map_err(|_| CoreError::Invalid("bad caller address".into()))?;
         let erc = Erc20::new(token, &self.node.provider)?;
         let text = |v: Vec<Value>| v.first().and_then(Value::as_str).map(crate::ops::sanitize_display);
-        let symbol = erc.contract().call(caller, "symbol", &[], block).await.ok().and_then(text).unwrap_or_else(|| "TOKEN".into());
-        let name = erc.contract().call(caller, "name", &[], block).await.ok().and_then(text).unwrap_or_else(|| symbol.clone());
-        let decimals = erc
-            .contract()
-            .call(caller, "decimals", &[], block)
-            .await?
+        // Three independent reads, one round: every token review passes through here.
+        let (symbol, name, decimals) = tokio::join!(
+            erc.contract().call(caller, "symbol", &[], block),
+            erc.contract().call(caller, "name", &[], block),
+            erc.contract().call(caller, "decimals", &[], block),
+        );
+        let symbol = symbol.ok().and_then(text).unwrap_or_else(|| "TOKEN".into());
+        let name = name.ok().and_then(text).unwrap_or_else(|| symbol.clone());
+        let decimals = decimals?
             .first()
             .and_then(Value::as_str)
             .and_then(|d| d.parse::<u8>().ok())

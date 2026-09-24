@@ -378,6 +378,7 @@ fn a_bonding_curve_market_shows_its_progress() {
                 target_quai: Some(25_000.0),
                 progress_bps: Some(6_852),
                 launchpad: None,
+                locked_quai: None,
             }),
             ..Pool::default()
         });
@@ -396,6 +397,48 @@ fn a_bonding_curve_market_shows_its_progress() {
     assert!(screen.contains("bonding curve"), "the chart names the venue");
     assert!(screen.contains("t buy on the curve"), "and how to trade it");
     assert!(screen.contains("raised 17,132 of 25,000 QUAI (68%)"), "{screen}");
+}
+
+/// A bonded Hartii curve trades against a pool its graduation seeded and locked. Its depth is
+/// that pool, not the "100%" every sold-out curve would read, and its price is the pool's ratio.
+#[test]
+fn a_bonded_curve_shows_its_locked_depth() {
+    use ratatui::{Terminal, backend::TestBackend};
+    use wallet_core::markets::{CurveMark, Pool, PoolToken, PriceBasis, Venue};
+    let (_dir, mut app) = markets_app();
+    if let Some(Ok((pools, _))) = app.eco.markets_view.pools.as_mut() {
+        pools.push(Pool {
+            address: "0x004bc4".into(),
+            token0: PoolToken { address: "0x003518".into(), symbol: "QAXE".into(), decimals: 18 },
+            token1: PoolToken { address: "0x006c".into(), symbol: "WQUAI".into(), decimals: 18 },
+            venue: Venue::Curve,
+            curve: Some(CurveMark {
+                venue_kind: Some(wallet_core::capabilities::Family::HartiiCurve),
+                price_basis: PriceBasis::ReserveSpot,
+                price_quai: Some(0.0040174),
+                raised_quai: 0.0,
+                target_quai: None,
+                progress_bps: Some(10_000),
+                launchpad: Some("HartiiLabs".into()),
+                locked_quai: Some(190_560.68),
+            }),
+            ..Pool::default()
+        });
+    }
+    app.switch(Screen::Markets);
+    app.selected = 2;
+    let (w, h) = (160u16, 44u16);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let screen: String = {
+        let buffer = term.backend().buffer();
+        (0..h).map(|y| (0..w).filter_map(|x| buffer.cell((x, y)).map(|c| c.symbol().to_string())).collect::<String>()).collect()
+    };
+    assert!(screen.contains("QAXE/"), "the curve is listed");
+    assert!(!screen.contains("100%"), "a bonded curve's depth is not its sell-out");
+    assert!(screen.contains("locked 190,561 QUAI"), "{screen}");
+    assert!(screen.contains("no LP token"), "and that depth cannot leave");
+    assert!(screen.contains("reserve spot (before fee)"), "the price says what it measures");
 }
 
 #[test]
@@ -970,6 +1013,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
                     target_quai: Some(25_000.0),
                     progress_bps: Some(6_852),
                     launchpad: None,
+                    locked_quai: None,
                 }),
                 ..Default::default()
             };

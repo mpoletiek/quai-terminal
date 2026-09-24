@@ -1863,6 +1863,7 @@ fn markets_hold_every_venue_and_pools_hold_the_two_that_mint_lp() {
             target_quai: Some(25_000.0),
             progress_bps: Some(10),
             launchpad: None,
+            locked_quai: None,
         }),
         ..Default::default()
     });

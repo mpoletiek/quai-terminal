@@ -5,12 +5,11 @@
 //! tokens and names each one's curve; the curves are EIP-1167 clones of one pinned implementation,
 //! which is what makes reading them by a fixed ABI safe.
 //!
-//! **Bonding is not migration here.** The two tokens that have bonded so far sold out their curve
-//! supply, and neither has a pair on any factory this wallet knows — Quainance's, the launch AMM's,
-//! HartiiLabs' own, or the legacy one. They are still traded, on the curve itself: `quoteBuy` and
-//! `quoteSell` both answer, and Quainance's own trade-zone index records their market as a CURVE at
-//! the curve's address with hundreds of executions against it. So a bonded token is a live market,
-//! not a dead one.
+//! **Bonding is not migration here.** Graduation zeroes the curve's raise and seeds a pool *inside
+//! the curve* (`poolQuaiReserve`/`poolTokenReserve`) with no LP token, so that liquidity is locked
+//! for good. Buys and sells keep going to the curve, x*y=k against that pool, with the same fee.
+//! So a bonded token is a live market, and its curve stays the canonical one even when someone
+//! seeds a separate pair for it elsewhere.
 
 use crate::data::DataCtx;
 use crate::error::{CoreError, Result};
@@ -40,6 +39,8 @@ pub const CURVE_ABI: &[&str] = &[
     "function realQuaiReserve() view returns (uint256)",
     "function virtualQuaiReserve() view returns (uint256)",
     "function virtualTokenReserve() view returns (uint256)",
+    "function poolQuaiReserve() view returns (uint256)",
+    "function poolTokenReserve() view returns (uint256)",
     "function quoteBuy(uint256 quaiIn) view returns (uint256 tokensOut)",
     "function quoteSell(uint256 tokensIn) view returns (uint256 quaiOut)",
     "function buy(uint256 minTokensOut) payable returns (uint256 tokensOut)",
@@ -74,6 +75,38 @@ pub fn reserves_reproduce_quote(quai_reserve: U256, token_reserve: U256, quai_in
         Some(out) => out.abs_diff(quoted_out) <= U256::from(1u64),
         None => false,
     }
+}
+
+/// The reserves a curve is trading against right now, confirmed by its own quote.
+///
+/// A curve still selling trades x*y=k over its virtual reserves; a bonded one over the pool its
+/// graduation seeded (`poolQuaiReserve`/`poolTokenReserve`), with the virtual fields left at their
+/// launch values. Each state has its own candidates, and a reading is used only once it reproduces
+/// the `quote` the curve gave for `net`, so a misread field prices nothing rather than wrongly.
+#[allow(clippy::too_many_arguments)]
+pub fn live_reserves(
+    bonded: bool,
+    virtual_quai: U256,
+    virtual_token: U256,
+    raised: U256,
+    sold: U256,
+    pool_quai: U256,
+    pool_token: U256,
+    net: U256,
+    quoted: U256,
+) -> Option<(U256, U256)> {
+    let candidates: Vec<(U256, U256)> = if bonded {
+        vec![(pool_quai, pool_token)]
+    } else {
+        vec![(virtual_quai.saturating_add(raised), virtual_token.saturating_sub(sold)), (virtual_quai, virtual_token)]
+    };
+    candidates.into_iter().filter(|(q, t)| !q.is_zero() && !t.is_zero()).find(|(q, t)| reserves_reproduce_quote(*q, *t, net, quoted))
+}
+
+/// QUAI per whole token at the margin: the reserve ratio, before the fee and any price impact.
+pub fn reserve_spot(quai_reserve: U256, token_reserve: U256, decimals: u8) -> Option<f64> {
+    let t = crate::amount::to_f64(token_reserve, decimals);
+    Some(crate::amount::to_f64(quai_reserve, crate::amount::QUAI_DECIMALS) / t).filter(|p| p.is_finite() && *p > 0.0)
 }
 
 /// The launch-state reserves behind current ones, from which the entire curve follows.
@@ -140,15 +173,21 @@ pub struct HartiiLaunch {
     pub raised_quai: f64,
     /// Share of the curve's sale supply taken, in basis points.
     pub progress_bps: Option<u64>,
-    /// QUAI per whole token from inverse quoteBuy(1 QUAI), including fees and price impact.
+    /// QUAI per whole token: the reserve spot once the reserves reproduce the curve's own quote,
+    /// else the inverse of quoteBuy(1 QUAI). `price_basis` says which.
     pub price_quai: Option<f64>,
+    #[serde(default)]
+    pub price_basis: crate::markets::PriceBasis,
+    /// A bonded curve's pool QUAI reserve: locked depth, since graduation mints no LP token.
+    #[serde(default)]
+    pub locked_quai: Option<f64>,
 }
 
 impl HartiiLaunch {
-    /// Where it can be traded, in a sentence. A bonded token has no pool, but its curve keeps
-    /// quoting and taking both sides, which is where Quainance's own app trades it too.
+    /// Where it can be traded, in a sentence. A bonded token keeps trading on its curve, against
+    /// the locked pool its graduation seeded, which is where Quainance's own app trades it too.
     pub fn market_note(&self) -> &'static str {
-        if self.bonded { "bonded; still bought and sold on its curve, no pool" } else { "on its bonding curve" }
+        if self.bonded { "bonded; bought and sold on its curve's locked pool" } else { "on its bonding curve" }
     }
 }
 
@@ -221,9 +260,10 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
     let calls: Vec<Call> = tokens.iter().map(|t| Call::view(&launcher, "curveOf(address)", &[Arg::Addr(t.clone())])).collect();
     let curves: Vec<String> = mc.try_all(&calls).await?.into_iter().map(|d| d.map(|d| address_word(&d, 0)).unwrap_or_default()).collect();
 
-    // Per token: symbol and decimals; per curve: state plus fee for the subsequent net-input quote.
-    // Seven reads per token; `base` below strides by the same number.
-    const PER_TOKEN: usize = 7;
+    // Per token: symbol and decimals; per curve: state plus fee for the subsequent net-input quote,
+    // and both reserve pairs, one of which the quote then confirms. Eleven reads per token; `base`
+    // below strides by the same number.
+    const PER_TOKEN: usize = 11;
     let mut calls = Vec::with_capacity(tokens.len() * PER_TOKEN);
     for (token, curve) in tokens.iter().zip(&curves) {
         calls.push(Call::view(token, "symbol()", &[]));
@@ -234,6 +274,10 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
         calls.push(Call::view(curve, "realQuaiReserve()", &[]));
         // The quote functions exclude this fee; buy deducts it before calling quoteBuy.
         calls.push(Call::view(curve, "feeBps()", &[]));
+        calls.push(Call::view(curve, "virtualQuaiReserve()", &[]));
+        calls.push(Call::view(curve, "virtualTokenReserve()", &[]));
+        calls.push(Call::view(curve, "poolQuaiReserve()", &[]));
+        calls.push(Call::view(curve, "poolTokenReserve()", &[]));
     }
     let out = mc.try_all(&calls).await?;
     let at = |i: usize| out.get(i).and_then(Option::as_ref);
@@ -241,12 +285,14 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
     // Query the exact net amount for a one-QUAI user payment, keeping the fee observation paired.
     let mut quote_calls = Vec::new();
     let mut quote_indices = vec![None; tokens.len()];
+    let mut nets = vec![U256::ZERO; tokens.len()];
     for (n, curve) in curves.iter().enumerate() {
         if let Some(fee) = at(n * PER_TOKEN + 6).filter(|d| d.len() >= 32).and_then(|d| u16::try_from(word(d, 0)).ok())
             && let Ok((net, _)) = after_fee(U256::from(10u64).pow(U256::from(18u64)), fee)
             && !curve.is_empty()
         {
             quote_indices[n] = Some(quote_calls.len());
+            nets[n] = net;
             quote_calls.push(Call::view(curve, "quoteBuy(uint256)", &[Arg::Uint(net)]));
         }
     }
@@ -264,6 +310,8 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
         let sold = at(base + 3).map(|d| word(d, 0)).unwrap_or(U256::ZERO);
         let supply = at(base + 4).map(|d| word(d, 0)).unwrap_or(U256::ZERO);
         let real_quai = at(base + 5).map(|d| word(d, 0)).unwrap_or(U256::ZERO);
+        let read = |i: usize| at(base + i).filter(|d| d.len() >= 32).map(|d| word(d, 0)).unwrap_or(U256::ZERO);
+        let (virtual_quai, virtual_token, pool_quai, pool_token) = (read(7), read(8), read(9), read(10));
         let per_quai = quote_indices[n]
             .and_then(|i| quotes.get(i))
             .and_then(Option::as_ref)
@@ -275,16 +323,24 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
             let bps = sold.saturating_mul(U256::from(10_000u64)) / supply;
             u64::try_from(bps).unwrap_or(10_000).min(10_000)
         });
-        // Ask the curve what one QUAI buys and invert it, rather than deriving a price from its
-        // reserves. `virtualQuaiReserve`/`virtualTokenReserve` are the curve's *parameters* —
-        // identical on all 27 tokens at 17,000 QUAI against 1.073b — and the constant-product ratio
-        // built from them agrees with the curve only while it is still selling. A bonded curve
-        // reports the same reserves as every other bonded one and prices nothing like them: HRT and
-        // QAXE both read 784m sold with nothing left in them, yet one is worth 65x the other. The
-        // contract's own quote is right in both states, and it includes the fee.
-        let price_quai = (!per_quai.is_zero() && (bonded || per_quai < supply.saturating_sub(sold)))
-            .then(|| 1.0 / to_f64(per_quai, decimals))
-            .filter(|p| p.is_finite() && *p > 0.0);
+        // The price is the reserve ratio the curve trades against, as HartiiLabs' own pricing
+        // defines it: (virtualQuai + raised) / (virtualToken - sold) while selling, and
+        // poolQuaiReserve / poolTokenReserve once bonded. The virtual fields alone are launch
+        // parameters, identical on every token, which is why reading them priced HRT and QAXE alike.
+        // So the reserves are used only when they reproduce the curve's own one-QUAI quote; when
+        // they do not, the inverted quote stands in, fee and price impact included, and says so.
+        let quotable = !per_quai.is_zero() && (bonded || per_quai < supply.saturating_sub(sold));
+        let live = quotable
+            .then(|| live_reserves(bonded, virtual_quai, virtual_token, real_quai, sold, pool_quai, pool_token, nets[n], per_quai))
+            .flatten();
+        let (price_quai, price_basis) = match live.and_then(|(q, t)| reserve_spot(q, t, decimals)) {
+            Some(spot) => (Some(spot), crate::markets::PriceBasis::ReserveSpot),
+            None => (
+                quotable.then(|| 1.0 / to_f64(per_quai, decimals)).filter(|p| p.is_finite() && *p > 0.0),
+                crate::markets::PriceBasis::OneQuaiBuyQuote,
+            ),
+        };
+        let locked_quai = (bonded && live.is_some()).then(|| to_f64(pool_quai, 18));
         rows.push(HartiiLaunch {
             token: token.clone(),
             curve: curve.clone(),
@@ -294,6 +350,8 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
             raised_quai: to_f64(real_quai, 18),
             progress_bps,
             price_quai,
+            price_basis,
+            locked_quai,
         });
     }
     rows.reverse();
@@ -303,8 +361,8 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
 /// The launchpad's **bonded** tokens as market rows.
 ///
 /// Bonding here sells out the curve's supply but does not retire it: the curve still quotes and
-/// still takes both sides, and no pool was ever deployed for it to move to. So a bonded token is a
-/// real market with nowhere else to be, and it belongs in the market list.
+/// still takes both sides, against a locked pool of its own. So a bonded token is a real market
+/// whose canonical venue is its curve, and it belongs in the market list.
 ///
 /// A token still raising is not. It has no depth but the curve and no other side, and the Launches
 /// screen is built to show exactly that — progress, what it has raised, and what it needs. Listing
@@ -319,7 +377,8 @@ pub fn curve_pools(rows: &[HartiiLaunch], wquai: &str) -> Vec<Pool> {
             venue: Venue::Curve,
             curve: Some(CurveMark {
                 price_quai: l.price_quai,
-                price_basis: crate::markets::PriceBasis::OneQuaiBuyQuote,
+                price_basis: l.price_basis,
+                locked_quai: l.locked_quai,
                 raised_quai: l.raised_quai,
                 target_quai: None,
                 progress_bps: l.progress_bps,
@@ -345,6 +404,7 @@ mod tests {
             raised_quai: if bonded { 0.0 } else { 2.5 },
             progress_bps: progress,
             price_quai: Some(0.000015),
+            ..HartiiLaunch::default()
         }
     }
 
@@ -357,13 +417,50 @@ mod tests {
         let rows = vec![row("HRT", true, Some(10_000)), row("PEPE", false, Some(21))];
         let pools = curve_pools(&rows, "0x006c3e2a");
         assert_eq!(pools.len(), 1, "the one still raising belongs on Launches, not in the market list");
-        assert_eq!(pools[0].token0.symbol, "HRT", "and the bonded one is a market: it still quotes, with no pool to move to");
+        assert_eq!(pools[0].token0.symbol, "HRT", "and the bonded one is a market: it still quotes, on its own locked pool");
         assert_eq!(pools[0].venue, Venue::Curve);
         assert_eq!(pools[0].curve.as_ref().unwrap().launchpad.as_deref(), Some("HartiiLabs"), "whose launchpad it is, is part of the row");
         // A bonded curve that cannot quote is not a market either.
         let mut mute = row("DEAD", true, Some(10_000));
         mute.price_quai = None;
         assert!(curve_pools(&[mute], "0x006c3e2a").is_empty());
+    }
+
+    /// QAXE on chain 2026-09-23: bonded, its virtual fields still at the launch parameters, and its
+    /// pool at 190,560.68 QUAI against 47,434,019.08 tokens. quoteBuy(0.99 QUAI) answered
+    /// 246.427728351405685537 tokens, which that pool reproduces to the wei and the virtual fields
+    /// do not. Its price is the pool ratio, 0.0040174, not the 0.00406 the inverted quote gave.
+    #[test]
+    fn a_bonded_curve_is_priced_from_the_pool_its_quote_confirms() {
+        let n = |s: &str| U256::from_str_radix(s, 10).unwrap();
+        let (pool_quai, pool_token) = (n("190560677731240720000000"), n("47434019080671735000000000"));
+        let net = n("990000000000000000");
+        let quoted = constant_product_out(pool_quai, pool_token, net).unwrap();
+        let (vq, vt) = (n("17000000000000000000000"), n("1073000000000000000000000000"));
+        let sold = n("784000000000000000000000000");
+        let live = live_reserves(true, vq, vt, U256::ZERO, sold, pool_quai, pool_token, net, quoted);
+        assert_eq!(live, Some((pool_quai, pool_token)));
+        let spot = reserve_spot(pool_quai, pool_token, 18).unwrap();
+        assert!((spot - 0.0040174).abs() < 1e-7, "{spot}");
+        assert!(spot < 1.0 / crate::amount::to_f64(quoted, 18), "the spot is below the fee-inclusive quote");
+        // A quote the pool does not reproduce is not priced from the pool.
+        assert_eq!(live_reserves(true, vq, vt, U256::ZERO, sold, pool_quai, pool_token, net, quoted / U256::from(2u64)), None);
+        // An unseeded pool (zero reserves) is never a reading.
+        assert_eq!(live_reserves(true, vq, vt, U256::ZERO, sold, U256::ZERO, U256::ZERO, net, U256::ZERO), None);
+    }
+
+    /// A curve still selling trades over (virtualQuai + raised, virtualToken - sold), the reading
+    /// HartiiLabs' pricing page gives, and its pool fields are ignored even if they are nonzero.
+    #[test]
+    fn a_selling_curve_is_priced_from_its_virtual_reserves() {
+        let (q0, t0) = launch();
+        let raised = crate::amount::parse_quai("5").unwrap();
+        let sold = constant_product_out(q0, t0, raised).unwrap();
+        let (q, t) = (q0 + raised, t0 - sold);
+        let net = crate::amount::parse_quai("0.99").unwrap();
+        let quoted = constant_product_out(q, t, net).unwrap();
+        assert_eq!(live_reserves(false, q0, t0, raised, sold, U256::from(7u64), U256::from(7u64), net, quoted), Some((q, t)));
+        assert!((reserve_spot(q, t, 18).unwrap() - crate::amount::to_f64(q, 18) / crate::amount::to_f64(t, 18)).abs() < 1e-18);
     }
 
     /// The price is the curve's own quote inverted, not a ratio of its reserves.
@@ -385,8 +482,8 @@ mod tests {
 
     /// The two states a row can be in read differently, because they mean different things.
     #[test]
-    fn a_bonded_token_says_it_has_no_pool_yet() {
-        assert!(row("HRT", true, Some(10_000)).market_note().contains("no pool"));
+    fn a_bonded_token_says_where_it_trades() {
+        assert!(row("HRT", true, Some(10_000)).market_note().contains("locked pool"));
         assert_eq!(row("PEPE", false, Some(21)).market_note(), "on its bonding curve");
     }
 

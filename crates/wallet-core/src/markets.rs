@@ -91,6 +91,9 @@ pub enum PriceBasis {
     IndexedLastTrade,
     /// Inverse of quoteBuy(1 QUAI), including fees and finite-trade price impact.
     OneQuaiBuyQuote,
+    /// The ratio of the reserves a curve trades against, confirmed by its own quote: the marginal
+    /// price before the fee, comparable with a pool's reserve price.
+    ReserveSpot,
 }
 impl PriceBasis {
     pub fn label(self) -> &'static str {
@@ -98,6 +101,7 @@ impl PriceBasis {
             Self::Unknown => "price basis unknown",
             Self::IndexedLastTrade => "last indexed trade",
             Self::OneQuaiBuyQuote => "1 QUAI buy quote (fee included)",
+            Self::ReserveSpot => "reserve spot (before fee)",
         }
     }
 }
@@ -114,6 +118,9 @@ pub struct CurveMark {
     pub target_quai: Option<f64>,
     /// Progress toward graduation, in basis points.
     pub progress_bps: Option<u64>,
+    /// QUAI locked in a bonded curve's own pool. Its depth, where a pool would show TVL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_quai: Option<f64>,
     /// Which launchpad runs this curve, when it is not Quainance's own. Two launchpads' curves sit
     /// in one list and they are different contracts with different operators, so a row says which.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1110,6 +1117,7 @@ pub fn curve_pools(launches: &[crate::launches::Launch], wquai: &str) -> Vec<Poo
                     target_quai: l.target_quai,
                     progress_bps: l.progress_bps,
                     launchpad: None,
+                    locked_quai: None,
                     venue_kind: l.venue_kind,
                 }),
                 ..Pool::default()
