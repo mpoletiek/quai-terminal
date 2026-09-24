@@ -33,15 +33,16 @@ pub(crate) fn draw_lock(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             // Looping: the next effect starts in this very frame, with the one that just ended
             // dissolving over it, so there is no held last frame between them. Whether or not
             // the window has the focus: the lock screen is a screensaver.
-            let ended = last_frame(app);
+            let ended = app.ambient.as_ref().and_then(|c| c.frame()).map(str::to_string);
             app.ambient = None;
             if app.config.lock_loop {
                 app.start_lock_ceremony((area.width, area.height));
             }
-            if app.ambient.is_some() {
-                app.lock_fade = ended;
-            } else {
-                app.lock_fade = ended;
+            // Timed from here, once the next effect exists: building it can take longer than the
+            // dissolve on a slow machine, which would use the whole handover up before a frame
+            // of it was drawn.
+            app.lock_fade = ended.map(|frame| (frame, std::time::Instant::now()));
+            if app.ambient.is_none() {
                 app.lock_rested = true;
             }
         }
