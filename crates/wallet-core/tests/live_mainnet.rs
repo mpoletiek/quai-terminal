@@ -134,6 +134,64 @@ async fn curve_destination_slots_match_the_launchers_calls() {
     }
 }
 
+/// On every exchange, a trade's output computed from pools proven at one block equals the
+/// exchange's own router quote at that block: the factory's `getPair` slot, the pair layout and the
+/// 0.3% fee are what a review's minimum is checked against.
+#[tokio::test]
+#[ignore = "network"]
+async fn a_route_s_output_is_proven_from_its_pools() {
+    use wallet_core::markets::Venue;
+    use wallet_core::sdk::{BlockTag, U256};
+    let ctx = mainnet();
+    let wquai = ctx.network.wquai.clone().unwrap().to_lowercase();
+    let mut all = wallet_core::markets::pools(&ctx).await.unwrap().0;
+    for directory in [
+        wallet_core::markets::launch_amm_pools(&ctx).await,
+        wallet_core::markets::legacy_pools(&ctx).await,
+        wallet_core::markets::hartii_amm_pools(&ctx).await,
+    ] {
+        all.extend(directory.unwrap().pools);
+    }
+    for venue in [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm] {
+        let pool = all
+            .iter()
+            .filter(|p| p.venue == venue && (p.token0.address == wquai || p.token1.address == wquai))
+            .max_by(|a, b| {
+                let side = |p: &wallet_core::markets::Pool| if p.token0.address == wquai { p.reserve0 } else { p.reserve1 };
+                side(a).total_cmp(&side(b))
+            })
+            .unwrap_or_else(|| panic!("{venue:?}: no WQUAI pool"));
+        let other = if pool.token0.address == wquai { &pool.token1 } else { &pool.token0 };
+        let path = vec![wquai.clone(), other.address.clone()];
+        let amount = U256::from(10u128.pow(18)); // one QUAI
+        let proven = wallet_core::swap::prove_route(&ctx.node, &ctx.network, venue, &path, std::slice::from_ref(&pool.address), amount)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{venue:?}: not provable"));
+        let anchor = ctx.node.anchor_confirmation();
+        assert!(anchor.is_some(), "an anchor was read");
+        let (router, _) = wallet_core::swap::venue_pins(&ctx.network, venue).unwrap();
+        let block = wallet_core::anchor::anchor(&ctx.node, &ctx.network).await.unwrap().anchor.block.number;
+        let contract = wallet_core::sdk::contracts::Contract::new(
+            router.address.parse().unwrap(),
+            wallet_core::sdk::abi::AbiInterface::from_human_readable(wallet_core::swap::ROUTER_ABI).unwrap(),
+            &ctx.node.provider,
+        );
+        let quoted = contract
+            .call(
+                wallet_core::data::READ_CALLER.parse().unwrap(),
+                "getAmountsOut",
+                &[serde_json::json!(amount.to_string()), serde_json::json!(path)],
+                BlockTag::Number(U256::from(block)),
+            )
+            .await
+            .unwrap();
+        let last = quoted[0].as_array().and_then(|a| a.last()).and_then(|v| v.as_str()).unwrap().to_string();
+        eprintln!("{venue:?} {}: proven {} router {last}", other.symbol, proven.amount_out);
+        assert_eq!(proven.amount_out.to_string(), last, "{venue:?}: the proven pools and the router disagree");
+    }
+}
+
 /// A quote that is going into a review reads the pins and every pair address from the chain
 /// (`docs/REVIEW_TRUST.md`), so it must agree with the cached one and must still work when the
 /// memo and the pair cache are seeded with nothing. The timing is printed because the cost of
