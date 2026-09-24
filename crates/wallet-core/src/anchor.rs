@@ -143,29 +143,73 @@ pub fn explain(error: &ProviderError, what: &str, network: &NetworkProfile) -> C
 }
 
 /// Where a node keeps its last anchor.
-pub struct AnchorSlot(std::sync::Mutex<Option<(Anchored, Instant)>>);
+///
+/// Every [`Node`] reading through the same monitoring node with the same witness shares one: the
+/// wallet worker, the signing lane and a review's data context are separate sessions, and the
+/// anchor the worker keeps warm is only useful if the review sees it. It is public chain data.
+pub struct AnchorSlot {
+    last: std::sync::Mutex<Option<(Anchored, Instant)>>,
+    refreshing: std::sync::atomic::AtomicBool,
+}
 
 impl Default for AnchorSlot {
     fn default() -> Self {
-        Self(std::sync::Mutex::new(None))
+        Self { last: std::sync::Mutex::new(None), refreshing: std::sync::atomic::AtomicBool::new(false) }
     }
 }
 
 impl AnchorSlot {
     pub(crate) fn get(&self, within: Duration) -> Option<Anchored> {
-        let slot = self.0.lock().ok()?;
+        let slot = self.last.lock().ok()?;
         slot.as_ref().filter(|(_, at)| at.elapsed() < within).map(|(a, _)| a.clone())
     }
     pub(crate) fn set(&self, anchored: &Anchored) {
-        if let Ok(mut slot) = self.0.lock() {
+        if let Ok(mut slot) = self.last.lock() {
             *slot = Some((anchored.clone(), Instant::now()));
         }
     }
     pub(crate) fn clear(&self) {
-        if let Ok(mut slot) = self.0.lock() {
+        if let Ok(mut slot) = self.last.lock() {
             *slot = None;
         }
     }
+}
+
+/// The slot shared by every node that reads through `serving` and is witnessed by `witness`.
+pub(crate) fn shared_slot(serving: &str, witness: &str) -> std::sync::Arc<AnchorSlot> {
+    static SLOTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<AnchorSlot>>>> =
+        std::sync::OnceLock::new();
+    let key = format!("{serving}\n{witness}");
+    let mut slots = SLOTS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    slots.entry(key).or_default().clone()
+}
+
+/// How old the kept anchor may get before [`keep_warm`] reads the next one: early enough that a
+/// review almost always finds one inside [`ANCHOR_REUSE`].
+pub const ANCHOR_KEEP: Duration = Duration::from_secs(6);
+
+/// Read the next anchor before the current one expires, so a review finds a confirmed block
+/// waiting instead of asking the witness itself. One confirmation is a round trip to the network's
+/// RPC; from the user's own node everything else is a millisecond, so without this the first
+/// review after a pause waited on the public RPC for the confirmation alone.
+///
+/// Only for a node with a witness. One refresh runs at a time; a failure is left for the review to
+/// meet and report.
+pub async fn keep_warm(node: &Node, network: &NetworkProfile) {
+    use std::sync::atomic::Ordering;
+    if node.witness().is_none() || node.recent_anchor(ANCHOR_KEEP).is_some() {
+        return;
+    }
+    let slot = node.anchor_slot();
+    if slot.refreshing.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let started = Instant::now();
+    if let Ok(fresh) = read(node, network).await {
+        crate::diag::timing("anchor.kept_warm", started);
+        node.remember_anchor(&fresh);
+    }
+    slot.refreshing.store(false, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -384,5 +428,29 @@ mod tests {
         let pin = PinnedContract { address: WQUAI.into(), code_hash: Some(code) };
         let (result, _, _) = check(Kind::Upgraded, None, &pin).await;
         assert!(result.is_ok(), "the bytecode check answered: {result:?}");
+    }
+
+    /// The worker keeps an anchor warm, and the signing lane's review, a separate session with its
+    /// own node, finds it there: nodes reading through the same monitor and witness share it.
+    #[tokio::test]
+    async fn an_anchor_kept_warm_by_one_session_serves_another() {
+        let (monitor_url, _) = serve(Kind::Honest).await;
+        let (rpc_url, rpc_log) = serve(Kind::Honest).await;
+        let net = network(&monitor_url);
+        let worker = net.node().unwrap().with_witness(network(&rpc_url).node().unwrap());
+        let lane = net.node().unwrap().with_witness(network(&rpc_url).node().unwrap());
+        keep_warm(&worker, &net).await;
+        assert_eq!(lane.anchor_confirmation(), Some(Confirmation::Witnessed), "the lane sees the worker's anchor");
+        let asked = rpc_log.lock().unwrap().len();
+        let app = AppDb::memory().unwrap();
+        verify_pinned_all(&app, &lane, &net, &[(&wquai_pin(), "WQUAI")], Trust::FirstHand).await.unwrap();
+        assert_eq!(rpc_log.lock().unwrap().len(), asked, "the review asked the witness nothing more");
+        // Fresh enough: a second keep_warm right away reads nothing.
+        keep_warm(&worker, &net).await;
+        assert_eq!(rpc_log.lock().unwrap().len(), asked);
+        // A node without a witness is never kept warm: it has nothing to confirm with.
+        let (alone_url, alone_log) = serve(Kind::Honest).await;
+        keep_warm(&network(&alone_url).node().unwrap(), &net).await;
+        assert!(alone_log.lock().unwrap().is_empty());
     }
 }

@@ -675,8 +675,8 @@ pub struct Node {
 impl Node {
     /// This node, with `witness` confirming the blocks its state proofs are read at.
     pub fn with_witness(mut self, witness: Node) -> Node {
+        self.anchor = crate::anchor::shared_slot(self.endpoint.as_str(), witness.endpoint.as_str());
         self.witness = Some(std::sync::Arc::new(Node { witness: None, ..witness }));
-        self.anchor = std::sync::Arc::default();
         self
     }
 
@@ -689,6 +689,10 @@ impl Node {
     /// is still in use.
     pub fn anchor_confirmation(&self) -> Option<crate::anchor::Confirmation> {
         self.recent_anchor(crate::anchor::ANCHOR_REUSE).map(|a| a.confirmation)
+    }
+
+    pub(crate) fn anchor_slot(&self) -> &crate::anchor::AnchorSlot {
+        &self.anchor
     }
 
     pub(crate) fn recent_anchor(&self, within: Duration) -> Option<crate::anchor::Anchored> {

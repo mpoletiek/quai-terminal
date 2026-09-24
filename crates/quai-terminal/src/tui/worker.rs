@@ -2092,6 +2092,12 @@ async fn refresh(
     let t = std::time::Instant::now();
     // The node's gas price, client version and block order are System-screen detail that does not
     // change between blocks; the refresh reads them on their own schedule and carries them meanwhile.
+    // With a monitoring node, keep a block the network's RPC has confirmed ready for the next
+    // review, off this refresh's path: reviews on the signing lane share it.
+    if session.node.witness().is_some() {
+        let (node, network) = (session.node.clone(), session.network.clone());
+        tokio::spawn(async move { wallet_core::anchor::keep_warm(&node, &network).await });
+    }
     let detail = stages.due("node_detail", NODE_DETAIL_EVERY, force);
     let check =
         tokio::time::timeout(std::time::Duration::from_secs(12), network::check_node_detail(&session.network, &session.node, detail));
