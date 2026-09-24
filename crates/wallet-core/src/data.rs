@@ -513,9 +513,25 @@ pub async fn verify_pinned(
             Err(quai_sdk::contracts::ContractError::MissingCode) => {
                 return Err(CoreError::Rejected(format!("{what} has no code at {}", contract.address)));
             }
-            // A new block during the observation is transient.
-            Err(_) if attempt < 4 => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-            Err(e) => return Err(CoreError::Network(format!("could not verify {what}: {e}"))),
+            // A node on another network: saying so is the answer, and asking again only tells it
+            // more. (Since SDK alpha.12 the address is not sent before the genesis is checked.)
+            Err(quai_sdk::contracts::ContractError::GenesisMismatch) => {
+                return Err(CoreError::Rejected(format!("{what}: the node is not on network `{}`; refusing to read from it", network.id)));
+            }
+            // Only a new block or reorg during the observation, or a network blip, is worth another
+            // try. Everything else fails the same way every time, so it is reported at once, as
+            // what it is rather than as a connection problem.
+            Err(e) if attempt < 4 && matches!(e.class(), quai_sdk::ErrorClass::Stale | quai_sdk::ErrorClass::Transient) => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await
+            }
+            Err(e) => {
+                let text = format!("could not verify {what}: {e}");
+                return Err(match e.class() {
+                    quai_sdk::ErrorClass::Stale | quai_sdk::ErrorClass::Transient => CoreError::Network(text),
+                    quai_sdk::ErrorClass::NetworkMismatch => CoreError::Rejected(text),
+                    _ => CoreError::Invalid(text),
+                });
+            }
         }
     }
 }
