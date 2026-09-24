@@ -4302,3 +4302,40 @@ fn accounts_import_a_key_or_watch_an_address() {
         "the address goes to the worker"
     );
 }
+
+/// A trade that fails before its first review has nothing to resume, so its checkpoint ends
+/// cancelled. Left paused, it became the newest unfinished trade, which `p` resumes, over a real
+/// one stopped halfway. A trade that got a step through still pauses.
+#[test]
+fn a_trade_that_never_started_is_not_left_to_resume() {
+    use super::super::eco::FlowKind;
+    use wallet_core::plans::PlanState;
+    let swap = || FlowKind::Swap {
+        account: None,
+        from: "0x002b".into(),
+        to: "0x0049".into(),
+        amount: "1".into(),
+        slippage: 50,
+        deadline: 10,
+        label: "swap 1 WQI → USDT".into(),
+        prewrap: None,
+        unwrap_after: false,
+        baseline: "0".into(),
+        then: None,
+    };
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.dash.unlocked = true;
+    app.start_flow(swap());
+    assert!(app.eco.flow.as_ref().unwrap().requested, "the first review was asked for");
+    app.flow_on_error();
+    let state = |app: &App| app.flow_db().unwrap().trade_plans(&app.network_id).unwrap().first().map(|p| (p.state, p.reason.clone()));
+    let (s, reason) = state(&app).expect("a checkpoint was written");
+    assert_eq!(s, PlanState::Cancelled, "{reason}");
+    // One step through, then a failure: that is a trade to come back to.
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.dash.unlocked = true;
+    app.start_flow(swap());
+    app.eco.flow.as_mut().unwrap().done.push("approve WQI".into());
+    app.flow_on_error();
+    assert_eq!(state(&app).unwrap().0, PlanState::Paused);
+}

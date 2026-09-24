@@ -459,6 +459,16 @@ impl Coordinator {
         session.preparing_plan = None;
         let review = match result {
             Ok(review) => review,
+            // Nothing was ever prepared under this plan, so there is nothing to resume: a trade
+            // that could not start (not enough to pay, no route) ends here. Left paused, it became
+            // the newest unfinished trade, which is what "resume" picks, over a real one stopped
+            // halfway with a swap done and an allowance live.
+            Err(error) if self.plan.operations.is_empty() => {
+                self.plan.state = PlanState::Cancelled;
+                self.plan.reason = format!("stopped before anything was prepared: {error}");
+                session.app.save_trade_plan(&mut self.plan)?;
+                return Err(error);
+            }
             Err(error) => {
                 self.pause(session, &error.to_string())?;
                 return Err(error);
