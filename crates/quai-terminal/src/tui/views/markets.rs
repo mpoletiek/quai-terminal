@@ -67,10 +67,9 @@ fn token_info(
 /// A bonded curve's TVL: both sides of its locked pool, the token side at the pool's own price,
 /// in USD when QUAI has a price and in QUAI when it does not.
 fn locked_tvl(app: &App, pool: &wallet_core::markets::Pool, curve: &wallet_core::markets::CurveMark) -> String {
-    let quai = 2.0 * curve.locked_quai.unwrap_or(0.0);
-    match pool.tvl_usd.or_else(|| app.token_usd(&pool.token1).map(|usd| quai * usd)) {
+    match app.row_tvl_usd(pool) {
         Some(usd) => wallet_core::swap::usd_compact(usd),
-        None => format!("{}Q", compact(quai)),
+        None => format!("{}Q", compact(2.0 * curve.locked_quai.unwrap_or(0.0))),
     }
 }
 
@@ -218,12 +217,8 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 _ => listed_price(p, base0),
             };
             // The pool's own trades when they are loaded; otherwise the indexer's day-ago price, so
-            // every row has a change and not only the one that was opened.
-            let listed = p.change_24h().map(|c| if base0 { c } else { (100.0 / (100.0 + c) - 1.0) * 100.0 });
-            let change = match &stats {
-                Some(stats) => pct_span(t, stats.change_24h.or(listed)),
-                _ => pct_span(t, listed),
-            };
+            // every row has a change and not only the one that was opened. The sort reads the same.
+            let change = pct_span(t, app.row_change(p, now));
             let icons = [base, quote].map(|tok| images::asset_span(app, t, &app.pool_icon_contract(tok), &app.market_symbol(tok)));
             let [base_icon, quote_icon] = icons;
             // Where it trades: a graduated launch is marked, a curve shows how far it has raised,

@@ -2350,8 +2350,7 @@ fn every_setting_can_be_reached_on_a_small_terminal() {
 }
 
 /// `L` orders the pairs by depth and `M` by how far they moved today, each cycling back to the
-/// directory's own order; a watched pair stays at the top of every order, and the cursor keeps
-/// the pair it was on.
+/// directory's own order; a watched pair stays at the top of every order.
 #[test]
 fn markets_sort_by_tvl_and_movement_with_watched_pinned() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
@@ -2388,6 +2387,37 @@ fn markets_sort_by_tvl_and_movement_with_watched_pinned() {
     let holding = app.selected_pool().unwrap().address;
     app.keep_cursor_on(Some(holding.clone()));
     assert_eq!(app.selected_pool().map(|p| p.address), Some(holding));
+}
+
+/// The 24h and TVL orders follow the figures the rows show. A pair shown the other way round
+/// shows its change turned round (a gain for token1-per-token0 is a loss the other way), and the
+/// sort used to rank it by the unturned figure.
+#[test]
+fn pairs_sort_by_the_figures_their_rows_show() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    if let Some(Ok((pools, _))) = &mut app.eco.markets_view.pools {
+        pools[1].spot_24h_ago = Some(0.5); // SMOL/WQI: up 100% as token1 per token0
+        pools[2].spot_24h_ago = Some(1.25); // LAPTOP/WQUAI: down 20%
+    }
+    let smol = "0x00pairSMOLWQI".to_string();
+    app.switch(Screen::Markets);
+    app.pane = 0;
+    let before = app.pool_base0(app.market_rows().iter().find(|p| p.address == smol).unwrap());
+    app.eco.markets_view.flipped.insert(smol.clone());
+    let now = wallet_core::registry::now();
+    let shown = |app: &App| app.market_rows().iter().map(|p| (p.address.clone(), app.row_change(p, now))).collect::<Vec<_>>();
+    let smol_shown = shown(&app).into_iter().find(|(a, _)| *a == smol).unwrap().1.unwrap();
+    assert!((smol_shown > 0.0) != before, "flipped, its row shows the change turned round: {smol_shown}");
+    for (key, descending) in [('M', true), ('M', false)] {
+        press(&mut app, KeyCode::Char(key));
+        let figures: Vec<f64> = shown(&app).into_iter().filter_map(|(_, c)| c).collect();
+        let ordered = figures.windows(2).all(|w| if descending { w[0] >= w[1] } else { w[0] <= w[1] });
+        assert!(ordered, "{:?} order by what the rows show: {figures:?}", app.eco.markets_view.sort);
+    }
+    press(&mut app, KeyCode::Char('L'));
+    let depths: Vec<f64> = app.market_rows().iter().filter_map(|p| app.row_tvl_usd(p)).collect();
+    assert!(depths.windows(2).all(|w| w[0] >= w[1]), "deepest first by what the rows show: {depths:?}");
 }
 
 /// Enter on a page that is already open does not stack another copy of it, so one Esc goes back.
@@ -2436,10 +2466,12 @@ fn an_asset_page_can_buy_and_sell_it() {
     assert_eq!(app.screen, Screen::Home, "no swap card");
 }
 
-/// Sorting or watching must never move the cursor off the pair the chart is on, and must never
-/// reach into the flow column's cursor while that column has it.
+/// A new order is read from its top: sorting puts the cursor, and so the chart, on the first row.
+/// Holding the cursor on its old pair scrolled the list to wherever that pair landed, which looked
+/// like no sort at all. The chart and the highlight always agree, and sorting never reaches into
+/// the flow column's cursor while that column has it.
 #[test]
-fn sorting_keeps_the_chart_and_the_cursor_on_the_same_pair() {
+fn sorting_starts_the_list_and_the_chart_at_the_top() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Markets);
@@ -2449,25 +2481,27 @@ fn sorting_keeps_the_chart_and_the_cursor_on_the_same_pair() {
         let rows = app.market_rows();
         rows.get(app.markets_pair().min(rows.len().saturating_sub(1))).map(|p| p.address.clone())
     };
-    app.selected = 2;
-    let held = highlighted(&app).unwrap();
     for key in ['L', 'L', 'M', 'M', 'L'] {
+        app.selected = 2;
         press(&mut app, KeyCode::Char(key));
-        assert_eq!(highlighted(&app), Some(held.clone()), "after {key}: the cursor left the pair it was on");
+        assert_eq!(highlighted(&app), Some(app.market_rows()[0].address.clone()), "after {key}: the cursor is on the first row");
         assert_eq!(app.selected_pool().map(|p| p.address), highlighted(&app), "after {key}: the chart and the cursor disagree");
     }
     // Watching re-orders the list; the cursor still holds its pair.
+    app.selected = 2;
+    let held = highlighted(&app).unwrap();
     app.eco.watchlist = vec![app.market_rows()[0].address.clone()];
     app.keep_cursor_on(Some(held.clone()));
-    assert_eq!(app.selected_pool().map(|p| p.address), Some(held.clone()));
+    assert_eq!(app.selected_pool().map(|p| p.address), Some(held));
 
-    // With the cursor in the flow column, sorting the pairs must not touch it.
+    // With the cursor in the flow column, sorting the pairs must not touch it; the chart still
+    // moves to the new first pair.
     app.pane = 1;
     app.selected = 0;
     app.eco.markets_view.flow_selected = 0;
     sheet(&mut app, 'l');
     assert_eq!(app.selected, 0, "sorting the pairs moved the flow column's cursor");
-    assert_eq!(app.selected_pool().map(|p| p.address), Some(held), "and the chart still holds its pair");
+    assert_eq!(app.selected_pool().map(|p| p.address), Some(app.market_rows()[0].address.clone()));
 }
 
 /// What the Markets screen actually draws: the chart is the pair the cursor is on, whatever order

@@ -67,8 +67,9 @@ impl App {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (mv.sort as u8).hash(&mut h);
             self.eco.watchlist.hash(&mut h);
+            let now = wallet_core::registry::now();
             for p in pools {
-                (p.address.as_str(), p.tvl_usd.map(f64::to_bits), p.change_24h().map(f64::to_bits)).hash(&mut h);
+                (p.address.as_str(), self.row_tvl_usd(p).map(f64::to_bits), self.row_change(p, now).map(f64::to_bits)).hash(&mut h);
             }
             h.finish()
         };
@@ -87,11 +88,17 @@ impl App {
         let shadowed = wallet_core::markets::shadowed(pools);
         let watched = |i: &usize| self.eco.watchlist.iter().any(|w| w.eq_ignore_ascii_case(&pools[*i].address));
         let mut rows: Vec<usize> = (0..pools.len()).filter(|i| !shadowed.contains(i) || watched(i)).collect();
-        let key = |i: &usize| match mv.sort {
-            MarketSort::TvlDesc | MarketSort::TvlAsc => pools[*i].tvl_usd,
-            MarketSort::ChangeDesc | MarketSort::ChangeAsc => pools[*i].change_24h(),
-            MarketSort::Default => None,
-        };
+        // What the rows show, not a figure beside it: the column and the order must agree.
+        let now = wallet_core::registry::now();
+        let keys: Vec<Option<f64>> = pools
+            .iter()
+            .map(|p| match mv.sort {
+                MarketSort::TvlDesc | MarketSort::TvlAsc => self.row_tvl_usd(p),
+                MarketSort::ChangeDesc | MarketSort::ChangeAsc => self.row_change(p, now),
+                MarketSort::Default => None,
+            })
+            .collect();
+        let key = |i: &usize| keys[*i];
         match mv.sort {
             MarketSort::Default => {}
             MarketSort::TvlDesc | MarketSort::ChangeDesc => {
@@ -107,6 +114,30 @@ impl App {
             rows.sort_by_key(|i| !watched(i));
         }
         rows
+    }
+
+    /// A pair's 24h change as its row shows it: from the pool's own trades once they are loaded,
+    /// otherwise the indexer's day-ago price, and turned round when the row names the pair the
+    /// other way. The sort orders by this, so the column and the order never disagree.
+    pub fn row_change(&self, pool: &wallet_core::markets::Pool, now: u64) -> Option<f64> {
+        let base0 = self.pool_base0(pool);
+        let listed = pool.change_24h().map(|c| if base0 { c } else { (100.0 / (100.0 + c) - 1.0) * 100.0 });
+        let traded = matches!(self.eco.markets_view.events.get(&pool.address), Some(Ok(_)))
+            .then(|| self.market_stats(pool, base0, now).change_24h)
+            .flatten();
+        traded.or(listed)
+    }
+
+    /// A pair's depth in USD as its row shows it. A bonded curve's is its locked pool, both sides
+    /// at the pool's own price; a curve still selling has no pool, so none.
+    pub fn row_tvl_usd(&self, pool: &wallet_core::markets::Pool) -> Option<f64> {
+        match &pool.curve {
+            Some(c) if let Some(locked) = c.locked_quai => {
+                pool.tvl_usd.or_else(|| self.token_usd(&pool.token1).map(|usd| 2.0 * locked * usd))
+            }
+            Some(_) => None,
+            None => pool.tvl_usd,
+        }
     }
 
     /// The pool the chart is showing.
@@ -560,19 +591,17 @@ impl App {
 
     /// Re-order the pairs list and keep the cursor on the pair it was on.
     pub(crate) fn sort_markets(&mut self, next: impl Fn(MarketSort) -> MarketSort) -> bool {
-        let holding = self.selected_pool().map(|p| p.address);
         self.eco.markets_view.sort = next(self.eco.markets_view.sort);
         let label = self.eco.markets_view.sort.label();
-        if let Some(address) = holding
-            && let Some(i) = self.market_rows().iter().position(|p| p.address == address)
-        {
-            // Only the pairs list owns `selected`; while the flow column has the cursor, moving it
-            // here would drag that column's cursor to a row number that means nothing in it.
-            if self.screen == Screen::Markets && self.pane == 0 {
-                self.selected = i;
-            }
-            self.eco.markets_view.pair_selected = i;
+        // A new order is read from its top. Holding the cursor on the pair it was on scrolled the
+        // list to wherever that pair landed (the end, for the deepest pair sorted shallowest
+        // first), which looked like no sort at all.
+        // Only the pairs list owns `selected`; while the flow column has the cursor, moving it
+        // here would drag that column's cursor to a row number that means nothing in it.
+        if self.screen == Screen::Markets && self.pane == 0 {
+            self.selected = 0;
         }
+        self.eco.markets_view.pair_selected = 0;
         self.info(format!("pairs by {label}"));
         true
     }
