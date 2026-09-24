@@ -107,6 +107,49 @@ async fn witnessed(witness: &Node, anchor: &StateAnchor) -> std::result::Result<
     Ok(())
 }
 
+/// Prove accounts and storage slots at the node's current anchor.
+///
+/// `Ok(None)` when the serving node's header has a field this SDK cannot hash yet (after a go-quai
+/// upgrade): the caller keeps the checks it had before proofs. A block reorganized away under the
+/// proof is read again once, at a fresh anchor. Every other failure is explained for a review.
+pub async fn prove_state(
+    node: &Node,
+    network: &NetworkProfile,
+    targets: &[(quai_sdk::QuaiAddress, &[quai_sdk::primitives::Hash32])],
+    what: &str,
+) -> std::result::Result<Option<(Vec<quai_sdk::provider::ProvenAccount>, Confirmation)>, CoreError> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let result = async {
+            let anchored = anchor(node, network).await?;
+            let proven = node.provider.prove_accounts_at(&anchored.anchor, targets).await?;
+            Ok::<_, ProviderError>((proven, anchored.confirmation))
+        }
+        .await;
+        match result {
+            Ok(proven) => return Ok(Some(proven)),
+            Err(e) if unknown_header(&e) => return Ok(None),
+            Err(ProviderError::ObservationChanged) if attempt < 2 => node.forget_anchor(),
+            Err(e) => return Err(explain(&e, what, network)),
+        }
+    }
+}
+
+/// The address a proven storage word holds: its low 20 bytes.
+pub fn word_address(word: U256) -> String {
+    let bytes = word.to_be_bytes::<32>();
+    format!("0x{}", hex::encode(&bytes[12..]))
+}
+
+/// A Solidity mapping entry's slot, `offset` words into a struct stored there.
+pub fn mapping_field_slot(key: quai_sdk::QuaiAddress, base: u64, offset: u64) -> quai_sdk::primitives::Hash32 {
+    use quai_sdk::provider::state_proof::{address_word, solidity_mapping_slot};
+    let entry = solidity_mapping_slot(address_word(key), U256::from(base));
+    let slot = U256::from_be_bytes(entry.into_bytes()).wrapping_add(U256::from(offset));
+    quai_sdk::primitives::Hash32::from_bytes(slot.to_be_bytes::<32>())
+}
+
 /// Whether the serving node's header carries a field this SDK cannot hash yet. That follows a
 /// go-quai upgrade and is not the node's fault: a caller with another way to check falls back to
 /// it rather than refusing.
@@ -454,5 +497,18 @@ mod tests {
         let (alone_url, alone_log) = serve(Kind::Honest).await;
         keep_warm(&network(&alone_url).node().unwrap(), &net).await;
         assert!(alone_log.lock().unwrap().is_empty());
+    }
+
+    /// A struct field's slot is its mapping entry plus the field's offset, and a proven word's
+    /// address is its low twenty bytes.
+    #[test]
+    fn slots_and_words_follow_solidity_layout() {
+        use quai_sdk::provider::state_proof::{address_word, solidity_mapping_slot};
+        let token: QuaiSdkAddress = "0x0045d3439b813016a14e5eadaed06584e690ebfa".parse().unwrap();
+        let entry = U256::from_be_bytes(solidity_mapping_slot(address_word(token), U256::ZERO).into_bytes());
+        let field = U256::from_be_bytes(mapping_field_slot(token, 0, 1).into_bytes());
+        assert_eq!(field, entry + U256::from(1));
+        let word = U256::from_str_radix("39d1b1275c2329e3c54164f52674936fcb8a40", 16).unwrap();
+        assert_eq!(word_address(word), "0x0039d1b1275c2329e3c54164f52674936fcb8a40");
     }
 }

@@ -18,13 +18,53 @@ pub struct VerifiedCurve {
     pub graduated: bool,
 }
 
+/// Where the Hartii launcher keeps `curveOf(token)`: a mapping at slot 12. Read against
+/// `curveOf()` at the same block on mainnet (2026-09-24, QMOON and PEPEQUAI); the live test
+/// `the_hartii_launchpad_reads_its_curves` reads it again.
+pub const CURVE_OF_SLOT: u64 = 12;
+
+/// The runtime of an EIP-1167 clone of `implementation`.
+fn clone_code(implementation: &str) -> Option<Vec<u8>> {
+    hex::decode(format!("363d3d373d3d3d363d73{}5af43d82803e903d91602b57fd5bf3", implementation.trim_start_matches("0x"))).ok()
+}
+
 fn clone_matches(code: &[u8], implementation: &str) -> bool {
-    let Ok(expected) =
-        hex::decode(format!("363d3d373d3d3d363d73{}5af43d82803e903d91602b57fd5bf3", implementation.trim_start_matches("0x")))
-    else {
-        return false;
+    clone_code(implementation).is_some_and(|expected| code == expected)
+}
+
+/// On a review, the launcher's own record of the token's curve and the code of both clones,
+/// proven at one block (confirmed by the network's RPC when a monitor serves the reads). The
+/// calls beside it are the node's word; this is what a buy's destination rests on.
+async fn prove_curve(
+    ctx: &DataCtx,
+    launcher: QuaiAddress,
+    token: &str,
+    curve: QuaiAddress,
+    curve_impl: &str,
+    token_impl: &str,
+) -> Result<()> {
+    let token = addr(token)?;
+    let slot = crate::anchor::mapping_field_slot(token, CURVE_OF_SLOT, 0);
+    let targets: [(QuaiAddress, &[quai_sdk::primitives::Hash32]); 3] = [(launcher, &[slot]), (curve, &[]), (token, &[])];
+    let Some((proven, _)) = crate::anchor::prove_state(&ctx.node, &ctx.network, &targets, "Hartii curve").await? else {
+        return Ok(());
     };
-    code == expected
+    let hash = |implementation: &str| {
+        clone_code(implementation).map(|code| quai_sdk::primitives::Hash32::from_bytes(quai_sdk::crypto::keccak256(&code)))
+    };
+    let named = proven[0].storage_value(slot).map(crate::anchor::word_address).unwrap_or_default();
+    if !named.eq_ignore_ascii_case(&curve.to_string()) {
+        return Err(CoreError::Rejected(
+            "the Hartii launcher's own records do not name this curve for the token; refusing to use it".into(),
+        ));
+    }
+    if hash(curve_impl) != Some(proven[1].code_hash()) {
+        return Err(CoreError::Rejected("Hartii curve is not the exact proxy of its pinned implementation".into()));
+    }
+    if hash(token_impl) != Some(proven[2].code_hash()) {
+        return Err(CoreError::Rejected("Hartii token is not the exact proxy of the launcher's pinned token implementation".into()));
+    }
+    Ok(())
 }
 
 /// Preliminary adapter detection from exact proxy bytes. This grants no trust by itself;
@@ -89,6 +129,9 @@ pub async fn verified_curve(ctx: &DataCtx, token: &str, curve: &str) -> Result<V
         || !address_at(&actual_factory, 0).eq_ignore_ascii_case(&launcher.to_string())
     {
         return Err(CoreError::Rejected("Hartii curve does not name its token and launcher back".into()));
+    }
+    if !ctx.trust.may_cache() {
+        prove_curve(ctx, launcher, token, address, &implementation.to_string(), &token_impl.to_string()).await?;
     }
     let fee_bps = u16::try_from(uint(&fee, 0)).map_err(|_| CoreError::Invalid("Hartii fee is unreadable".into()))?;
     crate::hartii::after_fee(U256::from(1), fee_bps)?;

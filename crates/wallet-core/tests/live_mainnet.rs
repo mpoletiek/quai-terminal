@@ -84,6 +84,56 @@ async fn pins_are_proven_at_a_block_the_rpc_confirms() {
     eprintln!("9 pins: {first:?} with the confirmation, {:?} sharing it", started.elapsed());
 }
 
+/// The storage slots a review proves a curve's address from still hold what the launchers' own
+/// calls return, at the same block, for the launches listed now. A launcher upgrade that moved them
+/// would refuse every curve review; this says so first.
+#[tokio::test]
+#[ignore = "network"]
+async fn curve_destination_slots_match_the_launchers_calls() {
+    use wallet_core::capabilities::Family;
+    use wallet_core::sdk::BlockTag;
+    let ctx = mainnet();
+    let launches = wallet_core::launches::launches(&ctx, 200).await.unwrap();
+    let eco = ctx.network.ecosystem.clone();
+    for (family, launcher, base, field, selector) in [
+        (
+            Family::QuainanceCurve,
+            eco.curve_launcher.unwrap(),
+            wallet_core::curve::LAUNCHES_SLOT,
+            wallet_core::curve::LAUNCH_MARKET_FIELD,
+            "launches(address)",
+        ),
+        (Family::HartiiCurve, eco.hartii_launcher.unwrap(), wallet_core::hartii_tx::CURVE_OF_SLOT, 0, "curveOf(address)"),
+    ] {
+        let tokens: Vec<_> = launches.iter().filter(|l| l.venue_kind == Some(family) && l.curve.is_some()).take(3).collect();
+        assert!(!tokens.is_empty(), "{family:?}: no launches listed to check against");
+        let launcher: wallet_core::sdk::QuaiAddress = launcher.address.parse().unwrap();
+        for l in tokens {
+            let token: wallet_core::sdk::QuaiAddress = l.token.parse().unwrap();
+            let slot = wallet_core::anchor::mapping_field_slot(token, base, field);
+            let (proven, _) =
+                wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(launcher, &[slot])], "launcher").await.unwrap().unwrap();
+            let stored = wallet_core::anchor::word_address(proven[0].storage_value(slot).unwrap());
+            let block = BlockTag::Number(wallet_core::sdk::U256::from(proven[0].block.number));
+            let mut data = wallet_core::sdk::crypto::keccak256(selector.as_bytes())[..4].to_vec();
+            data.extend_from_slice(&[0u8; 12]);
+            data.extend_from_slice(token.bytes());
+            let mut request = wallet_core::sdk::provider::CallRequest::new(wallet_core::data::READ_CALLER.parse().unwrap(), launcher);
+            request.input = wallet_core::sdk::provider::RpcData::new(data).unwrap();
+            let answer = ctx.node.provider.call(&request, block).await.unwrap();
+            let word = |i: usize| format!("0x{}", hex::encode(&answer.bytes()[i * 32 + 12..(i + 1) * 32]));
+            let called = word(if family == Family::QuainanceCurve { 1 } else { 0 });
+            assert_eq!(stored, called, "{family:?} {}: the slot and the call disagree", l.symbol);
+            assert!(called.eq_ignore_ascii_case(l.curve.as_deref().unwrap()), "{family:?} {}: listed curve differs", l.symbol);
+            // And a review of it takes the curve from that proof, clones and all, and passes.
+            let review = mainnet().for_review();
+            wallet_core::curve::market(&review, &l.token, l.curve.as_deref().unwrap(), &[])
+                .await
+                .unwrap_or_else(|e| panic!("{family:?} {}: a first-hand read failed: {e}", l.symbol));
+        }
+    }
+}
+
 /// A quote that is going into a review reads the pins and every pair address from the chain
 /// (`docs/REVIEW_TRUST.md`), so it must agree with the cached one and must still work when the
 /// memo and the pair cache are seeded with nothing. The timing is printed because the cost of
