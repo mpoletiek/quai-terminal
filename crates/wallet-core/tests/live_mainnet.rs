@@ -287,6 +287,37 @@ async fn revenue_curves_speak_the_launch_zone_interface() {
     assert!(out.is_ok(), "a 0.1 QUAI buy of RIG simulates: {out:?}");
 }
 
+/// New pairs are found by themselves on Quainance and HartiiLabs, and never on QuaiSwap: every pair
+/// the main Quainance factory holds is in the directory (the explorer leaves small ones out), the
+/// launch and revenue AMMs are read from their factories, HartiiLabs from its launcher, and
+/// QuaiSwap lists exactly its allowlist.
+#[tokio::test]
+#[ignore = "network"]
+async fn quainance_and_hartii_pairs_are_discovered_and_quaiswap_is_an_allowlist() {
+    use wallet_core::markets::Venue;
+    use wallet_core::sdk::{BlockTag, QuaiAddress, U256};
+    let ctx = mainnet();
+    let factory: QuaiAddress = ctx.network.ecosystem.quainance_factory.clone().unwrap().address.parse().unwrap();
+    let count = wallet_core::sdk::contracts::Contract::new(
+        factory,
+        wallet_core::sdk::abi::AbiInterface::from_human_readable(&["function allPairsLength() view returns (uint256)"]).unwrap(),
+        &ctx.node.provider,
+    )
+    .call(wallet_core::data::READ_CALLER.parse().unwrap(), "allPairsLength", &[], BlockTag::Latest)
+    .await
+    .unwrap();
+    let count = U256::from_str_radix(count[0].as_str().unwrap(), 10).unwrap().to::<u64>() as usize;
+    let (pools, _) = wallet_core::markets::all_markets(&ctx).await.unwrap();
+    let main = pools.iter().filter(|p| p.venue == Venue::Main).count();
+    assert_eq!(main, count, "every Quainance pair is listed: {main} of {count}");
+    let legacy: std::collections::BTreeSet<String> =
+        pools.iter().filter(|p| p.venue == Venue::Legacy).map(|p| p.address.to_lowercase()).collect();
+    let allowed: std::collections::BTreeSet<String> = ctx.network.ecosystem.legacy_pairs.iter().map(|p| p.to_lowercase()).collect();
+    assert!(legacy.is_subset(&allowed), "QuaiSwap lists only its allowlist: {legacy:?}");
+    assert!(pools.iter().any(|p| p.venue == Venue::LaunchAmm) && pools.iter().any(|p| p.venue == Venue::HartiiAmm), "both AMMs read");
+    assert!(pools.iter().any(|p| p.venue == Venue::Curve), "HartiiLabs curves from its launcher");
+}
+
 /// A review's commitment check proves the owner's WQUAI balance as the mapping at slot 3. The
 /// biggest WQUAI pool holds WQUAI, so its proven word must equal WQUAI's own `balanceOf` there.
 #[tokio::test]

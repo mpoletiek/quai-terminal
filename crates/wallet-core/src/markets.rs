@@ -812,7 +812,7 @@ pub async fn pools(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
         let base = explorer.absolute("/api/stats/tvl?days=7");
         match ctx.cached("dex_pools", DIRECTORY_TTL, || async move { Ok(parse_tvl_pools(&crate::http::get_json(&base).await?)) }).await {
             Ok(cached) => {
-                let (pools, mut overview) = cached.value;
+                let (mut pools, mut overview) = cached.value;
                 overview.sources = vec![MarketSource {
                     venue: Venue::Main,
                     source: overview.source.clone(),
@@ -822,6 +822,14 @@ pub async fn pools(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
                     complete: true,
                     error: None,
                 }];
+                // The explorer lists the pools it values, not every pair: HARDHAT/WQUAI, a day old
+                // at $0.35, and two other small pairs were missing (25 of the factory's 28). The
+                // pinned factory's own list adds whatever it left out, so a new Quainance pair is
+                // on screen at the next directory read however small it starts.
+                if let Ok(factory) = main_factory_pools(ctx).await {
+                    let listed: std::collections::HashSet<String> = pools.iter().map(|p| p.address.to_lowercase()).collect();
+                    pools.extend(factory.pools.into_iter().filter(|p| !listed.contains(&p.address.to_lowercase())));
+                }
                 (pools, overview)
             }
             Err(error) if !ctx.cache_only => {
@@ -927,6 +935,11 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
         ),
     };
     let usd = wquai_usd(&markets, ctx.network.wquai.as_deref(), ctx.network.ecosystem.usdt.as_ref().map(|u| u.address.as_str()));
+    // Pairs the factory added that the explorer does not value: from their reserves, as the other
+    // factory-read venues are.
+    for p in markets.iter_mut().filter(|p| p.tvl_usd.is_none()) {
+        p.tvl_usd = amm_tvl(p, ctx.network.wquai.as_deref(), usd);
+    }
     for (venue, name, configured, result) in [
         (Venue::LaunchAmm, "launch AMM factory", ctx.network.ecosystem.launch_amm_factory.is_some(), launch),
         (Venue::Legacy, "QuaiSwap factory", ctx.network.ecosystem.legacy_factory.is_some(), legacy),
@@ -1113,6 +1126,20 @@ pub async fn hartii_amm_pools(ctx: &DataCtx) -> Result<Directory> {
     let cached = ctx
         .cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "revenue AMM factory", Venue::HartiiAmm).await })
         .await?;
+    Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
+}
+
+/// The main Quainance factory's own pair list, cached as the other factories' are.
+async fn main_factory_pools(ctx: &DataCtx) -> Result<Directory> {
+    let factory = ctx
+        .network
+        .ecosystem
+        .quainance_factory
+        .clone()
+        .ok_or_else(|| CoreError::NotFound(format!("no DEX factory configured on {}", ctx.network.name)))?;
+    let key = directory_key("main_factory_pools", &factory, &[]);
+    let cached =
+        ctx.cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "Quainance factory", Venue::Main).await }).await?;
     Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
 }
 
