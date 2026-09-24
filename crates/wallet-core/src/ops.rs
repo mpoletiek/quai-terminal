@@ -327,7 +327,7 @@ impl Session {
         // A wrapper address is a call destination in the review that follows: read its code now.
         let contract =
             crate::data::verify_pinned(&self.app, &self.node, &self.network, &pin, &format!("{name} contract"), Trust::FirstHand).await?;
-        Ok((contract, pin.trust_label()))
+        Ok((contract, pin.trust_label_on(&self.node)))
     }
 
     /// Parse a recipient: contact name, Quai/Qi address or payment code.
@@ -1716,7 +1716,7 @@ impl Session {
         let contract = Contract::new(address, crate::messages::interface()?, &self.node.provider);
         let call = contract.prepare("post", &args, U256::ZERO)?;
         fields.push(field("Size", format!("{} bytes", body.len())));
-        fields.push(field("Board", format!("{address} · {}", pin.trust_label())));
+        fields.push(field("Board", format!("{address} · {}", pin.trust_label_on(&self.node))));
         detail["bytes"] = serde_json::json!(body.len());
         self.prepare_account(AccountRequest {
             from,

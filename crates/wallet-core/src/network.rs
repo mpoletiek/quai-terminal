@@ -214,6 +214,15 @@ impl PinnedContract {
         if self.code_hash.is_some() { "✓ pinned bytecode" } else { "configured, no bytecode pin" }
     }
 
+    /// The review label for a pin just checked through `node`: it says so when the code was
+    /// proven at a block the network's RPC confirmed, which a lying monitor cannot fake.
+    pub fn trust_label_on(&self, node: &Node) -> &'static str {
+        match (self.code_hash.is_some(), node.anchor_confirmation()) {
+            (true, Some(crate::anchor::Confirmation::Witnessed)) => "✓ pinned bytecode, confirmed by two nodes",
+            _ => self.trust_label(),
+        }
+    }
+
     fn new(address: &str, code_hash: &str) -> Self {
         PinnedContract { address: address.into(), code_hash: Some(code_hash.into()) }
     }

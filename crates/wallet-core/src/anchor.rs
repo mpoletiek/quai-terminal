@@ -378,6 +378,7 @@ mod tests {
         assert_eq!(result.unwrap(), vec![WQUAI.parse::<QuaiSdkAddress>().unwrap()]);
         let anchored = node.recent_anchor(ANCHOR_REUSE).expect("the anchor is kept for the review's other checks");
         assert_eq!(anchored.confirmation, Confirmation::Witnessed);
+        assert_eq!(wquai_pin().trust_label_on(&node), "✓ pinned bytecode, confirmed by two nodes", "the review says so");
         let asked = witness_log.join("\n").to_lowercase();
         assert!(asked.contains("quai_getheaderbynumber"), "the witness was asked for the header");
         assert!(!asked.contains(&WQUAI.to_lowercase()[2..]), "and never told what is being proven: {asked}");
@@ -388,6 +389,7 @@ mod tests {
         let (result, node, _) = check(Kind::Honest, None, &wquai_pin()).await;
         assert!(result.is_ok());
         assert_eq!(node.recent_anchor(ANCHOR_REUSE).unwrap().confirmation, Confirmation::NodeOnly);
+        assert_eq!(wquai_pin().trust_label_on(&node), "✓ pinned bytecode", "one node's word claims no more");
     }
 
     /// A monitoring node that serves another real block at the height: the header hashes, every

@@ -1307,8 +1307,8 @@ async fn verify_venue(
 }
 
 /// A router's review label: `0x… (launch AMM, ✓ pinned bytecode)`.
-pub(crate) fn router_field(network: &NetworkProfile, venue: Venue, router: &str) -> String {
-    let trust = venue_pins(network, venue).map_or("", |(r, _)| r.trust_label());
+pub(crate) fn router_field(network: &NetworkProfile, node: &Node, venue: Venue, router: &str) -> String {
+    let trust = venue_pins(network, venue).map_or("", |(r, _)| r.trust_label_on(node));
     format!("{router} ({}, {trust})", venue.label())
 }
 
@@ -1566,7 +1566,7 @@ impl Session {
                 field("Quoted input", amount::format_amount(u(&quote.required_input), quote.from.decimals())),
                 field("Exact recipient output", format!("{} {}", amount::format_amount(u(&quote.amount_out), quote.to.decimals()), quote.to.symbol())),
                 field("Recipient", recipient.clone()), field("Path contracts", quote.path.join(" → ")),
-                field("Router", router_field(&self.network, quote.venue, &quote.router)), field("Deadline", deadline.to_string())],
+                field("Router", router_field(&self.network, &self.node, quote.venue, &quote.router)), field("Deadline", deadline.to_string())],
             warnings: vec![refund.into(), "Conventional pinned-token semantics only. A price move beyond the input cap reverts the transaction; fees may still be spent.".into()],
             detail: json!({"expires_at": deadline, "decimals": quote.from.decimals(), "from_token": token(&quote.from), "to_token": token(&quote.to),
                 "to_decimals": quote.to.decimals(), "to_symbol": quote.to.symbol(), "expected_out": quote.amount_out,
@@ -1803,7 +1803,7 @@ impl Session {
             counterparty: router.to_string(),
             fields: vec![
                 field("Token contract", address.clone()),
-                field("Spender", router_field(&self.network, venue, &router.to_string())),
+                field("Spender", router_field(&self.network, &self.node, venue, &router.to_string())),
                 field("Allowance", format!("exactly {} {symbol}", amount::format_amount(atoms, decimals))),
             ],
             warnings: quote.warnings.clone(),
@@ -1944,7 +1944,7 @@ impl Session {
             field("Price impact", format!("{:.2}%", quote.impact_bps as f64 / 100.0)),
             field("Output protection", "router checks received balance; transfer fees reduce the quoted estimate"),
             field("LP fee", format!("{:.1}%", quote.fee_bps as f64 / 100.0)),
-            field("Router", router_field(&self.network, venue, &quote.router)),
+            field("Router", router_field(&self.network, &self.node, venue, &quote.router)),
             field("Deadline", format!("{deadline_minutes} min")),
         ];
         for pool in &quote.pools {

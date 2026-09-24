@@ -952,7 +952,7 @@ impl Session {
                     format!(
                         "{} (Zora ERC-721 transfer helper, {})",
                         zora.erc721_helper,
-                        self.network.ecosystem.zora_erc721_helper.as_ref().map_or("", |p| p.trust_label())
+                        self.network.ecosystem.zora_erc721_helper.as_ref().map_or("", |p| p.trust_label_on(&self.node))
                     ),
                 ),
                 field("Scope", "every item you hold in this collection"),
@@ -1013,7 +1013,7 @@ impl Session {
         let marketplace = format!(
             "{} (Zora Asks v1.1, {}) · shown on Bazarr",
             zora.asks,
-            self.network.ecosystem.zora_asks.as_ref().map_or("", |p| p.trust_label())
+            self.network.ecosystem.zora_asks.as_ref().map_or("", |p| p.trust_label_on(&self.node))
         );
         let Some((price_text, currency_name)) = price else {
             let ask = state.ask.ok_or_else(|| CoreError::Rejected("this item has no active listing from this account".into()))?;
@@ -1310,12 +1310,16 @@ impl Session {
                     format!(
                         "{} (Zora, {})",
                         zora.manager,
-                        self.network.ecosystem.zora_module_manager.as_ref().map_or("", |p| p.trust_label())
+                        self.network.ecosystem.zora_module_manager.as_ref().map_or("", |p| p.trust_label_on(&self.node))
                     ),
                 ),
                 field(
                     "Module",
-                    format!("{} (Asks v1.1, {})", zora.asks, self.network.ecosystem.zora_asks.as_ref().map_or("", |p| p.trust_label())),
+                    format!(
+                        "{} (Asks v1.1, {})",
+                        zora.asks,
+                        self.network.ecosystem.zora_asks.as_ref().map_or("", |p| p.trust_label_on(&self.node))
+                    ),
                 ),
             ],
             warnings: vec!["lets the Zora Asks module move tokens you approve to its transfer helpers; the contracts are unaudited".into()],
@@ -1361,7 +1365,7 @@ impl Session {
                     format!(
                         "{} (Zora ERC-20 helper, {})",
                         zora.erc20_helper,
-                        self.network.ecosystem.zora_erc20_helper.as_ref().map_or("", |p| p.trust_label())
+                        self.network.ecosystem.zora_erc20_helper.as_ref().map_or("", |p| p.trust_label_on(&self.node))
                     ),
                 ),
                 field("Allowance", format!("exactly {} {symbol}", amount::format_amount(price, decimals))),
@@ -1446,7 +1450,7 @@ impl Session {
                 field("Token id", token_id),
                 field("Seller", ask.seller.clone()),
                 field("Seller still owns it", "yes (checked on-chain)"),
-                field("Marketplace", format!("{} (Zora Asks v1.1, {})", zora.asks, self.network.ecosystem.zora_asks.as_ref().map_or("", |p| p.trust_label()))),
+                field("Marketplace", format!("{} (Zora Asks v1.1, {})", zora.asks, self.network.ecosystem.zora_asks.as_ref().map_or("", |p| p.trust_label_on(&self.node)))),
                 field("Price", if native { format!("{} QUAI", amount::format_amount(price, QUAI_DECIMALS)) } else { format!("{} {symbol} ({})", amount::format_amount(price, decimals), ask.currency) }),
                 field("Royalties and fees", "paid from the price by the contract"),
             ],

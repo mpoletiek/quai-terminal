@@ -880,7 +880,7 @@ impl Session {
             counterparty: router.to_string(),
             fields: vec![
                 field("Token contract", approved.address.clone()),
-                field("Spender", crate::swap::router_field(&self.network, quote.venue, &router.to_string())),
+                field("Spender", crate::swap::router_field(&self.network, &self.node, quote.venue, &router.to_string())),
                 field("Allowance", format!("exactly {} {}", amount::format_amount(atoms, approved.decimals), approved.symbol)),
             ],
             warnings: quote.warnings.clone(),
@@ -1127,7 +1127,7 @@ impl Session {
             counterparty: router.to_string(),
             fields: vec![
                 field("LP token", pair.to_string()),
-                field("Spender", crate::swap::router_field(&self.network, pool.venue, &router.to_string())),
+                field("Spender", crate::swap::router_field(&self.network, &self.node, pool.venue, &router.to_string())),
                 field("Allowance", format!("exactly {} LP", amount::format_amount_short(liquidity, 18, 6))),
             ],
             warnings: vec![],

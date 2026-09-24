@@ -316,7 +316,7 @@ impl Session {
     }
 
     fn curve_trust(&self) -> &'static str {
-        self.network.ecosystem.curve_launcher.as_ref().map_or("", |p| p.trust_label())
+        self.network.ecosystem.curve_launcher.as_ref().map_or("", |p| p.trust_label_on(&self.node))
     }
 
     /// Review buying on a curve with `quai` QUAI. The curve quotes it first; the review names the
