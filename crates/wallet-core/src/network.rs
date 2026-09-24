@@ -281,6 +281,10 @@ pub struct Ecosystem {
     /// Market data only: no address is ever sent to it.
     #[serde(default)]
     pub launch_subgraph: Option<String>,
+    /// HartiiLabs' public read API: its launchpad's 24h changes. Market data only: no address is
+    /// ever sent to it, only the one directory request.
+    #[serde(default)]
+    pub hartii_api: Option<String>,
     /// Bridged USDT.
     pub usdt: Option<PinnedContract>,
     /// Zora V3 Asks v1.1 module (Bazarr listings).
@@ -430,6 +434,7 @@ impl Ecosystem {
             )),
             quainance_subgraph: Some("https://graph.quai.network/subgraphs/name/quainance/v2".into()),
             launch_subgraph: Some("https://graph.quai.network/subgraphs/name/quainance/trade-zone-staging".into()),
+            hartii_api: Some("https://hartiilabs.com".into()),
             bazarr_indexer: Some("https://watcher.basedhash.cc".into()),
             bazarr_web: Some("https://bazarr.xyz".into()),
         }

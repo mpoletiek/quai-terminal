@@ -1476,6 +1476,17 @@ async fn a_hartii_curve_verifies_and_prices_from_its_pool() {
     let list = qaxe.price_quai.unwrap();
     assert!((market.spot_price / list - 1.0).abs() < 0.01, "card {} list {list}", market.spot_price);
     assert!(market.points.is_empty() && market.target.is_zero(), "a bonded curve has no sell-out left to draw");
+    // In the market list it has a 24h change from HartiiLabs, and it refreshes with the pools.
+    let mut display = mainnet();
+    display.trust = Trust::Cached;
+    let (mut all, _) = wallet_core::markets::all_markets(&display).await.expect("the market list reads");
+    let row = all.iter().find(|p| p.address.eq_ignore_ascii_case(&qaxe.curve)).expect("QAXE's curve is listed");
+    eprintln!("QAXE listed at {:?}, 24h {:?}", row.spot_price(), row.change_24h());
+    assert!(row.change_24h().is_some(), "HartiiLabs gives it a 24h change");
+    let fresh = wallet_core::markets::refresh_reserves(&display, &all).await.expect("reserves refresh");
+    let hit = fresh.iter().find(|(a, _, _)| a.eq_ignore_ascii_case(&qaxe.curve)).expect("the curve is refreshed with the pools");
+    assert!((hit.2 / hit.1 / list - 1.0).abs() < 0.05, "refreshed {} vs listed {list}", hit.2 / hit.1);
+    wallet_core::markets::apply_reserves(&mut all, &fresh, display.network.wquai.as_deref(), None);
 }
 
 /// The pool a deposit screen is opened from has to be findable by the deposit screen.

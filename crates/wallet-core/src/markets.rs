@@ -891,12 +891,13 @@ async fn chain_pools(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
 /// still on their bonding curves. Independent sources have bounded deadlines; one unavailable
 /// venue cannot discard the directories that answered.
 pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
-    let (main, launch, legacy, hartii, hartii_amm) = futures::join!(
+    let (main, launch, legacy, hartii, hartii_amm, hartii_changes) = futures::join!(
         venue_deadline(pools(ctx)),
         venue_deadline(launch_amm_pools(ctx)),
         venue_deadline(legacy_pools(ctx)),
         venue_deadline(crate::hartii::launches_observed(ctx)),
         venue_deadline(hartii_amm_pools(ctx)),
+        venue_deadline(crate::hartii::changes_24h(ctx)),
     );
     let mut healthy = main.is_ok();
     let (mut markets, mut overview) = match main {
@@ -954,7 +955,12 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
     if let Ok(rows) = hartii {
         healthy = true;
         if let Some(wquai) = ctx.network.wquai.as_deref() {
-            markets.extend(crate::hartii::curve_pools(&rows.value, wquai));
+            let mut curves = crate::hartii::curve_pools(&rows.value, wquai);
+            // Without it the rows still list and price; they only lack a 24h change.
+            if let Ok(changes) = &hartii_changes {
+                crate::hartii::apply_changes(&mut curves, changes);
+            }
+            markets.extend(curves);
         }
         overview.sources.push(MarketSource {
             venue: Venue::Curve,
@@ -985,7 +991,8 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
     // unindexed pair simply comes back empty. A curve has no pair to ask about.
     let indexed: Vec<String> = markets.iter().filter(|p| p.venue.routable()).map(|p| p.address.clone()).collect();
     if let Ok(then) = venue_deadline(crate::subgraph::spot_24h_ago(ctx, &indexed)).await {
-        for p in &mut markets {
+        // A curve's day-ago price is its launchpad's, set above; this query has none to give it.
+        for p in markets.iter_mut().filter(|p| p.venue.routable()) {
             p.spot_24h_ago = then.get(&p.address.to_lowercase()).copied();
         }
     }
@@ -1001,11 +1008,20 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
     Ok((markets, overview))
 }
 
+/// How long one optional source may hold up a directory refresh.
+///
+/// A read cut off here is dropped, and it starts again from the beginning on the next refresh, so
+/// a source that needs longer than this never lands at all. Three seconds did that on a public
+/// RPC at 250 ms a call: the HartiiLabs launchpad takes about five rounds once its pins are known,
+/// plus a new connection, and every attempt was cancelled before it finished. The screen draws the
+/// last known directory first, so waiting a little longer here delays nothing it already has.
+pub const VENUE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// Optional sources have a bounded share of a directory refresh, including multi-call walks.
 async fn venue_deadline<T>(read: impl std::future::Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(std::time::Duration::from_secs(3), read)
+    tokio::time::timeout(VENUE_DEADLINE, read)
         .await
-        .unwrap_or_else(|_| Err(CoreError::Network("market source timed out after 3 s".into())))
+        .unwrap_or_else(|_| Err(CoreError::Network(format!("market source timed out after {} s", VENUE_DEADLINE.as_secs()))))
 }
 
 /// USD per WQUAI from the main exchange's WQUAI/USDT pool (USDT taken at a dollar). Display data:
@@ -1273,22 +1289,47 @@ async fn factory_pools(ctx: &DataCtx, factory: &crate::network::PinnedContract, 
 pub async fn refresh_reserves(ctx: &DataCtx, pools: &[Pool]) -> Result<Vec<(String, f64, f64)>> {
     use crate::multicall::Call;
     ctx.online()?;
-    // A curve has no pair to ask, and no reserves to read.
+    // A curve still selling has no pair to ask. A bonded Hartii curve does: the locked pool its
+    // graduation seeded, whose reserves the directory has already confirmed against its quote.
     let pairs: Vec<&Pool> = pools.iter().filter(|p| p.venue.routable()).collect();
-    if pairs.is_empty() {
+    let curves: Vec<&Pool> = pools.iter().filter(|p| bonded_hartii(p)).collect();
+    if pairs.is_empty() && curves.is_empty() {
         return Ok(Vec::new());
     }
     let mc = crate::multicall::Multicall::open(ctx).await.ok_or_else(|| CoreError::NotFound("live reserves need Multicall3".into()))?;
-    let calls: Vec<Call> = pairs.iter().map(|p| Call::view(&p.address, "getReserves()", &[])).collect();
+    let mut calls: Vec<Call> = pairs.iter().map(|p| Call::view(&p.address, "getReserves()", &[])).collect();
+    for c in &curves {
+        calls.push(Call::view(&c.address, "poolTokenReserve()", &[]));
+        calls.push(Call::view(&c.address, "poolQuaiReserve()", &[]));
+    }
     let out = mc.try_all(&calls).await?;
-    Ok(pairs
+    let (pair_out, curve_out) = out.split_at(pairs.len().min(out.len()));
+    let mut fresh: Vec<(String, f64, f64)> = pairs
         .iter()
-        .zip(out)
+        .zip(pair_out)
         .filter_map(|(p, data)| {
             let (r0, r1) = decoded_reserves(data.as_deref()?, p.token0.decimals, p.token1.decimals)?;
             Some((p.address.clone(), r0, r1))
         })
-        .collect())
+        .collect();
+    for (c, data) in curves.iter().zip(curve_out.chunks(2)) {
+        let word = |i: usize| data.get(i).and_then(Option::as_ref).filter(|d| d.len() >= 32).map(|d| crate::multicall::word(d, 0));
+        if let (Some(token), Some(quai)) = (word(0), word(1))
+            && !token.is_zero()
+            && !quai.is_zero()
+        {
+            fresh.push((c.address.clone(), units(token, c.token0.decimals), units(quai, c.token1.decimals)));
+        }
+    }
+    Ok(fresh)
+}
+
+/// A bonded HartiiLabs curve whose price the directory took from its pool reserves.
+fn bonded_hartii(p: &Pool) -> bool {
+    p.venue == Venue::Curve
+        && p.curve.as_ref().is_some_and(|c| {
+            c.launchpad.as_deref() == Some("HartiiLabs") && c.locked_quai.is_some() && c.price_basis == PriceBasis::ReserveSpot
+        })
 }
 
 fn decoded_reserves(data: &[u8], decimals0: u8, decimals1: u8) -> Option<(f64, f64)> {
@@ -1308,6 +1349,19 @@ pub fn apply_reserves(pools: &mut [Pool], fresh: &[(String, f64, f64)], wquai: O
     let mut hit = 0;
     for p in pools.iter_mut() {
         if let Some((r0, r1)) = by.get(p.address.as_str()) {
+            // A bonded curve's pool is its mark: price and locked depth, not pair reserves that a
+            // router would take for a pair it can route through.
+            if bonded_hartii(p)
+                && let Some(mark) = p.curve.as_mut()
+            {
+                if *r0 > 0.0 && *r1 > 0.0 {
+                    // The day-old price stays: the 24h change follows the new one.
+                    mark.price_quai = Some(r1 / r0);
+                    mark.locked_quai = Some(*r1);
+                    hit += 1;
+                }
+                continue;
+            }
             (p.reserve0, p.reserve1) = (*r0, *r1);
             hit += 1;
         }
@@ -2416,6 +2470,38 @@ mod tests {
     /// The figures are the live WQI/WQUAI pair, read from a monitoring node and from the explorer
     /// within seconds of each other: they agreed to the atom, which is what makes it safe to price
     /// the screen off the node instead of waiting on the explorer's 30-second page.
+    /// A bonded Hartii curve refreshes with the pools: its locked pool is its price and its depth,
+    /// and it never takes on pair reserves a router would route through. A curve whose price did
+    /// not come from its pool is left alone.
+    #[test]
+    fn a_bonded_curve_reprices_from_its_locked_pool() {
+        let curve = |basis: PriceBasis, locked: Option<f64>| Pool {
+            address: "0x004bc4".into(),
+            token0: PoolToken { address: "0x003518".into(), symbol: "QAXE".into(), decimals: 18 },
+            token1: PoolToken { address: "0x006c".into(), symbol: "WQUAI".into(), decimals: 18 },
+            venue: Venue::Curve,
+            curve: Some(CurveMark {
+                price_quai: Some(0.004),
+                price_basis: basis,
+                locked_quai: locked,
+                launchpad: Some("HartiiLabs".into()),
+                ..CurveMark::default()
+            }),
+            spot_24h_ago: Some(0.002),
+            ..Pool::default()
+        };
+        let mut pools = vec![curve(PriceBasis::ReserveSpot, Some(190_000.0)), curve(PriceBasis::OneQuaiBuyQuote, None)];
+        pools[1].address = "0x00other".into();
+        let fresh = vec![("0x004bc4".into(), 47_000_000.0, 200_000.0), ("0x00other".into(), 1.0, 1.0)];
+        assert_eq!(apply_reserves(&mut pools, &fresh, Some("0x006c"), Some(0.01)), 2);
+        let mark = pools[0].curve.as_ref().unwrap();
+        assert!((mark.price_quai.unwrap() - 200_000.0 / 47_000_000.0).abs() < 1e-12);
+        assert_eq!(mark.locked_quai, Some(200_000.0));
+        assert_eq!((pools[0].reserve0, pools[0].reserve1), (0.0, 0.0), "no pair reserves on a curve");
+        assert!((pools[0].change_24h().unwrap() - (200_000.0 / 47_000_000.0 / 0.002 - 1.0) * 100.0).abs() < 1e-9);
+        assert_eq!(pools[1].curve.as_ref().unwrap().price_quai, Some(0.004), "a quote-priced curve keeps its quote");
+    }
+
     #[test]
     fn live_reserves_replace_the_directorys_and_reprice_it() {
         let wquai = "0x006c3e2aaae5db1bcd11a1a097ce572312eaddbb";

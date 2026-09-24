@@ -20,6 +20,10 @@ use serde_json::{Value, json};
 /// node's `eth_call` gas and response limits are never near.
 pub const CHUNK: usize = 120;
 
+/// Chunks of one batch in flight at once: a sweep of a few hundred calls is one round trip, and a
+/// directory of thousands still asks the node for no more than this many at a time.
+pub const CHUNKS_IN_FLIGHT: usize = 4;
+
 /// `aggregate3` is `payable` on the real contract, but the wallet only ever reads through it and
 /// never sends value. It is declared `view` here so the SDK routes it to `eth_call` instead of
 /// refusing it as state-changing; nothing in this module can produce a transaction.
@@ -124,11 +128,13 @@ impl<'a> Multicall<'a> {
     /// The result is positional: `out[i]` is the return data of `calls[i]`, or `None` when that one
     /// reverted. Batches larger than [`CHUNK`] are split, still in order.
     pub async fn try_all(&self, calls: &[Call]) -> Result<Vec<Option<Vec<u8>>>> {
-        let mut out = Vec::with_capacity(calls.len());
-        for chunk in calls.chunks(CHUNK) {
-            out.extend(self.aggregate3(chunk).await?);
-        }
-        Ok(out)
+        use futures::{StreamExt, TryStreamExt};
+        // The chunks are independent, so up to [`CHUNKS_IN_FLIGHT`] go out at once; `buffered`
+        // keeps them in order. One after another, the launchpad's 385-call sweep was four round
+        // trips of half a second each.
+        let chunks: Vec<Vec<Option<Vec<u8>>>> =
+            futures::stream::iter(calls.chunks(CHUNK).map(|chunk| self.aggregate3(chunk))).buffered(CHUNKS_IN_FLIGHT).try_collect().await?;
+        Ok(chunks.into_iter().flatten().collect())
     }
 
     async fn aggregate3(&self, calls: &[Call]) -> Result<Vec<Option<Vec<u8>>>> {

@@ -234,9 +234,13 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
         .hartii_launcher
         .clone()
         .ok_or_else(|| CoreError::NotFound(format!("no HartiiLabs launchpad on {}", ctx.network.name)))?;
-    let launcher = crate::data::verify_pinned(&ctx.app, &ctx.node, &ctx.network, &pin, "HartiiLabs launcher", ctx.trust).await?;
-    let launcher = launcher.to_string().to_lowercase();
-    let Some(mc) = crate::multicall::Multicall::open(ctx).await else {
+    // Two independent pin checks, five sequential reads each: side by side, not one after another.
+    let (launcher, mc) = tokio::join!(
+        crate::data::verify_pinned(&ctx.app, &ctx.node, &ctx.network, &pin, "HartiiLabs launcher", ctx.trust),
+        crate::multicall::Multicall::open(ctx),
+    );
+    let launcher = launcher?.to_string().to_lowercase();
+    let Some(mc) = mc else {
         return Err(CoreError::NotFound("the HartiiLabs launchpad needs Multicall3 to be read".into()));
     };
     use crate::multicall::{Arg, Call, address_word, word};
@@ -358,6 +362,60 @@ async fn read_launches(ctx: &DataCtx) -> Result<Vec<HartiiLaunch>> {
     Ok(rows)
 }
 
+/// How long HartiiLabs' token directory is believed: its own `max-age`.
+pub const CHANGES_TTL: u64 = 60;
+
+/// Each launchpad token's 24h price change in percent, from HartiiLabs' public read API, keyed by
+/// (token, curve), both lowercase.
+///
+/// The chain has no day-old price to compare with, and reading one would mean a day of logs per
+/// curve. HartiiLabs indexes its own trades and prices them on the same reserve basis the wallet
+/// now uses (its `lastPriceWei` for QAXE was the wallet's reserve spot to the wei on 2026-09-23),
+/// so its change is comparable. It is display data only: it moves no price and sizes no trade.
+pub async fn changes_24h(ctx: &DataCtx) -> Result<std::collections::HashMap<(String, String), f64>> {
+    if !ctx.policy.market {
+        return Err(CoreError::NotFound("market data is off".into()));
+    }
+    let base = ctx.network.ecosystem.hartii_api.clone().ok_or_else(|| CoreError::NotFound("no HartiiLabs API on this network".into()))?;
+    let url = format!("{}/api/tokens", base.trim_end_matches('/'));
+    let listed = ctx
+        .cached(&format!("hartii_changes:{}", base.to_lowercase()), CHANGES_TTL, || async move {
+            let body = crate::http::get_json(&url).await?;
+            Ok(parse_changes(&body))
+        })
+        .await?;
+    Ok(listed.value.into_iter().map(|(token, curve, change)| ((token, curve), change)).collect())
+}
+
+/// `(token, curve, change %)` for each item that names both contracts and a plausible change.
+fn parse_changes(body: &serde_json::Value) -> Vec<(String, String, f64)> {
+    let items = body["items"].as_array().map(Vec::as_slice).unwrap_or_default();
+    items
+        .iter()
+        .filter_map(|item| {
+            let token = item["address"].as_str().filter(|a| crate::chain::addr(a).is_ok())?.to_lowercase();
+            let curve = item["curveAddress"].as_str().filter(|a| crate::chain::addr(a).is_ok())?.to_lowercase();
+            let change = item["change24h"].as_f64().or_else(|| item["priceChange24h"].as_f64())?;
+            // A price cannot fall more than 100%, and a figure that is not a number is no figure.
+            (change.is_finite() && change > -100.0).then_some((token, curve, change))
+        })
+        .collect()
+}
+
+/// Give each HartiiLabs curve row the price it had a day ago, from its 24h change, so the list's
+/// 24h column fills in for it as it does for a pool. Bound to both the token and the curve.
+pub fn apply_changes(pools: &mut [Pool], changes: &std::collections::HashMap<(String, String), f64>) {
+    for p in pools.iter_mut().filter(|p| p.venue == Venue::Curve) {
+        let Some(price) = p.spot_price() else { continue };
+        if p.curve.as_ref().and_then(|c| c.launchpad.as_deref()) != Some("HartiiLabs") {
+            continue;
+        }
+        if let Some(change) = changes.get(&(p.token0.address.to_lowercase(), p.address.to_lowercase())) {
+            p.spot_24h_ago = Some(price / (1.0 + change / 100.0)).filter(|v| v.is_finite() && *v > 0.0);
+        }
+    }
+}
+
 /// The launchpad's **bonded** tokens as market rows.
 ///
 /// Bonding here sells out the curve's supply but does not retire it: the curve still quotes and
@@ -461,6 +519,32 @@ mod tests {
         let quoted = constant_product_out(q, t, net).unwrap();
         assert_eq!(live_reserves(false, q0, t0, raised, sold, U256::from(7u64), U256::from(7u64), net, quoted), Some((q, t)));
         assert!((reserve_spot(q, t, 18).unwrap() - crate::amount::to_f64(q, 18) / crate::amount::to_f64(t, 18)).abs() < 1e-18);
+    }
+
+    /// HartiiLabs' directory as it answered on 2026-09-23, trimmed: a row's change lands on its own
+    /// curve and nowhere else, and a figure no price could have is dropped.
+    #[test]
+    fn a_curve_takes_its_24h_change_from_hartii_by_token_and_curve() {
+        let body = serde_json::json!({"items": [
+            {"address": "0x0035187a7660f595d93cd53a4d16c635d6cffc8f", "curveAddress": "0x004bc407903a51506bcf0b1ab423958c5991c237", "change24h": 47.61},
+            {"address": "0x00aa000000000000000000000000000000000001", "curveAddress": "0x00bb000000000000000000000000000000000001", "change24h": -100.0},
+            {"address": "not an address", "curveAddress": "0x00bb000000000000000000000000000000000002", "change24h": 3.0},
+            {"address": "0x00aa000000000000000000000000000000000003", "curveAddress": "0x00bb000000000000000000000000000000000003", "change24h": null}
+        ]});
+        let rows = parse_changes(&body);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let changes: std::collections::HashMap<(String, String), f64> = rows.into_iter().map(|(t, c, x)| ((t, c), x)).collect();
+        let mut qaxe = row("QAXE", true, Some(10_000));
+        qaxe.token = "0x0035187a7660f595d93cd53a4d16c635d6cffc8f".into();
+        qaxe.curve = "0x004bc407903a51506bcf0b1ab423958c5991c237".into();
+        qaxe.price_quai = Some(0.0040174);
+        let mut other = qaxe.clone();
+        other.curve = "0x00cc000000000000000000000000000000000009".into();
+        let mut pools = curve_pools(&[qaxe, other], "0x006c3e2a");
+        apply_changes(&mut pools, &changes);
+        let change = pools[0].change_24h().unwrap();
+        assert!((change - 47.61).abs() < 1e-9, "{change}");
+        assert_eq!(pools[1].change_24h(), None, "the same token on another curve is not the same market");
     }
 
     /// The price is the curve's own quote inverted, not a ratio of its reserves.
