@@ -3304,6 +3304,83 @@ fn every_timeframe_reads_at_least_a_day_of_a_pairs_trades() {
     }
 }
 
+/// A token with a bonding curve is quoted there too, and the swap card trades where it pays more:
+/// the exchanges when they pay more, the curve when it does or when the exchanges cannot fill the
+/// amount at all (QAXE: a $13 pool beside a $3.9k curve refused 1,000 QUAI outright).
+#[test]
+fn the_swap_card_trades_on_the_curve_when_it_pays_more() {
+    use wallet_core::swap::{SwapAsset, SwapQuote};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let qaxe = SwapAsset::Token { address: "0x0035187a7660f595d93cd53a4d16c635d6cffc8f".into(), symbol: "QAXE".into(), decimals: 18 };
+    app.switch(Screen::Swap);
+    app.eco.swap.from = SwapAsset::Quai;
+    app.eco.swap.to = Some(qaxe.clone());
+    app.eco.swap.amount = "100".into();
+    let routed = |out: &str| SwapQuote {
+        from: SwapAsset::Quai,
+        to: qaxe.clone(),
+        amount_in: "100000000000000000000".into(),
+        amount_out: out.into(),
+        minimum_out: "0".into(),
+        slippage_bps: 50,
+        path: vec![],
+        route: vec![],
+        pools: vec![],
+        impact_bps: 0,
+        fee_bps: 30,
+        router: "0x00".into(),
+        allowance: None,
+        approval_needed: false,
+        balance: None,
+        insufficient: false,
+        warnings: vec![],
+        observed_at: 0,
+        liquidity_at: None,
+        legs: vec![],
+    };
+    let offer = |out: &str| wallet_core::curve::CurveOffer {
+        token: "0x0035187a7660f595d93cd53a4d16c635d6cffc8f".into(),
+        symbol: "QAXE".into(),
+        curve: "0x004bc407903a51506bcf0b1ab423958c5991c237".into(),
+        sell: false,
+        input: "100000000000000000000".into(),
+        output: out.into(),
+        fee: "0".into(),
+        family: wallet_core::capabilities::Family::HartiiCurve,
+    };
+    // The exchanges pay more: the card swaps.
+    app.eco.swap.quote = Some(Ok(routed("25143000000000000000000")));
+    app.eco.swap.curve = Some(Ok(offer("23331000000000000000000")));
+    assert!(app.swap_uses_curve().is_none(), "the exchanges pay more here");
+    // The curve pays more: the card buys on the curve.
+    app.eco.swap.curve = Some(Ok(offer("26000000000000000000000")));
+    assert!(app.swap_uses_curve().is_some(), "the curve pays more");
+    // The exchanges cannot fill it: the curve does.
+    app.eco.swap.quote = Some(Err("price impact 60.6% is too high; try a smaller amount".into()));
+    app.eco.swap.curve = Some(Ok(offer("232260000000000000000000")));
+    assert!(app.swap_uses_curve().is_some(), "the curve fills what the exchanges refuse");
+    // A curve quote for another amount says nothing about this one.
+    app.eco.swap.amount = "200".into();
+    assert!(app.swap_uses_curve().is_none(), "a stale curve quote is never used");
+    // Enter with the curve chosen opens a curve buy review, not a swap.
+    app.eco.swap.amount = "100".into();
+    app.eco.swap.quote_key = 7;
+    app.eco.swap.requested_key = 7;
+    app.eco.swap.requested_input = app.swap_input_key();
+    app.eco.swap.quoted_at = Some(std::time::Instant::now());
+    let (worker, prepared) = Worker::capture_prepares();
+    app.worker = Some(worker);
+    app.dash.unlocked = true;
+    app.swap_submit();
+    let got = prepared.recv_timeout(std::time::Duration::from_secs(2));
+    assert!(
+        matches!(&got, Ok(super::super::worker::Prepare::CurveBuy { curve, amount, .. })
+            if curve == "0x004bc407903a51506bcf0b1ab423958c5991c237" && amount == "100"),
+        "a curve buy of 100 QUAI was prepared: {:?}",
+        app.toasts
+    );
+}
+
 /// A curve trade reads like every other tape row, though no pair in the directory matches it.
 ///
 /// The tape asks the directory which side of a swap is the base, and a bonding curve has no pair

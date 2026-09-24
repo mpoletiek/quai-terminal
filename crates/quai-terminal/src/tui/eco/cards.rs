@@ -1290,6 +1290,48 @@ impl App {
         h.finish()
     }
 
+    /// The bonding curve that trades this pair's token against QUAI, from the market directory: a
+    /// token still on its curve, or one bonded onto a pool its curve keeps. `None` for a pair
+    /// without QUAI on one side, or a token without a curve.
+    pub(crate) fn token_curve(&self, a: &SwapAsset, b: &SwapAsset) -> Option<(wallet_core::markets::PoolToken, String)> {
+        let token = match (a, b) {
+            (SwapAsset::Quai, SwapAsset::Token { address, .. }) | (SwapAsset::Token { address, .. }, SwapAsset::Quai) => address,
+            _ => return None,
+        };
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) else { return None };
+        pools
+            .iter()
+            .find(|p| p.venue == wallet_core::markets::Venue::Curve && p.token0.address.eq_ignore_ascii_case(token))
+            .map(|p| (p.token0.clone(), p.address.clone()))
+    }
+
+    /// Where the swap card's trade goes: the token's curve when it pays more than the exchanges,
+    /// or when the exchanges cannot fill it at all; otherwise the router. Only a curve quote for
+    /// the pair and amount on the card counts.
+    pub(crate) fn swap_uses_curve(&self) -> Option<wallet_core::curve::CurveOffer> {
+        let card = &self.eco.swap;
+        let offer = card.curve.as_ref()?.as_ref().ok()?;
+        let to = card.to.as_ref()?;
+        let atoms = amount::parse_amount(&card.amount, card.from.decimals()).ok()?;
+        let token = if offer.sell { &card.from } else { to };
+        let matches = offer.input == atoms.to_string()
+            && matches!(token, SwapAsset::Token { address, .. } if address.eq_ignore_ascii_case(&offer.token))
+            && matches!(if offer.sell { to } else { &card.from }, SwapAsset::Quai);
+        let curve_out = offer.amount().filter(|v| !v.is_zero())?;
+        if !matches {
+            return None;
+        }
+        match &card.quote {
+            Some(Ok(q)) if q.from == card.from && Some(&q.to) == card.to.as_ref() => {
+                let routed = U256::from_str_radix(&q.amount_out, 10).unwrap_or(U256::ZERO);
+                (curve_out > routed).then(|| offer.clone())
+            }
+            // The exchanges refused (no route, or impact past the limit): the curve fills it.
+            Some(Err(_)) => Some(offer.clone()),
+            _ => None,
+        }
+    }
+
     /// Keep the swap card's rate and chart fed: the market list, then the pair's hourly candles.
     pub(crate) fn tick_swap(&mut self) {
         let mv = &self.eco.markets_view;
@@ -1327,6 +1369,24 @@ impl App {
         }
         if amount::parse_amount(&card.amount, card.from.decimals()).map_or(true, |a| a.is_zero()) {
             self.toast("enter an amount to pay", true);
+            return;
+        }
+        // The token's curve pays more than the exchanges here (or they cannot fill it): trade on the
+        // curve, through the same reviews Launches uses, proofs of its destination included.
+        if self.swap_quote_current()
+            && let Some(offer) = self.swap_uses_curve()
+        {
+            let account = self.dash.accounts.first().map(|a| a.address.clone());
+            let (amount, slippage, deadline) = (card.amount.clone(), card.slippage_bps, Some(card.deadline_minutes));
+            let (token, symbol, curve) = (offer.token.clone(), offer.symbol.clone(), offer.curve.clone());
+            if offer.sell {
+                self.start_flow(FlowKind::Steps {
+                    prepare: Box::new(Prepare::CurveSellNext { account, token, symbol: symbol.clone(), curve, amount, slippage, deadline }),
+                    label: format!("sell {symbol} to its curve"),
+                });
+            } else {
+                self.send(Cmd::Prepare(Prepare::CurveBuy { account, token, symbol, curve, amount, slippage, deadline }));
+            }
             return;
         }
         let quote = match (&card.quote, self.swap_quote_current()) {

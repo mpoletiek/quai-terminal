@@ -35,14 +35,24 @@ impl App {
         };
         let (pay, get) = (address(&self.eco.swap.from)?, address(to)?);
         let Some(Ok((pools, _))) = &self.eco.markets_view.pools else { return None };
+        // The deepest market for the pair, a bonding curve included: QAXE's chart and rate come
+        // from its curve ($3.9k), not a $13 pool beside it. A curve still raising has no TVL, so
+        // it counts what it has raised.
+        let depth = |p: &wallet_core::markets::Pool| {
+            self.row_tvl_usd(p)
+                .or_else(|| {
+                    let raised = p.curve.as_ref().map(|c| c.raised_quai)?;
+                    self.token_usd(&p.token1).map(|usd| raised * usd)
+                })
+                .unwrap_or(0.0)
+        };
         pools
             .iter()
-            .filter(|p| p.venue != wallet_core::markets::Venue::Curve)
             .filter(|p| {
                 let (a, b) = (p.token0.address.to_lowercase(), p.token1.address.to_lowercase());
                 (a == pay && b == get) || (a == get && b == pay)
             })
-            .max_by(|a, b| a.tvl_usd.unwrap_or(0.0).total_cmp(&b.tvl_usd.unwrap_or(0.0)))
+            .max_by(|a, b| depth(a).total_cmp(&depth(b)))
             .map(|p| (p.clone(), p.token0.address.eq_ignore_ascii_case(&pay)))
     }
 

@@ -576,10 +576,11 @@ impl App {
                     self.eco.swap.to = self.default_receive_asset();
                 }
             }
-            DataEv::SwapQuote { key, result } => {
+            DataEv::SwapQuote { key, result, curve } => {
                 if key != 0 && key == self.eco.swap.requested_key && self.swap_input_key() == self.eco.swap.requested_input {
                     let approval_done = self.eco.swap.approving && matches!(&result, Ok(q) if !q.approval_needed);
                     self.eco.swap.quote = Some(result.map(|b| *b));
+                    self.eco.swap.curve = curve.map(|r| r.map(|b| *b));
                     self.eco.swap.quote_key = key;
                     self.eco.swap.quoted_at = Some(Instant::now());
                     if approval_done && self.eco.flow.is_none() {
@@ -838,7 +839,8 @@ impl App {
             self.eco.swap.requested_key = key;
             self.eco.swap.requested_input = Some(input);
             self.eco.swap.quoted_at = Some(Instant::now());
-            self.send_data(DataCmd::SwapQuote { key, from, to, amount: atoms.to_string(), slippage, owner });
+            let curve = self.token_curve(&from, &to);
+            self.send_data(DataCmd::SwapQuote { key, from, to, amount: atoms.to_string(), slippage, owner, curve });
         }
     }
 }

@@ -245,6 +245,97 @@ pub async fn market(ctx: &DataCtx, token: &str, curve: &str, owners: &[String]) 
     })
 }
 
+/// What a curve pays for `input`: `(output, fee, credit back, hartii)`. A buy's input is QUAI and
+/// its output tokens; a sell's the reverse. Both launchpads, each read through its own verified
+/// curve; the fee is the curve's, and a Quainance buy past its target credits the excess back.
+pub async fn quote_on_curve(
+    ctx: &crate::data::DataCtx,
+    caller: QuaiAddress,
+    token: &str,
+    curve: &str,
+    input: U256,
+    sell: bool,
+) -> Result<(U256, U256, Option<String>, bool)> {
+    let hartii = crate::hartii_tx::matches_curve_runtime(ctx, curve).await?;
+    if hartii {
+        let target = crate::hartii_tx::verified_curve(ctx, token, curve).await?;
+        let contract = Contract::new(target.address, interface(crate::hartii::CURVE_ABI)?, &ctx.node.provider);
+        if sell {
+            let gross = crate::chain::uint(&contract.call(caller, "quoteSell", &[json!(input.to_string())], BlockTag::Latest).await?, 0);
+            let (output, fee) = crate::hartii::after_fee(gross, target.fee_bps)?;
+            return Ok((output, fee, None, true));
+        }
+        let (net, fee) = crate::hartii::after_fee(input, target.fee_bps)?;
+        let raw = crate::chain::uint(&contract.call(caller, "quoteBuy", &[json!(net.to_string())], BlockTag::Latest).await?, 0);
+        let output = if target.graduated {
+            raw
+        } else {
+            let supply = crate::chain::uint(&contract.call(caller, "curveSupply", &[], BlockTag::Latest).await?, 0);
+            let sold = crate::chain::uint(&contract.call(caller, "tokensSold", &[], BlockTag::Latest).await?, 0);
+            raw.min(supply.checked_sub(sold).ok_or_else(|| CoreError::Invalid("curve sold exceeds allocation".into()))?)
+        };
+        return Ok((output, fee, None, true));
+    }
+    let address = verified_curve(&ctx.app, &ctx.node, &ctx.network, token, curve, ctx.trust).await?;
+    let contract = Contract::new(address, interface(CURVE_ABI)?, &ctx.node.provider);
+    let values = contract.call(caller, if sell { "quoteSell" } else { "quoteBuy" }, &[json!(input.to_string())], BlockTag::Latest).await?;
+    Ok((crate::chain::uint(&values, 3), crate::chain::uint(&values, 2), (!sell).then(|| crate::chain::uint(&values, 4).to_string()), false))
+}
+
+/// A token's bonding curve offered beside the exchanges for the same trade against QUAI. A token
+/// whose market is its curve (still bonding, or bonded onto a pool the curve itself keeps) can
+/// have a shallow pool elsewhere; the router alone would send a trade there, or refuse it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CurveOffer {
+    pub token: String,
+    pub symbol: String,
+    pub curve: String,
+    /// Selling the token to the curve (for QUAI), not buying it.
+    pub sell: bool,
+    /// Base units in and out.
+    pub input: String,
+    pub output: String,
+    pub fee: String,
+    pub family: crate::capabilities::Family,
+}
+
+impl CurveOffer {
+    /// The output as a number, for comparing with an exchange's.
+    pub fn amount(&self) -> Option<U256> {
+        U256::from_str_radix(&self.output, 10).ok()
+    }
+}
+
+/// Quote trading `amount` of `from` for `to` on `token`'s curve, when one side is QUAI and the other
+/// that token. `Ok(None)` for any other pair.
+pub async fn curve_offer(
+    ctx: &crate::data::DataCtx,
+    token: &crate::markets::PoolToken,
+    curve: &str,
+    from: &crate::swap::SwapAsset,
+    to: &crate::swap::SwapAsset,
+    amount: U256,
+) -> Result<Option<CurveOffer>> {
+    use crate::swap::SwapAsset;
+    let is_token = |a: &SwapAsset| matches!(a, SwapAsset::Token { address, .. } if address.eq_ignore_ascii_case(&token.address));
+    let sell = match (from, to) {
+        (SwapAsset::Quai, t) if is_token(t) => false,
+        (f, SwapAsset::Quai) if is_token(f) => true,
+        _ => return Ok(None),
+    };
+    let (output, fee, _, hartii) = quote_on_curve(ctx, addr(READ_CALLER)?, &token.address, curve, amount, sell).await?;
+    Ok(Some(CurveOffer {
+        token: token.address.to_lowercase(),
+        symbol: token.symbol.clone(),
+        curve: curve.to_lowercase(),
+        sell,
+        input: amount.to_string(),
+        output: output.to_string(),
+        fee: fee.to_string(),
+        family: if hartii { crate::capabilities::Family::HartiiCurve } else { crate::capabilities::Family::QuainanceCurve },
+    }))
+}
+
 /// `amount × (1 − slippage)`, rounded down.
 fn minimum(amount: U256, slippage_bps: u16) -> U256 {
     crate::swap::minimum_out(amount, slippage_bps)
@@ -263,7 +354,13 @@ impl Session {
     ) -> Result<CurveTradeQuote> {
         crate::swap::validate_slippage(slippage)?;
         let ctx = self.data_ctx_at(crate::data::Trust::FirstHand)?;
-        let owner = self.account(account)?.address;
+        // A quote reads; only `max` needs an account to read a balance from. A watch-only wallet
+        // quotes from the read-only caller, as a swap quote does.
+        let owner = match self.account(account) {
+            Ok(a) => a.address,
+            Err(_) if !value.eq_ignore_ascii_case("max") => READ_CALLER.to_string(),
+            Err(e) => return Err(e),
+        };
         let caller = addr(&owner)?;
         let metadata = crate::markets::token_meta_required(&ctx, token).await?;
         let input = if value.eq_ignore_ascii_case("max") {
@@ -280,34 +377,7 @@ impl Session {
             crate::amount::parse_amount(value, if sell { metadata.decimals } else { 18 })?
         };
         crate::swap::require_minimum(input)?;
-        let hartii = crate::hartii_tx::matches_curve_runtime(&ctx, curve).await?;
-        let (output, fee, excess) = if hartii {
-            let target = crate::hartii_tx::verified_curve(&ctx, token, curve).await?;
-            let contract = Contract::new(target.address, interface(crate::hartii::CURVE_ABI)?, &ctx.node.provider);
-            if sell {
-                let gross =
-                    crate::chain::uint(&contract.call(caller, "quoteSell", &[json!(input.to_string())], BlockTag::Latest).await?, 0);
-                let (output, fee) = crate::hartii::after_fee(gross, target.fee_bps)?;
-                (output, fee, None)
-            } else {
-                let (net, fee) = crate::hartii::after_fee(input, target.fee_bps)?;
-                let raw = crate::chain::uint(&contract.call(caller, "quoteBuy", &[json!(net.to_string())], BlockTag::Latest).await?, 0);
-                let output = if target.graduated {
-                    raw
-                } else {
-                    let supply = crate::chain::uint(&contract.call(caller, "curveSupply", &[], BlockTag::Latest).await?, 0);
-                    let sold = crate::chain::uint(&contract.call(caller, "tokensSold", &[], BlockTag::Latest).await?, 0);
-                    raw.min(supply.checked_sub(sold).ok_or_else(|| CoreError::Invalid("curve sold exceeds allocation".into()))?)
-                };
-                (output, fee, None)
-            }
-        } else {
-            let address = verified_curve(&ctx.app, &ctx.node, &ctx.network, token, curve, crate::data::Trust::FirstHand).await?;
-            let contract = Contract::new(address, interface(CURVE_ABI)?, &ctx.node.provider);
-            let values =
-                contract.call(caller, if sell { "quoteSell" } else { "quoteBuy" }, &[json!(input.to_string())], BlockTag::Latest).await?;
-            (crate::chain::uint(&values, 3), crate::chain::uint(&values, 2), (!sell).then(|| crate::chain::uint(&values, 4).to_string()))
-        };
+        let (output, fee, excess, hartii) = quote_on_curve(&ctx, caller, token, curve, input, sell).await?;
         let minimum = crate::swap::minimum_out(output, slippage);
         crate::swap::require_minimum(minimum)?;
         Ok(CurveTradeQuote {

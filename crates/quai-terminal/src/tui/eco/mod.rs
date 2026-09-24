@@ -53,6 +53,8 @@ pub struct SwapCard {
     /// The share of the spendable maximum last set with `%` (25, 50, 75, 100), until the amount
     /// is typed over.
     pub preset: Option<u8>,
+    /// The same trade on the token's bonding curve, quoted with `quote`.
+    pub curve: Option<Result<wallet_core::curve::CurveOffer, String>>,
 }
 
 impl Default for SwapCard {
@@ -73,6 +75,7 @@ impl Default for SwapCard {
             quoted_at: None,
             approving: false,
             preset: None,
+            curve: None,
         }
     }
 }
