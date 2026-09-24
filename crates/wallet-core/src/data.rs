@@ -282,6 +282,21 @@ impl DataCtx {
         }
     }
 
+    /// The last answer stored for `key`, however old (up to [`MAX_SERVE_AGE`]), without asking
+    /// anyone: for a display that has waited as long as it will for a fresh one.
+    pub fn peek_cached<T: DeserializeOwned>(&self, key: &str) -> Option<Cached<T>> {
+        if !self.trust.may_cache() {
+            return None;
+        }
+        let store = self.store(key);
+        let (text, at) = store.cache_get(&format!("{}:{key}", self.network.id)).ok().flatten()?;
+        (now().saturating_sub(at) < MAX_SERVE_AGE).then(|| serde_json::from_str::<T>(&text).ok()).flatten().map(|value| Cached {
+            value,
+            fetched_at: at,
+            stale: true,
+        })
+    }
+
     /// Wait for whoever holds a key's refresh to write it, up to [`LEADER_WAIT`].
     ///
     /// Only reached with nothing to show, so waiting costs a screen nothing it was not already

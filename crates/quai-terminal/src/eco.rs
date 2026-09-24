@@ -680,10 +680,12 @@ async fn swap_once(
     max_fee: Option<&str>,
     step: Option<(&str, &str)>,
 ) -> Result<wallet_core::tx::Submitted> {
-    let quote = s.swap_quote(account, from, to, value, slippage, wallet_core::data::Trust::Cached).await?;
+    // Only a step of a longer trade prints its own quote line; a lone swap printed its quote
+    // already, and quoting it again here was a second full round of reads before the review's.
     if let Some((label, _)) = step
         && !ctx.out.json()
     {
+        let quote = s.swap_quote(account, from, to, value, slippage, wallet_core::data::Trust::Cached).await?;
         println!("\n{} · {} → ≈ {}", ctx.out.bold(label), quote.pay_text(), quote.receive_text());
     }
     run_action(
