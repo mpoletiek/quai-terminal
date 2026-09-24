@@ -66,7 +66,7 @@ pub fn draw_board(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         // Each group is announced, and the rows inside it carry their own mark.
         let group_of = |r: &BoardRow| match r {
             BoardRow::Channel(_) => 0u8,
-            BoardRow::Setup | BoardRow::Chat(..) => 1,
+            BoardRow::Messaging | BoardRow::Chat(..) => 1,
             BoardRow::Request(_) => 2,
             BoardRow::Peer(..) => 3,
             BoardRow::Unfollowed(..) => 4,
@@ -149,7 +149,14 @@ pub fn draw_board(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                         };
                         (truncate(name.as_deref().unwrap_or(&wallet_core::session::short_code(code)), 15), n, true)
                     }
-                    BoardRow::Setup => ("set up messages".to_string(), String::new(), true),
+                    BoardRow::Messaging => {
+                        use wallet_core::messaging::service::KeyNeed;
+                        match app.messaging().map(|v| v.status.need) {
+                            Some(KeyNeed::NotSetUp) => ("set up messages".to_string(), String::new(), true),
+                            Some(KeyNeed::Publish | KeyNeed::NoKeys) => ("your account".to_string(), t.icon(Icon::Danger).into(), true),
+                            _ => ("your account".to_string(), String::new(), true),
+                        }
+                    }
                     BoardRow::Chat(address, name) => {
                         let label = name.clone().unwrap_or_else(|| short_address(address));
                         (truncate(&label, 15), private_count(app, t, address), true)
@@ -191,7 +198,7 @@ pub fn draw_board(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     match open {
         BoardRow::Channel(channel) | BoardRow::Unfollowed(channel, _) => draw_board_channel(f, app, t, main, &channel),
         BoardRow::Peer(code, name) => draw_board_conversation(f, app, t, main, &code, name.as_deref()),
-        BoardRow::Setup => draw_messaging_setup(f, app, t, main),
+        BoardRow::Messaging => draw_messaging_account(f, app, t, main),
         BoardRow::Chat(address, _) => draw_private_conversation(f, app, t, main, &address, false),
         BoardRow::Request(address) => draw_private_conversation(f, app, t, main, &address, true),
     }
@@ -208,46 +215,100 @@ fn private_count(app: &App, t: &Theme, address: &str) -> String {
     }
 }
 
-/// What private messages are, before they are set up.
-pub(crate) fn draw_messaging_setup(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+/// The messaging account: where messages go from, its balance, fingerprint and this week's key,
+/// and the accounts to choose it from (never the main one).
+pub(crate) fn draw_messaging_account(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::messaging::service::KeyNeed;
-    let block = panel(t, "private messages", app.lit_pane() == Some(1));
+    let block = panel(t, "messaging account", app.lit_pane() == Some(1));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let no_keys = app.messaging().is_some_and(|v| v.status.need == KeyNeed::NoKeys);
-    let mut lines = vec![
-        Line::from(Span::styled(
-            if no_keys {
-                format!("{}  This computer holds no keys for your messaging account.", t.icon(Icon::Lock))
-            } else {
-                format!("{}  Private messages", t.icon(Icon::Chat))
-            },
-            t.strong_style(),
-        )),
-        Line::from(""),
-    ];
-    let points: &[&str] = if no_keys {
-        &[
-            "Messaging keys are never backed up, so a restored or copied wallet has none.",
-            "Starting again makes a new identity: people you talk to will see it change and should compare fingerprints with you.",
-        ]
-    } else {
-        &[
-            "Each message is encrypted to one person. On chain, anyone sees that your messaging address sent something, when, and \
-             roughly how big — not who it was for.",
-            "Messages and board posts go from an account of their own, never your main one. You fund it; that transfer links the two.",
-            "Keys stay on this computer and are never backed up. A restore starts a new messaging identity with no history.",
-            "Anyone can write to you. People you have not accepted wait under requests and never notify.",
-        ]
+    if app.locked {
+        return empty(f, inner, t, Icon::Lock, "Unlock to set up private messages.", &[]);
+    }
+    let Some(view) = app.messaging() else {
+        return empty_state(f, inner, t, spinner(), "Reading…", &[]);
     };
-    for p in points {
-        lines.push(Line::from(Span::styled(format!("•  {p}"), t.dim_style())));
+    let status = &view.status;
+    let current = status.account.clone().filter(|_| status.need != KeyNeed::NotSetUp);
+    let mut lines: Vec<Line> = Vec::new();
+    let label = |k: &str| Span::styled(format!("{k:<13}"), t.dim_style());
+    match &current {
+        None => {
+            lines.push(Line::from(Span::styled(
+                format!("{}  Choose the account your messages go from", t.icon(Icon::Chat)),
+                t.strong_style(),
+            )));
+            lines.push(Line::from(""));
+            for p in [
+                "It is never your main account: whatever an account posts is tied to what it holds. You fund it, and that transfer is public.",
+                "Each message is encrypted to one person. On chain, anyone sees that this account sent something, when and roughly how big, not who it was for.",
+                "Its keys stay on this computer and are never backed up: a restore starts a new identity with no history.",
+            ] {
+                // Wrapped here, so the list below starts exactly where the text ends.
+                for (i, part) in crate::tui::ui::textwrap(p, inner.width.saturating_sub(4) as usize).into_iter().enumerate() {
+                    lines.push(Line::from(Span::styled(format!("{}{part}", if i == 0 { "•  " } else { "   " }), t.dim_style())));
+                }
+            }
+        }
+        Some(account) => {
+            let entry = app.dash.accounts.iter().find(|a| a.address.eq_ignore_ascii_case(account));
+            let name = entry.map_or_else(|| short_address(account), |a| format!("{} · {}", a.label, short_address(&a.address)));
+            lines.push(Line::from(vec![label("account"), Span::styled(name, t.strong_style())]));
+            let balance = entry.map(|a| {
+                format!("{} QUAI", wallet_core::amount::group_thousands(&wallet_core::amount::format_amount_short(a.balance, 18, 4)))
+            });
+            let empty_account = entry.is_some_and(|a| a.balance.is_zero());
+            lines.push(Line::from(vec![
+                label("balance"),
+                Span::styled(
+                    balance.unwrap_or_else(|| "—".into()),
+                    if empty_account { Style::default().fg(t.danger) } else { t.text_style() },
+                ),
+                Span::styled(if empty_account { "   it pays for every message: F funds it" } else { "" }, t.dim_style()),
+            ]));
+            if let Some(fp) = &status.fingerprint {
+                lines.push(Line::from(vec![label("fingerprint"), Span::styled(fp.clone(), t.text_style())]));
+            }
+            let key = match status.need {
+                KeyNeed::Ready => Span::styled("published", t.text_style()),
+                KeyNeed::Publishing => Span::styled("on its way", t.text_style()),
+                KeyNeed::Publish => Span::styled("not published yet: K", Style::default().fg(t.danger)),
+                KeyNeed::NoKeys => {
+                    Span::styled("none on this computer: pick an account below to start again", Style::default().fg(t.danger))
+                }
+                KeyNeed::NotSetUp => Span::raw(""),
+            };
+            lines.push(Line::from(vec![label("this week"), key]));
+        }
+    }
+    lines.push(Line::from(""));
+    if current.is_some() {
+        lines.push(hint_line(t, &[("F", "fund it"), ("K", "publish this week's key"), ("m", "new message")]));
         lines.push(Line::from(""));
     }
-    lines.push(hint_line(t, &[("p", if no_keys { "start a new identity" } else { "set up" })]));
-    let width = inner.width.saturating_sub(4).min(80);
-    let rect = Rect::new(inner.x + 2, inner.y + 1, width, inner.height.saturating_sub(1));
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), rect);
+    lines.push(Line::from(Span::styled(if current.is_some() { "move messaging to" } else { "messages go from" }, t.dim_style())));
+    let head = lines.len() as u16;
+    let [top, list] = Layout::vertical([Constraint::Length(head), Constraint::Min(1)]).areas(inner);
+    f.render_widget(Paragraph::new(lines), top);
+    let cursor = (app.lit_pane() == Some(1)).then_some(app.selected);
+    let rows: Vec<Line> = app
+        .messaging_choices()
+        .iter()
+        .enumerate()
+        .map(|(i, (address, text))| {
+            let in_use = current.as_deref().is_some_and(|c| address.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(c)));
+            let line = Line::from(vec![
+                Span::styled(if in_use { format!(" {} ", t.icon(Icon::Ok)) } else { "   ".into() }, Style::default().fg(t.ok)),
+                Span::styled(text.clone(), if in_use { t.strong_style() } else { t.text_style() }),
+            ]);
+            if cursor == Some(i) { line.style(t.selected()) } else { line }
+        })
+        .collect();
+    f.render_widget(Paragraph::new(rows), list);
+    if cursor.is_none() {
+        let hint = Rect { y: list.y + list.height.saturating_sub(1), height: 1, ..list };
+        f.render_widget(Paragraph::new(hint_line(t, &[("enter", "choose from this list")])), hint);
+    }
 }
 
 /// One private conversation, or a request: what they said, oldest first, under whatever needs

@@ -448,8 +448,9 @@ pub enum BoardRow {
     Unfollowed(String, u32),
     /// An old (v1/v2) payment-code conversation, read-only: code, and the contact name.
     Peer(String, Option<String>),
-    /// Private messages are not set up on this network yet.
-    Setup,
+    /// The messaging account: which account messages go from, its balance and keys, and the
+    /// list to choose it from.
+    Messaging,
     /// A private conversation: messaging address, and the contact name.
     Chat(String, Option<String>),
     /// Someone who wrote first and waits to be accepted: messaging address.

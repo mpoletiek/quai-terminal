@@ -195,19 +195,6 @@ impl App {
                 vec![Field::new("To", "messaging address or contact"), Field::new("Message", "only they can read it")],
                 Some("Encrypted to them alone. On chain anyone sees your messaging address, the time and the size, not who it is for."),
             ),
-            FormKind::MessagingSetup => {
-                // Never the main account: messages would be tied to everything it holds.
-                let mut choices: Vec<(String, String)> = accounts.iter().skip(1).cloned().collect();
-                choices.push(("new".into(), "a new account, just for messaging".into()));
-                (
-                    "Set up private messages",
-                    vec![Field::new("Messaging account", "").choice(choices)],
-                    Some(
-                        "Messages and board posts go from this account, not your main one. Its keys stay on this computer and are \
-                         never backed up: a restore starts a new messaging identity.",
-                    ),
-                )
-            }
             FormKind::MessagingFund => (
                 "Fund the messaging account",
                 vec![account("From"), Field::new("Amount", "QUAI for its fees").amount("QUAI")],
@@ -632,10 +619,6 @@ impl App {
             FormKind::Message { peer, .. } => Cmd::Prepare(Prepare::Message { peer: peer.clone(), text: v(0) }),
             FormKind::MessageNew => Cmd::Prepare(Prepare::Message { peer: v(0), text: v(1) }),
             FormKind::MessagingFund => Cmd::Prepare(Prepare::MessagingFund { from: opt(0), amount: v(1) }),
-            FormKind::MessagingSetup => {
-                let account = Some(v(0)).filter(|a| a != "new" && !a.is_empty());
-                Cmd::Messaging { op: super::super::worker::MsgOp::Setup { account }, epoch: self.private_epoch }
-            }
             FormKind::OrderCreate { .. } | FormKind::FollowChannel | FormKind::RenameWallet(_) => unreachable!("handled above"),
             FormKind::AddAccount => Cmd::AddAccount(opt(0)),
             // Moved straight into wiped buffers; the form's own copies are wiped when it drops.

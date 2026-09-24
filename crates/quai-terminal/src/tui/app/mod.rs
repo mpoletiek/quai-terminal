@@ -542,8 +542,6 @@ pub enum FormKind {
     },
     /// A private message to someone not in the list yet: address or contact, and the text.
     MessageNew,
-    /// Choose the messaging account (never the main one).
-    MessagingSetup,
     /// QUAI to the messaging account for its fees.
     MessagingFund,
     /// Follow another channel.
@@ -846,6 +844,8 @@ pub enum ConfirmAction {
     TrustPeer(String),
     /// Record that a peer's fingerprint matched.
     VerifyPeer(String),
+    /// Move messaging to another account (`None`: a new one), starting a new identity.
+    MoveMessaging(Option<String>),
 }
 
 pub enum Modal {

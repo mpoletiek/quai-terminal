@@ -313,6 +313,9 @@ impl App {
                         ConfirmAction::BlockPeer(address) => self.messaging_op(super::super::worker::MsgOp::Block(address)),
                         ConfirmAction::TrustPeer(address) => self.messaging_op(super::super::worker::MsgOp::Trust(address)),
                         ConfirmAction::VerifyPeer(address) => self.messaging_op(super::super::worker::MsgOp::Verify(address)),
+                        ConfirmAction::MoveMessaging(account) => {
+                            self.messaging_op(super::super::worker::MsgOp::Setup { account, new_identity: true })
+                        }
                         ConfirmAction::Unfollow(name) => {
                             self.config.board_channels.retain(|c| *c != name);
                             self.save_config();

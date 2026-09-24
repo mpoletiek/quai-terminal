@@ -2746,7 +2746,7 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
     app.meta.as_mut().unwrap().kind = wallet_core::registry::WalletKind::Hd;
     app.config.board_channels = vec!["general".into()];
     app.eco.board.msg = Some(Ok(messaging_view(KeyNeed::NotSetUp)));
-    assert_eq!(app.board_rows(), vec![BoardRow::Channel("general".into()), BoardRow::Setup]);
+    assert_eq!(app.board_rows(), vec![BoardRow::Channel("general".into()), BoardRow::Messaging]);
     app.switch(Screen::Board);
     app.selected = 1;
     let text = screen_text(&mut app, 160, 48).join("\n");
@@ -2757,7 +2757,12 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
     let carol = "0x00cacacacacacacacacacacacacacacacacacaca".to_string();
     assert_eq!(
         app.board_rows(),
-        vec![BoardRow::Channel("general".into()), BoardRow::Chat(bob.clone(), Some("bob".into())), BoardRow::Request(carol.clone())]
+        vec![
+            BoardRow::Channel("general".into()),
+            BoardRow::Messaging,
+            BoardRow::Chat(bob.clone(), Some("bob".into())),
+            BoardRow::Request(carol.clone())
+        ]
     );
     let line = |outgoing, text: &str, status: &str| Line {
         at: 1,
@@ -2768,7 +2773,7 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
         tx: String::new(),
     };
     app.eco.board.msg_lines.insert(bob.clone(), Ok(vec![line(false, "meet at nine", "received"), line(true, "see you there", "pending")]));
-    app.selected = 1;
+    app.selected = 2;
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("bob · private"), "{text}");
     assert!(text.contains("meet at nine") && text.contains("see you there   · pending"), "{text}");
@@ -2776,14 +2781,69 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
     assert!(text.contains("◉ private") && text.contains("◉ requests"), "the groups are headed: {text}");
 
     app.eco.board.msg_lines.insert(carol.clone(), Ok(vec![line(false, "hello?", "received")]));
-    app.selected = 2;
+    app.selected = 3;
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("request") && text.contains("a accept") && text.contains("Wrote to you first"), "{text}");
 
     if let Some(Ok(v)) = &mut app.eco.board.msg {
         v.conversations[0].identity_changed = true;
     }
-    app.selected = 1;
+    app.selected = 2;
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("Their identity key changed"), "{text}");
+}
+
+/// The messaging account is chosen on the Board: its row opens a list of every account but the
+/// main one (and a new one); picking one sets messaging up, and picking another later asks first,
+/// since it starts a new identity. The account in use shows its balance and how to fund it.
+#[test]
+fn the_messaging_account_is_chosen_and_funded_from_the_board() {
+    use super::super::eco::BoardRow;
+    use crate::tui::app::{ConfirmAction, FormKind};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |app: &mut App, code: KeyCode| app.on_key(KeyEvent::new(code, KeyModifiers::NONE), (160, 48));
+    use wallet_core::messaging::service::KeyNeed;
+    let (_dir, mut app) = populated_app();
+    app.meta.as_mut().unwrap().kind = wallet_core::registry::WalletKind::Hd;
+    app.config.board_channels = vec![];
+    // A second account, and a third, to choose between.
+    for (n, address) in [(2, "0x00b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"), (3, "0x00c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2")] {
+        let mut extra = app.dash.accounts[0].clone();
+        extra.address = address.into();
+        extra.label = format!("Account {n}");
+        app.dash.accounts.push(extra);
+    }
+    app.eco.board.msg = Some(Ok(messaging_view(KeyNeed::NotSetUp)));
+    app.switch(Screen::Board);
+    let row = app.board_rows().iter().position(|r| *r == BoardRow::Messaging).unwrap();
+    app.pane = 0;
+    app.selected = row;
+    let choices = app.messaging_choices();
+    assert_eq!(choices.len(), app.dash.accounts.len(), "every account but the main one, and a new one");
+    assert!(choices.iter().all(|(a, _)| a.as_deref() != Some(app.dash.accounts[0].address.as_str())), "never the main one");
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert!(text.contains("Choose the account your messages go from") && text.contains("a new account, just for messaging"), "{text}");
+    assert!(text.contains("messages go from") && !text.contains("F fund it"), "nothing to fund before there is an account: {text}");
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.pane, 1, "enter goes to the list beside");
+    app.eco.board.msg_loading = false;
+    press(&mut app, KeyCode::Char('p'));
+    assert!(app.eco.board.msg_loading, "picking one sets messaging up");
+
+    // Set up: the pane shows the account and how to fund it; another account asks first.
+    let mut view = messaging_view(KeyNeed::Ready);
+    view.status.account = Some(app.dash.accounts[1].address.clone());
+    app.eco.board.msg = Some(Ok(view));
+    app.eco.board.msg_loading = false;
+    app.pane = 0;
+    app.selected = app.board_rows().iter().position(|r| *r == BoardRow::Messaging).unwrap();
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert!(text.contains("F fund it") && text.contains("move messaging to") && text.contains(" ✓ "), "{text}");
+    press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('p'));
+    assert!(matches!(&app.modal, Modal::Confirm { action: ConfirmAction::MoveMessaging(_), .. }), "moving asks first");
+    app.modal = Modal::None;
+    press(&mut app, KeyCode::Char('F'));
+    assert!(matches!(&app.modal, Modal::Form(f) if f.kind == FormKind::MessagingFund), "F funds it from the Board");
 }

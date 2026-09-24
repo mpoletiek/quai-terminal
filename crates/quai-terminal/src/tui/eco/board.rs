@@ -12,14 +12,14 @@ impl App {
     pub fn board_rows(&self) -> Vec<BoardRow> {
         let followed = &self.config.board_channels;
         let mut rows: Vec<BoardRow> = followed.iter().cloned().map(BoardRow::Channel).collect();
-        // Private messages: set up first, then conversations newest first, then who is waiting.
+        // Private messages: the messaging account first, then conversations newest first, then
+        // who is waiting.
         if let Some(Ok(view)) = &self.eco.board.msg {
             use wallet_core::messaging::service::KeyNeed;
-            if matches!(view.status.need, KeyNeed::NotSetUp | KeyNeed::NoKeys) {
-                if self.can_sign() {
-                    rows.push(BoardRow::Setup);
-                }
-            } else {
+            if self.can_sign() {
+                rows.push(BoardRow::Messaging);
+            }
+            if !matches!(view.status.need, KeyNeed::NotSetUp | KeyNeed::NoKeys) {
                 rows.extend(view.conversations.iter().map(|c| BoardRow::Chat(c.peer.clone(), c.name.clone())));
                 rows.extend(view.requests.iter().map(|c| BoardRow::Request(c.peer.clone())));
             }
@@ -55,7 +55,7 @@ impl App {
                 contact.as_ref().is_some_and(|c| c.to_lowercase().contains(&filter)) || id.to_lowercase().contains(&filter)
             }
             BoardRow::Request(address) => address.contains(&filter),
-            BoardRow::Setup => true,
+            BoardRow::Messaging => true,
         });
         rows
     }
@@ -84,7 +84,7 @@ impl App {
                 (format!("msg:{address}"), name.clone().unwrap_or_else(|| wallet_core::session::short_address(address)))
             }
             BoardRow::Request(address) => (format!("msg:{address}"), wallet_core::session::short_address(address)),
-            BoardRow::Setup => (String::new(), "private messages".into()),
+            BoardRow::Messaging => (String::new(), "messaging account".into()),
         }
     }
 
@@ -188,7 +188,7 @@ impl App {
         match self.board_row() {
             Some(BoardRow::Peer(..)) => self.board_dm_lines().get(self.selected).map(|l| l.from.clone()),
             Some(BoardRow::Chat(address, _) | BoardRow::Request(address)) => Some(address),
-            Some(BoardRow::Setup) => None,
+            Some(BoardRow::Messaging) => None,
             _ => self.board_posts().get(self.selected).map(|p| p.from.clone()),
         }
     }
@@ -245,12 +245,65 @@ impl App {
         }
         match self.messaging().map(|v| v.status.need) {
             Some(KeyNeed::Publish) => self.publish_messaging_key(),
-            Some(KeyNeed::NotSetUp | KeyNeed::NoKeys) => self.open_form(FormKind::MessagingSetup),
+            Some(KeyNeed::NotSetUp | KeyNeed::NoKeys) => self.open_messaging_account(),
             _ => {
                 if self.private_conversation(&address).is_some_and(|c| c.identity_changed) {
                     return self.toast("their identity key changed: compare fingerprints (v), then accept it (T)", true);
                 }
                 self.open_form(FormKind::Message { peer: address, name })
+            }
+        }
+    }
+
+    /// The accounts messaging can go from: every one but the main one, then a new one. Each is
+    /// (address, `None` for a new account) and how it reads.
+    pub fn messaging_choices(&self) -> Vec<(Option<String>, String)> {
+        let mut out: Vec<(Option<String>, String)> = self
+            .dash
+            .accounts
+            .iter()
+            .skip(1)
+            .map(|a| {
+                let balance = wallet_core::amount::group_thousands(&wallet_core::amount::format_amount_short(a.balance, 18, 4));
+                (Some(a.address.clone()), format!("{} · {} · {balance} QUAI", a.label, wallet_core::session::short_address(&a.address)))
+            })
+            .collect();
+        out.push((None, "a new account, just for messaging".into()));
+        out
+    }
+
+    /// Put the cursor on the messaging account's row, with the choice beside it.
+    pub(crate) fn open_messaging_account(&mut self) {
+        let Some(i) = self.board_rows().iter().position(|r| *r == BoardRow::Messaging) else {
+            return self.toast("unlock to set up private messages", true);
+        };
+        self.pane = 0;
+        self.selected = i;
+        self.toast("choose the account messages go from: enter, then pick one", false);
+    }
+
+    /// Messages go from the `i`th choice. The first choice sets messaging up; a different one
+    /// later moves it, which starts a new identity, so that asks first.
+    pub(crate) fn choose_messaging_account(&mut self, i: usize) {
+        use wallet_core::messaging::service::KeyNeed;
+        let Some((account, label)) = self.messaging_choices().get(i).cloned() else { return };
+        let status = self.messaging().map(|v| v.status.clone());
+        let current = status.as_ref().and_then(|s| s.account.clone());
+        let same = matches!((&account, &current), (Some(a), Some(c)) if a.eq_ignore_ascii_case(c));
+        match status.map(|s| s.need) {
+            None => {}
+            Some(KeyNeed::NotSetUp) => self.messaging_op(super::super::worker::MsgOp::Setup { account, new_identity: false }),
+            Some(KeyNeed::NoKeys) if same => self.messaging_op(super::super::worker::MsgOp::Setup { account, new_identity: true }),
+            Some(_) if same => self.info("messages already go from this account"),
+            Some(_) => {
+                self.modal = super::super::app::Modal::Confirm {
+                    title: "New messaging identity".into(),
+                    body: format!(
+                        "Move messaging to {label}? This starts a new identity: the keys and history on this computer are \
+                         deleted, and people you talk to will see it change and should compare fingerprints with you again."
+                    ),
+                    action: super::super::app::ConfirmAction::MoveMessaging(account),
+                };
             }
         }
     }
@@ -266,7 +319,7 @@ impl App {
         match self.board_row() {
             Some(BoardRow::Peer(..)) => self.board_dm_lines().len(),
             Some(BoardRow::Chat(..) | BoardRow::Request(..)) => self.board_private_lines().len(),
-            Some(BoardRow::Setup) => 0,
+            Some(BoardRow::Messaging) => self.messaging_choices().len(),
             _ => self.board_posts().len(),
         }
     }
@@ -306,7 +359,7 @@ impl App {
                     self.refresh_messaging(Some(address), true);
                 }
             }
-            Some(BoardRow::Setup) | None => {}
+            Some(BoardRow::Messaging) | None => {}
         }
         // The list itself: once on opening, then every half minute.
         if !self.locked && self.eco.board.msg_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
@@ -443,7 +496,18 @@ impl App {
             }
             KeyCode::Char('p') => {
                 match self.board_row() {
-                    Some(BoardRow::Setup) => self.open_form(FormKind::MessagingSetup),
+                    Some(BoardRow::Messaging) if self.pane == 1 => self.choose_messaging_account(self.selected),
+                    // The choice is the pane beside: go there, onto the account in use.
+                    Some(BoardRow::Messaging) => {
+                        self.eco.board_channel_selected = self.selected;
+                        self.pane = 1;
+                        let current = self.messaging().and_then(|v| v.status.account.clone());
+                        self.selected = self
+                            .messaging_choices()
+                            .iter()
+                            .position(|(a, _)| a.as_deref().is_some_and(|a| current.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(a))))
+                            .unwrap_or(0);
+                    }
                     Some(BoardRow::Chat(address, name)) => self.write_private(address, name),
                     Some(BoardRow::Request(_)) => self.toast("accept them first (a), or block them (B)", true),
                     Some(BoardRow::Channel(channel)) => self.open_form(FormKind::BoardPost { channel }),
@@ -495,7 +559,7 @@ impl App {
                 true
             }
             // Notify me when someone says something here (again stops).
-            KeyCode::Char('n') if matches!(self.board_row(), Some(BoardRow::Chat(..) | BoardRow::Request(..) | BoardRow::Setup)) => {
+            KeyCode::Char('n') if matches!(self.board_row(), Some(BoardRow::Chat(..) | BoardRow::Request(..) | BoardRow::Messaging)) => {
                 self.info("private conversations always notify; requests never do until you accept them");
                 true
             }

@@ -286,9 +286,11 @@ pub enum MsgOp {
         open: Option<String>,
         sync: bool,
     },
-    /// Choose the messaging account; `None` derives a new one first.
+    /// Choose the messaging account; `None` derives a new one first. `new_identity` moves an
+    /// existing identity (its keys and history are deleted).
     Setup {
         account: Option<String>,
+        new_identity: bool,
     },
     Accept(String),
     Block(String),
@@ -2303,13 +2305,13 @@ async fn messaging_op(session: &mut Session, op: MsgOp) -> (Option<String>, bool
     let said = |r: wallet_core::Result<String>| Some(r.unwrap_or_else(|e| e.to_string()));
     match op {
         MsgOp::Refresh { open, sync } => (open, sync, None),
-        MsgOp::Setup { account } => {
+        MsgOp::Setup { account, new_identity } => {
             let account = match account {
                 Some(a) => Ok(a),
                 None => session.add_account(Some("messaging")).map(|a| a.address),
             };
             let note = match account {
-                Ok(a) => said(session.messaging_setup(&a, false).await.map(|s| {
+                Ok(a) => said(session.messaging_setup(&a, new_identity).await.map(|s| {
                     format!(
                         "private messages from {} · fingerprint {} · fund it (F), then publish this week's key (K)",
                         wallet_core::session::short_address(s.account.as_deref().unwrap_or(&a)),
