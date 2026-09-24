@@ -128,6 +128,7 @@ const MARKETS: ViewKeys = ViewKeys {
         ov(PanePrev, "pairs · flow", V(KeyCode::BackTab)),
         ov(Open, "actions · chart", Act(App::markets_open)),
         ov(Trade, "trade", V(ch('t'))),
+        ov(Sell, "sell to the curve", V(ch('S'))),
         ov(Flip, "flip pair", V(ch('f'))),
         ov(Sort, "sort", Act(App::cycle_market_sort)),
         ov(ViewMode, "timeframe · dust", Act(App::markets_view_mode)),
@@ -136,6 +137,7 @@ const MARKETS: ViewKeys = ViewKeys {
     footer: &[Trade, Flip, Sort, ViewMode],
     sheet: &[
         tr('t', "trade this pair", V(ch('t'))),
+        it('s', "sell to the curve", V(ch('S'))),
         it('w', "watch pair", V(ch('w'))),
         it('a', "alert on pair", V(ch('A'))),
         it('f', "timeframe", V(ch('T'))),

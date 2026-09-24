@@ -81,7 +81,12 @@ impl App {
 
     pub(crate) fn sort_markets_order(&self, pools: &[wallet_core::markets::Pool]) -> Vec<usize> {
         let mv = &self.eco.markets_view;
-        let mut rows: Vec<usize> = (0..pools.len()).collect();
+        // A few dollars seeded beside a token's real market lists as a second pair nobody trades.
+        // It stays in Pools and the router still sees it; the pairs list shows the market, unless
+        // the pair is watched.
+        let shadowed = wallet_core::markets::shadowed(pools);
+        let watched = |i: &usize| self.eco.watchlist.iter().any(|w| w.eq_ignore_ascii_case(&pools[*i].address));
+        let mut rows: Vec<usize> = (0..pools.len()).filter(|i| !shadowed.contains(i) || watched(i)).collect();
         let key = |i: &usize| match mv.sort {
             MarketSort::TvlDesc | MarketSort::TvlAsc => pools[*i].tvl_usd,
             MarketSort::ChangeDesc | MarketSort::ChangeAsc => pools[*i].change_24h(),
@@ -99,7 +104,6 @@ impl App {
         // Watched pairs stay at the top whatever the order: watching one is the user saying it
         // belongs in front. The sort still decides the order within each group (a stable sort).
         if !self.eco.watchlist.is_empty() {
-            let watched = |i: &usize| self.eco.watchlist.iter().any(|w| w.eq_ignore_ascii_case(&pools[*i].address));
             rows.sort_by_key(|i| !watched(i));
         }
         rows
@@ -337,6 +341,7 @@ impl App {
         }
         let pools = pools.clone();
         self.eco.markets_view.flow_loading = true;
+        self.eco.markets_view.flow_asked = Some(Instant::now());
         self.send_data(DataCmd::DexFlow { pools, blocks: FLOW_BLOCKS });
     }
 
@@ -443,8 +448,36 @@ impl App {
                 self.trade_selected_pool();
                 true
             }
+            // A curve takes both sides; `t` buys on it, `S` sells to it.
+            KeyCode::Char('S') if self.pane == 0 => {
+                self.sell_to_selected_curve();
+                true
+            }
             _ => false,
         }
+    }
+
+    /// Open the sale form for the selected pair when it is a bonding curve, prefilled with what
+    /// the wallet holds. A pool is sold through the swap card, which `t` opens and `f` flips.
+    pub(crate) fn sell_to_selected_curve(&mut self) {
+        let Some(pool) = self.selected_pool() else { return };
+        if pool.venue != wallet_core::markets::Venue::Curve {
+            self.info("S sells to a bonding curve; for a pool, t opens the swap card and f flips it to sell");
+            return;
+        }
+        if !self.can_sign() {
+            self.toast("this wallet is watch-only", true);
+            return;
+        }
+        let token = pool.token0.address.clone();
+        let held = self
+            .eco
+            .portfolio
+            .as_ref()
+            .and_then(|p| p.rows.iter().find(|r| matches!(&r.key, AssetKey::Token(a) if a.eq_ignore_ascii_case(&token))))
+            .map(|r| amount::format_amount(r.amount(), r.decimals))
+            .unwrap_or_default();
+        self.open_form(FormKind::CurveSell { token, symbol: pool.token0.symbol.clone(), curve: pool.address.clone(), held });
     }
 
     /// A pair as the lists name it, base first.
@@ -545,6 +578,7 @@ impl App {
     /// trades. A tick that falls inside a source's cache TTL is served from the store and never
     /// reaches the network, so this paces the screen rather than the network.
     pub(crate) fn tick_markets(&mut self) {
+        self.unstick_markets();
         let mv = &self.eco.markets_view;
         let stale_pools = mv.pools_at.is_none_or(|t| t.elapsed().as_secs() > wallet_core::markets::DIRECTORY_TTL);
         if !mv.pools_loading && (mv.pools.is_none() || stale_pools) && mv.pools_attempted.is_none_or(|at| at.elapsed() >= MARKET_REFRESH) {
@@ -570,6 +604,16 @@ impl App {
             return;
         }
         let bucket = wallet_core::markets::TIMEFRAMES[self.eco.markets_view.timeframe].1;
+        let since = self.tick_pair(pool, bucket);
+        if let Some(since) = since {
+            self.prefetch_neighbours(bucket, since);
+        }
+    }
+
+    /// Keep one pair's chart fed: the indexer's candles for `bucket` and the pool's own trades,
+    /// each at the screen's pace. Returns the history window when the pair already has its
+    /// trades and nothing of its own is in flight, which is when neighbours may load.
+    pub(crate) fn tick_pair(&mut self, pool: wallet_core::markets::Pool, bucket: u64) -> Option<u64> {
         let since = wallet_core::registry::now()
             .saturating_sub(bucket * (MARKET_CANDLES as u64 + 1))
             .max(wallet_core::registry::now().saturating_sub(30 * 86_400));
@@ -591,10 +635,33 @@ impl App {
             self.eco.markets_view.events_loading = Some(pool.address.clone());
             self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
             self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since });
-            return;
+            return None;
         }
-        if matches!(self.eco.markets_view.events.get(&pool.address), Some(Ok(_))) {
-            self.prefetch_neighbours(bucket, since);
+        matches!(self.eco.markets_view.events.get(&pool.address), Some(Ok(_))).then_some(since)
+    }
+
+    /// Clear a read that has been in flight far longer than any source takes.
+    ///
+    /// Each market feed asks again only once its last request has answered. An answer can go
+    /// missing: the data worker drops what it finished for a configuration it has since left
+    /// (a settings change, a new monitoring node), and a source can hang. Without this, one lost
+    /// answer froze that feed — prices, TVL, the tape or a chart — until the wallet restarted.
+    pub(crate) fn unstick_markets(&mut self) {
+        let mv = &mut self.eco.markets_view;
+        let stuck = |at: Option<Instant>| at.is_some_and(|at| at.elapsed() > MARKET_STUCK);
+        if mv.pools_loading && stuck(mv.pools_attempted) {
+            mv.pools_loading = false;
+        }
+        if mv.reserves_loading && stuck(mv.reserves_attempted) {
+            mv.reserves_loading = false;
+        }
+        if mv.flow_loading && stuck(mv.flow_asked) {
+            mv.flow_loading = false;
+        }
+        for slot in [&mut mv.events_loading, &mut mv.events_prefetching] {
+            if slot.as_ref().is_some_and(|pool| stuck(mv.events_at.get(pool).map(|(at, _)| *at))) {
+                *slot = None;
+            }
         }
     }
 

@@ -170,6 +170,13 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         super::super::eco::MarketSort::Default => String::new(),
         sort => format!(" · by {}", sort.label()),
     };
+    // Shallow duplicates of a deeper market are left out of the list, not out of existence.
+    let shadows = match pools.len().saturating_sub(rows_pools.len()) {
+        0 => String::new(),
+        1 => " · 1 shallow copy in Pools".into(),
+        n => format!(" · {n} shallow copies in Pools"),
+    };
+    let ordered = format!("{ordered}{shadows}");
     let stale = overview.sources.is_empty() || overview.sources.iter().any(|source| !source.fresh_at(now));
     let freshness = if stale { " · stale/partial source" } else { "" };
     let reserves = app
@@ -275,7 +282,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         _ => None,
     };
     let loading = [&mv.events_loading, &mv.events_prefetching].iter().any(|slot| slot.as_deref() == Some(pool.address.as_str()));
-    let action = if pool.venue == Venue::Curve { "t buy on the curve" } else { "t trade" };
+    let action = if pool.venue == Venue::Curve { "t buy · S sell" } else { "t trade" };
     let title = format!(
         "{base_sym}/{quote_sym} · {} · {tf_label} · . timeframe · f flip · {action}{}",
         pool.venue.label(),

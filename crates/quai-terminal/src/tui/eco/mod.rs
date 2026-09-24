@@ -53,8 +53,6 @@ pub struct SwapCard {
     /// The share of the spendable maximum last set with `%` (25, 50, 75, 100), until the amount
     /// is typed over.
     pub preset: Option<u8>,
-    /// The pair chart last asked for, and when, so a sitting card does not re-ask every tick.
-    pub chart_asked: Option<(String, Instant)>,
 }
 
 impl Default for SwapCard {
@@ -75,7 +73,6 @@ impl Default for SwapCard {
             quoted_at: None,
             approving: false,
             preset: None,
-            chart_asked: None,
         }
     }
 }
@@ -287,6 +284,8 @@ pub struct MarketsView {
     /// Swaps across every pool, newest first (the flow column).
     pub flow: Vec<wallet_core::markets::DexSwap>,
     pub flow_loading: bool,
+    /// When the tape was last asked for, so a request that never answers can be let go.
+    pub flow_asked: Option<Instant>,
     pub flow_at: Option<Instant>,
     /// Why the last flow refresh failed, while the tape still shows what it has.
     pub flow_error: Option<String>,
@@ -372,6 +371,7 @@ impl Default for MarketsView {
             sort: MarketSort::default(),
             flow: Vec::new(),
             flow_loading: false,
+            flow_asked: None,
             flow_at: None,
             flow_error: None,
             selected_at: None,
@@ -434,6 +434,9 @@ pub const MARKET_CANDLES: usize = 64;
 /// is not what costs — each source's own TTL decides whether a tick reaches the network at all,
 /// and a tick inside that window is served from the store.
 pub const MARKET_REFRESH: Duration = Duration::from_secs(wallet_core::markets::MARKET_TICK_SECS);
+/// A market read still unanswered after this is taken as lost and asked again. Every source gives
+/// up well before it: the HTTP client after 20 s, a slow venue after `markets::VENUE_DEADLINE`.
+pub const MARKET_STUCK: Duration = Duration::from_secs(45);
 /// How long a PnL answer is shown before opening the screen reads it again.
 pub const PNL_TTL: Duration = Duration::from_secs(30);
 /// The swap card's pair chart: hourly, which the indexer buckets, so it is one query.

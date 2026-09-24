@@ -1384,6 +1384,54 @@ pub fn apply_reserves(pools: &mut [Pool], fresh: &[(String, f64, f64)], wquai: O
     hit
 }
 
+/// Price every computable TVL on one USD basis.
+///
+/// The directory prices a pool's QUAI side off the on-chain QUAI/USDT pool, and a live reserve
+/// read prices it off the price feed. The two differ by a percent or two, so a row repriced by one
+/// and then the other flickered between them on every refresh. A caller holding the feed's price
+/// applies it here when a directory lands, so both paths agree.
+pub fn reprice_tvl(pools: &mut [Pool], wquai: Option<&str>, usd_per_quai: Option<f64>) {
+    for p in pools.iter_mut() {
+        if let Some(tvl) = amm_tvl(p, wquai, usd_per_quai) {
+            p.tvl_usd = Some(tvl);
+        }
+    }
+}
+
+/// A market this much shallower than another for the same two tokens is a shadow of it.
+pub const SHADOW_RATIO: f64 = 20.0;
+/// Only a market under this TVL can be a shadow: a deep second market is a real choice, however
+/// much deeper the first one is.
+pub const SHADOW_MAX_USD: f64 = 250.0;
+
+/// Markets that only repeat a much deeper market for the same two tokens: a pool seeded with a few
+/// dollars beside a token's real market, which lists as a second pair with no trading behind it.
+///
+/// A bonding curve pairs its token with QUAI, the same pair as a pool against WQUAI, so a bonded
+/// curve and a pool beside it are compared too. Returned as indices into `pools`.
+pub fn shadowed(pools: &[Pool]) -> std::collections::HashSet<usize> {
+    let pair = |p: &Pool| {
+        let (a, b) = (p.token0.address.to_lowercase(), p.token1.address.to_lowercase());
+        if a <= b { (a, b) } else { (b, a) }
+    };
+    let mut deepest: std::collections::HashMap<(String, String), f64> = std::collections::HashMap::new();
+    for p in pools {
+        let tvl = p.tvl_usd.unwrap_or(0.0);
+        let slot = deepest.entry(pair(p)).or_insert(0.0);
+        *slot = slot.max(tvl);
+    }
+    pools
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            let tvl = p.tvl_usd.unwrap_or(0.0);
+            let top = deepest.get(&pair(p)).copied().unwrap_or(0.0);
+            tvl < SHADOW_MAX_USD && top > 0.0 && tvl * SHADOW_RATIO <= top
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// Turn a list of pair addresses into priced [`Pool`] rows. `total` is how many the source
 /// holds, so a directory can say when it is showing fewer.
 async fn pools_from_pairs(ctx: &DataCtx, pairs: Vec<String>, total: usize, venue: Venue) -> Result<Directory> {
@@ -2264,6 +2312,43 @@ fn read_dex_flow(ctx: &DataCtx) -> Result<Vec<DexSwap>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn market(address: &str, a: &str, b: &str, tvl: f64, venue: Venue) -> Pool {
+        let tok = |x: &str| PoolToken { address: x.into(), symbol: x.into(), decimals: 18 };
+        Pool { address: address.into(), token0: tok(a), token1: tok(b), tvl_usd: Some(tvl), venue, ..Pool::default() }
+    }
+
+    /// A few dollars seeded beside a token's market is a shadow of it; a deep second market, a
+    /// market twenty times smaller but still worth listing, and a token's only market are not.
+    #[test]
+    fn only_a_shallow_copy_of_a_much_deeper_market_is_a_shadow() {
+        let pools = vec![
+            market("0xcurve", "0xqaxe", "0xwquai", 3_640.0, Venue::Curve),
+            // Same two tokens, in the other order, 280 times shallower and under the floor.
+            market("0xcopy", "0xwquai", "0xqaxe", 12.97, Venue::HartiiAmm),
+            // Deep on both venues: a real choice between them.
+            market("0xbig", "0xwqi", "0xwquai", 200_000.0, Venue::Main),
+            market("0xbig2", "0xwqi", "0xwquai", 5_000.0, Venue::Legacy),
+            // Only five times shallower.
+            market("0xnear", "0xsmol", "0xwquai", 1_000.0, Venue::Main),
+            market("0xnear2", "0xsmol", "0xwquai", 200.0, Venue::LaunchAmm),
+            // Tiny, but the only market this token has.
+            market("0xlone", "0xnvnt", "0xwquai", 4.25, Venue::Main),
+        ];
+        let hidden: Vec<&str> = shadowed(&pools).into_iter().map(|i| pools[i].address.as_str()).collect();
+        assert_eq!(hidden, vec!["0xcopy"]);
+    }
+
+    /// Every computable TVL on the basis given: a row repriced by the directory and then by a live
+    /// reserve read must not flicker between two USD prices.
+    #[test]
+    fn tvl_is_repriced_on_one_basis() {
+        let mut pools = vec![market("0xp", "0xtok", "0xwquai", 1.0, Venue::Main), market("0xq", "0xwqi", "0xusdt", 77.0, Venue::Main)];
+        pools[0].reserve1 = 100.0;
+        reprice_tvl(&mut pools, Some("0xwquai"), Some(0.01));
+        assert_eq!(pools[0].tvl_usd, Some(2.0), "both sides of 100 WQUAI at a cent");
+        assert_eq!(pools[1].tvl_usd, Some(77.0), "a pair with no QUAI side keeps what it had");
+    }
 
     #[tokio::test]
     async fn concurrent_wallets_share_an_empty_history_scan_and_cancelled_leases_release() {

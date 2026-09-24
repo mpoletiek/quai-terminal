@@ -415,8 +415,17 @@ impl App {
             }
             DataEv::Portfolio(Err(e)) => self.eco.portfolio_error = Some(e),
             DataEv::Notice(text) => self.toast(text, true),
-            DataEv::MarketPools(r) => {
+            DataEv::MarketPools(mut r) => {
                 self.eco.markets_view.pools_loading = false;
+                // The same USD basis the live reserves use (below), or each refresh would flip the
+                // TVL column between the directory's price and the feed's.
+                if let Ok((pools, _)) = r.as_mut() {
+                    let wquai = self.net().and_then(|n| n.wquai.clone());
+                    let usd = self.eco.portfolio.as_ref().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+                    if usd.is_some() {
+                        wallet_core::markets::reprice_tvl(pools, wquai.as_deref(), usd);
+                    }
+                }
                 if r.is_ok() {
                     self.eco.markets_view.pools_at = Some(Instant::now());
                 }
