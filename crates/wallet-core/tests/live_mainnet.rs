@@ -229,6 +229,42 @@ async fn a_route_s_output_is_proven_from_its_pools() {
     }
 }
 
+/// Reads asked for at a block describe that block: the tape ends there, and every pool's reserves
+/// are what the pair's own `getReserves` answers there. This is what lets the header, the prices
+/// and the tape name one block.
+#[tokio::test]
+#[ignore = "network"]
+async fn reads_at_the_announced_block_describe_that_block() {
+    use wallet_core::sdk::{BlockTag, U256};
+    let ctx = mainnet();
+    let head = ctx.node.provider.latest_header(wallet_core::network::ZONE).await.unwrap().unwrap().number;
+    let at = head - 2;
+    let pools: Vec<_> = wallet_core::markets::pools(&ctx).await.unwrap().0.into_iter().take(8).collect();
+    let tape = wallet_core::markets::dex_flow_at(&ctx, &pools, 300, Some(at)).await.unwrap();
+    let pool_rows: Vec<_> = tape.iter().filter(|s| pools.iter().any(|p| p.address == s.pool)).collect();
+    assert!(pool_rows.iter().all(|s| s.block <= at), "a pool swap after the asked block: {:?}", pool_rows.iter().map(|s| s.block).max());
+    let reserves = wallet_core::markets::refresh_reserves_at(&ctx, &pools, Some(at)).await.unwrap();
+    assert!(!reserves.is_empty());
+    for (address, r0, r1) in reserves.iter().take(4) {
+        let pool = pools.iter().find(|p| &p.address == address).unwrap();
+        let contract = wallet_core::sdk::contracts::Contract::new(
+            address.parse().unwrap(),
+            wallet_core::sdk::abi::AbiInterface::from_human_readable(&[
+                "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+            ])
+            .unwrap(),
+            &ctx.node.provider,
+        );
+        let answer = contract
+            .call(wallet_core::data::READ_CALLER.parse().unwrap(), "getReserves", &[], BlockTag::Number(U256::from(at)))
+            .await
+            .unwrap();
+        let units = |v: &serde_json::Value, d: u8| v.as_str().unwrap().parse::<f64>().unwrap() / 10f64.powi(i32::from(d));
+        assert!((units(&answer[0], pool.token0.decimals) - r0).abs() <= r0.abs() * 1e-12, "{address}: reserve0 at {at}");
+        assert!((units(&answer[1], pool.token1.decimals) - r1).abs() <= r1.abs() * 1e-12, "{address}: reserve1 at {at}");
+    }
+}
+
 /// A quote that is going into a review reads the pins and every pair address from the chain
 /// (`docs/REVIEW_TRUST.md`), so it must agree with the cached one and must still work when the
 /// memo and the pair cache are seeded with nothing. The timing is printed because the cost of

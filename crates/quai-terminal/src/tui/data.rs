@@ -67,6 +67,8 @@ pub enum DataCmd {
     PoolEvents {
         pool: Box<wallet_core::markets::Pool>,
         since: u64,
+        /// Read the node's tail up to this block: the head the screens were told about.
+        at: Option<u64>,
     },
     /// Channels with messages on the board, followed or not.
     BoardChannels {
@@ -88,6 +90,8 @@ pub enum DataCmd {
     DexFlow {
         pools: Vec<wallet_core::markets::Pool>,
         blocks: u64,
+        /// End the tape at this block: the head the screens were told about.
+        at: Option<u64>,
     },
     Images(Vec<(String, u32)>),
     /// Both QUAI ⇄ Qi markets for an amount (Trade › Convert).
@@ -356,7 +360,7 @@ fn cache_pass(cmd: &DataCmd) -> Option<DataCmd> {
         DataCmd::Launches => DataCmd::Launches,
         DataCmd::ChainStats => DataCmd::ChainStats,
         DataCmd::PairCandles { pool, bucket, count } => DataCmd::PairCandles { pool: pool.clone(), bucket: *bucket, count: *count },
-        DataCmd::DexFlow { pools, blocks } => DataCmd::DexFlow { pools: pools.clone(), blocks: *blocks },
+        DataCmd::DexFlow { pools, blocks, at } => DataCmd::DexFlow { pools: pools.clone(), blocks: *blocks, at: *at },
         DataCmd::Board { channel, blocks } => DataCmd::Board { channel: channel.clone(), blocks: *blocks },
         DataCmd::BoardChannels { blocks } => DataCmd::BoardChannels { blocks: *blocks },
         DataCmd::Nfts { owners, refresh: false } => DataCmd::Nfts { owners: owners.clone(), refresh: false },
@@ -997,13 +1001,13 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
             let r = ctx.node.provider.gas_price(wallet_core::network::ZONE).await.map(|p| p.to_string()).map_err(|e| e.to_string());
             send(DataEv::GasPrice(r));
         }
-        DataCmd::PoolEvents { pool, since } => {
-            let r = wallet_core::markets::pool_events(ctx, &pool, since, 10).await.map_err(|e| e.to_string());
+        DataCmd::PoolEvents { pool, since, at } => {
+            let r = wallet_core::markets::pool_events_at(ctx, &pool, since, 10, at).await.map_err(|e| e.to_string());
             let coverage = if r.is_ok() { wallet_core::markets::pool_history_coverage(ctx, &pool).ok().flatten() } else { None };
             send(DataEv::PoolEvents { pool: pool.address.clone(), coverage, result: r });
         }
-        DataCmd::DexFlow { pools, blocks } => {
-            send(DataEv::DexFlow(wallet_core::markets::dex_flow(ctx, &pools, blocks).await.map_err(|e| e.to_string())));
+        DataCmd::DexFlow { pools, blocks, at } => {
+            send(DataEv::DexFlow(wallet_core::markets::dex_flow_at(ctx, &pools, blocks, at).await.map_err(|e| e.to_string())));
         }
         DataCmd::PoolReserves { pools, at } => {
             send(DataEv::PoolReserves(wallet_core::markets::refresh_reserves_at(ctx, &pools, at).await.map_err(|e| e.to_string())));

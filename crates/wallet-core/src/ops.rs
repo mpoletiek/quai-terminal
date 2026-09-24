@@ -563,8 +563,16 @@ impl Session {
         if let (Some(owner), Some(wquai)) = (&wrapped, &self.network.wquai) {
             calls.push(Call::view(wquai, "balanceOf(address)", &[Arg::Addr(owner.to_string())]));
         }
-        let Ok(results) = mc.try_all(&calls).await else {
-            return self.dashboard_balances_serially(accounts).await;
+        // At the block the screens were told about, like the QUAI balances beside these; the
+        // latest when the node has not reached it.
+        let at = self.read_tag();
+        let results = match mc.try_all_at(&calls, at).await {
+            Ok(results) => results,
+            Err(_) if at != BlockTag::Latest => match mc.try_all(&calls).await {
+                Ok(results) => results,
+                Err(_) => return self.dashboard_balances_serially(accounts).await,
+            },
+            Err(_) => return self.dashboard_balances_serially(accounts).await,
         };
         let mut out = DashboardBalances::default();
         for (i, owner) in accounts.iter().enumerate() {

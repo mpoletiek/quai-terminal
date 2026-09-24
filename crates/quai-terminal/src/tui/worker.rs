@@ -1281,6 +1281,12 @@ impl Heads {
         self.stream.as_ref().map_or(0, |(rx, _)| *rx.borrow())
     }
 
+    /// Whether the heads come from polling the node that serves the reads (the monitor, or the
+    /// RPC when the explorer's stream is off), so that it has every block announced.
+    fn polled_from_reader(&self, session: &Session) -> bool {
+        session.monitoring() || self.stream.is_none()
+    }
+
     /// Least time between block-triggered refreshes: every block. A block every ~5 s is the
     /// pace the chain moves at, on a monitoring node or the public RPC alike.
     fn min_gap(&self, session: &Session) -> Duration {
@@ -1504,18 +1510,25 @@ async fn run(
                 // Notifications wait for the refreshed dashboard, so a notice never announces
                 // something the screen does not show yet.
                 let mut deferred: Vec<Ev> = Vec::new();
-                last_refresh =
-                    if refresh(&mut session, &mut dash, full, false, &mut inbox, &mut stages, &mut deferred, &send, &mut lane).await {
-                        std::time::Instant::now()
-                    } else {
-                        // Cut short for the user: due again as soon as the queue is empty, not on a
-                        // timer. Backdating by a fixed 12 s of the 15 s gap meant an interrupted
-                        // refresh waited out the remaining 3 s doing nothing — and a command arriving
-                        // a couple of hundred milliseconds into a launch is enough to hit it, which is
-                        // exactly what put a 3.8 s tail on an otherwise 0.7 s warm start. The loop
-                        // only refreshes when nothing is queued, so this cannot spin.
-                        std::time::Instant::now() - IDLE_REFRESH
-                    };
+                // The dashboard's balances are read at the block the screens were just told about,
+                // so they and the prices beside them describe the same block.
+                // Only a head polled from the node that serves the reads: the explorer's stream
+                // can lead the RPC by a block, and a read at a block the node lacks costs a retry.
+                session.read_at_block(heads.polled_from_reader(&session).then_some(announced_head));
+                let refreshed =
+                    refresh(&mut session, &mut dash, full, false, &mut inbox, &mut stages, &mut deferred, &send, &mut lane).await;
+                session.read_at_block(None);
+                last_refresh = if refreshed {
+                    std::time::Instant::now()
+                } else {
+                    // Cut short for the user: due again as soon as the queue is empty, not on a
+                    // timer. Backdating by a fixed 12 s of the 15 s gap meant an interrupted
+                    // refresh waited out the remaining 3 s doing nothing — and a command arriving
+                    // a couple of hundred milliseconds into a launch is enough to hit it, which is
+                    // exactly what put a 3.8 s tail on an otherwise 0.7 s warm start. The loop
+                    // only refreshes when nothing is queued, so this cannot spin.
+                    std::time::Instant::now() - IDLE_REFRESH
+                };
                 send(Ev::Busy(None));
                 send(Ev::Dashboard(Box::new(dash.clone())));
                 for ev in deferred {

@@ -150,6 +150,9 @@ pub struct Session {
     pub rpc: Node,
     /// `node` is the verified monitoring endpoint.
     monitored: bool,
+    /// The block display reads are made at, when the caller knows the head the screens were told
+    /// about; `None` reads the latest. Reviews never use it: they read first-hand.
+    read_at: Option<u64>,
     /// SDK store for Quai account custody.
     pub quai_store: SqliteStore,
     /// SDK store for Qi custody (HD, imported, payment channels).
@@ -209,6 +212,7 @@ impl Session {
             node: rpc.clone(),
             rpc,
             monitored: false,
+            read_at: None,
             quai_store,
             qi_store,
             app,
@@ -465,6 +469,18 @@ impl Session {
         self.quai_balances_with(&[]).await
     }
 
+    /// Read the dashboard's balances at this block: the head the screens were told about, so the
+    /// balances beside a price describe the same block as the price. A node that cannot answer for
+    /// it yet is asked for its latest instead.
+    pub fn read_at_block(&mut self, block: Option<u64>) {
+        self.read_at = block.filter(|b| *b > 0);
+    }
+
+    /// The block tag display reads use: [`Self::read_at_block`]'s, else the latest.
+    pub fn read_tag(&self) -> BlockTag {
+        self.read_at.map_or(BlockTag::Latest, |b| BlockTag::Number(U256::from(b)))
+    }
+
     /// The same, reusing locked balances read earlier instead of asking again.
     ///
     /// A locked balance costs three calls, not one: the node method is wrapped in a header read
@@ -483,10 +499,26 @@ impl Session {
             }
         }
         let carried: HashMap<&str, U256> = known_locked.iter().map(|(a, v)| (a.as_str(), *v)).collect();
+        let at = self.read_tag();
+        match self.balances_at(&entries, &carried, at).await {
+            Ok(read) => out.extend(read),
+            // The node has not reached the announced block yet: its latest, rather than nothing.
+            Err(_) if at != BlockTag::Latest => out.extend(self.balances_at(&entries, &carried, BlockTag::Latest).await?),
+            Err(e) => return Err(e),
+        }
+        Ok(out)
+    }
+
+    async fn balances_at(
+        &self,
+        entries: &[(String, String, Option<u32>)],
+        carried: &HashMap<&str, U256>,
+        at: BlockTag,
+    ) -> Result<Vec<AccountBalance>> {
         // Every account's reads at once: they are independent, and a wallet with five accounts
         // otherwise waits on that many round trips in a row.
         let provider = self.provider();
-        let reads = entries.into_iter().map(|(address, label, hd_index)| {
+        let reads = entries.iter().cloned().map(|(address, label, hd_index)| {
             let carried = carried.get(address.as_str()).copied();
             async move {
                 let parsed: QuaiAddress = address.parse().map_err(|_| CoreError::Storage(format!("invalid account {address}")))?;
@@ -496,13 +528,11 @@ impl Session {
                         None => provider.locked_quai_balance(parsed).await.map(|l| l.balance).unwrap_or(U256::ZERO),
                     }
                 };
-                let (balance, nonce, locked) =
-                    tokio::join!(provider.balance(parsed, BlockTag::Latest), provider.transaction_count(parsed, BlockTag::Latest), locked,);
+                let (balance, nonce, locked) = tokio::join!(provider.balance(parsed, at), provider.transaction_count(parsed, at), locked,);
                 Ok::<_, CoreError>(AccountBalance { address, label, hd_index, balance: balance?, nonce: nonce?, locked })
             }
         });
-        out.extend(futures::future::try_join_all(reads).await?);
-        Ok(out)
+        futures::future::try_join_all(reads).await
     }
 
     /// Add the next HD Quai account.

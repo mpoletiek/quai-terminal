@@ -344,7 +344,8 @@ impl App {
         let pools = pools.clone();
         self.eco.markets_view.flow_loading = true;
         self.eco.markets_view.flow_asked = Some(Instant::now());
-        self.send_data(DataCmd::DexFlow { pools, blocks: FLOW_BLOCKS });
+        let at = (self.eco.head > 0).then_some(self.eco.head);
+        self.send_data(DataCmd::DexFlow { pools, blocks: FLOW_BLOCKS, at });
     }
 
     pub(crate) fn markets_key(&mut self, key: KeyEvent) -> bool {
@@ -636,7 +637,7 @@ impl App {
         if due && events_idle {
             self.eco.markets_view.events_loading = Some(pool.address.clone());
             self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
-            self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since });
+            self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.head > 0).then_some(self.eco.head) });
             return None;
         }
         matches!(self.eco.markets_view.events.get(&pool.address), Some(Ok(_))).then_some(since)
@@ -694,6 +695,6 @@ impl App {
         }
         self.eco.markets_view.events_prefetching = Some(pool.address.clone());
         self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
-        self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since });
+        self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.head > 0).then_some(self.eco.head) });
     }
 }

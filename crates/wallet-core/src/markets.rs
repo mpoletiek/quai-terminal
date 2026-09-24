@@ -1529,10 +1529,26 @@ pub const HISTORY_SHARE_SECS: u64 = 2;
 pub const EXPLORER_TAIL_SECS: u64 = 30;
 
 pub async fn pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: usize) -> Result<Vec<PoolEvent>> {
+    pool_events_at(ctx, pool, since, max_pages, None).await
+}
+
+/// [`pool_events`] with the node's tail read up to block `at` (the head the screens were told
+/// about), so a pair's trades end where the header and the prices do.
+pub async fn pool_events_at(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: usize, at: Option<u64>) -> Result<Vec<PoolEvent>> {
     if ctx.cache_only {
         return read_pool_events(ctx, pool, since);
     }
-    shared_history_refresh(ctx, pool, since, || refresh_pool_events(ctx, pool, since, max_pages)).await
+    shared_history_refresh(ctx, pool, since, || refresh_pool_events(ctx, pool, since, max_pages, at)).await
+}
+
+/// The header of block `at` when given and the node has it, else the node's latest.
+async fn head_or_latest(ctx: &DataCtx, at: Option<u64>) -> Result<quai_sdk::provider::ZoneHeader> {
+    if let Some(block) = at
+        && let Ok(Some(header)) = ctx.node.provider.header_at(crate::network::ZONE, block).await
+    {
+        return Ok(header);
+    }
+    ctx.node.provider.latest_header(crate::network::ZONE).await?.ok_or_else(|| CoreError::Network("no head".into()))
 }
 
 struct HistoryLease<'a> {
@@ -1582,7 +1598,7 @@ where
     Ok(events)
 }
 
-async fn refresh_pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: usize) -> Result<Vec<PoolEvent>> {
+async fn refresh_pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: usize, at: Option<u64>) -> Result<Vec<PoolEvent>> {
     let network = &ctx.network.id;
     let horizon = now().saturating_sub(crate::appdb::FEED_KEEP);
     let known = read_pool_events(ctx, pool, horizon.min(since))?;
@@ -1604,7 +1620,7 @@ async fn refresh_pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: 
             events
         }
     } else {
-        chain_events(ctx, pool, since).await?
+        chain_events(ctx, pool, since, at).await?
     };
     let rows: Vec<(u64, u64, u64, String)> = fresh
         .iter()
@@ -1616,7 +1632,7 @@ async fn refresh_pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: 
         .collect();
     ctx.feeds().add_pool_events(network, &pool.address, &rows)?;
     if pool.venue == Venue::Curve || (pool.venue.routable() && ctx.policy.market && ctx.explorer.source() == "explorer.qu.ai") {
-        canonical_pool_tail(ctx, pool).await?;
+        canonical_pool_tail(ctx, pool, at).await?;
     }
     read_pool_events(ctx, pool, since)
 }
@@ -1924,13 +1940,8 @@ fn canonical_ranges(head: u64, previous: Option<&CanonicalCoverage>, oldest: Opt
     if older < covered_from && covered_from < tail { vec![(older, covered_from - 1), (tail, head)] } else { vec![(older.min(tail), head)] }
 }
 
-async fn canonical_pool_tail(ctx: &DataCtx, pool: &Pool) -> Result<()> {
-    let head = ctx
-        .node
-        .provider
-        .latest_header(crate::network::ZONE)
-        .await?
-        .ok_or_else(|| CoreError::Network("no head for history reconciliation".into()))?;
+async fn canonical_pool_tail(ctx: &DataCtx, pool: &Pool, at: Option<u64>) -> Result<()> {
+    let head = head_or_latest(ctx, at).await?;
     let key = canonical_key(ctx, pool);
     let original = ctx.feeds().cache_get(&key)?.map(|(value, _)| value);
     let mut previous: Option<CanonicalCoverage> = original.as_deref().and_then(|value| serde_json::from_str(value).ok());
@@ -2055,7 +2066,7 @@ async fn read_chain_range(ctx: &DataCtx, pool: &Pool, from: u64, to: u64) -> Res
 }
 
 /// Events from the node over the recent block range (≤ 10,000 blocks), with block timestamps.
-async fn chain_events(ctx: &DataCtx, pool: &Pool, since: u64) -> Result<Vec<PoolEvent>> {
+async fn chain_events(ctx: &DataCtx, pool: &Pool, since: u64, at: Option<u64>) -> Result<Vec<PoolEvent>> {
     let key = canonical_key(ctx, pool);
     let previous = ctx.feeds().cache_get(&key)?.map(|(value, _)| value);
     let bootstrapped = previous
@@ -2063,10 +2074,10 @@ async fn chain_events(ctx: &DataCtx, pool: &Pool, since: u64) -> Result<Vec<Pool
         .and_then(|value| serde_json::from_str::<CanonicalCoverage>(value).ok())
         .is_some_and(|coverage| !coverage.through_hash.is_empty());
     if bootstrapped {
-        canonical_pool_tail(ctx, pool).await?;
+        canonical_pool_tail(ctx, pool, at).await?;
         return Ok(Vec::new()); // Durable canonical rows are returned by the shared reader.
     }
-    let head = ctx.node.provider.latest_header(crate::network::ZONE).await?.ok_or_else(|| CoreError::Network("no head".into()))?;
+    let head = head_or_latest(ctx, at).await?;
     let from = head.number.saturating_sub(9_999);
     let events = read_chain_range(ctx, pool, from, head.number).await?;
     let checked = ctx.node.provider.header_at(crate::network::ZONE, head.number).await?;
@@ -2200,6 +2211,13 @@ fn order_routes(tape: &mut [DexSwap]) {
 /// from the blocks' headers, at most [`FLOW_TIMES`] a call; the rest are estimated from the head
 /// and corrected on a later refresh. Multi-hop routes appear as one row per pool they crossed.
 pub async fn dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64) -> Result<Vec<DexSwap>> {
+    dex_flow_at(ctx, pools, blocks, None).await
+}
+
+/// [`dex_flow`] up to block `at` (the head the screens were told about) rather than the node's
+/// latest, so the tape ends where the header and the prices do. A node without that block yet is
+/// read to its latest.
+pub async fn dex_flow_at(ctx: &DataCtx, pools: &[Pool], blocks: u64, at: Option<u64>) -> Result<Vec<DexSwap>> {
     if ctx.cache_only || pools.is_empty() {
         return read_dex_flow(ctx);
     }
@@ -2210,14 +2228,14 @@ pub async fn dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64) -> Result<Vec<
     let key = format!("dex_flow:{}:{}", hex::encode(Sha256::digest(addresses.join(",").as_bytes())), blocks);
     // Shared between processes for a moment, never long enough to answer a block-triggered ask
     // with the tape from before that block.
-    let result = ctx.cached(&key, HISTORY_SHARE_SECS, || refresh_dex_flow(ctx, pools, blocks)).await?;
+    let result = ctx.cached(&key, HISTORY_SHARE_SECS, || refresh_dex_flow(ctx, pools, blocks, at)).await?;
     if result.stale {
         return Err(CoreError::Network("DEX flow source is not updating; showing the previous tape".into()));
     }
     Ok(result.value)
 }
 
-async fn refresh_dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64) -> Result<Vec<DexSwap>> {
+async fn refresh_dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64, at: Option<u64>) -> Result<Vec<DexSwap>> {
     use quai_sdk::provider::{LogFilter, LogRange, TopicMatch};
     let network = ctx.network.id.clone();
     if ctx.cache_only || pools.is_empty() {
@@ -2226,7 +2244,7 @@ async fn refresh_dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64) -> Result<
     // The node's scan and the launch index run together: the index is a round trip to another
     // service, and waiting for it after the scan held the tape a third of a second behind the block.
     let chain = async {
-        let head = ctx.node.provider.latest_header(crate::network::ZONE).await?.ok_or_else(|| CoreError::Network("no head".into()))?;
+        let head = head_or_latest(ctx, at).await?;
         let head_time = crate::network::header_time(&head).unwrap_or_else(now);
         let to = head.number;
         let floor = to.saturating_sub(blocks.max(1));
