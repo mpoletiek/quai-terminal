@@ -3265,6 +3265,23 @@ fn the_flow_cursor_stays_on_its_trade_as_new_trades_arrive() {
     assert_eq!(app.flow_rows()[app.eco.markets_view.flow_selected].tx, "0xe", "a parked cursor follows its trade too");
 }
 
+/// A pair's logs always reach a day back, whatever the chart's timeframe: the header's 24h volume,
+/// trades, high and low are counted from them. At 15m the chart alone asked for 16 hours.
+#[test]
+fn every_timeframe_reads_at_least_a_day_of_a_pairs_trades() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    let pool = app.market_rows()[0].clone();
+    let now = wallet_core::registry::now();
+    for (_, bucket) in wallet_core::markets::TIMEFRAMES {
+        app.eco.markets_view.events_at.clear();
+        app.eco.markets_view.events_loading = None;
+        app.tick_pair(pool.clone(), *bucket);
+        let (_, since) = app.eco.markets_view.events_at.get(&pool.address).expect("the pair's logs were asked for");
+        assert!(*since <= now.saturating_sub(86_400), "a {bucket}s chart asked for logs from {} s ago", now - since);
+    }
+}
+
 /// A curve trade reads like every other tape row, though no pair in the directory matches it.
 ///
 /// The tape asks the directory which side of a swap is the base, and a bonding curve has no pair

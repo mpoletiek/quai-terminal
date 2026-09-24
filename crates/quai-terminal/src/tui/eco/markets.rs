@@ -646,9 +646,12 @@ impl App {
     /// each at the screen's pace. Returns the history window when the pair already has its
     /// trades and nothing of its own is in flight, which is when neighbours may load.
     pub(crate) fn tick_pair(&mut self, pool: wallet_core::markets::Pool, bucket: u64) -> Option<u64> {
-        let since = wallet_core::registry::now()
-            .saturating_sub(bucket * (MARKET_CANDLES as u64 + 1))
-            .max(wallet_core::registry::now().saturating_sub(30 * 86_400));
+        // Enough logs for the chart's candles, and never less than a day and an hour: the header's
+        // 24h volume, trades, high and low count these logs too. At 15m the chart alone asked for
+        // 16 hours, and every 24h figure shrank when the timeframe changed.
+        let now = wallet_core::registry::now();
+        let window = (bucket * (MARKET_CANDLES as u64 + 1)).max(25 * 3_600);
+        let since = now.saturating_sub(window).max(now.saturating_sub(30 * 86_400));
         let mv = &self.eco.markets_view;
         let due = match mv.events_at.get(&pool.address) {
             None => true,
