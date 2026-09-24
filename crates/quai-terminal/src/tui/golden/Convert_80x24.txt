@@ -3,7 +3,7 @@
 ┌ ▸ exchange · convert QUAI ↔ Qi ──────────────────────────────────────────────┐
 │   pair        ◆  QUAI → ◉  Qi ‹›                                             │
 │   you pay     5,000 QUAI   available 179,071.7533 QUAI                       │
-│   slippage    3.00% ‹› (conversion)                                          │
+│   slippage    auto ‹› (conversion · suggested by the quote)                  │
 │   route       protocol conversion ‹›                                         │
 │                                                                              │
 │ enter quote the conversion   r route   f flip                                │

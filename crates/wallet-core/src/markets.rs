@@ -49,7 +49,10 @@ pub enum Venue {
     /// symbols appear on it twice at different addresses, and a directory that cannot tell those
     /// apart is worse than one that admits it is a shortlist.
     Legacy,
-    /// Hartii separate UniswapV2 router/factory, independently pinned.
+    /// Quainance's second curve system (its frontend's `revenueCurveSystem`): a UniswapV2 factory
+    /// and router that the revenue launcher's curves graduate into, independently pinned. Named
+    /// `HartiiAmm` because it was first found through HartiiLabs, whose treasury seeded a QAXE pool
+    /// on it and whose docs call it "Quainance V2"; it is Quainance's, and says so on screen.
     HartiiAmm,
 }
 
@@ -61,7 +64,7 @@ impl Venue {
             Venue::LaunchAmm => "launch AMM",
             Venue::Curve => "bonding curve",
             Venue::Legacy => "QuaiSwap",
-            Venue::HartiiAmm => "Hartii AMM",
+            Venue::HartiiAmm => "revenue AMM",
         }
     }
 
@@ -72,7 +75,7 @@ impl Venue {
             Venue::LaunchAmm => "on the launch AMM",
             Venue::Curve => "on its bonding curve",
             Venue::Legacy => "on QuaiSwap",
-            Venue::HartiiAmm => "on Hartii AMM",
+            Venue::HartiiAmm => "on Quainance's revenue AMM",
         }
     }
 
@@ -512,7 +515,14 @@ pub fn pair_stats(events: &[PoolEvent], pool: &Pool, base0: bool, now: u64) -> P
     if let (Some(first), Some(last)) = (day.first(), day.last())
         && first.open > 0.0
     {
-        stats.change_24h = Some((last.close / first.open - 1.0) * 100.0);
+        // A change is only a day's when the price a day ago is known: the window's first hour
+        // has a candle only when the history reaches back past it. History that starts later
+        // (a pool whose logs are still loading) measured from its first trade, and overrode the
+        // indexer's real day-ago figure with a partial one (+84% for a pair up 249%).
+        let window_start = last.start.saturating_sub(3600 * 23);
+        if first.start == window_start {
+            stats.change_24h = Some((last.close / first.open - 1.0) * 100.0);
+        }
         stats.high_24h = day.iter().map(|c| c.high).reduce(f64::max);
         stats.low_24h = day.iter().map(|c| c.low).reduce(f64::min);
     }
@@ -802,7 +812,7 @@ pub async fn pools(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
         let base = explorer.absolute("/api/stats/tvl?days=7");
         match ctx.cached("dex_pools", DIRECTORY_TTL, || async move { Ok(parse_tvl_pools(&crate::http::get_json(&base).await?)) }).await {
             Ok(cached) => {
-                let (pools, mut overview) = cached.value;
+                let (mut pools, mut overview) = cached.value;
                 overview.sources = vec![MarketSource {
                     venue: Venue::Main,
                     source: overview.source.clone(),
@@ -812,6 +822,14 @@ pub async fn pools(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
                     complete: true,
                     error: None,
                 }];
+                // The explorer lists the pools it values, not every pair: HARDHAT/WQUAI, a day old
+                // at $0.35, and two other small pairs were missing (25 of the factory's 28). The
+                // pinned factory's own list adds whatever it left out, so a new Quainance pair is
+                // on screen at the next directory read however small it starts.
+                if let Ok(factory) = main_factory_pools(ctx).await {
+                    let listed: std::collections::HashSet<String> = pools.iter().map(|p| p.address.to_lowercase()).collect();
+                    pools.extend(factory.pools.into_iter().filter(|p| !listed.contains(&p.address.to_lowercase())));
+                }
                 (pools, overview)
             }
             Err(error) if !ctx.cache_only => {
@@ -917,10 +935,15 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
         ),
     };
     let usd = wquai_usd(&markets, ctx.network.wquai.as_deref(), ctx.network.ecosystem.usdt.as_ref().map(|u| u.address.as_str()));
+    // Pairs the factory added that the explorer does not value: from their reserves, as the other
+    // factory-read venues are.
+    for p in markets.iter_mut().filter(|p| p.tvl_usd.is_none()) {
+        p.tvl_usd = amm_tvl(p, ctx.network.wquai.as_deref(), usd);
+    }
     for (venue, name, configured, result) in [
         (Venue::LaunchAmm, "launch AMM factory", ctx.network.ecosystem.launch_amm_factory.is_some(), launch),
         (Venue::Legacy, "QuaiSwap factory", ctx.network.ecosystem.legacy_factory.is_some(), legacy),
-        (Venue::HartiiAmm, "Hartii AMM factory", ctx.network.ecosystem.hartii_amm_factory.is_some(), hartii_amm),
+        (Venue::HartiiAmm, "revenue AMM factory", ctx.network.ecosystem.hartii_amm_factory.is_some(), hartii_amm),
     ] {
         if !configured {
             continue;
@@ -1091,13 +1114,32 @@ pub async fn legacy_pools(ctx: &DataCtx) -> Result<Directory> {
     Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
 }
 
-/// Hartii AMM directory comes only from its authenticated factory, independent of launch labels.
+/// The revenue AMM's directory comes only from its authenticated factory, independent of launch labels.
 pub async fn hartii_amm_pools(ctx: &DataCtx) -> Result<Directory> {
-    let factory =
-        ctx.network.ecosystem.hartii_amm_factory.clone().ok_or_else(|| CoreError::NotFound("Hartii AMM is not configured".into()))?;
+    let factory = ctx
+        .network
+        .ecosystem
+        .hartii_amm_factory
+        .clone()
+        .ok_or_else(|| CoreError::NotFound("Quainance's revenue AMM is not configured".into()))?;
     let key = directory_key("hartii_amm_pools", &factory, &[]);
+    let cached = ctx
+        .cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "revenue AMM factory", Venue::HartiiAmm).await })
+        .await?;
+    Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
+}
+
+/// The main Quainance factory's own pair list, cached as the other factories' are.
+async fn main_factory_pools(ctx: &DataCtx) -> Result<Directory> {
+    let factory = ctx
+        .network
+        .ecosystem
+        .quainance_factory
+        .clone()
+        .ok_or_else(|| CoreError::NotFound(format!("no DEX factory configured on {}", ctx.network.name)))?;
+    let key = directory_key("main_factory_pools", &factory, &[]);
     let cached =
-        ctx.cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "Hartii AMM factory", Venue::HartiiAmm).await }).await?;
+        ctx.cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "Quainance factory", Venue::Main).await }).await?;
     Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
 }
 
@@ -2836,7 +2878,7 @@ mod tests {
             to: "0x00aa".into(),
         };
         let events = vec![
-            sync(90 * hour, 1000.0, 100_000.0), // 0.01 before the window
+            sync(70 * hour, 1000.0, 100_000.0), // 0.01 before both windows (the 4h and the 24h)
             swap_buy_base(98 * hour + 10, 10.0, 980.0),
             sync(98 * hour + 10, 1010.0, 99_020.0), // ≈0.0102
             swap_buy_base(100 * hour + 5, 20.0, 1900.0),
@@ -2862,6 +2904,11 @@ mod tests {
         assert_eq!(s.trades_24h, 2);
         assert!(s.change_24h.unwrap() > 5.0, "{s:?}");
         assert!((s.volume_24h - 30.0).abs() < 1e-6);
+        // Without the price from before the window, the history does not reach a day back: no
+        // 24h change is claimed from the first trade it has (the indexer's day-ago price answers).
+        let partial = pair_stats(&events[1..], &p, false, now);
+        assert_eq!(partial.change_24h, None, "{partial:?}");
+        assert_eq!(partial.trades_24h, 2, "the trades it has still count");
     }
 
     #[test]
@@ -3067,7 +3114,7 @@ mod tests {
         assert_eq!(factory.address.to_lowercase(), "0x0006112e89ee10615273ed72fe035cc068bc57a9");
         // A shortlist, not the whole factory: the eighteen pairs include two duplicated symbols.
         let pairs = &mainnet.ecosystem.legacy_pairs;
-        assert_eq!(pairs.len(), 3, "BOSS/WQUAI, QIQI/WQUAI and BARRY/WQUAI");
+        assert_eq!(pairs.len(), 5, "BOSS, QIQI, BARRY, and the trade zone's Q0 and QPEPE, each against WQUAI");
         assert!(pairs.iter().all(|p| p.len() == 42 && p.starts_with("0x") && p.chars().all(|c| !c.is_ascii_uppercase())));
         let unique: std::collections::BTreeSet<&String> = pairs.iter().collect();
         assert_eq!(unique.len(), pairs.len(), "no pair is named twice");

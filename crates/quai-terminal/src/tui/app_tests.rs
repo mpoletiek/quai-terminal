@@ -934,6 +934,28 @@ fn with_pools(app: &mut App) {
     app.eco.markets_view.pools = Some(Ok((pool_shape(), wallet_core::markets::DexOverview::default())));
 }
 
+/// What was typed decides the order before route quality does: `qi` puts Qi first, not WQI above
+/// it because WQI has a pool route, and an exact symbol comes before one that merely contains the
+/// text. A token no route reaches still sinks below every one that can be reached.
+#[test]
+fn the_token_picker_ranks_what_was_typed_first() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.network_id = "mainnet".into();
+    let first = |app: &App, q: &str| {
+        let e = app.picker_entries(q, false).into_iter().next().expect("an entry");
+        if e.qi { "Qi".to_string() } else { e.asset.symbol().to_string() }
+    };
+    assert_eq!(first(&app, "qi"), "Qi", "the exact match, though WQI has a pool route");
+    assert_eq!(first(&app, "WQI"), "WQI");
+    // Every reachable entry comes before any dead one, whatever the text matched.
+    let entries = app.picker_entries("", false);
+    let dead = entries.iter().position(|e| matches!(e.route, super::super::eco::RouteState::Dead));
+    if let Some(d) = dead {
+        assert!(entries[d..].iter().all(|e| matches!(e.route, super::super::eco::RouteState::Dead)), "dead routes sink");
+    }
+}
+
 /// A pair that needs two hubs is offered, and one with no pool at all is refused rather than
 /// let through to fail as "no Quainance pool route".
 #[test]
@@ -2350,8 +2372,7 @@ fn every_setting_can_be_reached_on_a_small_terminal() {
 }
 
 /// `L` orders the pairs by depth and `M` by how far they moved today, each cycling back to the
-/// directory's own order; a watched pair stays at the top of every order, and the cursor keeps
-/// the pair it was on.
+/// directory's own order; a watched pair stays at the top of every order.
 #[test]
 fn markets_sort_by_tvl_and_movement_with_watched_pinned() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
@@ -2388,6 +2409,56 @@ fn markets_sort_by_tvl_and_movement_with_watched_pinned() {
     let holding = app.selected_pool().unwrap().address;
     app.keep_cursor_on(Some(holding.clone()));
     assert_eq!(app.selected_pool().map(|p| p.address), Some(holding));
+}
+
+/// The 24h and TVL orders follow the figures the rows show. A pair shown the other way round
+/// shows its change turned round (a gain for token1-per-token0 is a loss the other way), and the
+/// sort used to rank it by the unturned figure.
+#[test]
+fn pairs_sort_by_the_figures_their_rows_show() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    if let Some(Ok((pools, _))) = &mut app.eco.markets_view.pools {
+        pools[1].spot_24h_ago = Some(0.5); // SMOL/WQI: up 100% as token1 per token0
+        pools[2].spot_24h_ago = Some(1.25); // LAPTOP/WQUAI: down 20%
+    }
+    let smol = "0x00pairSMOLWQI".to_string();
+    app.switch(Screen::Markets);
+    app.pane = 0;
+    let before = app.pool_base0(app.market_rows().iter().find(|p| p.address == smol).unwrap());
+    app.eco.markets_view.flipped.insert(smol.clone());
+    let now = wallet_core::registry::now();
+    let shown = |app: &App| app.market_rows().iter().map(|p| (p.address.clone(), app.row_change(p, now))).collect::<Vec<_>>();
+    let smol_shown = shown(&app).into_iter().find(|(a, _)| *a == smol).unwrap().1.unwrap();
+    assert!((smol_shown > 0.0) != before, "flipped, its row shows the change turned round: {smol_shown}");
+    for (key, descending) in [('M', true), ('M', false)] {
+        press(&mut app, KeyCode::Char(key));
+        let figures: Vec<f64> = shown(&app).into_iter().filter_map(|(_, c)| c).collect();
+        let ordered = figures.windows(2).all(|w| if descending { w[0] >= w[1] } else { w[0] <= w[1] });
+        assert!(ordered, "{:?} order by what the rows show: {figures:?}", app.eco.markets_view.sort);
+    }
+    press(&mut app, KeyCode::Char('L'));
+    let depths: Vec<f64> = app.market_rows().iter().filter_map(|p| app.row_tvl_usd(p)).collect();
+    assert!(depths.windows(2).all(|w| w[0] >= w[1]), "deepest first by what the rows show: {depths:?}");
+}
+
+/// The Pools cursor stays on its pool when the directory is read again in another order. It was a
+/// row number: a reload that ranked the pools differently put it, and `a` (add liquidity) or
+/// staking, on a different pool.
+#[test]
+fn a_directory_reload_keeps_the_pools_cursor_on_its_pool() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.switch(Screen::Pools);
+    app.pane = 1;
+    app.eco.pools_view.pool_selected = 1;
+    let held = app.focused_pool().expect("a focused pool").pair;
+    // The same pools, read again, ranked the other way round.
+    let mut reordered = app.directory_rows();
+    reordered.reverse();
+    assert_ne!(reordered.iter().position(|p| p.address == held), Some(1), "the reload moves the pool");
+    app.on_data_event(super::super::data::DataEv::MarketPools(Ok((reordered, wallet_core::markets::DexOverview::default()))));
+    assert_eq!(app.focused_pool().map(|f| f.pair), Some(held), "the cursor followed its pool");
 }
 
 /// Enter on a page that is already open does not stack another copy of it, so one Esc goes back.
@@ -2436,10 +2507,12 @@ fn an_asset_page_can_buy_and_sell_it() {
     assert_eq!(app.screen, Screen::Home, "no swap card");
 }
 
-/// Sorting or watching must never move the cursor off the pair the chart is on, and must never
-/// reach into the flow column's cursor while that column has it.
+/// A new order is read from its top: sorting puts the cursor, and so the chart, on the first row.
+/// Holding the cursor on its old pair scrolled the list to wherever that pair landed, which looked
+/// like no sort at all. The chart and the highlight always agree, and sorting never reaches into
+/// the flow column's cursor while that column has it.
 #[test]
-fn sorting_keeps_the_chart_and_the_cursor_on_the_same_pair() {
+fn sorting_starts_the_list_and_the_chart_at_the_top() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Markets);
@@ -2449,25 +2522,27 @@ fn sorting_keeps_the_chart_and_the_cursor_on_the_same_pair() {
         let rows = app.market_rows();
         rows.get(app.markets_pair().min(rows.len().saturating_sub(1))).map(|p| p.address.clone())
     };
-    app.selected = 2;
-    let held = highlighted(&app).unwrap();
     for key in ['L', 'L', 'M', 'M', 'L'] {
+        app.selected = 2;
         press(&mut app, KeyCode::Char(key));
-        assert_eq!(highlighted(&app), Some(held.clone()), "after {key}: the cursor left the pair it was on");
+        assert_eq!(highlighted(&app), Some(app.market_rows()[0].address.clone()), "after {key}: the cursor is on the first row");
         assert_eq!(app.selected_pool().map(|p| p.address), highlighted(&app), "after {key}: the chart and the cursor disagree");
     }
     // Watching re-orders the list; the cursor still holds its pair.
+    app.selected = 2;
+    let held = highlighted(&app).unwrap();
     app.eco.watchlist = vec![app.market_rows()[0].address.clone()];
     app.keep_cursor_on(Some(held.clone()));
-    assert_eq!(app.selected_pool().map(|p| p.address), Some(held.clone()));
+    assert_eq!(app.selected_pool().map(|p| p.address), Some(held));
 
-    // With the cursor in the flow column, sorting the pairs must not touch it.
+    // With the cursor in the flow column, sorting the pairs must not touch it; the chart still
+    // moves to the new first pair.
     app.pane = 1;
     app.selected = 0;
     app.eco.markets_view.flow_selected = 0;
     sheet(&mut app, 'l');
     assert_eq!(app.selected, 0, "sorting the pairs moved the flow column's cursor");
-    assert_eq!(app.selected_pool().map(|p| p.address), Some(held), "and the chart still holds its pair");
+    assert_eq!(app.selected_pool().map(|p| p.address), Some(app.market_rows()[0].address.clone()));
 }
 
 /// What the Markets screen actually draws: the chart is the pair the cursor is on, whatever order
@@ -3135,6 +3210,175 @@ fn launches_lead_with_the_curve_nearest_graduation_and_drop_what_markets_already
     app.eco.markets_view.pools = None;
     let unloaded: Vec<String> = app.launch_rows().iter().map(|l| l.symbol.clone()).collect();
     assert!(unloaded.contains(&"SMOL".to_string()), "no directory, no filtering: {unloaded:?}");
+}
+
+/// The Launches cursor stays on its token when the list re-ranks: every buy moves a curve's
+/// stage, and a directory landing drops the launches Markets now carries. It was a row number, so
+/// the curve card and `b`/`S` moved to another token.
+#[test]
+fn launches_keep_the_cursor_on_its_token_when_the_list_reorders() {
+    use wallet_core::launches::{Launch, Phase};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let launch = |token: &str, symbol: &str, phase, bps: u64| Launch {
+        token: token.into(),
+        symbol: symbol.into(),
+        phase,
+        progress_bps: Some(bps),
+        ..Default::default()
+    };
+    app.eco.launches = Some(Ok(vec![
+        launch("0x00a1", "SMOL", Phase::Pooled, 10_000),
+        launch("0x00c1", "EARLY", Phase::Bonding, 1_200),
+        launch("0x00c3", "NEARLY", Phase::Bonding, 9_400),
+    ]));
+    app.switch(Screen::Launches);
+    app.selected = 1;
+    let on = |app: &App| app.launch_rows().get(app.selected).map(|l| l.symbol.clone());
+    assert_eq!(on(&app).as_deref(), Some("EARLY"));
+    // A buy on EARLY takes it past NEARLY: the next read ranks it first.
+    app.on_data_event(super::super::data::DataEv::Launches(Ok(vec![
+        launch("0x00a1", "SMOL", Phase::Pooled, 10_000),
+        launch("0x00c1", "EARLY", Phase::Bonding, 9_800),
+        launch("0x00c3", "NEARLY", Phase::Bonding, 9_400),
+    ])));
+    assert_eq!(on(&app).as_deref(), Some("EARLY"), "the cursor followed its token up the list");
+    // The directory lands and carries SMOL's pool: SMOL leaves Launches, and every row below moves.
+    app.selected = app.launch_rows().iter().position(|l| l.symbol == "NEARLY").unwrap();
+    app.on_data_event(super::super::data::DataEv::MarketPools(Ok((pool_shape(), wallet_core::markets::DexOverview::default()))));
+    assert_eq!(on(&app).as_deref(), Some("NEARLY"), "and stays put when a row above it leaves");
+}
+
+/// The flow's cursor stays on its trade as new ones arrive above it. It was a row number into a
+/// newest-first tape, so every block moved the highlight to an older trade, and Enter opened that
+/// trade's pair rather than the one the user was looking at.
+#[test]
+fn the_flow_cursor_stays_on_its_trade_as_new_trades_arrive() {
+    use wallet_core::markets::{DexSwap, PoolToken};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    let tok = |a: &str, s: &str| PoolToken { address: a.into(), symbol: s.into(), decimals: 18 };
+    let trade = |block: u64, tx: &str| DexSwap {
+        at: 1_790_026_405 + block,
+        timed: true,
+        block,
+        tx: tx.into(),
+        index: 0,
+        pool: "0x00pairSMOLWQI".into(),
+        token_in: tok("0x00a1", "SMOL"),
+        token_out: tok("0x00b1", "WQI"),
+        amount_in: 1.0,
+        amount_out: 1.0,
+        trader: "0x0051".into(),
+    };
+    app.eco.markets_view.flow = vec![trade(3, "0xc"), trade(2, "0xb"), trade(1, "0xa")];
+    app.eco.markets_view.flow_min_usd = 0.0;
+    app.switch(Screen::Markets);
+    app.pane = 1;
+    app.selected = 1;
+    assert_eq!(app.flow_rows()[app.selected].tx, "0xb");
+    // Two new blocks land at the top of the tape.
+    let tape = vec![trade(5, "0xe"), trade(4, "0xd"), trade(3, "0xc"), trade(2, "0xb"), trade(1, "0xa")];
+    app.on_data_event(super::super::data::DataEv::DexFlow(Ok(tape.clone())));
+    assert_eq!(app.flow_rows()[app.selected].tx, "0xb", "the highlight stayed on its trade");
+    // The same with the cursor parked while the pairs list has it.
+    app.pane = 0;
+    app.eco.markets_view.flow_selected = 0;
+    app.on_data_event(super::super::data::DataEv::DexFlow(Ok([vec![trade(6, "0xf")], tape].concat())));
+    assert_eq!(app.flow_rows()[app.eco.markets_view.flow_selected].tx, "0xe", "a parked cursor follows its trade too");
+}
+
+/// A pair's logs always reach a day back, whatever the chart's timeframe: the header's 24h volume,
+/// trades, high and low are counted from them. At 15m the chart alone asked for 16 hours.
+#[test]
+fn every_timeframe_reads_at_least_a_day_of_a_pairs_trades() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    let pool = app.market_rows()[0].clone();
+    let now = wallet_core::registry::now();
+    for (_, bucket) in wallet_core::markets::TIMEFRAMES {
+        app.eco.markets_view.events_at.clear();
+        app.eco.markets_view.events_loading = None;
+        app.tick_pair(pool.clone(), *bucket);
+        let (_, since) = app.eco.markets_view.events_at.get(&pool.address).expect("the pair's logs were asked for");
+        assert!(*since <= now.saturating_sub(86_400), "a {bucket}s chart asked for logs from {} s ago", now - since);
+    }
+}
+
+/// A token with a bonding curve is quoted there too, and the swap card trades where it pays more:
+/// the exchanges when they pay more, the curve when it does or when the exchanges cannot fill the
+/// amount at all (QAXE: a $13 pool beside a $3.9k curve refused 1,000 QUAI outright).
+#[test]
+fn the_swap_card_trades_on_the_curve_when_it_pays_more() {
+    use wallet_core::swap::{SwapAsset, SwapQuote};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let qaxe = SwapAsset::Token { address: "0x0035187a7660f595d93cd53a4d16c635d6cffc8f".into(), symbol: "QAXE".into(), decimals: 18 };
+    app.switch(Screen::Swap);
+    app.eco.swap.from = SwapAsset::Quai;
+    app.eco.swap.to = Some(qaxe.clone());
+    app.eco.swap.amount = "100".into();
+    let routed = |out: &str| SwapQuote {
+        from: SwapAsset::Quai,
+        to: qaxe.clone(),
+        amount_in: "100000000000000000000".into(),
+        amount_out: out.into(),
+        minimum_out: "0".into(),
+        slippage_bps: 50,
+        path: vec![],
+        route: vec![],
+        pools: vec![],
+        impact_bps: 0,
+        fee_bps: 30,
+        router: "0x00".into(),
+        allowance: None,
+        approval_needed: false,
+        balance: None,
+        insufficient: false,
+        warnings: vec![],
+        observed_at: 0,
+        liquidity_at: None,
+        legs: vec![],
+    };
+    let offer = |out: &str| wallet_core::curve::CurveOffer {
+        token: "0x0035187a7660f595d93cd53a4d16c635d6cffc8f".into(),
+        symbol: "QAXE".into(),
+        curve: "0x004bc407903a51506bcf0b1ab423958c5991c237".into(),
+        sell: false,
+        input: "100000000000000000000".into(),
+        output: out.into(),
+        fee: "0".into(),
+        family: wallet_core::capabilities::Family::HartiiCurve,
+    };
+    // The exchanges pay more: the card swaps.
+    app.eco.swap.quote = Some(Ok(routed("25143000000000000000000")));
+    app.eco.swap.curve = Some(Ok(offer("23331000000000000000000")));
+    assert!(app.swap_uses_curve().is_none(), "the exchanges pay more here");
+    // The curve pays more: the card buys on the curve.
+    app.eco.swap.curve = Some(Ok(offer("26000000000000000000000")));
+    assert!(app.swap_uses_curve().is_some(), "the curve pays more");
+    // The exchanges cannot fill it: the curve does.
+    app.eco.swap.quote = Some(Err("price impact 60.6% is too high; try a smaller amount".into()));
+    app.eco.swap.curve = Some(Ok(offer("232260000000000000000000")));
+    assert!(app.swap_uses_curve().is_some(), "the curve fills what the exchanges refuse");
+    // A curve quote for another amount says nothing about this one.
+    app.eco.swap.amount = "200".into();
+    assert!(app.swap_uses_curve().is_none(), "a stale curve quote is never used");
+    // Enter with the curve chosen opens a curve buy review, not a swap.
+    app.eco.swap.amount = "100".into();
+    app.eco.swap.quote_key = 7;
+    app.eco.swap.requested_key = 7;
+    app.eco.swap.requested_input = app.swap_input_key();
+    app.eco.swap.quoted_at = Some(std::time::Instant::now());
+    let (worker, prepared) = Worker::capture_prepares();
+    app.worker = Some(worker);
+    app.dash.unlocked = true;
+    app.swap_submit();
+    let got = prepared.recv_timeout(std::time::Duration::from_secs(2));
+    assert!(
+        matches!(&got, Ok(super::super::worker::Prepare::CurveBuy { curve, amount, .. })
+            if curve == "0x004bc407903a51506bcf0b1ab423958c5991c237" && amount == "100"),
+        "a curve buy of 100 QUAI was prepared: {:?}",
+        app.toasts
+    );
 }
 
 /// A curve trade reads like every other tape row, though no pair in the directory matches it.

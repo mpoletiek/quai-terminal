@@ -3,34 +3,28 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
-## What's new in 0.1.0-alpha.7
+## What's new in 0.1.0-alpha.8
 
-- **Reviews check the chain's own state, not only a node's answers** (quai-sdk 0.1.0-alpha.14).
-  The contracts a review relies on are proven at one block: their code, a bonding curve's
-  destination, the pools behind a swap or a liquidity change, and your nonce and balances before
-  any spend. A swap quote that falls short of what the proven pools give by more than your slippage
-  refuses the review, and so does an exact-output or liquidity review whose numbers disagree with
-  them.
-- **How far that goes depends on having your own node.** With a monitoring node set, the network's
-  RPC must hold the same block, and the review says "confirmed by two nodes". If the two disagree,
-  the review is refused; if your node is more than 8 blocks behind, its answers are not used.
-  **Without your own node there is no second opinion:** a proof then shows only that the answers
-  are consistent with the one node that gave them, and the review claims nothing more.
-- **Fees and token imports are cross-checked** when your own node serves reads. A gas price over
-  125% of the network RPC's opens the review with both numbers, and a token is imported only if the
-  RPC reports the same decimals. A contract you call by its own ABI must have the code the chain's
-  state holds.
-- **One block on screen.** The header names the newest block, and prices, balances, the trade tape
-  and a pair's trades are read at that block ("at #N" in Markets). Screens move when a block
-  arrives; through a node on your own network, a block's trades are on screen about a tenth of a
-  second after it.
-- **Markets.** The Exchange chart is live for every pair, launch-AMM, QuaiSwap and HartiiLabs
-  included. A market feed that stops answering recovers by itself. A pool's TVL no longer flips
-  between two USD prices, and says how old its QUAI price is. A pool 20 times shallower than
-  another for the same two tokens, and under $250, is listed only in Pools. `S` sells to a curve
-  from its row.
-- **Faster.** Node responses are compressed, and the block a review is proven at is kept ready, so
-  a review through your own node does not wait on the network's RPC.
+- **A token's bonding curve is quoted beside the exchanges.** When you swap QUAI for a token that
+  trades on a Quainance or HartiiLabs curve, the swap card quotes the curve too, says how deep it
+  is, and trades on the curve when it pays more or when the exchanges cannot fill the amount. QAXE
+  is the case in point: its market is its curve (about $3.9k), and a separate $13 pool beside it was
+  all the swap card could see, so 1,000 QUAI was refused there although the curve fills it.
+- **More of Quainance's trade zone.** Tokens from Quainance's second launcher (its revenue system)
+  can be bought and sold on their curves, and every pair on Quainance's exchanges is listed,
+  including new and small ones the explorer leaves out. QuaiSwap lists the trade zone's pools
+  (BARRY, BOSS, Q0, QPEPE) and QIQI, and nothing else. poop.fun curves are not supported.
+- **The revenue AMM is named for what it is.** The exchange shown as "Hartii AMM" is Quainance's
+  revenue AMM; HartiiLabs' tokens trade on their own curves.
+- **Markets numbers you can trust.** Sorting by 24h change or TVL orders by the figures the rows
+  show, from the top of the list. A pair's 24h change is a real day's change: history that does not
+  reach a day back no longer produces one. 24h volume, trades, high and low no longer change with
+  the chart's timeframe. Launch progress means the same thing on every row.
+- **Cursors stay put.** Pools, Launches and the trade tape keep the cursor on the pool, token or
+  trade it was on when their lists refresh, so an action never lands on a row that moved under it.
+- **Smaller fixes.** The token picker ranks what you typed first (`qi` finds Qi), Convert stops
+  claiming a route pays more than one that cannot run, curve quotes work from a watch-only wallet,
+  and `markets PUNK` finds the pair from its symbol.
 
 ## Download
 
@@ -86,10 +80,10 @@ background was successfully negotiated with the terminal.
 
 Read this part.
 
-- **Only part of trading has run on Quai mainnet.** Swaps, bonding-curve buys, adding and removing
-  liquidity, staking, unstaking and harvesting have all confirmed there from this wallet. Curve
-  sells, Hartii trades, exact-output and split swaps, and the automatic wrap before a trade have
-  not: they are qualified by simulation against the deployed contracts and by execution on a
+- **Only part of trading has run on Quai mainnet.** Swaps, buys on Quainance's launch-zone curves,
+  adding and removing liquidity, staking, unstaking and harvesting have all confirmed there from
+  this wallet. Curve sells, Hartii trades, trades on the revenue launcher's curves, exact-output and
+  split swaps, and the automatic wrap before a trade have not: they are qualified by simulation against the deployed contracts and by execution on a
   disposable local chain. A limit order's swap is an ordinary swap once you approve its review,
   but no order has yet been run to completion on mainnet.
 - It holds real keys. Back up your recovery phrase before funding anything, and try it with a small

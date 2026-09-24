@@ -49,7 +49,9 @@ pub const KV_LABEL: usize = 14;
 
 /// A key/value row: the label quiet in a fixed column, then the value's spans.
 pub fn kv<'a>(t: &Theme, label: &str, value: Vec<Span<'a>>) -> ratatui::text::Line<'a> {
-    let mut spans = vec![Span::styled(format!("{label:<KV_LABEL$}"), t.dim_style())];
+    // A label as wide as the column still gets a space before its value ("effective price0.01").
+    let padded = if label.chars().count() >= KV_LABEL { format!("{label} ") } else { format!("{label:<KV_LABEL$}") };
+    let mut spans = vec![Span::styled(padded, t.dim_style())];
     spans.extend(value);
     ratatui::text::Line::from(spans)
 }

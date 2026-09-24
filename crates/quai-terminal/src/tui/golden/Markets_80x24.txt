@@ -2,13 +2,13 @@
  Markets ·  Pairs   Launches   Pools   [ ]
 ┌ ▸ pairs · stale/partial source · reserves unverified · TVL $11.9k · 24h $2.…─┐
 │ pair                                               price     24h     TVL/%   │
-│ ◆  US QUAI/USDT                                     0.008744 ▼25.4%   $3.33k │
+│ ◆  US QUAI/USDT                                     0.008744 —        $3.33k │
 │ QO ◆  QOGE/QUAI ◈                                   0.0₃4062 —       $997.60 │
 │ CH ◆  CHEEZ/QUAI ◇                                   0.0₄744 —           68% │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ QUAI/USDT · Quainance · 1h · . timeframe · f flip · t trade · updating… ─────┐
-│ ◆  US 0.008744 USDT  ▼25.4%  24h · partial history  H 0.01173  L 0.008744    │
+│ ◆  US 0.008744 USDT  —  24h · partial history  H 0.01173  L 0.008744         │
 │ vol 343.50 USDT ($343.50) · 30 trades · TVL $3.33k priced 3m ago · you hold  │
 │ ▄                                                                 0.01191    │
 │ █┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈            │

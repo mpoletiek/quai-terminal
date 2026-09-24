@@ -549,6 +549,92 @@ mod tests {
         assert!(matches!(refused, CoreError::Insufficient(text) if text.contains("token")));
     }
 
+    /// Against mainnet, from a watch-only wallet (the check reads; it never signs): a funded
+    /// account's proven nonce, QUAI, WQUAI and USDT at the anchor equal the node's plain answers at
+    /// the same block; a spend it covers passes and one it cannot is refused. `QW_FUNDS_ACCOUNT`
+    /// picks the account (else a recent curve trader); `QW_MONITOR_RPC` proves through a monitor
+    /// with the RPC as witness.
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn live_the_funds_check_is_proven_on_mainnet() {
+        use crate::network::MonitorEndpoint;
+        let config = crate::config::AppConfig::default();
+        let mut network = config.network("mainnet").unwrap();
+        if let Ok(url) = std::env::var("QW_MONITOR_RPC") {
+            network.monitor = Some(MonitorEndpoint { rpc_url: url, use_pathing: false });
+        }
+        let probe = network.node().unwrap();
+        let owner = match std::env::var("QW_FUNDS_ACCOUNT") {
+            Ok(a) => a.to_lowercase(),
+            Err(_) => {
+                let policy = crate::config::DataPolicy { explorer: true, market: true, images: false, icons: false };
+                let ctx = crate::data::DataCtx::with_app(AppDb::memory().unwrap(), network.clone(), policy).unwrap();
+                let trades = crate::launches::curve_trades(&ctx, 200).await.unwrap();
+                let mut found = None;
+                for trader in trades.iter().map(|t| t.trader.to_lowercase()) {
+                    let Ok(a) = trader.parse::<QuaiAddress>() else { continue };
+                    let code = probe.provider.code(a, BlockTag::Latest).await.unwrap_or_default();
+                    if code.bytes().is_empty() && probe.provider.balance(a, BlockTag::Latest).await.unwrap_or_default() > U256::ZERO {
+                        found = Some(trader);
+                        break;
+                    }
+                }
+                found.expect("a funded trader")
+            }
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let registry = crate::registry::Registry::new(crate::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap());
+        let meta = registry.create_watch("funds", &[(owner.clone(), "Main".into())]).unwrap();
+        let mut session = Session::open(registry, config, meta, network.clone()).unwrap();
+        if network.monitor.is_some() {
+            assert!(session.use_monitor().await.is_none(), "the monitor is used");
+        }
+        let address: QuaiAddress = owner.parse().unwrap();
+        let wquai = network.wquai.clone().unwrap().to_lowercase();
+        let usdt = network.ecosystem.usdt.clone().unwrap().address.to_lowercase();
+        let tokens: BTreeSet<String> = [wquai.clone(), usdt.clone()].into();
+
+        let started = std::time::Instant::now();
+        let seen = session.observe_holdings(address, &tokens).await.unwrap();
+        let took = started.elapsed();
+        assert!(seen.proven, "mainnet proves the funds check");
+        let at = BlockTag::Number(U256::from(seen.block));
+        let token = |t: &str| quai_sdk::contracts::Erc20::new(t.parse().unwrap(), &session.node.provider).unwrap();
+        let (nonce, native, wq, us) = tokio::join!(
+            session.node.provider.transaction_count(address, at),
+            session.node.provider.balance(address, at),
+            async { token(&wquai).balance_of(address, address, at).await },
+            async { token(&usdt).balance_of(address, address, at).await },
+        );
+        eprintln!(
+            "FUNDS {owner} at #{}: nonce {} QUAI {} WQUAI {} USDT {} ({} ms, {})",
+            seen.block,
+            seen.nonce,
+            seen.native,
+            seen.tokens[&wquai],
+            seen.tokens[&usdt],
+            took.as_millis(),
+            session.node.anchor_confirmation().map_or("no anchor", |c| c.text())
+        );
+        assert_eq!(seen.nonce, nonce.unwrap(), "proven nonce = the node's");
+        assert_eq!(seen.native, native.unwrap(), "proven QUAI = the node's");
+        assert_eq!(seen.tokens[&wquai], wq.unwrap(), "proven WQUAI (slot 3) = balanceOf");
+        assert_eq!(seen.tokens[&usdt], us.unwrap(), "USDT by call at the anchor's block");
+
+        let spend = |native: U256, token: Option<(&str, U256)>| Commitments {
+            native_value: native.to_string(),
+            fee: "0".into(),
+            tokens: token.map(|(t, v)| [(t.to_string(), v.to_string())].into()).unwrap_or_default(),
+            unknown_assets: false,
+        };
+        session.check_commitments(&owner, "live", &spend(U256::from(1), None)).await.unwrap();
+        let over = seen.native.saturating_mul(U256::from(10)).max(U256::from(10u128.pow(30)));
+        assert!(matches!(session.check_commitments(&owner, "live", &spend(over, None)).await, Err(CoreError::Insufficient(_))));
+        let wq_over = seen.tokens[&wquai].saturating_mul(U256::from(2)) + U256::from(1);
+        let refused = session.check_commitments(&owner, "live", &spend(U256::ZERO, Some((&wquai, wq_over)))).await;
+        assert!(matches!(refused, Err(CoreError::Insufficient(text)) if text.contains("token")));
+    }
+
     #[tokio::test]
     async fn order_bound_speedup_is_refused_before_keys_or_rpc() {
         let (_dir, mut session) = fixture();

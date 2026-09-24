@@ -72,7 +72,6 @@ pub enum Icon {
     Listed,
     Staked,
     Legacy,
-    Hartii,
     Coins,
     Chat,
     Bell,
@@ -82,7 +81,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 47] = [
+    pub const ALL: [Icon; 46] = [
         Icon::Ok,
         Icon::InFlight,
         Icon::Stale,
@@ -124,7 +123,6 @@ impl Icon {
         Icon::Listed,
         Icon::Staked,
         Icon::Legacy,
-        Icon::Hartii,
         Icon::Coins,
         Icon::Chat,
         Icon::Bell,
@@ -179,12 +177,11 @@ impl Icon {
             Icon::Listed => ("\u{f04f9}", "$", "$"), // md-tag: for sale
             Icon::Staked => ("\u{f0565}", "■", "="), // md-shield_check: in a gauge
             Icon::Legacy => ("◦", "◦", "q"),         // the older QuaiSwap exchange
-            Icon::Hartii => ("H", "H", "H"),
-            Icon::Coins => ("\u{f0b38}", "◎", "0"), // md-circle_multiple
-            Icon::Chat => ("\u{f0369}", "", ""),    // md-message_text
-            Icon::Bell => ("\u{f009c}", "●", "*"),  // md-bell_outline
-            Icon::Search => ("\u{f0349}", "", ""),  // md-magnify
-            Icon::Mining => ("\u{f08b7}", "", ""),  // md-pickaxe
+            Icon::Coins => ("\u{f0b38}", "◎", "0"),  // md-circle_multiple
+            Icon::Chat => ("\u{f0369}", "", ""),     // md-message_text
+            Icon::Bell => ("\u{f009c}", "●", "*"),   // md-bell_outline
+            Icon::Search => ("\u{f0349}", "", ""),   // md-magnify
+            Icon::Mining => ("\u{f08b7}", "", ""),   // md-pickaxe
         }
     }
 

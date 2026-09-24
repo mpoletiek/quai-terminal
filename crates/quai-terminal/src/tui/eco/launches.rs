@@ -116,6 +116,20 @@ impl App {
         rows
     }
 
+    /// The token the Launches cursor is on, read before the list changes under it.
+    pub(crate) fn launch_under_cursor(&self) -> Option<String> {
+        (self.screen == Screen::Launches).then(|| self.launch_rows().get(self.selected).map(|l| l.token.clone())).flatten()
+    }
+
+    /// Put the Launches cursor back on `token` once the list has changed. The list re-ranks as
+    /// curves trade and as the directory claims launches for Markets; a cursor left on its row
+    /// number would point the curve card and `b`/`S` at another token.
+    pub(crate) fn keep_launch_cursor(&mut self, token: Option<String>) {
+        if let Some(i) = token.and_then(|t| self.launch_rows().iter().position(|l| l.token == t)) {
+            self.selected = i;
+        }
+    }
+
     /// Whether the market directory already carries a pool holding this token, on any exchange.
     ///
     /// False while the directory is still loading, so a row is never hidden on the strength of

@@ -336,7 +336,9 @@ impl App {
                 self.eco.launches_at = Some(Instant::now());
                 // Keep the last good list when a refresh fails.
                 if result.is_ok() || !matches!(self.eco.launches, Some(Ok(_))) {
+                    let holding = self.launch_under_cursor();
                     self.eco.launches = Some(result);
+                    self.keep_launch_cursor(holding);
                 }
             }
             DataEv::LaunchLogos(logos) => self.eco.launch_logos.extend(logos),
@@ -432,8 +434,17 @@ impl App {
                 // Keep showing the last good directory when a refresh fails.
                 if r.is_ok() || self.eco.markets_view.pools.as_ref().is_none_or(|p| p.is_err()) {
                     let holding = self.selected_pool().map(|p| p.address);
+                    // Pools keeps its own cursor into the same directory; it follows its pool too,
+                    // or a reload ranked differently would leave `a` and staking on another one.
+                    let pool_holding = self.directory_rows().into_iter().nth(self.eco.pools_view.pool_selected).map(|p| p.address);
+                    // And Launches, which drops the launches the directory now carries.
+                    let launch_holding = self.launch_under_cursor();
                     self.eco.markets_view.pools = Some(r);
                     self.keep_cursor_on(holding);
+                    self.keep_launch_cursor(launch_holding);
+                    if let Some(i) = pool_holding.and_then(|a| self.directory_rows().iter().position(|p| p.address == a)) {
+                        self.eco.pools_view.pool_selected = i;
+                    }
                 }
             }
             DataEv::PoolReserves(result) => {
@@ -467,7 +478,21 @@ impl App {
                     Ok(flow) => {
                         self.eco.markets_view.flow_error = None;
                         if !flow.is_empty() || self.eco.markets_view.flow.is_empty() {
+                            // New trades arrive above the cursor every block; it follows its trade
+                            // rather than its row number, so Enter opens the pair that was lit.
+                            let active = self.screen == Screen::Markets && self.pane == 1;
+                            let at = if active { self.selected } else { self.eco.markets_view.flow_selected };
+                            let holding = self.flow_rows().get(at).map(|s| (s.tx.clone(), s.index));
                             self.eco.markets_view.flow = flow;
+                            if let Some(i) =
+                                holding.and_then(|(tx, index)| self.flow_rows().iter().position(|s| s.tx == tx && s.index == index))
+                            {
+                                if active {
+                                    self.selected = i;
+                                } else {
+                                    self.eco.markets_view.flow_selected = i;
+                                }
+                            }
                         }
                     }
                     Err(e) => self.eco.markets_view.flow_error = Some(e),
@@ -551,10 +576,11 @@ impl App {
                     self.eco.swap.to = self.default_receive_asset();
                 }
             }
-            DataEv::SwapQuote { key, result } => {
+            DataEv::SwapQuote { key, result, curve } => {
                 if key != 0 && key == self.eco.swap.requested_key && self.swap_input_key() == self.eco.swap.requested_input {
                     let approval_done = self.eco.swap.approving && matches!(&result, Ok(q) if !q.approval_needed);
                     self.eco.swap.quote = Some(result.map(|b| *b));
+                    self.eco.swap.curve = curve.map(|r| r.map(|b| *b));
                     self.eco.swap.quote_key = key;
                     self.eco.swap.quoted_at = Some(Instant::now());
                     if approval_done && self.eco.flow.is_none() {
@@ -813,7 +839,8 @@ impl App {
             self.eco.swap.requested_key = key;
             self.eco.swap.requested_input = Some(input);
             self.eco.swap.quoted_at = Some(Instant::now());
-            self.send_data(DataCmd::SwapQuote { key, from, to, amount: atoms.to_string(), slippage, owner });
+            let curve = self.token_curve(&from, &to);
+            self.send_data(DataCmd::SwapQuote { key, from, to, amount: atoms.to_string(), slippage, owner, curve });
         }
     }
 }

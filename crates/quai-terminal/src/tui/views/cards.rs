@@ -174,16 +174,23 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     }
     let quote = if app.swap_quote_current() { card.quote.as_ref() } else { None };
     let ok_quote = quote.and_then(|q| q.as_ref().ok());
-    let receive = match ok_quote {
-        Some(q) => Span::styled(
+    // The token's bonding curve, when it pays more than the exchanges or they cannot fill it.
+    let on_curve = if app.swap_quote_current() { app.swap_uses_curve() } else { None };
+    let curve_out = |o: &wallet_core::curve::CurveOffer, decimals: u8| {
+        amount::group_thousands(&amount::format_amount_short(o.amount().unwrap_or_default(), decimals, 6))
+    };
+    let to_decimals = card.to.as_ref().map_or(18, |a| a.decimals());
+    let receive = match (&on_curve, ok_quote) {
+        (Some(o), _) => Span::styled(format!("≈ {} on the curve", curve_out(o, to_decimals)), t.strong_style()),
+        (None, Some(q)) => Span::styled(
             format!(
                 "≈ {}",
                 amount::group_thousands(&amount::format_amount_short(q.amount_out.parse().unwrap_or_default(), q.to.decimals(), 6))
             ),
             t.strong_style(),
         ),
-        None if !card.amount.is_empty() => Span::styled(format!("{} quoting…", spinner()), t.dim_style()),
-        None => Span::styled("—", t.dim_style()),
+        (None, None) if !card.amount.is_empty() => Span::styled(format!("{} quoting…", spinner()), t.dim_style()),
+        (None, None) => Span::styled("—", t.dim_style()),
     };
     let mut c = Card::new();
     c.line(Line::from(Span::styled("you pay", t.dim_style())));
@@ -205,7 +212,15 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     c.line(Line::from(""));
     c.field(t, 3, card.field, "slippage", cycler(t, format!("{:.2}%", f64::from(card.slippage_bps) / 100.0), card.field == 3));
     c.field(t, 4, card.field, "deadline", cycler(t, format!("{} min", card.deadline_minutes), card.field == 4));
-    if let Some(q) = ok_quote
+    if let Some(o) = &on_curve {
+        c.line(Line::from(""));
+        let what = if o.sell {
+            format!("enter · sell {} to its bonding curve", o.symbol)
+        } else {
+            format!("enter · buy {} on its bonding curve", o.symbol)
+        };
+        c.action(Line::from(Span::styled(what, t.strong_style().fg(t.focus))), crossterm::event::KeyCode::Enter);
+    } else if let Some(q) = ok_quote
         && (q.approval_needed || card.approving)
     {
         c.line(Line::from(""));
@@ -240,9 +255,52 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let inner = block.inner(right);
     f.render_widget(block, right);
     let mut q_lines = Vec::new();
+    // A token with a curve trades in two places: say which, and which pays more for this amount.
+    let offer = if app.swap_quote_current() { card.curve.as_ref().and_then(|r| r.as_ref().ok()) } else { None };
+    if let Some(o) = offer
+        && let Some(to) = &card.to
+    {
+        let curve_pool = card.to.as_ref().and(app.eco.markets_view.pools.as_ref()).and_then(|r| r.as_ref().ok()).and_then(|(pools, _)| {
+            pools.iter().find(|p| p.venue == wallet_core::markets::Venue::Curve && p.address.eq_ignore_ascii_case(&o.curve))
+        });
+        let depth = curve_pool
+            .and_then(|p| app.row_tvl_usd(p))
+            .map(|v| format!(" · {} deep", wallet_core::swap::usd_compact(v)))
+            .unwrap_or_default();
+        let theirs = format!("≈ {} {}", curve_out(o, to.decimals()), to.symbol());
+        let routed = ok_quote.and_then(|q| U256::from_str_radix(&q.amount_out, 10).ok());
+        let vs = match routed {
+            Some(r) if !r.is_zero() => {
+                let (c, r) =
+                    (o.amount().unwrap_or_default().to_string().parse::<f64>().unwrap_or(0.0), r.to_string().parse::<f64>().unwrap_or(0.0));
+                let pct = (c / r - 1.0) * 100.0;
+                if pct >= 0.0 { format!("  {pct:.1}% more than the exchanges") } else { format!("  {:.1}% less than the exchanges", -pct) }
+            }
+            _ => "  the exchanges cannot fill this".to_string(),
+        };
+        let style = if on_curve.is_some() { t.strong_style() } else { t.text_style() };
+        q_lines.push(kv(t, "curve", Span::styled(format!("{theirs}{vs}"), style)));
+        q_lines.push(kv(
+            t,
+            "",
+            Span::styled(
+                format!(
+                    "{} trades on its bonding curve{depth}{}",
+                    o.symbol,
+                    if on_curve.is_some() { " · enter trades there" } else { " · the exchanges pay more here" }
+                ),
+                t.dim_style(),
+            ),
+        ));
+        q_lines.push(Line::from(""));
+    }
     match quote {
+        // The exchanges refused, but the curve fills it: a note, not an error.
+        Some(Err(e)) if on_curve.is_some() => {
+            q_lines.push(kv(t, "exchanges", Span::styled(app::friendly_error(e), t.dim_style())));
+        }
         Some(Ok(q)) => {
-            q_lines.push(kv(t, "route", Span::raw(q.route_text())));
+            q_lines.push(kv(t, if offer.is_some() { "exchanges" } else { "route" }, Span::raw(q.route_text())));
             if q.legs.len() > 1 {
                 q_lines.push(kv(
                     t,
@@ -466,8 +524,23 @@ pub fn draw_convert_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         2,
         card.field,
         "slippage",
-        [cycler(t, format!("{:.2}%", f64::from(slippage) / 100.0), card.field == 2), vec![Span::styled(" (conversion)", t.dim_style())]]
-            .concat(),
+        // Not chosen and not yet suggested: say so, rather than show a placeholder as a setting.
+        [
+            cycler(
+                t,
+                if card.slippage_bps == 0 && card.quote.is_none() {
+                    "auto".to_string()
+                } else {
+                    format!("{:.2}%", f64::from(slippage) / 100.0)
+                },
+                card.field == 2,
+            ),
+            vec![Span::styled(
+                if card.slippage_bps == 0 { " (conversion · suggested by the quote)" } else { " (conversion)" },
+                t.dim_style(),
+            )],
+        ]
+        .concat(),
     );
     c.field(t, 3, card.field, "route", cycler(t, route_name.to_string(), card.field == 3));
     c.line(Line::from(""));
@@ -994,7 +1067,15 @@ pub(crate) fn draw_curve(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                if l.venue_kind == Some(wallet_core::capabilities::Family::HartiiCurve) { "1 QUAI quote " } else { "price   " },
+                // A HartiiLabs price is the reserve spot when the reserves reproduce the curve's
+                // own quote, and the inverted one-QUAI quote only when they do not.
+                if l.venue_kind == Some(wallet_core::capabilities::Family::HartiiCurve)
+                    && l.price_basis == wallet_core::markets::PriceBasis::OneQuaiBuyQuote
+                {
+                    "1 QUAI quote "
+                } else {
+                    "price   "
+                },
                 t.dim_style(),
             ),
             Span::styled(format!("{} QUAI", fmt_price(m.spot_price)), t.strong_style()),

@@ -189,6 +189,7 @@ pub(crate) fn draw_positions_pane(
     now: u64,
 ) {
     use wallet_core::gauge::apr_text;
+    let directory = app.directory_rows();
     let total: f64 = positions.iter().filter_map(|p| p.usd).sum();
     let heading = if positions.is_empty() { "your liquidity".to_string() } else { format!("your liquidity · {}", amount::usd(total)) };
     let block = panel(t, &heading, app.lit_pane() == Some(0));
@@ -226,9 +227,17 @@ pub(crate) fn draw_positions_pane(
             (false, _) => Span::raw(""),
         };
         let mut row = vec![Span::styled(if focused { "▌" } else { " " }, Style::default().fg(t.focus))];
-        row.extend(pair_icons(app, t, &p.token0, &p.token1));
+        // Named as the pool list and Markets name its pool, when the directory carries it.
+        let (name, icons) = match directory.iter().find(|d| d.address.eq_ignore_ascii_case(&p.pair)) {
+            Some(d) => {
+                let (base, quote) = if app.pool_base0(d) { (&d.token0, &d.token1) } else { (&d.token1, &d.token0) };
+                (app.pair_name(d), pair_icons(app, t, base, quote))
+            }
+            None => (p.name(), pair_icons(app, t, &p.token0, &p.token1)),
+        };
+        row.extend(icons);
         row.extend([
-            Span::styled(format!("{:<14}", truncate(&p.name(), 14)), style.add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:<14}", truncate(&name, 14)), style.add_modifier(Modifier::BOLD)),
             Span::styled(format!("{:>8}  ", p.share_text()), t.dim_style()),
             Span::styled(format!("{:>10}", p.usd.map(amount::usd).unwrap_or_else(|| "—".into())), style),
             Span::styled(
@@ -396,7 +405,10 @@ pub(crate) fn draw_directory_pane(
     for (i, pool) in pools.iter().enumerate().skip(start).take(height) {
         let focused = i == selected && app.lit_pane() == Some(1);
         let style = if focused { t.selected() } else { t.text_style() };
-        let name = format!("{}/{}", pool.token0.symbol, pool.token1.symbol);
+        // Named as Markets names it (base first, QUAI for wrapped QUAI), so one pool reads the
+        // same on both tabs.
+        let name = app.pair_name(pool);
+        let (base, quote) = if app.pool_base0(pool) { (&pool.token0, &pool.token1) } else { (&pool.token1, &pool.token0) };
         let held = app.position_rows().iter().any(|p| p.pair.eq_ignore_ascii_case(&pool.address));
         // The gauge's APR is a property of the pool, so it belongs here too — it is the main
         // reason to choose one pool over another.
@@ -407,7 +419,7 @@ pub(crate) fn draw_directory_pane(
         let zone = app.zone_pool_for(&pool.address).filter(|z| z.active(now));
         let zone_apr = zone.and_then(|z| app.zone_apr(z, pool.tvl_usd));
         let mut row = vec![Span::styled(if focused { "▌" } else { " " }, Style::default().fg(t.focus))];
-        row.extend(pair_icons(app, t, &pool.token0, &pool.token1));
+        row.extend(pair_icons(app, t, base, quote));
         row.extend([
             Span::styled(format!("{:<16}", truncate(&name, 16)), style),
             Span::styled(format!("{:>9}  ", pool.tvl_usd.map(wallet_core::swap::usd_compact).unwrap_or_else(|| "—".into())), t.dim_style()),

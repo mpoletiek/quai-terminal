@@ -15,8 +15,10 @@ use serde_json::{Value, json};
 /// The launchpads the Launches view carries: Quainance's own bonding curve, the AMM a curve
 /// graduates into, the main AMM that launched tokens are pooled on, and the HartiiLabs curve.
 ///
-/// The index knows two more — `POOP_CURVE` at two deployments, 62 launches between them — which are
-/// deliberately left out until someone has looked at what is on them. Adding one is a line here.
+/// The index knows two more — `POOP_CURVE` (poop.fun's factories, V1 and V2), 62 launches between
+/// them — which are not supported, by the owner's decision of 2026-09-24: their owner can pause them
+/// and change their fees at will, V2 is an upgradeable proxy, and its owner can withdraw the QUAI it
+/// holds. Tokens that left a POOP curve for a QuaiSwap pool trade there as any QuaiSwap pair does.
 pub const LAUNCH_VENUES: [&str; 4] = ["QUAINANCE_CURVE", "QUAINANCE_CURVE_AMM", "QUAINANCE_AMM", "HARTII_CURVE"];
 
 fn eighteen() -> u8 {
@@ -529,6 +531,7 @@ mod tests {
         // Only what the venue allowlist admits — POOP_CURVE is deliberately not asked for.
         assert!(TRADES_QUERY.contains("kind: CURVE"), "the AMM side would duplicate the pool tape");
         assert!(TRADES_QUERY.contains("venue_: {kind_in: $venues}"), "the same allowlist as the directory");
+        assert!(!LAUNCH_VENUES.iter().any(|v| v.contains("POOP")), "POOP curves are not supported");
     }
 
     /// A malformed page yields no rows rather than rows full of zeros.

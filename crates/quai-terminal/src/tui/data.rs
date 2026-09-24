@@ -121,6 +121,8 @@ pub enum DataCmd {
         amount: String,
         slippage: u16,
         owner: Option<String>,
+        /// The traded token's bonding curve, when it has one: quoted beside the exchanges.
+        curve: Option<(wallet_core::markets::PoolToken, String)>,
     },
     Nfts {
         owners: Vec<String>,
@@ -208,6 +210,8 @@ pub enum DataEv {
     SwapQuote {
         key: u64,
         result: Result<Box<SwapQuote>, String>,
+        /// The same trade on the token's curve, when it has one.
+        curve: Option<Result<Box<wallet_core::curve::CurveOffer>, String>>,
     },
     LiquidityQuote {
         key: u64,
@@ -796,19 +800,28 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
                 }
             }
         }
-        DataCmd::SwapQuote { key, from, to, amount, slippage, owner } => {
-            let result = async {
-                let amount =
-                    wallet_core::sdk::U256::from_str_radix(&amount, 10).map_err(|_| wallet_core::CoreError::Invalid("amount".into()))?;
+        DataCmd::SwapQuote { key, from, to, amount, slippage, owner, curve } => {
+            let atoms = wallet_core::sdk::U256::from_str_radix(&amount, 10);
+            // The exchanges and the token's curve, at once: a curve can be where the token's
+            // liquidity is while a shallow pool is all the router sees.
+            let routed = async {
+                let amount = atoms.map_err(|_| wallet_core::CoreError::Invalid("amount".into()))?;
                 let router = wallet_core::swap::Router::open(&ctx.app, &ctx.node, &ctx.network, ctx.trust).await?;
                 let mut quote = router.quote(&from, &to, amount, slippage, owner.as_deref()).await?;
                 wallet_core::swap::attach_liquidity(ctx, &mut quote).await;
                 Ok::<_, wallet_core::CoreError>(quote)
-            }
-            .await
-            .map(Box::new)
-            .map_err(|e| e.to_string());
-            send(DataEv::SwapQuote { key, result });
+            };
+            let offered = async {
+                let (token, address) = curve.as_ref()?;
+                let amount = atoms.ok()?;
+                match wallet_core::curve::curve_offer(ctx, token, address, &from, &to, amount).await {
+                    Ok(Some(offer)) => Some(Ok(Box::new(offer))),
+                    Ok(None) => None,
+                    Err(e) => Some(Err(e.to_string())),
+                }
+            };
+            let (result, curve) = tokio::join!(routed, offered);
+            send(DataEv::SwapQuote { key, result: result.map(Box::new).map_err(|e| e.to_string()), curve });
         }
         DataCmd::LiquidityQuote { key, pair, amount, token, slippage, owner } => {
             let result = wallet_core::liquidity::quote(ctx, &pair, &amount, Some(token.as_str()), slippage, owner.as_deref())

@@ -98,17 +98,36 @@ async fn curve_destination_slots_match_the_launchers_calls() {
     for (family, launcher, base, field, selector) in [
         (
             Family::QuainanceCurve,
-            eco.curve_launcher.unwrap(),
+            eco.curve_launcher.clone().unwrap(),
             wallet_core::curve::LAUNCHES_SLOT,
             wallet_core::curve::LAUNCH_MARKET_FIELD,
             "launches(address)",
         ),
-        (Family::HartiiCurve, eco.hartii_launcher.unwrap(), wallet_core::hartii_tx::CURVE_OF_SLOT, 0, "curveOf(address)"),
+        (Family::HartiiCurve, eco.hartii_launcher.clone().unwrap(), wallet_core::hartii_tx::CURVE_OF_SLOT, 0, "curveOf(address)"),
     ] {
-        let tokens: Vec<_> = launches.iter().filter(|l| l.venue_kind == Some(family) && l.curve.is_some()).take(3).collect();
+        let tokens: Vec<_> = launches.iter().filter(|l| l.venue_kind == Some(family) && l.curve.is_some()).take(6).collect();
         assert!(!tokens.is_empty(), "{family:?}: no launches listed to check against");
-        let launcher: wallet_core::sdk::QuaiAddress = launcher.address.parse().unwrap();
+        let mut launcher: wallet_core::sdk::QuaiAddress = launcher.address.parse().unwrap();
         for l in tokens {
+            // Quainance runs two launchers with one interface; each curve names its own, and it
+            // must be one of the two pinned ones, as the wallet requires.
+            if family == Family::QuainanceCurve {
+                let said = wallet_core::sdk::contracts::Contract::new(
+                    l.curve.as_deref().unwrap().parse().unwrap(),
+                    wallet_core::sdk::abi::AbiInterface::from_human_readable(wallet_core::curve::CURVE_ABI).unwrap(),
+                    &ctx.node.provider,
+                )
+                .call(wallet_core::data::READ_CALLER.parse().unwrap(), "launcher", &[], BlockTag::Latest)
+                .await
+                .unwrap();
+                let said = said[0].as_str().unwrap().to_lowercase();
+                let pinned = [eco.curve_launcher.clone().unwrap(), eco.revenue_curve_launcher.clone().unwrap()];
+                let pin = pinned
+                    .iter()
+                    .find(|p| p.address.eq_ignore_ascii_case(&said))
+                    .unwrap_or_else(|| panic!("{}: unknown launcher {said}", l.symbol));
+                launcher = pin.address.parse().unwrap();
+            }
             let token: wallet_core::sdk::QuaiAddress = l.token.parse().unwrap();
             let slot = wallet_core::anchor::mapping_field_slot(token, base, field);
             let (proven, _) =
@@ -227,6 +246,95 @@ async fn a_route_s_output_is_proven_from_its_pools() {
         assert!(!called.is_zero(), "{venue:?}: address zero holds no LP");
         assert_eq!(proven[0].storage_value(slot), Some(called), "{venue:?}: balanceOf is not the mapping at slot 1");
     }
+}
+
+/// Quainance's second launcher (its frontend's `revenueCurveSystem.launcher`) speaks the launch
+/// zone's interface: `launches(token)` names the curve, in the same storage slot, and the curve names
+/// its token and launcher back, quotes buys and sells in the same shapes, and dispatches on the same
+/// buy, sell and claim selectors. Its curves' runtime differs from the launch zone's, so this is what
+/// qualifies them for the launch zone's reads and write paths.
+#[tokio::test]
+#[ignore = "network"]
+async fn revenue_curves_speak_the_launch_zone_interface() {
+    use wallet_core::sdk::abi::AbiInterface;
+    use wallet_core::sdk::contracts::Contract;
+    use wallet_core::sdk::{BlockTag, QuaiAddress, U256};
+    let ctx = mainnet();
+    let caller: QuaiAddress = wallet_core::data::READ_CALLER.parse().unwrap();
+    let launcher: QuaiAddress = "0x002879c58c8430626d99bfd45504ffc484e6e811".parse().unwrap();
+    // RIG, bonding on the revenue launcher (Quainance's trade-zone catalog).
+    let token: QuaiAddress = "0x000761da96dadfe2c07e9acbad88fd8efd1bcfdc".parse().unwrap();
+    let curve: QuaiAddress = "0x002af09059576c7c9ff55ab28734c614bdb898e8".parse().unwrap();
+    let named = Contract::new(launcher, AbiInterface::from_human_readable(wallet_core::curve::LAUNCHER_ABI).unwrap(), &ctx.node.provider)
+        .call(caller, "launches", &[serde_json::json!(token.to_string())], BlockTag::Latest)
+        .await
+        .unwrap();
+    assert_eq!(named.len(), 9, "the launch zone's struct: {named:?}");
+    assert_eq!(named[1].as_str().unwrap().to_lowercase(), curve.to_string().to_lowercase(), "launches(token).market is the curve");
+    let slot = wallet_core::anchor::mapping_field_slot(token, wallet_core::curve::LAUNCHES_SLOT, wallet_core::curve::LAUNCH_MARKET_FIELD);
+    let (proven, _) =
+        wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(launcher, &[slot])], "revenue launcher").await.unwrap().unwrap();
+    let stored = proven[0].storage_value(slot).map(wallet_core::anchor::word_address).unwrap_or_default();
+    assert!(stored.eq_ignore_ascii_case(&curve.to_string()), "the market is in the same slot: {stored}");
+    let c = Contract::new(curve, AbiInterface::from_human_readable(wallet_core::curve::CURVE_ABI).unwrap(), &ctx.node.provider);
+    let text = |v: Vec<serde_json::Value>| v[0].as_str().unwrap().to_lowercase();
+    assert!(text(c.call(caller, "token", &[], BlockTag::Latest).await.unwrap()).eq_ignore_ascii_case(&token.to_string()));
+    assert!(text(c.call(caller, "launcher", &[], BlockTag::Latest).await.unwrap()).eq_ignore_ascii_case(&launcher.to_string()));
+    let quai = U256::from(10u128.pow(18));
+    let buy = c.call(caller, "quoteBuy", &[serde_json::json!(quai.to_string())], BlockTag::Latest).await.unwrap();
+    assert_eq!(buy.len(), 6, "quoteBuy's six values: {buy:?}");
+    let word = |v: &serde_json::Value| U256::from_str_radix(v.as_str().unwrap(), 10).unwrap();
+    assert!(!word(&buy[3]).is_zero(), "a QUAI buys tokens");
+    assert_eq!(word(&buy[1]) + word(&buy[2]), word(&buy[0]), "net plus fee is the gross used");
+    let sell = c.call(caller, "quoteSell", &[serde_json::json!(word(&buy[3]).to_string())], BlockTag::Latest).await.unwrap();
+    assert_eq!(sell.len(), 4, "quoteSell's four values: {sell:?}");
+    let code = ctx.node.provider.code(curve, BlockTag::Latest).await.unwrap();
+    let code = code.bytes();
+    for (name, selector) in [("buy", "d6febde8"), ("sell", "d3c9727c"), ("claimQuote", "67ec8364"), ("claimableQuote", "2d9cf134")] {
+        let push = [&[0x63u8][..], &hex::decode(selector).unwrap()].concat();
+        assert!(code.windows(5).any(|w| w == push.as_slice()), "the curve dispatches on {name}");
+    }
+    eprintln!("RIG curve: 1 QUAI buys {} tokens; runtime {} bytes", word(&buy[3]), code.len());
+    // Through the wallet itself: the curve is verified against the pinned revenue launcher, and
+    // the exact buy call simulates from an account holding QUAI.
+    let market = wallet_core::curve::market(&ctx, &token.to_string(), &curve.to_string(), &[]).await.unwrap();
+    assert!(market.target_quai() > 0.0 && !market.graduated, "RIG reads as a live curve: {market:?}");
+    let deadline = (wallet_core::registry::now() + 600).to_string();
+    let call = c.prepare("buy", &[serde_json::json!("1"), serde_json::json!(deadline)], U256::from(10u128.pow(17))).unwrap();
+    let holder = funded_account(&ctx).await;
+    let out = c.simulate(holder, &call, BlockTag::Latest, Some(600_000)).await;
+    assert!(out.is_ok(), "a 0.1 QUAI buy of RIG simulates: {out:?}");
+}
+
+/// New pairs are found by themselves on Quainance and HartiiLabs, and never on QuaiSwap: every pair
+/// the main Quainance factory holds is in the directory (the explorer leaves small ones out), the
+/// launch and revenue AMMs are read from their factories, HartiiLabs from its launcher, and
+/// QuaiSwap lists exactly its allowlist.
+#[tokio::test]
+#[ignore = "network"]
+async fn quainance_and_hartii_pairs_are_discovered_and_quaiswap_is_an_allowlist() {
+    use wallet_core::markets::Venue;
+    use wallet_core::sdk::{BlockTag, QuaiAddress, U256};
+    let ctx = mainnet();
+    let factory: QuaiAddress = ctx.network.ecosystem.quainance_factory.clone().unwrap().address.parse().unwrap();
+    let count = wallet_core::sdk::contracts::Contract::new(
+        factory,
+        wallet_core::sdk::abi::AbiInterface::from_human_readable(&["function allPairsLength() view returns (uint256)"]).unwrap(),
+        &ctx.node.provider,
+    )
+    .call(wallet_core::data::READ_CALLER.parse().unwrap(), "allPairsLength", &[], BlockTag::Latest)
+    .await
+    .unwrap();
+    let count = U256::from_str_radix(count[0].as_str().unwrap(), 10).unwrap().to::<u64>() as usize;
+    let (pools, _) = wallet_core::markets::all_markets(&ctx).await.unwrap();
+    let main = pools.iter().filter(|p| p.venue == Venue::Main).count();
+    assert_eq!(main, count, "every Quainance pair is listed: {main} of {count}");
+    let legacy: std::collections::BTreeSet<String> =
+        pools.iter().filter(|p| p.venue == Venue::Legacy).map(|p| p.address.to_lowercase()).collect();
+    let allowed: std::collections::BTreeSet<String> = ctx.network.ecosystem.legacy_pairs.iter().map(|p| p.to_lowercase()).collect();
+    assert!(legacy.is_subset(&allowed), "QuaiSwap lists only its allowlist: {legacy:?}");
+    assert!(pools.iter().any(|p| p.venue == Venue::LaunchAmm) && pools.iter().any(|p| p.venue == Venue::HartiiAmm), "both AMMs read");
+    assert!(pools.iter().any(|p| p.venue == Venue::Curve), "HartiiLabs curves from its launcher");
 }
 
 /// A review's commitment check proves the owner's WQUAI balance as the mapping at slot 3. The
@@ -1766,7 +1874,7 @@ async fn every_exchange_s_pairs_resolve_for_liquidity() {
         found(&all, Venue::Legacy),
         found(&all, Venue::Curve)
     );
-    assert!(found(&all, Venue::LaunchAmm) >= 2 && found(&all, Venue::Legacy) == 3);
+    assert!(found(&all, Venue::LaunchAmm) >= 2 && found(&all, Venue::Legacy) == ctx.network.ecosystem.legacy_pairs.len());
     // The pair that reported the bug: listed by the screen, and now findable by it.
     let cheez = "0x004301019e1380d9d247dbd47097ec0b98d026b5";
     assert!(!main.iter().any(|p| p.address.eq_ignore_ascii_case(cheez)), "which is why it could not be found");
