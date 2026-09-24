@@ -281,6 +281,11 @@ pub struct Ecosystem {
     /// curve (unpinnable one by one) is trusted.
     #[serde(default)]
     pub curve_launcher: Option<PinnedContract>,
+    /// Quainance's second launcher (its frontend's `revenueCurveSystem.launcher`), whose curves
+    /// graduate onto the revenue AMM. Same interface and storage layout as `curve_launcher`
+    /// (`live_mainnet::revenue_curves_speak_the_launch_zone_interface`); its curves' runtime differs.
+    #[serde(default)]
+    pub revenue_curve_launcher: Option<PinnedContract>,
     /// Multicall3, for batching the many small reads a pool or position sweep needs.
     pub multicall3: Option<PinnedContract>,
     /// Quainance's own indexer, for candles and pool history. Market data only: no address is
@@ -364,6 +369,12 @@ impl Ecosystem {
                 "0x002658af3d4a4d0366c5ab997630211a818ab923",
                 "0x80abe47423b1dcea2a1ccb2e03f6ac237d56674755c2048a76ab8e5234b1d3ea",
             )),
+            // From Quainance's app config (revenueCurveSystem.launcher, with this runtime hash),
+            // proven against chain 9 on 2026-09-24, confirmed by two nodes.
+            revenue_curve_launcher: Some(PinnedContract::new(
+                "0x002879c58c8430626d99bfd45504ffc484e6e811",
+                "0x352f4d2c9b37278b36eb2da662bdb9bc6a6d02a5e8b3e8cba70e0f3071a544f7",
+            )),
             multicall3: Some(PinnedContract::new(
                 "0x00567637197E6554e2CF47a3988Cb7B819f4E92C",
                 "0xf04e9845b5acf40ea55c268a50df01b9c2de08078740d2ee80504033cece3488",
@@ -417,6 +428,11 @@ impl Ecosystem {
                 "0x0002d1373b8bf88a03809eda30cb23815c2192b7".into(),
                 "0x0012f9ce8e7e0918bc22be5d6d0878ea523932cc".into(),
                 "0x002cf345a9ae76400662e87adf57ad278afd5752".into(),
+                // Q0/WQUAI and QPEPE/WQUAI: POOP_V1 graduates Quainance's trade zone trades on
+                // QuaiSwap (its catalog, 2026-09-24). Each is still checked to name the pinned
+                // factory before it is listed.
+                "0x003b4b96bf0793eb1d53b79f8c38746a298eeef8".into(),
+                "0x00240aaca3e2c74e09522025b6b948ecc8a0fb27".into(),
             ],
             // Read from chain 9 on 2026-09-21 and cross-checked against the app bundle's
             // LAUNCH_FACTORY_ADDRESS and BONDING_CURVE_IMPL_ADDRESS. 27 tokens, of which HRT and
@@ -442,7 +458,10 @@ impl Ecosystem {
                 "0x5921f7e274335dc1d0a6076079acf41461927b341702efa8271f0e58bc8c78f1",
             )),
             quainance_subgraph: Some("https://graph.quai.network/subgraphs/name/quainance/v2".into()),
-            launch_subgraph: Some("https://graph.quai.network/subgraphs/name/quainance/trade-zone-staging".into()),
+            // The index Quainance's own trade zone reads (its frontend names it eight times): the
+            // launch zone plus the revenue launcher's curves, which the older
+            // `trade-zone-staging` does not carry.
+            launch_subgraph: Some("https://graph.quai.network/subgraphs/name/quainance/trade-zone-revenue-staging-20260918-r2".into()),
             hartii_api: Some("https://hartiilabs.com".into()),
             bazarr_indexer: Some("https://watcher.basedhash.cc".into()),
             bazarr_web: Some("https://bazarr.xyz".into()),

@@ -3087,7 +3087,7 @@ mod tests {
         assert_eq!(factory.address.to_lowercase(), "0x0006112e89ee10615273ed72fe035cc068bc57a9");
         // A shortlist, not the whole factory: the eighteen pairs include two duplicated symbols.
         let pairs = &mainnet.ecosystem.legacy_pairs;
-        assert_eq!(pairs.len(), 3, "BOSS/WQUAI, QIQI/WQUAI and BARRY/WQUAI");
+        assert_eq!(pairs.len(), 5, "BOSS, QIQI, BARRY, and the trade zone's Q0 and QPEPE, each against WQUAI");
         assert!(pairs.iter().all(|p| p.len() == 42 && p.starts_with("0x") && p.chars().all(|c| !c.is_ascii_uppercase())));
         let unique: std::collections::BTreeSet<&String> = pairs.iter().collect();
         assert_eq!(unique.len(), pairs.len(), "no pair is named twice");

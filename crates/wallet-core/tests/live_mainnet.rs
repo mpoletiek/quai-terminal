@@ -229,6 +229,64 @@ async fn a_route_s_output_is_proven_from_its_pools() {
     }
 }
 
+/// Quainance's second launcher (its frontend's `revenueCurveSystem.launcher`) speaks the launch
+/// zone's interface: `launches(token)` names the curve, in the same storage slot, and the curve names
+/// its token and launcher back, quotes buys and sells in the same shapes, and dispatches on the same
+/// buy, sell and claim selectors. Its curves' runtime differs from the launch zone's, so this is what
+/// qualifies them for the launch zone's reads and write paths.
+#[tokio::test]
+#[ignore = "network"]
+async fn revenue_curves_speak_the_launch_zone_interface() {
+    use wallet_core::sdk::abi::AbiInterface;
+    use wallet_core::sdk::contracts::Contract;
+    use wallet_core::sdk::{BlockTag, QuaiAddress, U256};
+    let ctx = mainnet();
+    let caller: QuaiAddress = wallet_core::data::READ_CALLER.parse().unwrap();
+    let launcher: QuaiAddress = "0x002879c58c8430626d99bfd45504ffc484e6e811".parse().unwrap();
+    // RIG, bonding on the revenue launcher (Quainance's trade-zone catalog).
+    let token: QuaiAddress = "0x000761da96dadfe2c07e9acbad88fd8efd1bcfdc".parse().unwrap();
+    let curve: QuaiAddress = "0x002af09059576c7c9ff55ab28734c614bdb898e8".parse().unwrap();
+    let named = Contract::new(launcher, AbiInterface::from_human_readable(wallet_core::curve::LAUNCHER_ABI).unwrap(), &ctx.node.provider)
+        .call(caller, "launches", &[serde_json::json!(token.to_string())], BlockTag::Latest)
+        .await
+        .unwrap();
+    assert_eq!(named.len(), 9, "the launch zone's struct: {named:?}");
+    assert_eq!(named[1].as_str().unwrap().to_lowercase(), curve.to_string().to_lowercase(), "launches(token).market is the curve");
+    let slot = wallet_core::anchor::mapping_field_slot(token, wallet_core::curve::LAUNCHES_SLOT, wallet_core::curve::LAUNCH_MARKET_FIELD);
+    let (proven, _) =
+        wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(launcher, &[slot])], "revenue launcher").await.unwrap().unwrap();
+    let stored = proven[0].storage_value(slot).map(wallet_core::anchor::word_address).unwrap_or_default();
+    assert!(stored.eq_ignore_ascii_case(&curve.to_string()), "the market is in the same slot: {stored}");
+    let c = Contract::new(curve, AbiInterface::from_human_readable(wallet_core::curve::CURVE_ABI).unwrap(), &ctx.node.provider);
+    let text = |v: Vec<serde_json::Value>| v[0].as_str().unwrap().to_lowercase();
+    assert!(text(c.call(caller, "token", &[], BlockTag::Latest).await.unwrap()).eq_ignore_ascii_case(&token.to_string()));
+    assert!(text(c.call(caller, "launcher", &[], BlockTag::Latest).await.unwrap()).eq_ignore_ascii_case(&launcher.to_string()));
+    let quai = U256::from(10u128.pow(18));
+    let buy = c.call(caller, "quoteBuy", &[serde_json::json!(quai.to_string())], BlockTag::Latest).await.unwrap();
+    assert_eq!(buy.len(), 6, "quoteBuy's six values: {buy:?}");
+    let word = |v: &serde_json::Value| U256::from_str_radix(v.as_str().unwrap(), 10).unwrap();
+    assert!(!word(&buy[3]).is_zero(), "a QUAI buys tokens");
+    assert_eq!(word(&buy[1]) + word(&buy[2]), word(&buy[0]), "net plus fee is the gross used");
+    let sell = c.call(caller, "quoteSell", &[serde_json::json!(word(&buy[3]).to_string())], BlockTag::Latest).await.unwrap();
+    assert_eq!(sell.len(), 4, "quoteSell's four values: {sell:?}");
+    let code = ctx.node.provider.code(curve, BlockTag::Latest).await.unwrap();
+    let code = code.bytes();
+    for (name, selector) in [("buy", "d6febde8"), ("sell", "d3c9727c"), ("claimQuote", "67ec8364"), ("claimableQuote", "2d9cf134")] {
+        let push = [&[0x63u8][..], &hex::decode(selector).unwrap()].concat();
+        assert!(code.windows(5).any(|w| w == push.as_slice()), "the curve dispatches on {name}");
+    }
+    eprintln!("RIG curve: 1 QUAI buys {} tokens; runtime {} bytes", word(&buy[3]), code.len());
+    // Through the wallet itself: the curve is verified against the pinned revenue launcher, and
+    // the exact buy call simulates from an account holding QUAI.
+    let market = wallet_core::curve::market(&ctx, &token.to_string(), &curve.to_string(), &[]).await.unwrap();
+    assert!(market.target_quai() > 0.0 && !market.graduated, "RIG reads as a live curve: {market:?}");
+    let deadline = (wallet_core::registry::now() + 600).to_string();
+    let call = c.prepare("buy", &[serde_json::json!("1"), serde_json::json!(deadline)], U256::from(10u128.pow(17))).unwrap();
+    let holder = funded_account(&ctx).await;
+    let out = c.simulate(holder, &call, BlockTag::Latest, Some(600_000)).await;
+    assert!(out.is_ok(), "a 0.1 QUAI buy of RIG simulates: {out:?}");
+}
+
 /// A review's commitment check proves the owner's WQUAI balance as the mapping at slot 3. The
 /// biggest WQUAI pool holds WQUAI, so its proven word must equal WQUAI's own `balanceOf` there.
 #[tokio::test]

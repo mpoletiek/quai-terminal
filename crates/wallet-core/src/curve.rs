@@ -126,12 +126,25 @@ pub fn price_points(target: f64, sold: &[f64]) -> Vec<(f64, f64)> {
         .collect()
 }
 
-fn launcher_pin(ctx_network: &crate::network::NetworkProfile) -> Result<&PinnedContract> {
-    ctx_network
-        .ecosystem
-        .curve_launcher
-        .as_ref()
-        .ok_or_else(|| CoreError::NotFound(format!("no bonding-curve launcher on {}", ctx_network.name)))
+/// The pinned launcher that launched this curve: the curve names it, and only a pinned launcher is
+/// believed. Quainance runs two (the launch zone's and the revenue system's), with one interface.
+async fn launcher_pin<'a>(
+    network: &'a crate::network::NetworkProfile,
+    node: &crate::network::Node,
+    curve: &str,
+) -> Result<&'a PinnedContract> {
+    let eco = &network.ecosystem;
+    let pins: Vec<&PinnedContract> = [eco.curve_launcher.as_ref(), eco.revenue_curve_launcher.as_ref()].into_iter().flatten().collect();
+    if pins.is_empty() {
+        return Err(CoreError::NotFound(format!("no bonding-curve launcher on {}", network.name)));
+    }
+    let said = Contract::new(addr(curve)?, interface(CURVE_ABI)?, &node.provider)
+        .call(addr(READ_CALLER)?, "launcher", &[], BlockTag::Latest)
+        .await?;
+    let said = said.first().and_then(|v| v.as_str()).unwrap_or_default().to_lowercase();
+    pins.into_iter()
+        .find(|p| p.address.eq_ignore_ascii_case(&said))
+        .ok_or_else(|| CoreError::Rejected(format!("{curve} names a launcher this wallet does not know ({said}); refusing to use it")))
 }
 
 /// Check a curve against the pinned launcher; returns its address when it may be traded or read.
@@ -147,7 +160,9 @@ async fn verified_curve(
     curve: &str,
     trust: crate::data::Trust,
 ) -> Result<QuaiAddress> {
-    let launcher = crate::data::verify_pinned(app, node, network, launcher_pin(network)?, "Quainance curve launcher", trust).await?;
+    let launcher =
+        crate::data::verify_pinned(app, node, network, launcher_pin(network, node, curve).await?, "Quainance curve launcher", trust)
+            .await?;
     let caller = addr(READ_CALLER)?;
     let named = Contract::new(launcher, interface(LAUNCHER_ABI)?, &node.provider)
         .call(caller, "launches", &[json!(token)], BlockTag::Latest)
