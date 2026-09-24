@@ -433,7 +433,7 @@ pub const MARKET_CANDLES: usize = 64;
 /// It matches the zone's block time, so the screen moves at the speed the chain does. The request
 /// is not what costs — each source's own TTL decides whether a tick reaches the network at all,
 /// and a tick inside that window is served from the store.
-pub const MARKET_REFRESH: Duration = Duration::from_secs(5);
+pub const MARKET_REFRESH: Duration = Duration::from_secs(wallet_core::markets::MARKET_TICK_SECS);
 /// How long a PnL answer is shown before opening the screen reads it again.
 pub const PNL_TTL: Duration = Duration::from_secs(30);
 /// The swap card's pair chart: hourly, which the indexer buckets, so it is one query.

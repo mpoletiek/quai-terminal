@@ -64,8 +64,10 @@ pub fn parse_candles(v: &Value) -> Vec<Candle> {
 
 /// The query includes an open candle, whose OHLC/volume changes during its bucket.
 /// Refresh it at the market cadence rather than treating the whole answer as closed history.
+/// Under the Markets tick (5 s, counted from when it asks), so every tick reads the current
+/// candle. At 5 s, counted from when the answer landed, every other tick was served the old one.
 fn candle_ttl(_bucket: u64, _now: u64) -> u64 {
-    5
+    4
 }
 
 /// Candles for one pool, newest `count` buckets of `bucket` seconds, oldest first.
@@ -228,8 +230,10 @@ mod tests {
 
     #[test]
     fn open_candles_expire_before_the_bucket_closes() {
+        // Under the Markets tick, which is counted from the ask while this is counted from the
+        // answer: equal to it, every other tick got the old candle.
         for bucket in [0, 60, 300, 3600, 14400] {
-            assert_eq!(candle_ttl(bucket, 1_800_000_001), 5);
+            assert!(candle_ttl(bucket, 1_800_000_001) < crate::markets::MARKET_TICK_SECS);
         }
     }
 

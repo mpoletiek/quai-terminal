@@ -1457,6 +1457,13 @@ async fn pools_from_pairs(ctx: &DataCtx, pairs: Vec<String>, total: usize, venue
 ///
 /// What was read before lives in `pool_events` rows, added by log position. Recording a page the
 /// wallet (or another process) already has is a no-op rather than a rewrite of the whole history.
+/// How often a client showing Markets asks again for the selected pair (the TUI's refresh tick).
+/// Caches in front of that ask must expire sooner, or they answer every other tick.
+pub const MARKET_TICK_SECS: u64 = 5;
+
+/// How long one wallet's completed history refresh answers another's request for the same pool.
+pub const HISTORY_SHARE_SECS: u64 = 2;
+
 pub async fn pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: usize) -> Result<Vec<PoolEvent>> {
     if ctx.cache_only {
         return read_pool_events(ctx, pool, since);
@@ -1481,9 +1488,12 @@ where
     Fut: std::future::Future<Output = Result<Vec<PoolEvent>>>,
 {
     let key = format!("{}:refresh", history_key(ctx, pool));
+    // Long enough that windows asking together share one read, short enough that the next Markets
+    // tick (5 s after it asked, so about 3 s after a 2 s read landed) reads again. At 5 s from
+    // completion every other tick was answered from this stamp, and charts moved every 10 s.
     let fresh = || -> Result<bool> {
         Ok(ctx.feeds().cache_get(&key)?.is_some_and(|(covered_since, at)| {
-            now().saturating_sub(at) < 5 && covered_since.parse::<u64>().is_ok_and(|covered| covered <= since)
+            now().saturating_sub(at) < HISTORY_SHARE_SECS && covered_since.parse::<u64>().is_ok_and(|covered| covered <= since)
         }))
     };
     if fresh()? {
