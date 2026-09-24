@@ -497,6 +497,9 @@ impl App {
                 if self.eco.markets_view.events_loading.as_deref() == Some(pool.as_str()) {
                     self.eco.markets_view.events_loading = None;
                 }
+                if self.eco.markets_view.events_prefetching.as_deref() == Some(pool.as_str()) {
+                    self.eco.markets_view.events_prefetching = None;
+                }
                 if (result.is_ok() || !matches!(self.eco.markets_view.events.get(&pool), Some(Ok(_))))
                     && self.eco.markets_view.events.get(&pool) != Some(&result)
                 {

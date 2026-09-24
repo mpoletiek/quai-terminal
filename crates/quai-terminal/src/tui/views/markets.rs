@@ -35,6 +35,35 @@ pub fn fmt_qty(v: f64) -> String {
     }
 }
 
+/// The contracts behind the selected market: the token and where it trades. The frame scan links
+/// both to the explorer, so they open with ctrl+click; `y` copies the token and `Y` the market's
+/// explorer link.
+fn token_info(
+    app: &App,
+    t: &Theme,
+    pool: &wallet_core::markets::Pool,
+    base: &wallet_core::markets::PoolToken,
+    base_sym: &str,
+) -> Vec<Span<'static>> {
+    let short = wallet_core::session::short_address;
+    let venue = match (&pool.curve, pool.venue) {
+        (Some(c), _) => format!("{} curve", c.launchpad.as_deref().unwrap_or("launch")),
+        (None, v) => format!("{} pair", v.label()),
+    };
+    let mut spans = vec![
+        Span::styled(format!("{base_sym} "), t.dim_style()),
+        Span::styled(short(&base.address), t.text_style()),
+        Span::styled(format!(" · {venue} "), t.dim_style()),
+        Span::styled(short(&pool.address), t.text_style()),
+    ];
+    if app.caps.hyperlinks && !app.plain {
+        spans.push(Span::styled(" · ctrl+click opens · y copies", t.dim_style()));
+    } else {
+        spans.push(Span::styled(" · y copies · Y its link", t.dim_style()));
+    }
+    spans
+}
+
 /// A bonded curve's TVL: both sides of its locked pool, the token side at the pool's own price,
 /// in USD when QUAI has a price and in QUAI when it does not.
 fn locked_tvl(app: &App, pool: &wallet_core::markets::Pool, curve: &wallet_core::markets::CurveMark) -> String {
@@ -245,7 +274,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Some(Ok(ev)) => Some(ev.as_slice()),
         _ => None,
     };
-    let loading = mv.events_loading.as_deref() == Some(pool.address.as_str());
+    let loading = [&mv.events_loading, &mv.events_prefetching].iter().any(|slot| slot.as_deref() == Some(pool.address.as_str()));
     let action = if pool.venue == Venue::Curve { "t buy on the curve" } else { "t trade" };
     let title = format!(
         "{base_sym}/{quote_sym} · {} · {tf_label} · . timeframe · f flip · {action}{}",
@@ -255,8 +284,10 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, &title, false);
     let inner = block.inner(main);
     f.render_widget(block, main);
+    // A third header line names the contracts when there is room for it.
+    let info_line = inner.height > 20;
     let [header, chart_area, volume_area, tape_area] = Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(if info_line { 3 } else { 2 }),
         Constraint::Min(6),
         Constraint::Length(3),
         Constraint::Length(if inner.height > 26 { 9 } else { 5 }),
@@ -327,7 +358,11 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Span::styled(depth, if pool.curve.is_some() { Style::default().fg(t.attention) } else { t.dim_style() }),
         Span::styled(holdings, t.dim_style()),
     ];
-    f.render_widget(Paragraph::new(vec![Line::from(line1), Line::from(line2)]), header);
+    let mut lines = vec![Line::from(line1), Line::from(line2)];
+    if info_line {
+        lines.push(Line::from(token_info(app, t, pool, base, &base_sym)));
+    }
+    f.render_widget(Paragraph::new(lines), header);
 
     match events {
         None if loading || !mv.events.contains_key(&pool.address) => {

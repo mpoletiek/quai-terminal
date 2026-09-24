@@ -260,6 +260,9 @@ pub struct MarketsView {
     pub reserves_attempted: Option<Instant>,
     pub events: HashMap<String, Result<Vec<wallet_core::markets::PoolEvent>, String>>,
     pub events_loading: Option<String>,
+    /// A neighbour of the selected pair whose chart is loading before the cursor reaches it. It
+    /// has its own slot so the pair the user is looking at never waits behind it.
+    pub events_prefetching: Option<String>,
     pub history_coverage: HashMap<String, wallet_core::markets::HistoryCoverage>,
     /// Ready-bucketed candles from the indexer, keyed by (pool, bucket seconds). The chart uses
     /// these while the pool's logs are still loading, then keeps whichever covers more.
@@ -357,6 +360,7 @@ impl Default for MarketsView {
             reserves_attempted: None,
             events: HashMap::new(),
             events_loading: None,
+            events_prefetching: None,
             history_coverage: HashMap::new(),
             events_at: HashMap::new(),
             timeframe: 1,
@@ -439,6 +443,9 @@ pub const SWAP_CHART_BUCKET: u64 = 3_600;
 ///
 /// Long enough that holding a cursor key does not fetch every row it passes, short enough that
 /// stopping on a row feels immediate.
+/// How far from the cursor, in rows, charts are loaded before the cursor gets there: the order
+/// is below, above, two below, and so on. One loads at a time, only after the selected pair's own.
+pub const PREFETCH_ROWS: [isize; 6] = [1, -1, 2, 3, -2, 4];
 pub const SELECTION_SETTLES: Duration = Duration::from_millis(200);
 
 /// A signing sequence the TUI drives to completion across screens: every step is still its own
@@ -1435,6 +1442,11 @@ impl App {
             (None, Screen::Explore) => self.eco.collections_filtered().get(self.selected).map(|c| c.address.clone()),
             (None, Screen::Launches) => self.launch_rows().get(self.selected).map(|l| l.token.clone()),
             (None, Screen::Pnl) => self.pnl_positions().get(self.selected).map(|p| p.token.clone()),
+            // In the pairs list, the token the market prices (not WQUAI or USDT beside it).
+            (None, Screen::Markets) if self.pane == 0 => self.selected_pool().map(|p| {
+                let base = if self.pool_base0(&p) { p.token0 } else { p.token1 };
+                base.address
+            }),
             _ => None,
         }
     }

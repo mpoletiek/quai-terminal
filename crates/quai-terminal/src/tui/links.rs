@@ -1,9 +1,10 @@
 //! Hyperlinks (OSC 8) on the transaction hashes and addresses a frame shows.
 //!
 //! Every link goes to the configured explorer, built by the wallet from a hex id it already holds
-//! in its own records: its accounts, its operations, its activity, its contacts. Nothing a
-//! collection, a token or a message says ever becomes a link target — text elsewhere that
-//! happens to contain one of those ids links to the same explorer page the wallet would open.
+//! in its own records: its accounts, its operations, its activity, its contacts, and the contracts
+//! of the tokens it holds and the markets it lists. Nothing a collection, a token or a message says
+//! ever becomes a link target — text elsewhere that happens to contain one of those ids links to
+//! the same explorer page the wallet would open.
 //!
 //! The finished frame is scanned rather than each view marking its links, so a hash shown whole,
 //! in groups of four (`0x 00F4 1a2B …`) or shortened (`0x00F4…804B`) is found wherever it is,
@@ -31,7 +32,7 @@ enum Kind {
 /// The ids this wallet holds, lowercase, without `0x`. Rebuilt when its records change.
 #[derive(Default)]
 pub struct Known {
-    key: (usize, usize, usize, usize, String),
+    key: (usize, usize, usize, usize, usize, usize, String),
     ids: Vec<(String, Kind)>,
 }
 
@@ -47,7 +48,12 @@ fn id(s: &str) -> Option<String> {
 impl Known {
     fn refresh(&mut self, app: &App) {
         let d = &app.dash;
-        let key = (d.accounts.len(), d.ops.len(), d.activity.len(), d.contacts.len(), app.network_id.clone());
+        let pools = match &app.eco.markets_view.pools {
+            Some(Ok((pools, _))) => pools.as_slice(),
+            _ => &[],
+        };
+        let held = app.eco.portfolio.as_ref().map(|p| p.rows.as_slice()).unwrap_or_default();
+        let key = (d.accounts.len(), d.ops.len(), d.activity.len(), d.contacts.len(), pools.len(), held.len(), app.network_id.clone());
         if key == self.key {
             return;
         }
@@ -77,6 +83,18 @@ impl Known {
                 add(a, Kind::Address);
             }
         }
+        // Market and token contracts, as the directory and the portfolio read them from the chain
+        // and the explorer: the token info a market shows links to the page for what it names.
+        for p in pools {
+            add(&p.address, Kind::Address);
+            add(&p.token0.address, Kind::Address);
+            add(&p.token1.address, Kind::Address);
+        }
+        for r in held {
+            if let wallet_core::portfolio::AssetKey::Token(contract) = &r.key {
+                add(contract, Kind::Address);
+            }
+        }
         ids.sort();
         ids.dedup();
         self.ids = ids;
@@ -93,7 +111,7 @@ impl Known {
 
 /// A URL safe to put inside OSC 8: http(s), printable ASCII only, so it can neither end the
 /// sequence early nor carry anything the terminal would act on.
-fn safe(url: &str) -> bool {
+pub(crate) fn safe(url: &str) -> bool {
     (url.starts_with("https://") || url.starts_with("http://")) && url.len() < 2048 && url.bytes().all(|b| (0x21..0x7f).contains(&b))
 }
 

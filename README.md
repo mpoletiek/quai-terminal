@@ -104,7 +104,7 @@ The TUI has seven sections with sub-tabs, down the rail on the left:
 | `6` | **Activity** | All · Sends · Receipts · Trades · NFTs |
 | `0` | **System** | Wallets (switch, create, import) · Network (node health, hashrate per algorithm, transactions and gas paid per hour) · Settings · Data sources |
 
-Every screen uses the same keys for the same things. `space` opens the actions for what is selected, with that screen's own letters (on Pools, `h` harvests), and `?` lists the keys for the screen you are on. The mouse works too: click, scroll and hover.
+Every screen uses the same keys for the same things. `space` opens the actions for what is selected, with that screen's own letters (on Pools, `h` harvests), and `?` lists the keys for the screen you are on. The mouse works too: click, scroll and hover. The wallet has the mouse, so the terminal's own link handling doesn't see it: on an address or transaction hash, ctrl+click opens it in the explorer and alt+click copies it (hovering shows which). Hold shift to select text with the terminal instead.
 
 | Key | Action |
 | --- | --- |

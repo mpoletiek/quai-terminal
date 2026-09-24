@@ -1268,6 +1268,43 @@ fn scrolling_markets_only_fetches_the_row_the_cursor_settles_on() {
     assert_eq!(asked(&app), vec![settled], "and asking again while it is still fresh changes nothing");
 }
 
+/// Once the pair under the cursor has its chart, the pairs around it load theirs, one at a time
+/// and nearest first, so moving down the list lands on a drawn chart. The selected pair always
+/// has its own slot: a prefetch in flight never holds it up.
+#[test]
+fn neighbouring_charts_load_before_the_cursor_reaches_them() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.eco.markets_view.pools_at = Some(Instant::now());
+    app.switch(Screen::Markets);
+    app.selected = 1;
+    let rows: Vec<String> = app.market_rows().iter().map(|p| p.address.clone()).collect();
+    assert!(rows.len() >= 3, "the fixture lists enough pairs to have neighbours");
+    app.tick_markets();
+    std::thread::sleep(crate::tui::eco::SELECTION_SETTLES + std::time::Duration::from_millis(50));
+    app.tick_markets();
+    let selected = rows[1].clone();
+    assert_eq!(app.eco.markets_view.events_loading.as_deref(), Some(selected.as_str()));
+    app.tick_markets();
+    assert!(app.eco.markets_view.events_prefetching.is_none(), "nothing is prefetched before the selected pair has landed");
+    // The selected pair lands: the row below it is next.
+    app.on_data_event(super::super::data::DataEv::PoolEvents { pool: selected.clone(), coverage: None, result: Ok(vec![]) });
+    app.tick_markets();
+    assert_eq!(app.eco.markets_view.events_prefetching.as_deref(), Some(rows[2].as_str()), "the row below comes first");
+    app.tick_markets();
+    assert!(!app.eco.markets_view.events_at.contains_key(&rows[0]), "one at a time");
+    // It lands, and the row above follows.
+    app.on_data_event(super::super::data::DataEv::PoolEvents { pool: rows[2].clone(), coverage: None, result: Ok(vec![]) });
+    app.tick_markets();
+    assert_eq!(app.eco.markets_view.events_prefetching.as_deref(), Some(rows[0].as_str()), "then the row above");
+    // Moving onto a pair still prefetching does not fetch it twice.
+    app.selected = 0;
+    std::thread::sleep(crate::tui::eco::SELECTION_SETTLES + std::time::Duration::from_millis(50));
+    app.tick_markets();
+    app.tick_markets();
+    assert!(app.eco.markets_view.events_loading.is_none(), "the prefetch already in flight answers it");
+}
+
 /// Pools is a Markets tab, and its actions refuse clearly when there is nothing to act on.
 #[test]
 fn pools_tab_navigates_and_guards_its_actions() {
