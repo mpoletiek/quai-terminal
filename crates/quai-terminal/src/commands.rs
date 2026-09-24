@@ -636,6 +636,11 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
             let a = s.add_account(label.as_deref())?;
             done(ctx, "account add", &a, &format!("{} {}", a.label, a.address))
         }
+        AccountCmd::Watch { address, label } => {
+            let mut s = ctx.session().await?;
+            let address = s.add_watch_address(&address, label.as_deref())?;
+            done(ctx, "account watch", json!({"address": address}), &format!("watching {address}"))
+        }
         AccountCmd::Rename { account, label } => {
             let mut s = ctx.session().await?;
             s.rename_account(&account, &label)?;

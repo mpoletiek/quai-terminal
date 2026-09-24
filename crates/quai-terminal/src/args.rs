@@ -331,6 +331,12 @@ pub enum AccountCmd {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Watch another address in a watch-only wallet (Quai or Qi).
+    Watch {
+        address: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Rename an account (selector: label, address or number).
     Rename { account: String, label: String },
     /// Hide an account from lists.

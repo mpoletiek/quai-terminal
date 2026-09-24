@@ -315,6 +315,17 @@ pub enum Cmd {
         amount: String,
     },
     AddAccount(Option<String>),
+    /// Import a private key into this wallet. The password re-seals the vault.
+    ImportKey {
+        label: Option<String>,
+        key: Zeroizing<String>,
+        password: Zeroizing<String>,
+    },
+    /// Watch another address (watch-only wallets).
+    WatchAddress {
+        address: String,
+        label: Option<String>,
+    },
     RenameAccount {
         account: String,
         label: String,
@@ -389,6 +400,8 @@ impl Cmd {
             Cmd::SplitQuote { .. } => "split_quote",
             Cmd::InspectContract { .. } => "inspect_contract",
             Cmd::AddAccount(_) => "add_account",
+            Cmd::ImportKey { .. } => "import_key",
+            Cmd::WatchAddress { .. } => "watch_address",
             Cmd::RenameAccount { .. } => "rename_account",
             Cmd::NewQiAddress(_) => "new_qi_address",
             Cmd::ScanQi { .. } => "scan_qi",
@@ -1415,10 +1428,13 @@ async fn run(
             }
             None => continue,
         };
+        let adds_account = matches!(cmd, Cmd::AddAccount(_) | Cmd::ImportKey { .. } | Cmd::WatchAddress { .. });
         // Local edits the dashboard should reflect right away (a lightweight refresh follows).
         let mutates = matches!(
             cmd,
             Cmd::AddAccount(_)
+                | Cmd::ImportKey { .. }
+                | Cmd::WatchAddress { .. }
                 | Cmd::RenameAccount { .. }
                 | Cmd::NewQiAddress(_)
                 | Cmd::ScanQi { .. }
@@ -1534,6 +1550,18 @@ async fn run(
             }
             Cmd::AddAccount(label) => {
                 simple(&send, session.add_account(label.as_deref()).map(|a| format!("added {} {}", a.label, a.address)))
+            }
+            Cmd::ImportKey { label, key, password } => {
+                let label = label.unwrap_or_else(|| {
+                    format!("Imported {}", session.meta.quai_accounts.iter().filter(|a| a.hd_index.is_none()).count() + 1)
+                });
+                let r = session
+                    .import_key(&password, &key, &label)
+                    .map(|a| format!("imported {label} {a} · back the wallet up again: its phrase does not cover this key"));
+                simple(&send, r);
+            }
+            Cmd::WatchAddress { address, label } => {
+                simple(&send, session.add_watch_address(&address, label.as_deref()).map(|a| format!("watching {a}")))
             }
             Cmd::RenameAccount { account, label } => simple(&send, session.rename_account(&account, &label).map(|_| "renamed".into())),
             Cmd::NewQiAddress(label) => simple(&send, session.new_qi_address(label.as_deref()).map(|a| format!("new Qi address {a}"))),
@@ -1777,6 +1805,12 @@ async fn run(
         if mutates {
             refresh_local(&mut session, &mut dash);
             send(Ev::Dashboard(Box::new(dash.clone())));
+        }
+        // A new account has no balance until the network is read, and waiting for the next block
+        // left it missing from Accounts for seconds after it was added: refresh on the next idle
+        // turn of this loop instead.
+        if adds_account {
+            last_refresh = std::time::Instant::now() - IDLE_REFRESH;
         }
     }
 }

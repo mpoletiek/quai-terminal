@@ -519,6 +519,33 @@ impl Session {
         Ok(record)
     }
 
+    /// Watch another address in this watch-only wallet. Returns it, checksummed.
+    ///
+    /// Only a watch-only wallet watches. In a wallet with keys a watched address would sit among
+    /// its accounts, and one of them is a receive address someone could hand out for money that
+    /// no key here can move.
+    pub fn add_watch_address(&mut self, address: &str, label: Option<&str>) -> Result<String> {
+        if self.meta.kind != crate::registry::WalletKind::Watch {
+            return Err(CoreError::Invalid(
+                "only a watch-only wallet watches addresses; create one (wallet watch) to follow an address you hold no key for".into(),
+            ));
+        }
+        let parsed = crate::registry::parse_any_address(address)?.to_string();
+        let label = label.map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+        if label.as_ref().is_some_and(|l| l.chars().count() > 64 || l.chars().any(char::is_control)) {
+            return Err(CoreError::Invalid("a label is up to 64 printable characters".into()));
+        }
+        self.registry.update_meta(&mut self.meta, |meta| {
+            if meta.watch.iter().any(|w| w.address.eq_ignore_ascii_case(&parsed)) {
+                return Err(CoreError::Invalid(format!("{parsed} is already watched here")));
+            }
+            let label = label.unwrap_or_else(|| format!("Watch {}", meta.watch.len() + 1));
+            meta.watch.push(crate::registry::WatchAddress { address: parsed.clone(), label });
+            Ok(())
+        })?;
+        Ok(parsed)
+    }
+
     /// Rename a Quai account.
     pub fn rename_account(&mut self, selector: &str, label: &str) -> Result<()> {
         let address = self.meta.find_quai_account(selector)?.address.clone();
@@ -921,6 +948,35 @@ mod tests {
         assert!(registry.unlock(&s.meta, "password123").unwrap().secrets().imported.is_empty(), "and nothing was sealed");
         s.import_key("password123", &key, "miner").unwrap();
         assert_eq!(registry.unlock(&s.meta, "password123").unwrap().secrets().imported.len(), 1);
+    }
+
+    /// A watch-only wallet takes more addresses, once each, and survives a reopen with them. A
+    /// wallet with keys refuses: a watched address among its accounts could be handed out to be
+    /// paid into, with no key here to move what arrives.
+    #[test]
+    fn a_watch_wallet_watches_more_addresses_and_a_key_wallet_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap();
+        let registry = Registry::fast(paths);
+        let first = "0x0019f740d9e1602ce0e5a5da864e50b8d7d5ab61";
+        let second = "0x0035187a7660f595d93cd53a4d16c635d6cffc8f";
+        let meta = registry.create_watch("watched", &[(first.into(), "Watch 1".into())]).unwrap();
+        let network = NetworkProfile::builtins().into_iter().next().unwrap();
+        let mut s = Session::open(registry.clone(), AppConfig::default(), meta, network.clone()).unwrap();
+        let added = s.add_watch_address(second, None).unwrap();
+        assert!(added.eq_ignore_ascii_case(second));
+        assert_eq!(s.meta.watch.len(), 2);
+        assert_eq!(s.meta.watch[1].label, "Watch 2", "a default label that counts");
+        assert!(s.add_watch_address(&second.to_uppercase().replace("0X", "0x"), Some("again")).is_err(), "once each, whatever the case");
+        assert!(s.add_watch_address("0x1234", None).is_err(), "an address, not anything");
+        assert!(s.add_watch_address(first.trim_start_matches("0x"), Some("bad\u{7}label")).is_err());
+        assert_eq!(registry.load(&s.meta.id).unwrap().watch.len(), 2, "it is on disk, not only in this session");
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let hd = registry.create_hd("main", phrase, "english", "", "password123", true).unwrap();
+        let mut keyed = Session::open(registry, AppConfig::default(), hd, network).unwrap();
+        let refused = keyed.add_watch_address(second, None).unwrap_err().to_string();
+        assert!(refused.contains("watch-only wallet"), "{refused}");
+        assert!(keyed.meta.watch.is_empty());
     }
 
     /// Abbreviation counts characters: text from an explorer can hold multi-byte characters, and

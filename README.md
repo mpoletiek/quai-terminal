@@ -174,7 +174,7 @@ Every screen uses the same keys for the same things. `space` opens the actions f
 
 ## Features
 
-- **Wallets:** create (24 words, verification quiz), import phrase, private key or Web3 keystore, watch-only. Also export phrase, key or keystore; change password; rename; delete.
+- **Wallets:** create (24 words, verification quiz), import phrase, private key or Web3 keystore, watch-only. Also export phrase, key or keystore; change password; rename; delete. A private key can also join an existing wallet as another account (Accounts › `space` `i`, or `wallet import-key`); back the wallet up again afterwards, since its phrase does not cover that key. A watch-only wallet takes more addresses (Accounts › `a`, or `account watch ADDRESS`); a wallet with keys never watches an address it cannot sign for, so from one, Accounts › `space` `n` starts a new watch-only wallet.
 - **Encrypted backups:** keys, custody state, contacts and history in one file. `wallet backup`, `verify-backup` and `restore`.
 - **Quai accounts:** add, label, archive, discover used accounts; token import, balances, transfers, approvals, allowances, revocation.
 - **Qi:** gap-50 and deep scans, coin view with denominations, fresh single-use and mining addresses, imported Qi keys, denomination-preserving and aggregate consolidation.

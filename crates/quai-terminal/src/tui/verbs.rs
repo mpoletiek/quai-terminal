@@ -114,7 +114,12 @@ const ACCOUNTS: ViewKeys = ViewKeys {
         ov(Receive, "receive here", Act(App::receive_on_account)),
     ],
     footer: &[Send, Receive, Add, Edit],
-    sheet: &[it('a', "add account", Run("add_account")), it('e', "rename", Act(App::rename_account))],
+    sheet: &[
+        it('a', "add account", Run("add_account")),
+        it('i', "import a private key", Run("import_key")),
+        it('n', "new watch-only wallet", Run("new_watch_wallet")),
+        it('e', "rename", Act(App::rename_account)),
+    ],
 };
 
 const MARKETS: ViewKeys = ViewKeys {

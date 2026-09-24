@@ -188,10 +188,13 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                 lines.push(Line::from(Span::styled(format!("{} {msg}", t.icon(Icon::Danger)), Style::default().fg(t.danger))));
             }
             lines.push(Line::from(if form.pending {
-                Span::styled(
-                    format!("{} preparing… nothing is signed until you approve the review", spinner()),
-                    Style::default().fg(t.pending),
-                )
+                // Most forms end in a review; importing a key seals it into the vault instead.
+                let what = if form.kind == super::super::app::FormKind::ImportKey {
+                    "sealing the key into the wallet's vault…"
+                } else {
+                    "preparing… nothing is signed until you approve the review"
+                };
+                Span::styled(format!("{} {what}", spinner()), Style::default().fg(t.pending))
             } else {
                 Span::styled("tab/↑↓ fields · ←/→ choices · enter continue · esc cancel", t.dim_style())
             }));

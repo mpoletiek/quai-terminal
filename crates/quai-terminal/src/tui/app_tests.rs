@@ -4250,3 +4250,55 @@ fn a_reachable_order_reaches_the_desktop_once() {
     assert!(app.toasts.iter().any(|t| t.text.contains("reachable")), "{:?}", app.toasts);
     assert!(app.notices_out.is_empty(), "not on the desktop twice");
 }
+
+/// Accounts can take a private key into a wallet with keys, and an address into a watch-only
+/// wallet. The key and the password are secret fields, go to the worker in wiped buffers, and a
+/// wallet with keys never watches: asking it to opens a new watch-only wallet instead.
+#[test]
+fn accounts_import_a_key_or_watch_an_address() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let (worker, mut sent) = Worker::capture();
+    app.worker = Some(worker);
+    app.switch(Screen::Accounts);
+    while sent.try_recv().is_ok() {}
+    app.run_action("import_key");
+    let Modal::Form(form) = &app.modal else { panic!("a form opens") };
+    assert_eq!(form.kind, FormKind::ImportKey);
+    assert!(!form.fields[0].is_secret() && form.fields[1].is_secret() && form.fields[2].is_secret(), "key and password are masked");
+    type_text(&mut app, "Pelagus");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "0xabc123");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "password123");
+    press(&mut app, KeyCode::Enter);
+    let cmd =
+        std::iter::from_fn(|| sent.try_recv().ok()).find(|c| matches!(c, Cmd::ImportKey { .. })).expect("the import goes to the worker");
+    let Cmd::ImportKey { label, key, password } = cmd else { unreachable!() };
+    assert_eq!((label.as_deref(), key.as_str(), password.as_str()), (Some("Pelagus"), "0xabc123", "password123"));
+    // A wallet with keys does not watch; it offers a watch-only wallet.
+    app.modal = Modal::None;
+    app.run_action("watch_address");
+    assert!(matches!(app.modal, Modal::None), "no watch form on a wallet with keys");
+    assert!(app.onboarding.is_some(), "a new watch-only wallet begins instead");
+
+    let (_dir, mut app) = test_app(WalletKind::Watch);
+    let (worker, mut sent) = Worker::capture();
+    app.worker = Some(worker);
+    app.switch(Screen::Accounts);
+    app.run_action("import_key");
+    assert!(!matches!(app.modal, Modal::Form(_)), "a watch-only wallet has no vault to seal a key into");
+    app.modal = Modal::None;
+    app.run_action("add_account");
+    let Modal::Form(form) = &app.modal else { panic!("adding opens a form") };
+    assert_eq!(form.kind, FormKind::WatchAddress, "on a watch-only wallet, adding is watching");
+    type_text(&mut app, "0x0035187a7660f595d93cd53a4d16c635d6cffc8f");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "QAXE");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        std::iter::from_fn(|| sent.try_recv().ok()).any(
+            |c| matches!(c, Cmd::WatchAddress { address, label } if address == "0x0035187a7660f595d93cd53a4d16c635d6cffc8f" && label.as_deref() == Some("QAXE"))
+        ),
+        "the address goes to the worker"
+    );
+}

@@ -32,6 +32,7 @@ impl App {
                 | "notify"
                 | "speedup"
                 | "export_phrase"
+                | "import_key"
                 | "fill_gap"
         );
         if needs_keys && !self.can_sign() {
@@ -54,7 +55,16 @@ impl App {
             "unwrap_quai" => self.open_form(FormKind::UnwrapQuai),
             "approve" => self.open_form(FormKind::Approve),
             "import_token" => self.open_form(FormKind::ImportToken),
+            // A watch-only wallet has nothing to derive from: its "add" is another address to watch.
+            "add_account" if !self.can_sign() => self.open_form(FormKind::WatchAddress),
             "add_account" => self.open_form(FormKind::AddAccount),
+            "import_key" => self.open_form(FormKind::ImportKey),
+            "watch_address" if self.can_sign() => {
+                self.info("this wallet holds keys, so it watches nothing; a new watch-only wallet follows an address");
+                self.begin_onboarding(OnboardKind::Watch);
+            }
+            "watch_address" => self.open_form(FormKind::WatchAddress),
+            "new_watch_wallet" => self.begin_onboarding(OnboardKind::Watch),
             "new_qi_address" => self.open_form(FormKind::NewQiAddress),
             "scan_qi" => self.send(Cmd::ScanQi { deep: None }),
             "deep_scan" => self.open_form(FormKind::DeepScan),

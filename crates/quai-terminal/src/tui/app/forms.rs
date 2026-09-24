@@ -203,6 +203,22 @@ impl App {
                 ("Rename wallet", vec![Field::new("Name", "letters, digits, - and _").with(&current)], None)
             }
             FormKind::AddAccount => ("Add Quai account", vec![Field::new("Label", "e.g. Savings").optional()], None),
+            FormKind::ImportKey => (
+                "Import a private key",
+                vec![
+                    Field::new("Label", "e.g. Pelagus").optional(),
+                    Field::new("Private key", "hex, 0x optional · paste works").secret(),
+                    Field::new("Wallet password", "re-seals the vault with the new key in it").secret(),
+                ],
+                Some(
+                    "The key joins this wallet as another account, sealed in its vault with the others. Its recovery phrase does not cover it: back the wallet up again afterwards.",
+                ),
+            ),
+            FormKind::WatchAddress => (
+                "Watch an address",
+                vec![Field::new("Address", "Quai or Qi address (0x…)"), Field::new("Label", "e.g. Cold storage").optional()],
+                Some("A watched address shows its balances and activity. Nothing here can move what it holds."),
+            ),
             FormKind::RenameAccount(_) => ("Rename account", vec![Field::new("Label", "")], None),
             FormKind::NewQiAddress => ("New Qi / mining address", vec![Field::new("Label", "e.g. mining rig").with("mining")], None),
             FormKind::Contact(original) => {
@@ -596,6 +612,9 @@ impl App {
             FormKind::BoardDm { peer, .. } => Cmd::Prepare(Prepare::BoardDm { from: opt(0), peer: peer.clone(), text: v(1) }),
             FormKind::OrderCreate { .. } | FormKind::FollowChannel | FormKind::RenameWallet(_) => unreachable!("handled above"),
             FormKind::AddAccount => Cmd::AddAccount(opt(0)),
+            // Moved straight into wiped buffers; the form's own copies are wiped when it drops.
+            FormKind::ImportKey => Cmd::ImportKey { label: opt(0), key: Zeroizing::new(v(1)), password: Zeroizing::new(v(2)) },
+            FormKind::WatchAddress => Cmd::WatchAddress { address: v(0), label: opt(1) },
             FormKind::RenameAccount(a) => Cmd::RenameAccount { account: a.clone(), label: v(0) },
             FormKind::NewQiAddress => Cmd::NewQiAddress(opt(0)),
             FormKind::Contact(original) => {
