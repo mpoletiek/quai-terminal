@@ -742,7 +742,7 @@ fn lane_session(
 ) -> Option<Session> {
     let profile = config.network(network).ok()?;
     let mut session = Session::open(registry.clone(), config.clone(), meta, profile).ok()?;
-    let _ = runtime.block_on(session.use_execution_monitor());
+    let _ = runtime.block_on(session.use_monitor());
     Some(session)
 }
 
@@ -759,7 +759,7 @@ fn recheck_monitor(runtime: &tokio::runtime::Runtime, session: &mut Session) {
     let now = wallet_core::registry::now();
     if LAST.with(|l| now.saturating_sub(l.get()) >= EVERY) {
         LAST.with(|l| l.set(now));
-        let _ = runtime.block_on(session.use_execution_monitor());
+        let _ = runtime.block_on(session.use_monitor());
     }
 }
 
@@ -858,10 +858,24 @@ impl SignLane {
                         let t = std::time::Instant::now();
                         send(Ev::SignBusy(Some("preparing transaction…".into())));
                         let order = matches!(req, Prepare::OrderRun { .. });
-                        let result = runtime.block_on(prepare(s, req));
+                        // Whether the monitoring node this review reads from is keeping up with the
+                        // RPC it will be broadcast through, asked while the review is prepared.
+                        let probe = s.lag_probe();
+                        let lagging = async {
+                            match &probe {
+                                Some(probe) => probe.warning().await,
+                                None => None,
+                            }
+                        };
+                        let (result, lag) = runtime.block_on(async { tokio::join!(prepare(s, req), lagging) });
                         wallet_core::diag::timing("sign.prepare", t);
                         send(Ev::SignBusy(None));
-                        match result {
+                        match result.map(|mut r| {
+                            if let Some(warning) = lag {
+                                r.warnings.insert(0, warning);
+                            }
+                            r
+                        }) {
                             Ok(r) => send(if order { Ev::OrderReview(Box::new(r)) } else { Ev::Review(Box::new(r)) }),
                             // Nothing was signed: preparing is reading and building only.
                             Err(e) => send(Ev::PrepareError(e.to_string())),

@@ -283,25 +283,19 @@ impl Session {
         Ok(())
     }
 
-    /// Route every read through the network's monitoring endpoint once it reports the trusted
-    /// chain ID and genesis; broadcasts stay on `rpc`. Returns why it is not used when that check
-    /// fails, in which case reads stay on `rpc`.
-    pub async fn use_execution_monitor(&mut self) -> Option<String> {
-        if !self.config.execution_monitor_trusted(&self.network) {
-            self.drop_monitor();
-            return None;
-        }
-        self.use_monitor().await
+    pub(crate) fn require_execution_source(&self) -> Result<()> {
+        self.config.require_execution_transport(&self.network)
     }
 
-    pub(crate) fn require_execution_source(&self) -> Result<()> {
-        self.config.require_execution_transport(&self.network)?;
-        if self.monitoring() && !self.config.execution_monitor_trusted(&self.network) {
-            return Err(CoreError::Rejected(
-                "monitoring endpoint is not trusted for executable state; use the primary RPC or explicitly trust this endpoint".into(),
-            ));
-        }
-        Ok(())
+    /// The two nodes to compare before a review is shown: the monitoring node every read went to,
+    /// and the RPC endpoint the transaction will be broadcast through. None when reads are not on
+    /// a monitor. Cloned, so the comparison can run while the review is being prepared.
+    pub fn lag_probe(&self) -> Option<network::LagProbe> {
+        self.monitored.then(|| network::LagProbe {
+            monitor: self.node.clone(),
+            rpc: self.rpc.clone(),
+            rpc_url: self.network.rpc_url.clone(),
+        })
     }
 
     pub async fn use_monitor(&mut self) -> Option<String> {

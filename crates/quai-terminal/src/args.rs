@@ -1396,8 +1396,9 @@ pub enum NetworkCmd {
         #[arg(long)]
         allow_insecure: bool,
     },
-    /// Show, set or clear a monitoring endpoint for public reads. Financial reads require
-    /// --trust-execution; transactions are broadcast through the network RPC.
+    /// Show, set or clear a monitoring endpoint. Every blockchain read uses it once it reports the
+    /// same chain; transactions are broadcast through the network RPC, and a review warns when
+    /// the endpoint is 3 or more blocks behind it.
     Monitor {
         id: String,
         /// JSON-RPC URL; must report the same chain id and genesis.
@@ -1405,8 +1406,9 @@ pub enum NetworkCmd {
         /// Treat the URL as a gateway base that derives /cyprus1.
         #[arg(long)]
         pathing: bool,
-        /// Trust this exact monitoring URL for financial transaction reads.
-        #[arg(long, requires = "url", conflicts_with = "clear")]
+        /// No longer needed: a monitoring endpoint serves every read, reviews included. Accepted
+        /// so existing scripts keep working.
+        #[arg(long, requires = "url", conflicts_with = "clear", hide = true)]
         trust_execution: bool,
         /// Accept remote plaintext HTTP for execution on this network.
         #[arg(long, requires = "url", conflicts_with = "clear")]
