@@ -711,6 +711,8 @@ impl App {
             return;
         }
         self.eco.head = height;
+        self.eco.head_at = Some(Instant::now());
+        wallet_core::diag::timing("ui.block", Instant::now());
         let due = Instant::now().checked_sub(MARKET_STUCK);
         let mv = &mut self.eco.markets_view;
         mv.reserves_attempted = None;
@@ -727,6 +729,13 @@ impl App {
         if !self.locked {
             self.tick_eco();
         }
+    }
+
+    /// How long a chain-backed feed waits between reads when no block has asked for one: every
+    /// [`MARKET_REFRESH`] until blocks arrive, then only as a net under them.
+    pub fn feed_pace(&self) -> Duration {
+        let blocks_arriving = self.eco.head_at.is_some_and(|at| at.elapsed() < BLOCK_PACED_FALLBACK);
+        if blocks_arriving { BLOCK_PACED_FALLBACK } else { MARKET_REFRESH }
     }
 
     /// Periodic ecosystem work: debounced swap quotes and re-quotes while waiting on approval.

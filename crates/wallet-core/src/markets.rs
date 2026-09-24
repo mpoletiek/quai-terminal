@@ -1511,6 +1511,9 @@ pub const MARKET_TICK_SECS: u64 = 5;
 
 /// How long one wallet's completed history refresh answers another's request for the same pool.
 pub const HISTORY_SHARE_SECS: u64 = 2;
+/// How often a pool's history is re-read from the explorer once its window is covered: the
+/// explorer's own cache window. Between those reads the node's tail brings every block.
+pub const EXPLORER_TAIL_SECS: u64 = 30;
 
 pub async fn pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: usize) -> Result<Vec<PoolEvent>> {
     if ctx.cache_only {
@@ -1573,7 +1576,20 @@ async fn refresh_pool_events(ctx: &DataCtx, pool: &Pool, since: u64, max_pages: 
     let fresh = if pool.venue == Venue::Curve {
         curve_events(ctx, pool, since, max_pages, &known).await?
     } else if ctx.policy.market && ctx.explorer.source() == "explorer.qu.ai" {
-        explorer_events(ctx, pool, since, max_pages, &known).await?
+        // The node's own tail (below) brings each block's swaps. The explorer's pages are the
+        // backfill, and they sit behind its own cache: asked every block they answered the same
+        // page in half a second, which is what held the chart a second behind the block. Once the
+        // window is covered it is asked on its own pace.
+        let stamp = format!("{}:explorer_tail", history_key(ctx, pool));
+        let covered = pool_history_coverage(ctx, pool)?.is_some_and(|c| c.complete && c.since <= since);
+        let recent = ctx.feeds().cache_get(&stamp)?.is_some_and(|(_, at)| now().saturating_sub(at) < EXPLORER_TAIL_SECS);
+        if covered && recent {
+            Vec::new()
+        } else {
+            let events = explorer_events(ctx, pool, since, max_pages, &known).await?;
+            ctx.feeds().cache_put(&stamp, "1")?;
+            events
+        }
     } else {
         chain_events(ctx, pool, since).await?
     };
@@ -2194,95 +2210,105 @@ async fn refresh_dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64) -> Result<
     if ctx.cache_only || pools.is_empty() {
         return read_dex_flow(ctx);
     }
-    let head = ctx.node.provider.latest_header(crate::network::ZONE).await?.ok_or_else(|| CoreError::Network("no head".into()))?;
-    let head_time = crate::network::header_time(&head).unwrap_or_else(now);
-    let to = head.number;
-    let floor = to.saturating_sub(blocks.max(1));
-    use sha2::{Digest, Sha256};
-    let mut pool_addresses: Vec<String> = pools.iter().filter(|p| p.venue.routable()).map(|p| p.address.to_lowercase()).collect();
-    pool_addresses.sort();
-    pool_addresses.dedup();
-    let digest = hex::encode(Sha256::digest(pool_addresses.join(",").as_bytes()));
-    let scan_key = format!("{network}:dex_scan_v1:{digest}");
-    let checkpoint: Option<(u64, String)> = ctx.feeds().cache_get(&scan_key)?.and_then(|(text, _)| serde_json::from_str(&text).ok());
-    let mut from = floor;
-    if let Some((number, hash)) = checkpoint {
-        let canonical = ctx.node.provider.header_at(crate::network::ZONE, number).await?;
-        if canonical.is_some_and(|h| h.hash.to_string() == hash) {
-            from = number.saturating_sub(REORG_OVERLAP).clamp(floor, to);
+    // The node's scan and the launch index run together: the index is a round trip to another
+    // service, and waiting for it after the scan held the tape a third of a second behind the block.
+    let chain = async {
+        let head = ctx.node.provider.latest_header(crate::network::ZONE).await?.ok_or_else(|| CoreError::Network("no head".into()))?;
+        let head_time = crate::network::header_time(&head).unwrap_or_else(now);
+        let to = head.number;
+        let floor = to.saturating_sub(blocks.max(1));
+        use sha2::{Digest, Sha256};
+        let mut pool_addresses: Vec<String> = pools.iter().filter(|p| p.venue.routable()).map(|p| p.address.to_lowercase()).collect();
+        pool_addresses.sort();
+        pool_addresses.dedup();
+        let digest = hex::encode(Sha256::digest(pool_addresses.join(",").as_bytes()));
+        let scan_key = format!("{network}:dex_scan_v1:{digest}");
+        let checkpoint: Option<(u64, String)> = ctx.feeds().cache_get(&scan_key)?.and_then(|(text, _)| serde_json::from_str(&text).ok());
+        let mut from = floor;
+        if let Some((number, hash)) = checkpoint {
+            let canonical = ctx.node.provider.header_at(crate::network::ZONE, number).await?;
+            if canonical.is_some_and(|h| h.hash.to_string() == hash) {
+                from = number.saturating_sub(REORG_OVERLAP).clamp(floor, to);
+            }
         }
-    }
-    let addresses: Vec<_> =
-        pools.iter().filter(|p| p.venue.routable()).filter_map(|p| p.address.parse::<QuaiAddress>().ok().map(|a| a.address())).collect();
-    // A node caps how many addresses one `quai_getLogs` filter may name, so a directory larger than
-    // that is asked for in several filtered reads rather than quietly clipped to the first
-    // [`FLOW_FILTER_ADDRESSES`] pools. They cover disjoint pools over the same block range, so they
-    // run together and their logs merge.
-    let reads = addresses.chunks(FLOW_FILTER_ADDRESSES).map(|chunk| {
-        let filter = LogFilter::new(crate::network::ZONE, LogRange::Inclusive { from, to })
-            .with_addresses(chunk.to_vec())
-            .with_topics(vec![TopicMatch::AnyOf([SWAP_TOPIC].iter().filter_map(|t| t.parse().ok()).collect())]);
-        async move { ctx.node.provider.logs(&filter).await }
-    });
-    use futures::StreamExt;
-    let batches = futures::stream::iter(reads).buffer_unordered(4).collect::<Vec<_>>().await;
-    let logs: Vec<_> = batches.into_iter().collect::<std::result::Result<Vec<_>, _>>()?.concat();
-    let by_address: std::collections::HashMap<&str, &Pool> = pools.iter().map(|p| (p.address.as_str(), p)).collect();
-    let mut fresh = Vec::new();
-    for log in logs.iter().filter(|l| !l.removed) {
-        let address = log.address.to_string().to_lowercase();
-        let Some(pool) = by_address.get(address.as_str()) else { continue };
-        let topics: Vec<String> = log.topics.iter().map(|t| t.to_string()).collect();
-        let block = log.inclusion.block_number;
-        let Some(event) = decode_log(&topics, &log.data.to_hex(), 0, block, &log.transaction_hash.to_string(), log.log_index) else {
-            continue;
-        };
-        let PoolEvent::Swap { tx, index, to: trader, .. } = &event else { continue };
-        let Some((token_in, amount_in, token_out, amount_out)) = swap_sides(pool, &event) else { continue };
-        let (tx, index, trader) = (tx.clone(), *index, trader.clone());
-        fresh.push(DexSwap {
-            at: 0,
-            timed: false,
-            block,
-            tx,
-            index,
-            pool: pool.address.clone(),
-            token_in,
-            token_out,
-            amount_in,
-            amount_out,
-            trader,
+        let addresses: Vec<_> = pools
+            .iter()
+            .filter(|p| p.venue.routable())
+            .filter_map(|p| p.address.parse::<QuaiAddress>().ok().map(|a| a.address()))
+            .collect();
+        // A node caps how many addresses one `quai_getLogs` filter may name, so a directory larger than
+        // that is asked for in several filtered reads rather than quietly clipped to the first
+        // [`FLOW_FILTER_ADDRESSES`] pools. They cover disjoint pools over the same block range, so they
+        // run together and their logs merge.
+        let reads = addresses.chunks(FLOW_FILTER_ADDRESSES).map(|chunk| {
+            let filter = LogFilter::new(crate::network::ZONE, LogRange::Inclusive { from, to })
+                .with_addresses(chunk.to_vec())
+                .with_topics(vec![TopicMatch::AnyOf([SWAP_TOPIC].iter().filter_map(|t| t.parse().ok()).collect())]);
+            async move { ctx.node.provider.logs(&filter).await }
         });
-    }
-    // Block times: a budget of headers, newest blocks first, for blocks that arrived in this
-    // read and for ones recorded earlier whose time is still only an estimate.
-    let mut times: std::collections::HashMap<u64, u64> = std::collections::HashMap::from([(to, head_time)]);
-    let mut want: Vec<u64> = fresh
-        .iter()
-        .map(|s| s.block)
-        .chain(ctx.feeds().dex_untimed_blocks(&network, FLOW_TIMES)?)
-        .filter(|b| !times.contains_key(b))
-        .collect();
-    want.sort_unstable_by(|a, b| b.cmp(a));
-    want.dedup();
-    for block in want.into_iter().take(FLOW_TIMES) {
-        let header = ctx.node.provider.header_at(crate::network::ZONE, block).await.ok().flatten();
-        if let Some(t) = header.as_ref().and_then(crate::network::header_time) {
-            times.insert(block, t);
+        use futures::StreamExt;
+        let batches = futures::stream::iter(reads).buffer_unordered(4).collect::<Vec<_>>().await;
+        let logs: Vec<_> = batches.into_iter().collect::<std::result::Result<Vec<_>, _>>()?.concat();
+        let by_address: std::collections::HashMap<&str, &Pool> = pools.iter().map(|p| (p.address.as_str(), p)).collect();
+        let mut fresh = Vec::new();
+        for log in logs.iter().filter(|l| !l.removed) {
+            let address = log.address.to_string().to_lowercase();
+            let Some(pool) = by_address.get(address.as_str()) else { continue };
+            let topics: Vec<String> = log.topics.iter().map(|t| t.to_string()).collect();
+            let block = log.inclusion.block_number;
+            let Some(event) = decode_log(&topics, &log.data.to_hex(), 0, block, &log.transaction_hash.to_string(), log.log_index) else {
+                continue;
+            };
+            let PoolEvent::Swap { tx, index, to: trader, .. } = &event else { continue };
+            let Some((token_in, amount_in, token_out, amount_out)) = swap_sides(pool, &event) else { continue };
+            let (tx, index, trader) = (tx.clone(), *index, trader.clone());
+            fresh.push(DexSwap {
+                at: 0,
+                timed: false,
+                block,
+                tx,
+                index,
+                pool: pool.address.clone(),
+                token_in,
+                token_out,
+                amount_in,
+                amount_out,
+                trader,
+            });
         }
-    }
-    let estimate = |block: u64| head_time.saturating_sub(to.saturating_sub(block) * BLOCK_SECONDS);
-    for s in &mut fresh {
-        match times.get(&s.block) {
-            Some(t) => (s.at, s.timed) = (*t, true),
-            None => s.at = estimate(s.block),
+        // Block times: a budget of headers, newest blocks first, for blocks that arrived in this
+        // read and for ones recorded earlier whose time is still only an estimate.
+        let mut times: std::collections::HashMap<u64, u64> = std::collections::HashMap::from([(to, head_time)]);
+        let mut want: Vec<u64> = fresh
+            .iter()
+            .map(|s| s.block)
+            .chain(ctx.feeds().dex_untimed_blocks(&network, FLOW_TIMES)?)
+            .filter(|b| !times.contains_key(b))
+            .collect();
+        want.sort_unstable_by(|a, b| b.cmp(a));
+        want.dedup();
+        for block in want.into_iter().take(FLOW_TIMES) {
+            let header = ctx.node.provider.header_at(crate::network::ZONE, block).await.ok().flatten();
+            if let Some(t) = header.as_ref().and_then(crate::network::header_time) {
+                times.insert(block, t);
+            }
         }
-    }
+        let estimate = |block: u64| head_time.saturating_sub(to.saturating_sub(block) * BLOCK_SECONDS);
+        for s in &mut fresh {
+            match times.get(&s.block) {
+                Some(t) => (s.at, s.timed) = (*t, true),
+                None => s.at = estimate(s.block),
+            }
+        }
+        Ok::<_, CoreError>((fresh, times, head, to, from, pool_addresses, scan_key))
+    };
+    let (chain, curve) = futures::join!(chain, crate::launches::curve_trades(ctx, FLOW_KEEP));
+    let (mut fresh, times, head, to, from, pool_addresses, scan_key) = chain?;
     // Bonding-curve buys and sells, which no pool log carries. Best effort: the index being down
     // or switched off costs the curve rows, never the pool ones that were just read from the chain.
     // They land in the same store, so the tape orders them among the pool swaps by block and log
     // position rather than keeping a second list.
-    if let Ok(curve) = crate::launches::curve_trades(ctx, FLOW_KEEP).await {
+    if let Ok(curve) = curve {
         fresh.extend(curve);
     }
     let rows: Vec<(String, u64, u64, u64, bool, String)> = fresh

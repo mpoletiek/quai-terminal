@@ -507,7 +507,13 @@ async fn run(
     use std::rc::Rc;
     let mut path = path;
     let Some(mut cached) = open_cache(&path, network.clone(), policy) else { return };
-    let Some(first) = open(&path, network.clone(), policy) else { return };
+    let Some(mut first) = open(&path, network.clone(), policy) else { return };
+    // With a monitoring node, adopt it before the first job starts (bounded to 2 s, a couple of
+    // milliseconds on a LAN node). Jobs started before it answered read the public RPC, one
+    // round trip after another, and the first screen waited a second on them.
+    if network.monitor.is_some() {
+        let _ = first.use_monitor().await;
+    }
     let mut current = (network, policy);
     // A monitoring node is checked every minute: reads fall back to the main RPC while it does
     // not answer and return to it once it does again.
@@ -551,7 +557,10 @@ async fn run(
             if let Some(db) = app_db {
                 path.wallet = db;
             }
-            if let (Some(c), Some(mut cached)) = (open(&path, network.clone(), policy), open_cache(&path, network, policy)) {
+            if let (Some(mut c), Some(mut cached)) = (open(&path, network.clone(), policy), open_cache(&path, network, policy)) {
+                if current.0.monitor.is_some() {
+                    let _ = c.use_monitor().await;
+                }
                 monitor_job = None;
                 ticks = 0;
                 monitor_tick.reset_immediately();

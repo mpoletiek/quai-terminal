@@ -320,7 +320,7 @@ impl App {
             return;
         }
         let mv = &self.eco.markets_view;
-        if mv.reserves_loading || mv.reserves_attempted.is_some_and(|t| t.elapsed() < MARKET_REFRESH) {
+        if mv.reserves_loading || mv.reserves_attempted.is_some_and(|t| t.elapsed() < self.feed_pace()) {
             return;
         }
         let pools = pools.clone();
@@ -336,7 +336,7 @@ impl App {
             return;
         }
         let mv = &self.eco.markets_view;
-        if mv.flow_loading || mv.flow_at.is_some_and(|t| t.elapsed() < MARKET_REFRESH) {
+        if mv.flow_loading || mv.flow_at.is_some_and(|t| t.elapsed() < self.feed_pace()) {
             return;
         }
         let pools = pools.clone();
@@ -620,7 +620,7 @@ impl App {
         let mv = &self.eco.markets_view;
         let due = match mv.events_at.get(&pool.address) {
             None => true,
-            Some((at, window)) => at.elapsed() > MARKET_REFRESH || *window > since,
+            Some((at, window)) => at.elapsed() > self.feed_pace() || *window > since,
         };
         // The indexer already has this timeframe bucketed, so ask for it alongside the logs: the
         // chart can draw from whichever lands first, and the logs are still needed for the tape.

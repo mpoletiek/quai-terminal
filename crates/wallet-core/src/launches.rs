@@ -124,22 +124,55 @@ pub async fn curve_trades(ctx: &DataCtx, first: usize) -> Result<Vec<crate::mark
         .clone()
         .ok_or_else(|| CoreError::NotFound(format!("no launch index on {}", ctx.network.name)))?;
     let first = first.clamp(1, 200);
-    let query = json!({ "query": TRADES_QUERY, "variables": { "venues": LAUNCH_VENUES, "first": first } });
-    let rows = ctx
-        .cached(&format!("curve_trades:{first}"), TRADES_TTL, || async move {
-            let body = crate::http::post_json(&url, &query).await?;
-            if let Some(errors) = body["errors"].as_array().filter(|e| !e.is_empty()) {
-                return Err(CoreError::Network(format!(
-                    "launch index: {}",
-                    clean(errors[0]["message"].as_str().unwrap_or("query failed"), 160)
-                )));
-            }
-            Ok(parse_curve_trades(&body))
-        })
-        .await?;
+    let rows = ctx.cached(&format!("curve_trades:{first}"), TRADES_TTL, || curve_tape(ctx, url, first)).await?;
     Ok(rows.value)
 }
 
+/// How often the whole curve tape is read again rather than only what is newer than it: a reorg or
+/// a correction in the index reaches rows already held only through a full read.
+const TAPE_FULL_SECS: u64 = 300;
+
+/// The newest `first` curve trades. After one full read, only trades at or after the newest one
+/// held are asked for, and merged in: the tape is re-read every block, and the full answer is
+/// about a hundred kilobytes that held the tape most of a second behind the block.
+async fn curve_tape(ctx: &DataCtx, url: String, first: usize) -> Result<Vec<crate::markets::DexSwap>> {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Tape {
+        rows: Vec<crate::markets::DexSwap>,
+        full_at: u64,
+    }
+    let key = format!("curve_tape:{}:{first}", ctx.network.id);
+    let held: Option<Tape> = ctx.feeds().cache_get(&key)?.and_then(|(text, _)| serde_json::from_str(&text).ok());
+    let now = crate::registry::now();
+    let (query, full) = match &held {
+        Some(tape) if now.saturating_sub(tape.full_at) < TAPE_FULL_SECS && !tape.rows.is_empty() => {
+            let since = tape.rows.iter().map(|r| r.at).max().unwrap_or(0);
+            (
+                json!({ "query": TRADES_SINCE_QUERY, "variables": { "venues": LAUNCH_VENUES, "first": first, "since": since.to_string() } }),
+                false,
+            )
+        }
+        _ => (json!({ "query": TRADES_QUERY, "variables": { "venues": LAUNCH_VENUES, "first": first } }), true),
+    };
+    let body = crate::http::post_json(&url, &query).await?;
+    if let Some(errors) = body["errors"].as_array().filter(|e| !e.is_empty()) {
+        return Err(CoreError::Network(format!("launch index: {}", clean(errors[0]["message"].as_str().unwrap_or("query failed"), 160))));
+    }
+    let fresh = parse_curve_trades(&body);
+    let (mut rows, full_at) = match held {
+        Some(tape) if !full => (tape.rows, tape.full_at),
+        _ => (Vec::new(), now),
+    };
+    let seen: std::collections::HashSet<(String, u64)> = fresh.iter().map(|r| (r.tx.clone(), r.index)).collect();
+    rows.retain(|r| !seen.contains(&(r.tx.clone(), r.index)));
+    rows.extend(fresh);
+    rows.sort_by(|a, b| b.position().cmp(&a.position()));
+    rows.truncate(first);
+    ctx.feeds().cache_put(&key, &serde_json::to_string(&Tape { rows: rows.clone(), full_at })?)?;
+    Ok(rows)
+}
+
+const TRADES_SINCE_QUERY: &str = "query($venues: [String!]!, $first: Int!, $since: BigInt!) { tradeExecutions(first: $first, orderBy: timestamp, orderDirection: desc, where: {kind: CURVE, timestamp_gte: $since, venue_: {kind_in: $venues}}) { side token quoteToken quoteKind tokenAmount quoteAmount transactionHash blockNumber timestamp logIndex account sourceContract launch { tokenSymbol tokenDecimals } } }";
 const TRADES_QUERY: &str = "query($venues: [String!]!, $first: Int!) { tradeExecutions(first: $first, orderBy: timestamp, orderDirection: desc, where: {kind: CURVE, venue_: {kind_in: $venues}}) { side token quoteToken quoteKind tokenAmount quoteAmount transactionHash blockNumber timestamp logIndex account sourceContract launch { tokenSymbol tokenDecimals } } }";
 
 /// Turn the index's executions into the tape's own shape.
