@@ -98,17 +98,36 @@ async fn curve_destination_slots_match_the_launchers_calls() {
     for (family, launcher, base, field, selector) in [
         (
             Family::QuainanceCurve,
-            eco.curve_launcher.unwrap(),
+            eco.curve_launcher.clone().unwrap(),
             wallet_core::curve::LAUNCHES_SLOT,
             wallet_core::curve::LAUNCH_MARKET_FIELD,
             "launches(address)",
         ),
-        (Family::HartiiCurve, eco.hartii_launcher.unwrap(), wallet_core::hartii_tx::CURVE_OF_SLOT, 0, "curveOf(address)"),
+        (Family::HartiiCurve, eco.hartii_launcher.clone().unwrap(), wallet_core::hartii_tx::CURVE_OF_SLOT, 0, "curveOf(address)"),
     ] {
-        let tokens: Vec<_> = launches.iter().filter(|l| l.venue_kind == Some(family) && l.curve.is_some()).take(3).collect();
+        let tokens: Vec<_> = launches.iter().filter(|l| l.venue_kind == Some(family) && l.curve.is_some()).take(6).collect();
         assert!(!tokens.is_empty(), "{family:?}: no launches listed to check against");
-        let launcher: wallet_core::sdk::QuaiAddress = launcher.address.parse().unwrap();
+        let mut launcher: wallet_core::sdk::QuaiAddress = launcher.address.parse().unwrap();
         for l in tokens {
+            // Quainance runs two launchers with one interface; each curve names its own, and it
+            // must be one of the two pinned ones, as the wallet requires.
+            if family == Family::QuainanceCurve {
+                let said = wallet_core::sdk::contracts::Contract::new(
+                    l.curve.as_deref().unwrap().parse().unwrap(),
+                    wallet_core::sdk::abi::AbiInterface::from_human_readable(wallet_core::curve::CURVE_ABI).unwrap(),
+                    &ctx.node.provider,
+                )
+                .call(wallet_core::data::READ_CALLER.parse().unwrap(), "launcher", &[], BlockTag::Latest)
+                .await
+                .unwrap();
+                let said = said[0].as_str().unwrap().to_lowercase();
+                let pinned = [eco.curve_launcher.clone().unwrap(), eco.revenue_curve_launcher.clone().unwrap()];
+                let pin = pinned
+                    .iter()
+                    .find(|p| p.address.eq_ignore_ascii_case(&said))
+                    .unwrap_or_else(|| panic!("{}: unknown launcher {said}", l.symbol));
+                launcher = pin.address.parse().unwrap();
+            }
             let token: wallet_core::sdk::QuaiAddress = l.token.parse().unwrap();
             let slot = wallet_core::anchor::mapping_field_slot(token, base, field);
             let (proven, _) =
@@ -1855,7 +1874,7 @@ async fn every_exchange_s_pairs_resolve_for_liquidity() {
         found(&all, Venue::Legacy),
         found(&all, Venue::Curve)
     );
-    assert!(found(&all, Venue::LaunchAmm) >= 2 && found(&all, Venue::Legacy) == 3);
+    assert!(found(&all, Venue::LaunchAmm) >= 2 && found(&all, Venue::Legacy) == ctx.network.ecosystem.legacy_pairs.len());
     // The pair that reported the bug: listed by the screen, and now findable by it.
     let cheez = "0x004301019e1380d9d247dbd47097ec0b98d026b5";
     assert!(!main.iter().any(|p| p.address.eq_ignore_ascii_case(cheez)), "which is why it could not be found");
