@@ -451,3 +451,27 @@ fn the_pointer_takes_the_shape_of_what_is_under_it() {
     app.modal = Modal::Review(state(30, 60));
     assert_eq!(app.pointer_shape(), "pointer", "read: a click arms it (and only arms it)");
 }
+
+/// An explorer link the wallet drew: alt+click copies the id it shows, and a plain click on a row
+/// that shows one stays a click on the row. It never copies unasked, because the clipboard may
+/// hold the address someone is about to paste.
+#[test]
+fn a_link_copies_on_alt_click_and_a_plain_click_stays_the_rows() {
+    let (_dir, mut app, mut term) = setup();
+    app.caps.hyperlinks = true;
+    app.switch(Screen::Accounts);
+    frame(&mut app, &mut term);
+    let on_row = |app: &App, x: u16, y: u16| app.hits.borrow().at(x, y).is_some_and(|t| matches!(t, Target::Row { .. }));
+    let link =
+        app.links_shown.borrow().iter().find(|l| on_row(&app, l.x + 1, l.y)).cloned().expect("an account's address, linked on its row");
+    let (x, y) = (link.x + 1, link.y);
+    click(&mut app, x, y);
+    assert!(app.clipboard.is_none(), "a plain click on a row copies nothing");
+    let alt = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::ALT };
+    app.on_mouse(alt(MouseEventKind::Down(MouseButton::Left)), SIZE);
+    app.on_mouse(alt(MouseEventKind::Up(MouseButton::Left)), SIZE);
+    let copied = app.clipboard.take().expect("alt+click copies");
+    let id = link.url.rsplit('/').next().unwrap();
+    assert_eq!(copied.text.as_str(), id, "the id the link shows, not the link");
+    assert_eq!(copied.what, "address");
+}

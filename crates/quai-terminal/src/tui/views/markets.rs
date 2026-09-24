@@ -35,6 +35,55 @@ pub fn fmt_qty(v: f64) -> String {
     }
 }
 
+/// The contracts behind the selected market: the token and where it trades. The frame scan links
+/// both to the explorer, so they open with ctrl+click; `y` copies the token and `Y` the market's
+/// explorer link.
+fn token_info(
+    app: &App,
+    t: &Theme,
+    pool: &wallet_core::markets::Pool,
+    base: &wallet_core::markets::PoolToken,
+    base_sym: &str,
+) -> Vec<Span<'static>> {
+    let short = wallet_core::session::short_address;
+    let venue = match (&pool.curve, pool.venue) {
+        (Some(c), _) => format!("{} curve", c.launchpad.as_deref().unwrap_or("launch")),
+        (None, v) => format!("{} pair", v.label()),
+    };
+    let mut spans = vec![
+        Span::styled(format!("{base_sym} "), t.dim_style()),
+        Span::styled(short(&base.address), t.text_style()),
+        Span::styled(format!(" · {venue} "), t.dim_style()),
+        Span::styled(short(&pool.address), t.text_style()),
+    ];
+    if app.caps.hyperlinks && !app.plain {
+        spans.push(Span::styled(" · ctrl+click opens · y copies", t.dim_style()));
+    } else {
+        spans.push(Span::styled(" · y copies · Y its link", t.dim_style()));
+    }
+    spans
+}
+
+/// A bonded curve's TVL: both sides of its locked pool, the token side at the pool's own price,
+/// in USD when QUAI has a price and in QUAI when it does not.
+fn locked_tvl(app: &App, pool: &wallet_core::markets::Pool, curve: &wallet_core::markets::CurveMark) -> String {
+    let quai = 2.0 * curve.locked_quai.unwrap_or(0.0);
+    match pool.tvl_usd.or_else(|| app.token_usd(&pool.token1).map(|usd| quai * usd)) {
+        Some(usd) => wallet_core::swap::usd_compact(usd),
+        None => format!("{}Q", compact(quai)),
+    }
+}
+
+fn compact(v: f64) -> String {
+    if v >= 1e6 {
+        format!("{:.1}M", v / 1e6)
+    } else if v >= 1e3 {
+        format!("{:.1}k", v / 1e3)
+    } else {
+        format!("{v:.0}")
+    }
+}
+
 pub(crate) fn pct_span(t: &Theme, pct: Option<f64>) -> Span<'static> {
     // The arrow carries the sign, so the number never needs a minus; it fits seven cells up to
     // ±999% and a flat pair reads as flat, not as a green arrow.
@@ -157,7 +206,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let name = format!("{}/{}", app.market_symbol(base), app.market_symbol(quote));
             let stats = matches!(mv.events.get(&p.address), Some(Ok(_))).then(|| app.market_stats(p, base0, now));
             let price = match &stats {
-                Some(stats) => stats.price,
+                Some(stats) if !reserve_priced(p) => stats.price,
                 _ => listed_price(p, base0),
             };
             // The pool's own trades when they are loaded; otherwise the indexer's day-ago price, so
@@ -183,6 +232,8 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let watch =
                 Span::styled(if watched { format!(" {}", t.icon(Icon::On)) } else { String::new() }, Style::default().fg(t.attention));
             let depth = match &p.curve {
+                // A bonded curve's pool is locked for good, so its depth is its TVL, not "100%".
+                Some(c) if c.locked_quai.is_some() => Span::styled(locked_tvl(app, p, c), t.dim_style()),
                 Some(c) => Span::styled(format!("{}%", c.progress_bps.unwrap_or(0) / 100), Style::default().fg(t.attention)),
                 None => Span::styled(p.tvl_usd.map(wallet_core::swap::usd_compact).unwrap_or_default(), t.dim_style()),
             };
@@ -223,7 +274,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Some(Ok(ev)) => Some(ev.as_slice()),
         _ => None,
     };
-    let loading = mv.events_loading.as_deref() == Some(pool.address.as_str());
+    let loading = [&mv.events_loading, &mv.events_prefetching].iter().any(|slot| slot.as_deref() == Some(pool.address.as_str()));
     let action = if pool.venue == Venue::Curve { "t buy on the curve" } else { "t trade" };
     let title = format!(
         "{base_sym}/{quote_sym} · {} · {tf_label} · . timeframe · f flip · {action}{}",
@@ -233,8 +284,10 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, &title, false);
     let inner = block.inner(main);
     f.render_widget(block, main);
+    // A third header line names the contracts when there is room for it.
+    let info_line = inner.height > 20;
     let [header, chart_area, volume_area, tape_area] = Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(if info_line { 3 } else { 2 }),
         Constraint::Min(6),
         Constraint::Length(3),
         Constraint::Length(if inner.height > 26 { 9 } else { 5 }),
@@ -244,7 +297,9 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let stats = events.map(|_| app.market_stats(pool, base0, now)).unwrap_or_default();
     let quote_usd = app.token_usd(quote);
     let usd = |q: f64| quote_usd.map(|p| format!(" ({})", amount::usd(q * p))).unwrap_or_default();
-    let price = stats.price.or_else(|| listed_price(pool, base0));
+    // A curve priced from its reserves shows that live spot, as its basis label says; its last
+    // trade paid the fee and the impact on top.
+    let price = if reserve_priced(pool) { listed_price(pool, base0) } else { stats.price.or_else(|| listed_price(pool, base0)) };
     let mut line1 = vec![
         images::asset_span(app, t, &app.pool_icon_contract(base), &base_sym),
         Span::raw(" "),
@@ -274,8 +329,12 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         line1.push(Span::styled(format!("  H {}  L {}", fmt_price(h), fmt_price(l)), t.dim_style()));
     }
     let holdings = holding_line(app, base, quote, &base_sym, &quote_sym);
-    // A curve has no pool to measure: it has what it raised toward graduation.
+    // A curve still selling has no pool to measure: it has what it raised toward graduation. A
+    // bonded one trades against a pool its graduation seeded and locked, and that is its depth.
     let depth = match &pool.curve {
+        Some(c) if let Some(locked) = c.locked_quai => {
+            format!(" · locked {} QUAI · TVL {} · no LP token", fmt_qty(locked), locked_tvl(app, pool, c))
+        }
         Some(c) => format!(
             " · raised {} of {} QUAI ({}%)",
             fmt_qty(c.raised_quai),
@@ -301,7 +360,11 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Span::styled(depth, if pool.curve.is_some() { Style::default().fg(t.attention) } else { t.dim_style() }),
         Span::styled(holdings, t.dim_style()),
     ];
-    f.render_widget(Paragraph::new(vec![Line::from(line1), Line::from(line2)]), header);
+    let mut lines = vec![Line::from(line1), Line::from(line2)];
+    if info_line {
+        lines.push(Line::from(token_info(app, t, pool, base, &base_sym)));
+    }
+    f.render_widget(Paragraph::new(lines), header);
 
     match events {
         None if loading || !mv.events.contains_key(&pool.address) => {
@@ -341,6 +404,11 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 /// A market's price before its history loads, base-per-quote as the list shows it: from the pool's
 /// reserves, or a curve's own mark.
+/// A market whose listed price is a reserve spot the directory keeps live, not a last trade.
+fn reserve_priced(pool: &wallet_core::markets::Pool) -> bool {
+    pool.curve.as_ref().is_some_and(|c| c.price_basis == wallet_core::markets::PriceBasis::ReserveSpot)
+}
+
 pub(crate) fn listed_price(pool: &wallet_core::markets::Pool, base0: bool) -> Option<f64> {
     pool.spot_price().map(|p| if base0 { p } else { 1.0 / p })
 }

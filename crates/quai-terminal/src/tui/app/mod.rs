@@ -546,6 +546,10 @@ pub enum FormKind {
     /// Where IPFS content of one kind is fetched from (Settings).
     IpfsGateway(wallet_core::ipfs::Content),
     AddAccount,
+    /// A private key into this wallet: another signing account beside its own.
+    ImportKey,
+    /// Another address for this watch-only wallet to follow.
+    WatchAddress,
     RenameAccount(String),
     NewQiAddress,
     /// Add (None) or edit (Some(original name)) a contact.
@@ -1009,6 +1013,9 @@ pub const ACTIONS: &[Action] = &[
     action!("Import token", "quai-terminal token import ADDRESS", "import_token"),
     action!("Discover tokens you hold", "quai-terminal token discover --import", "discover_tokens"),
     action!("Add Quai account", "quai-terminal account add", "add_account"),
+    action!("Import a private key as an account", "quai-terminal wallet import-key", "import_key"),
+    action!("Watch an address (watch-only wallet)", "quai-terminal account watch ADDRESS", "watch_address"),
+    action!("New watch-only wallet", "quai-terminal wallet watch --name NAME ADDRESS", "new_watch_wallet"),
     action!("New Qi / mining address", "quai-terminal mining new", "new_qi_address"),
     action!("Scan Qi (gap 50)", "quai-terminal qi scan", "scan_qi"),
     action!("Deep scan Qi", "quai-terminal qi scan --deep N", "deep_scan"),

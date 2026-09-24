@@ -203,7 +203,7 @@ const SHARED_SCHEMA_VERSION: i64 = 3;
 /// holdings list does, and so does an NFT's metadata, which is looked up because a wallet holds or
 /// browsed that item. Those stay per wallet even though their contents are public, because a row's
 /// existence in a shared file is itself a fact about who fetched it.
-pub const SHARED_FEEDS: [&str; 22] = [
+pub const SHARED_FEEDS: [&str; 23] = [
     "chain_stats",
     "launch_logo:",
     "prices",
@@ -223,6 +223,7 @@ pub const SHARED_FEEDS: [&str; 22] = [
     "launch_amm_pools_v2:",
     "hartii_launches",
     "hartii_launches:",
+    "hartii_changes:",
     "subgraph_spot_24h:",
     "canonical_header:",
     "dex_flow:",

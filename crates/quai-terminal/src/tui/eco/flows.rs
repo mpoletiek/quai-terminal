@@ -486,10 +486,18 @@ impl App {
             if let FlowKind::Claim { qits, .. } = &flow.kind {
                 self.eco.claim_declined = Some(qits.clone());
             }
-            self.close_flow_checkpoint(
-                wallet_core::plans::PlanState::Paused,
-                "execution paused; inspect completed assets and allowances before resuming",
-            );
+            // A trade that never got as far as a review has nothing to resume. Paused, it would be
+            // the newest unfinished trade, which is what `p` resumes, over a real one stopped
+            // halfway.
+            let started = !flow.done.is_empty() || flow.checkpoint.as_ref().is_some_and(|plan| !plan.operations.is_empty());
+            if started {
+                self.close_flow_checkpoint(
+                    wallet_core::plans::PlanState::Paused,
+                    "execution paused; inspect completed assets and allowances before resuming",
+                );
+            } else {
+                self.close_flow_checkpoint(wallet_core::plans::PlanState::Cancelled, "stopped before anything was prepared");
+            }
             self.eco.flow = None;
             self.eco.swap.approving = false;
             self.toast_as(said, super::super::app::Severity::Attention, None);

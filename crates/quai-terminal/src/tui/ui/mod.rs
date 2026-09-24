@@ -771,10 +771,11 @@ fn hover_marks(app: &App, buf: &mut Buffer, t: &Theme, links: &mut Vec<super::li
     let Some(link) = links.iter().find(|l| l.y == y && (l.x..l.end).contains(&x)).cloned() else { return };
     let shown: String = (link.x..link.end).filter_map(|cx| buf.cell((cx, y)).map(|c| c.symbol().to_string())).collect();
     let Some(id) = link.url.rsplit('/').next().filter(|id| id.starts_with("0x")) else { return };
-    if !shown.contains('…') {
-        return;
-    }
-    let spans = super::widgets::address(t, id, t.strong_style());
+    // The whole id when the screen shortened it, and in every case what a click does: the mouse
+    // is the wallet's, so the terminal's own link handling never sees it.
+    let mut spans = if shown.contains('…') { super::widgets::address(t, id, t.strong_style()) } else { Vec::new() };
+    let hint = if spans.is_empty() { "ctrl+click opens · alt+click copies" } else { "  ctrl+click opens · alt+click copies" };
+    spans.push(Span::styled(hint, t.dim_style()));
     let text_w: u16 = spans.iter().map(|s| s.width() as u16).sum();
     let area = buf.area;
     let w = (text_w + 2).min(area.width);

@@ -2,6 +2,7 @@
 //! on background threads (see `worker`, `data`). The terminal itself is owned by `term`.
 
 pub mod app;
+pub mod browser;
 pub mod clipboard;
 pub mod data;
 pub mod eco;

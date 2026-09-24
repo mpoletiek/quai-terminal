@@ -282,6 +282,21 @@ impl DataCtx {
         }
     }
 
+    /// The last answer stored for `key`, however old (up to [`MAX_SERVE_AGE`]), without asking
+    /// anyone: for a display that has waited as long as it will for a fresh one.
+    pub fn peek_cached<T: DeserializeOwned>(&self, key: &str) -> Option<Cached<T>> {
+        if !self.trust.may_cache() {
+            return None;
+        }
+        let store = self.store(key);
+        let (text, at) = store.cache_get(&format!("{}:{key}", self.network.id)).ok().flatten()?;
+        (now().saturating_sub(at) < MAX_SERVE_AGE).then(|| serde_json::from_str::<T>(&text).ok()).flatten().map(|value| Cached {
+            value,
+            fetched_at: at,
+            stale: true,
+        })
+    }
+
     /// Wait for whoever holds a key's refresh to write it, up to [`LEADER_WAIT`].
     ///
     /// Only reached with nothing to show, so waiting costs a screen nothing it was not already
@@ -401,12 +416,15 @@ impl DataCtx {
         let caller: QuaiAddress = caller.parse().map_err(|_| CoreError::Invalid("bad caller address".into()))?;
         let erc = Erc20::new(token, &self.node.provider)?;
         let text = |v: Vec<Value>| v.first().and_then(Value::as_str).map(crate::ops::sanitize_display);
-        let symbol = erc.contract().call(caller, "symbol", &[], block).await.ok().and_then(text).unwrap_or_else(|| "TOKEN".into());
-        let name = erc.contract().call(caller, "name", &[], block).await.ok().and_then(text).unwrap_or_else(|| symbol.clone());
-        let decimals = erc
-            .contract()
-            .call(caller, "decimals", &[], block)
-            .await?
+        // Three independent reads, one round: every token review passes through here.
+        let (symbol, name, decimals) = tokio::join!(
+            erc.contract().call(caller, "symbol", &[], block),
+            erc.contract().call(caller, "name", &[], block),
+            erc.contract().call(caller, "decimals", &[], block),
+        );
+        let symbol = symbol.ok().and_then(text).unwrap_or_else(|| "TOKEN".into());
+        let name = name.ok().and_then(text).unwrap_or_else(|| symbol.clone());
+        let decimals = decimals?
             .first()
             .and_then(Value::as_str)
             .and_then(|d| d.parse::<u8>().ok())
@@ -495,9 +513,25 @@ pub async fn verify_pinned(
             Err(quai_sdk::contracts::ContractError::MissingCode) => {
                 return Err(CoreError::Rejected(format!("{what} has no code at {}", contract.address)));
             }
-            // A new block during the observation is transient.
-            Err(_) if attempt < 4 => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-            Err(e) => return Err(CoreError::Network(format!("could not verify {what}: {e}"))),
+            // A node on another network: saying so is the answer, and asking again only tells it
+            // more. (Since SDK alpha.12 the address is not sent before the genesis is checked.)
+            Err(quai_sdk::contracts::ContractError::GenesisMismatch) => {
+                return Err(CoreError::Rejected(format!("{what}: the node is not on network `{}`; refusing to read from it", network.id)));
+            }
+            // Only a new block or reorg during the observation, or a network blip, is worth another
+            // try. Everything else fails the same way every time, so it is reported at once, as
+            // what it is rather than as a connection problem.
+            Err(e) if attempt < 4 && matches!(e.class(), quai_sdk::ErrorClass::Stale | quai_sdk::ErrorClass::Transient) => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await
+            }
+            Err(e) => {
+                let text = format!("could not verify {what}: {e}");
+                return Err(match e.class() {
+                    quai_sdk::ErrorClass::Stale | quai_sdk::ErrorClass::Transient => CoreError::Network(text),
+                    quai_sdk::ErrorClass::NetworkMismatch => CoreError::Rejected(text),
+                    _ => CoreError::Invalid(text),
+                });
+            }
         }
     }
 }

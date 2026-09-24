@@ -296,11 +296,13 @@ pub struct AppConfig {
     pub abi_ipfs_gateway: Option<String>,
     /// User-defined networks.
     pub networks: Vec<NetworkProfile>,
-    /// Read-only monitoring endpoints by network id (built-in or custom): market data, charts
-    /// and balance re-reads use them; reviews, signing and broadcasting never do.
+    /// Monitoring endpoints by network id (built-in or custom). Once one reports the network's
+    /// chain id and genesis, every blockchain read goes to it, reviews included; broadcasting
+    /// always goes to the network's RPC, and a review warns when the monitor has fallen
+    /// [`crate::network::MONITOR_LAG_WARN`] blocks behind that RPC.
     pub monitor_endpoints: std::collections::BTreeMap<String, crate::network::MonitorEndpoint>,
-    /// Explicitly trusted monitoring endpoints for financial reads, keyed by network id.
-    /// Store the URL so changing an endpoint revokes the old grant.
+    /// Formerly an explicit opt-in for review reads from a monitoring endpoint. A configured
+    /// monitor now serves them; the field is kept only so older configs still load.
     pub execution_monitor_trust: std::collections::BTreeMap<String, String>,
     /// Explicit opt-in for remote plaintext RPC on these network ids.
     pub allow_insecure_rpc: std::collections::BTreeSet<String>,
@@ -363,14 +365,16 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    /// Trust is bound to the configured endpoint, not merely a network label.
-    pub fn execution_monitor_trusted(&self, profile: &NetworkProfile) -> bool {
-        profile.monitor.as_ref().is_some_and(|monitor| self.execution_monitor_trust.get(&profile.id) == Some(&monitor.rpc_url))
+    /// Whether reviews read from the network's monitoring endpoint: whenever one is configured.
+    /// (Its identity is still checked before any read goes to it, and a lagging one is flagged
+    /// on the review.)
+    pub fn monitor_serves_execution(&self, profile: &NetworkProfile) -> bool {
+        profile.monitor.is_some()
     }
 
     pub fn require_execution_transport(&self, profile: &NetworkProfile) -> Result<()> {
         crate::network::require_secure_rpc(&profile.rpc_url, self.allow_insecure_rpc.contains(&profile.id))?;
-        if self.execution_monitor_trusted(profile) {
+        if self.monitor_serves_execution(profile) {
             crate::network::require_secure_rpc(
                 &profile.monitor.as_ref().expect("trusted monitor").rpc_url,
                 self.allow_insecure_rpc.contains(&profile.id),
@@ -537,15 +541,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn execution_sources_require_explicit_endpoint_bound_trust() {
-        let mut config = AppConfig::default();
+    fn a_configured_monitor_serves_reviews_over_a_secure_transport() {
+        let config = AppConfig::default();
         let mut profile = NetworkProfile::builtins().remove(0);
+        assert!(!config.monitor_serves_execution(&profile), "no monitor, no monitor reads");
         profile.monitor = Some(crate::network::MonitorEndpoint { rpc_url: "https://node.example".into(), use_pathing: false });
-        assert!(!config.execution_monitor_trusted(&profile));
-        config.execution_monitor_trust.insert(profile.id.clone(), "https://node.example".into());
-        assert!(config.execution_monitor_trusted(&profile));
-        profile.monitor.as_mut().unwrap().rpc_url = "https://other.example".into();
-        assert!(!config.execution_monitor_trusted(&profile));
+        assert!(config.monitor_serves_execution(&profile), "a configured monitor serves every read");
+        assert!(config.require_execution_transport(&profile).is_ok());
+        // Remote plaintext still needs consent, whichever endpoint it is.
+        profile.monitor.as_mut().unwrap().rpc_url = "http://public.example".into();
+        assert!(config.require_execution_transport(&profile).is_err());
+        profile.monitor.as_mut().unwrap().rpc_url = "http://10.0.0.12:9200".into();
+        assert!(config.require_execution_transport(&profile).is_ok(), "a LAN node may be plain http");
         for url in ["https://public.example", "http://localhost:9000", "http://127.0.0.1", "http://192.168.1.2", "http://[::1]"] {
             assert!(crate::network::require_secure_rpc(url, false).is_ok(), "{url}");
         }

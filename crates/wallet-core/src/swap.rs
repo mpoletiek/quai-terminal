@@ -997,11 +997,16 @@ impl<'a> Router<'a> {
         ranked.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.len().cmp(&y.1.len())));
         // The router is the authority on the amount, so confirm the front-runners with it. Two
         // covers the case where a longer route through a deeper pool genuinely wins.
-        let mut best: Option<Route> = None;
-        for (_, route, pools, hops) in ranked.into_iter().take(2) {
+        // Both at once: they are independent reads, and in order they were two round trips.
+        let front: Vec<Route> = ranked.into_iter().take(2).collect();
+        let confirmed = futures::future::join_all(front.iter().map(|(_, route, ..)| {
             let path: Vec<String> = route.iter().map(|(p, _)| p.clone()).collect();
-            let Ok(amounts) = self.amounts_out(v.router, amount_in, &path).await else { continue };
-            let Some(out) = amounts.last().copied() else { continue };
+            async move { self.amounts_out(v.router, amount_in, &path).await }
+        }))
+        .await;
+        let mut best: Option<Route> = None;
+        for ((_, route, pools, hops), amounts) in front.into_iter().zip(confirmed) {
+            let Some(out) = amounts.ok().and_then(|a| a.last().copied()) else { continue };
             if best.as_ref().is_none_or(|(o, ..)| out > *o) {
                 best = Some((out, route, pools, hops));
             }
@@ -1075,11 +1080,22 @@ impl<'a> Router<'a> {
         let mut single: Option<(usize, Route)> = None;
         let mut unavailable = Vec::new();
         let mut venue_warnings = self.verification_warnings.clone();
-        for (i, v) in self.venues.iter().enumerate() {
-            if only_venue.is_some_and(|venue| v.venue != venue) {
-                continue;
+        // Every exchange at once. Each resolves its own hops (the legs are keyed by exchange, so
+        // they share nothing), and one after another they were four chains of round trips.
+        // Results are taken in exchange order, so a tie still goes to the one listed first.
+        let asked = self.venues.iter().enumerate().filter(|(_, v)| only_venue.is_none_or(|venue| v.venue == venue));
+        let answered = futures::future::join_all(asked.map(|(i, v)| {
+            let (a, b, name) = (&a, &b, &name);
+            async move {
+                let mut own = Legs::new();
+                let result = self.best_on_venue(v, a, b, amount_in, &mut own, name).await;
+                (i, v, result, own)
             }
-            match self.best_on_venue(v, &a, &b, amount_in, &mut legs, &name).await {
+        }))
+        .await;
+        for (i, v, result, own) in answered {
+            legs.extend(own);
+            match result {
                 Ok(Some(route)) if single.as_ref().is_none_or(|(_, best)| route.0 > best.0) => single = Some((i, route)),
                 Ok(_) => {}
                 Err(error) => {
@@ -1306,9 +1322,21 @@ pub async fn attach_liquidity(ctx: &crate::data::DataCtx, quote: &mut SwapQuote)
         return;
     }
     let explorer = ctx.explorer.clone();
-    let Ok(board) = ctx.cached("pool_tvl", 300, || async move { explorer.pool_stats().await }).await else { return };
-    apply_liquidity(quote, &board.value);
+    // Decoration on a quote, from an endpoint that takes 3-15 s cold: it waits a moment, then uses
+    // the last board it has. Waiting in full held a CLI swap at its quote for up to 15 s.
+    let fresh = tokio::time::timeout(LIQUIDITY_WAIT, ctx.cached("pool_tvl", 300, || async move { explorer.pool_stats().await })).await;
+    let board = match fresh {
+        Ok(Ok(board)) => board.value,
+        _ => match ctx.peek_cached::<crate::explorer::PoolBoard>("pool_tvl") {
+            Some(board) => board.value,
+            None => return,
+        },
+    };
+    apply_liquidity(quote, &board);
 }
+
+/// How long a quote waits for the explorer's pool TVL before using the last one it has.
+pub const LIQUIDITY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Pure part of [`attach_liquidity`].
 pub fn apply_liquidity(quote: &mut SwapQuote, board: &crate::explorer::PoolBoard) {

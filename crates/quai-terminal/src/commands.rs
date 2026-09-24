@@ -78,17 +78,23 @@ impl Ctx {
         }
         let password = prompt::password(self.global.password_fd, &format!("Password for `{}`", s.meta.name))?;
         s.unlock(&password)?;
-        // A monitoring URL is a public-data source until explicitly trusted for execution.
+        // Every read goes to the monitoring node when it checks out; broadcasts stay on the RPC.
         self.config.require_execution_transport(&s.network)?;
-        if self.config.execution_monitor_trusted(&s.network) {
-            self.use_monitor(&mut s).await;
-        }
+        self.use_monitor(&mut s).await;
         Ok((s, password))
     }
 
     /// Show a review, ask for confirmation, then commit (or discard on rejection).
-    pub async fn authorize(&self, session: &mut Session, review: Review) -> Result<Submitted> {
+    pub async fn authorize(&self, session: &mut Session, mut review: Review) -> Result<Submitted> {
         let op = session.app.operation(&review.op_id)?.ok_or_else(|| CoreError::NotFound("review operation".into()))?;
+        // Before anything is signed: is the node this review was read from keeping up?
+        let lag = match session.lag_probe() {
+            Some(probe) => probe.warning().await,
+            None => None,
+        };
+        if let Some(warning) = &lag {
+            review.warnings.insert(0, warning.clone());
+        }
         let read_url = if session.monitoring() {
             session.network.monitor.as_ref().map(|m| m.rpc_url.as_str()).unwrap_or(&session.network.rpc_url)
         } else {
@@ -110,7 +116,7 @@ impl Ctx {
                         "broadcast_origin": network::rpc_origin(&session.network.rpc_url),
                         "read_transport": if read_url.starts_with("https:") { "tls" } else { "plaintext" },
                         "monitoring": session.monitoring(),
-                        "execution_monitor_trusted": self.config.execution_monitor_trusted(&session.network),
+                        "monitor_lag_warning": lag.as_deref(),
                     },
                 }),
             );
@@ -120,9 +126,6 @@ impl Ctx {
         }
         let validation = (|| -> Result<()> {
             self.config.require_execution_transport(&session.network)?;
-            if session.monitoring() && !self.config.execution_monitor_trusted(&session.network) {
-                return Err(CoreError::Invalid("monitoring endpoint is not trusted for execution".into()));
-            }
             if let Some(path) = &self.global.authorization_policy {
                 let mut bytes = Vec::new();
                 std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(path)?, 64 * 1024 + 1), &mut bytes)?;
@@ -635,6 +638,11 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
             let mut s = ctx.session().await?;
             let a = s.add_account(label.as_deref())?;
             done(ctx, "account add", &a, &format!("{} {}", a.label, a.address))
+        }
+        AccountCmd::Watch { address, label } => {
+            let mut s = ctx.session().await?;
+            let address = s.add_watch_address(&address, label.as_deref())?;
+            done(ctx, "account watch", json!({"address": address}), &format!("watching {address}"))
         }
         AccountCmd::Rename { account, label } => {
             let mut s = ctx.session().await?;
@@ -1826,9 +1834,13 @@ pub async fn network_cmd(ctx: &mut Ctx, cmd: NetworkCmd) -> Result<()> {
                 return done(
                     ctx,
                     "network monitor",
-                    json!({"network": id, "monitor": current, "execution_trusted": ctx.config.execution_monitor_trusted(&profile), "allow_insecure_rpc": ctx.config.allow_insecure_rpc.contains(&id)}),
+                    json!({"network": id, "monitor": current, "serves_reviews": ctx.config.monitor_serves_execution(&profile), "lag_warning_blocks": network::MONITOR_LAG_WARN, "allow_insecure_rpc": ctx.config.allow_insecure_rpc.contains(&id)}),
                     &match &current {
-                        Some(u) => format!("monitoring endpoint: {u} (transactions use {})", profile.rpc_url),
+                        Some(u) => format!(
+                            "monitoring endpoint: {u}, for every read (broadcasts use {}; a review warns when it is {} or more blocks behind)",
+                            profile.rpc_url,
+                            network::MONITOR_LAG_WARN
+                        ),
                         None => format!("no monitoring endpoint; everything uses {}", profile.rpc_url),
                     },
                 );
@@ -1838,21 +1850,25 @@ pub async fn network_cmd(ctx: &mut Ctx, cmd: NetworkCmd) -> Result<()> {
             // Fail closed: the endpoint must be the same chain before anything reads from it.
             let node = profile.monitor_node()?;
             network::require_identity(&profile, &node.provider).await?;
-            ctx.config.monitor_endpoints.insert(id.clone(), endpoint);
-            ctx.config.execution_monitor_trust.remove(&id);
+            let _ = trust_execution;
             if allow_insecure_rpc {
                 ctx.config.allow_insecure_rpc.insert(id.clone());
             }
-            if trust_execution {
-                network::require_secure_rpc(&url, ctx.config.allow_insecure_rpc.contains(&id))?;
-                ctx.config.execution_monitor_trust.insert(id.clone(), url.clone());
-            }
+            // Reviews read from it, so it needs the transport a review's reads need: TLS, or this
+            // machine or the local network, unless remote plaintext was allowed.
+            network::require_secure_rpc(&url, ctx.config.allow_insecure_rpc.contains(&id))?;
+            ctx.config.monitor_endpoints.insert(id.clone(), endpoint);
+            ctx.config.execution_monitor_trust.remove(&id);
             ctx.config.save(&ctx.paths)?;
             done(
                 ctx,
                 "network monitor",
-                json!({"network": id, "monitor": url, "execution_trusted": trust_execution}),
-                &format!("monitoring endpoint set for {id} (chain id and genesis verified); transactions still use {}", profile.rpc_url),
+                json!({"network": id, "monitor": url, "serves_reviews": true, "lag_warning_blocks": network::MONITOR_LAG_WARN}),
+                &format!(
+                    "monitoring endpoint set for {id} (chain id and genesis verified): every read uses it, transactions are broadcast through {}, and a review warns when it is {} or more blocks behind",
+                    profile.rpc_url,
+                    network::MONITOR_LAG_WARN
+                ),
             )
         }
         NetworkCmd::Use { id } => {

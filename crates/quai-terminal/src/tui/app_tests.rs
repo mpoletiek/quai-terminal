@@ -1268,6 +1268,43 @@ fn scrolling_markets_only_fetches_the_row_the_cursor_settles_on() {
     assert_eq!(asked(&app), vec![settled], "and asking again while it is still fresh changes nothing");
 }
 
+/// Once the pair under the cursor has its chart, the pairs around it load theirs, one at a time
+/// and nearest first, so moving down the list lands on a drawn chart. The selected pair always
+/// has its own slot: a prefetch in flight never holds it up.
+#[test]
+fn neighbouring_charts_load_before_the_cursor_reaches_them() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.eco.markets_view.pools_at = Some(Instant::now());
+    app.switch(Screen::Markets);
+    app.selected = 1;
+    let rows: Vec<String> = app.market_rows().iter().map(|p| p.address.clone()).collect();
+    assert!(rows.len() >= 3, "the fixture lists enough pairs to have neighbours");
+    app.tick_markets();
+    std::thread::sleep(crate::tui::eco::SELECTION_SETTLES + std::time::Duration::from_millis(50));
+    app.tick_markets();
+    let selected = rows[1].clone();
+    assert_eq!(app.eco.markets_view.events_loading.as_deref(), Some(selected.as_str()));
+    app.tick_markets();
+    assert!(app.eco.markets_view.events_prefetching.is_none(), "nothing is prefetched before the selected pair has landed");
+    // The selected pair lands: the row below it is next.
+    app.on_data_event(super::super::data::DataEv::PoolEvents { pool: selected.clone(), coverage: None, result: Ok(vec![]) });
+    app.tick_markets();
+    assert_eq!(app.eco.markets_view.events_prefetching.as_deref(), Some(rows[2].as_str()), "the row below comes first");
+    app.tick_markets();
+    assert!(!app.eco.markets_view.events_at.contains_key(&rows[0]), "one at a time");
+    // It lands, and the row above follows.
+    app.on_data_event(super::super::data::DataEv::PoolEvents { pool: rows[2].clone(), coverage: None, result: Ok(vec![]) });
+    app.tick_markets();
+    assert_eq!(app.eco.markets_view.events_prefetching.as_deref(), Some(rows[0].as_str()), "then the row above");
+    // Moving onto a pair still prefetching does not fetch it twice.
+    app.selected = 0;
+    std::thread::sleep(crate::tui::eco::SELECTION_SETTLES + std::time::Duration::from_millis(50));
+    app.tick_markets();
+    app.tick_markets();
+    assert!(app.eco.markets_view.events_loading.is_none(), "the prefetch already in flight answers it");
+}
+
 /// Pools is a Markets tab, and its actions refuse clearly when there is nothing to act on.
 #[test]
 fn pools_tab_navigates_and_guards_its_actions() {
@@ -1863,6 +1900,7 @@ fn markets_hold_every_venue_and_pools_hold_the_two_that_mint_lp() {
             target_quai: Some(25_000.0),
             progress_bps: Some(10),
             launchpad: None,
+            locked_quai: None,
         }),
         ..Default::default()
     });
@@ -4211,4 +4249,179 @@ fn a_reachable_order_reaches_the_desktop_once() {
     app.on_event(Ev::Orders { wallet, network, rows: vec![reachable, other], announced: vec![] }, (100, 30));
     assert!(app.toasts.iter().any(|t| t.text.contains("reachable")), "{:?}", app.toasts);
     assert!(app.notices_out.is_empty(), "not on the desktop twice");
+}
+
+/// Accounts can take a private key into a wallet with keys, and an address into a watch-only
+/// wallet. The key and the password are secret fields, go to the worker in wiped buffers, and a
+/// wallet with keys never watches: asking it to opens a new watch-only wallet instead.
+#[test]
+fn accounts_import_a_key_or_watch_an_address() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let (worker, mut sent) = Worker::capture();
+    app.worker = Some(worker);
+    app.switch(Screen::Accounts);
+    while sent.try_recv().is_ok() {}
+    app.run_action("import_key");
+    let Modal::Form(form) = &app.modal else { panic!("a form opens") };
+    assert_eq!(form.kind, FormKind::ImportKey);
+    assert!(!form.fields[0].is_secret() && form.fields[1].is_secret() && form.fields[2].is_secret(), "key and password are masked");
+    type_text(&mut app, "Pelagus");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "0xabc123");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "password123");
+    press(&mut app, KeyCode::Enter);
+    let cmd =
+        std::iter::from_fn(|| sent.try_recv().ok()).find(|c| matches!(c, Cmd::ImportKey { .. })).expect("the import goes to the worker");
+    let Cmd::ImportKey { label, key, password } = cmd else { unreachable!() };
+    assert_eq!((label.as_deref(), key.as_str(), password.as_str()), (Some("Pelagus"), "0xabc123", "password123"));
+    // A wallet with keys does not watch; it offers a watch-only wallet.
+    app.modal = Modal::None;
+    app.run_action("watch_address");
+    assert!(matches!(app.modal, Modal::None), "no watch form on a wallet with keys");
+    assert!(app.onboarding.is_some(), "a new watch-only wallet begins instead");
+
+    let (_dir, mut app) = test_app(WalletKind::Watch);
+    let (worker, mut sent) = Worker::capture();
+    app.worker = Some(worker);
+    app.switch(Screen::Accounts);
+    app.run_action("import_key");
+    assert!(!matches!(app.modal, Modal::Form(_)), "a watch-only wallet has no vault to seal a key into");
+    app.modal = Modal::None;
+    app.run_action("add_account");
+    let Modal::Form(form) = &app.modal else { panic!("adding opens a form") };
+    assert_eq!(form.kind, FormKind::WatchAddress, "on a watch-only wallet, adding is watching");
+    type_text(&mut app, "0x0035187a7660f595d93cd53a4d16c635d6cffc8f");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "QAXE");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        std::iter::from_fn(|| sent.try_recv().ok()).any(
+            |c| matches!(c, Cmd::WatchAddress { address, label } if address == "0x0035187a7660f595d93cd53a4d16c635d6cffc8f" && label.as_deref() == Some("QAXE"))
+        ),
+        "the address goes to the worker"
+    );
+}
+
+/// A trade that fails before its first review has nothing to resume, so its checkpoint ends
+/// cancelled. Left paused, it became the newest unfinished trade, which `p` resumes, over a real
+/// one stopped halfway. A trade that got a step through still pauses.
+#[test]
+fn a_trade_that_never_started_is_not_left_to_resume() {
+    use super::super::eco::FlowKind;
+    use wallet_core::plans::PlanState;
+    let swap = || FlowKind::Swap {
+        account: None,
+        from: "0x002b".into(),
+        to: "0x0049".into(),
+        amount: "1".into(),
+        slippage: 50,
+        deadline: 10,
+        label: "swap 1 WQI → USDT".into(),
+        prewrap: None,
+        unwrap_after: false,
+        baseline: "0".into(),
+        then: None,
+    };
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.dash.unlocked = true;
+    app.start_flow(swap());
+    assert!(app.eco.flow.as_ref().unwrap().requested, "the first review was asked for");
+    app.flow_on_error();
+    let state = |app: &App| app.flow_db().unwrap().trade_plans(&app.network_id).unwrap().first().map(|p| (p.state, p.reason.clone()));
+    let (s, reason) = state(&app).expect("a checkpoint was written");
+    assert_eq!(s, PlanState::Cancelled, "{reason}");
+    // One step through, then a failure: that is a trade to come back to.
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.dash.unlocked = true;
+    app.start_flow(swap());
+    app.eco.flow.as_mut().unwrap().done.push("approve WQI".into());
+    app.flow_on_error();
+    assert_eq!(state(&app).unwrap().0, PlanState::Paused);
+}
+
+fn onboarding_screen(app: &mut App, w: u16, h: u16) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| super::super::ui::draw(f, app)).unwrap();
+    let b = term.backend().buffer();
+    let screen: String =
+        (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    if std::env::var("QW_SHOW").is_ok() {
+        println!("{screen}");
+    }
+    screen
+}
+
+/// The privacy step says what it is about, and what it is not: it switches the explorer's
+/// address lookups, and the node that answers balances and reviews sees addresses either way.
+/// Each answer names what it gets and what it costs.
+#[test]
+fn the_privacy_step_says_it_is_only_about_the_explorer() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.onboarding = Some(Onboarding::Privacy { selected: 0 });
+    let screen = onboarding_screen(&mut app, 120, 40).replace('\n', " ");
+    let flat: String = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+    for want in [
+        "Should explorer.qu.ai look up your addresses?",
+        "only about the explorer",
+        "rpc.quai.network",
+        "Private",
+        "Connected",
+        "gets",
+        "costs",
+    ] {
+        assert!(flat.contains(want), "{want} missing");
+    }
+    assert!(flat.contains("sees the addresses it is asked about whichever you pick"), "the node's view is not hidden");
+    // Small terminals keep every answer's cost on screen.
+    let small = onboarding_screen(&mut app, 80, 24);
+    let small: String = small.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(small.contains("a third party learns your addresses and IP"), "{small}");
+}
+
+/// Under the connections fields, what the settings add up to: reads go to the node as it is typed
+/// (or the public RPC without one), sends always go to the RPC, and address lookups follow the
+/// privacy answer.
+#[test]
+fn the_connections_step_shows_what_goes_where() {
+    let rpc = "https://rpc.quai.network/cyprus1";
+    let without = super::super::onboarding::routes("", false, rpc);
+    assert_eq!(without[0].1, "rpc.quai.network", "no node: the public RPC reads");
+    assert!(without[0].2.contains("sees each address"));
+    assert_eq!(without[1].1, "rpc.quai.network", "sends always go to the RPC");
+    assert_eq!(without[2].1, "none");
+    let with = super::super::onboarding::routes("http://10.0.0.12:9200", true, rpc);
+    assert_eq!(with[0].1, "10.0.0.12:9200");
+    assert!(with[0].2.contains("reviews too") && with[0].2.contains("3+ blocks behind"));
+    assert_eq!(with[1].1, "rpc.quai.network", "a node never becomes where transactions go");
+    assert_eq!(with[2].1, "explorer.qu.ai");
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.network_id = "mainnet".into();
+    let mut fields = super::super::onboarding::connection_fields(&app);
+    fields[0].value = "http://10.0.0.12:9200".into();
+    app.onboarding = Some(Onboarding::Connections { fields, focus: 0 });
+    let screen = onboarding_screen(&mut app, 120, 40);
+    assert!(screen.contains("what goes where"));
+    assert!(screen.lines().any(|l| l.contains("reads") && l.contains("10.0.0.12:9200")), "{screen}");
+    assert!(screen.lines().any(|l| l.contains("sends") && l.contains("rpc.quai.network")), "{screen}");
+    // And on a small terminal every route's host is still there.
+    let small = onboarding_screen(&mut app, 80, 24);
+    for what in ["reads", "sends", "address lookups", "prices, markets"] {
+        assert!(small.contains(what), "{what} dropped at 80x24: {small}");
+    }
+}
+
+/// Reviews read from the node set here, so one over the internet must be https.
+#[test]
+fn onboarding_refuses_a_plain_http_node_on_the_internet() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let mut fields = super::super::onboarding::connection_fields(&app);
+    fields[0].value = "http://node.example.com:9200".into();
+    let refused = super::super::onboarding::apply_connections(&mut app, &fields).unwrap_err();
+    assert_eq!(refused.0, 0);
+    assert!(refused.1.contains("https"), "{}", refused.1);
+    assert!(app.config.monitor_endpoints.is_empty());
+    fields[0].value = "http://192.168.1.20:9200".into();
+    assert!(super::super::onboarding::apply_connections(&mut app, &fields).is_ok(), "your own network may be plain http");
 }

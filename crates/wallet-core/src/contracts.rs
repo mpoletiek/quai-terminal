@@ -237,15 +237,30 @@ impl DataCtx {
     /// Everything this address is, as a call destination: whether it is a contract, what ABI it
     /// names, and how much of that stands up.
     ///
-    /// The code read is the same hardened observation [`crate::data::verify_pinned`] uses — genesis
-    /// checked, head re-read — and under [`Trust::FirstHand`] nothing here is answered from a
-    /// cache. The metadata *is* cached even then: it is pinned by a CID taken from the code that
+    /// The code read is the same hardened observation [`crate::data::verify_pinned`] uses: the
+    /// network's genesis is checked before the address is sent, and the head is re-read around the
+    /// code. Under [`Trust::FirstHand`] nothing here is answered from a cache. The metadata *is* cached even then: it is pinned by a CID taken from the code that
     /// was just read, so a cache hit is the same document by construction.
     pub async fn discover_contract(&self, address: &str, trust: Trust) -> Result<Discovered> {
         self.online()?;
         let parsed = crate::chain::addr(address)?;
         let key = address.to_lowercase();
-        let observation = self.node.provider.observe_contract_code(parsed, quai_sdk::provider::BlockTag::Latest, None).await?;
+        // Against the trusted genesis, so a node on another network is refused before it learns
+        // which address was asked about. The untrusted single observation sent the address first.
+        let observation = self
+            .node
+            .provider
+            .observe_contract_codes(self.network.genesis_hash()?, &[(parsed, None)], quai_sdk::provider::BlockTag::Latest)
+            .await
+            .map_err(|e| match e {
+                quai_sdk::ProviderError::GenesisMismatch => {
+                    CoreError::Rejected(format!("the node is not on network `{}`; refusing to read from it", self.network.id))
+                }
+                other => other.into(),
+            })?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::Network("the node returned no code observation".into()))?;
         let runtime = observation.code.bytes.bytes();
         let mut found = Discovered {
             address: key.clone(),

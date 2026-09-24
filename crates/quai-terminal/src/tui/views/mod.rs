@@ -23,7 +23,7 @@ use wallet_core::session::short_address;
 use wallet_core::swap::SwapAsset;
 use wallet_core::track::describe;
 
-mod board;
+pub(crate) mod board;
 mod cards;
 mod data_sources;
 mod home;

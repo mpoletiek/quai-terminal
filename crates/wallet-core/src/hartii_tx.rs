@@ -44,51 +44,63 @@ pub async fn verified_curve(ctx: &DataCtx, token: &str, curve: &str) -> Result<V
         eco.hartii_curve_impl.as_ref().ok_or_else(|| CoreError::NotFound("no Hartii curve implementation on this network".into()))?;
     let token_pin =
         eco.hartii_token_impl.as_ref().ok_or_else(|| CoreError::NotFound("no Hartii token implementation pin on this network".into()))?;
-    let token_impl = ctx.verify_pinned(token_pin, "Hartii token implementation").await?;
-    let launcher = ctx.verify_pinned(launcher_pin, "Hartii launcher").await?;
-    let implementation = ctx.verify_pinned(impl_pin, "Hartii curve implementation").await?;
     let caller = addr(READ_CALLER)?;
+    let address = addr(curve)?;
+    let launcher = addr(&launcher_pin.address)?;
     let factory = Contract::new(launcher, interface(crate::hartii::LAUNCHER_ABI)?, &ctx.node.provider);
-    let named = factory.call(caller, "curveOf", &[json!(token)], BlockTag::Latest).await?;
-    let named_impl = factory.call(caller, "curveImplementation", &[], BlockTag::Latest).await?;
+    let contract = Contract::new(address, interface(crate::hartii::CURVE_ABI)?, &ctx.node.provider);
+    let token_arg = [json!(token)];
+    // Every read below is independent of the others, so they go out as one round rather than
+    // fifteen in a row: on a review the pins are checked afresh, and in sequence this was seconds
+    // before a buy could even be quoted. Nothing is trusted until every check after it has passed.
+    let (verified, named, named_impl, named_token_impl, token_code, code, actual_token, actual_factory, fee, graduated, meta) = tokio::try_join!(
+        async {
+            tokio::try_join!(
+                ctx.verify_pinned(token_pin, "Hartii token implementation"),
+                ctx.verify_pinned(launcher_pin, "Hartii launcher"),
+                ctx.verify_pinned(impl_pin, "Hartii curve implementation"),
+            )
+        },
+        async { Ok::<_, CoreError>(factory.call(caller, "curveOf", &token_arg, BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(factory.call(caller, "curveImplementation", &[], BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(factory.call(caller, "tokenImplementation", &[], BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(ctx.node.provider.code(addr(token)?, BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(ctx.node.provider.code(address, BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(contract.call(caller, "token", &[], BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(contract.call(caller, "factory", &[], BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(contract.call(caller, "feeBps", &[], BlockTag::Latest).await?) },
+        async { Ok::<_, CoreError>(contract.call(caller, "graduated", &[], BlockTag::Latest).await?) },
+        crate::markets::token_meta_required(ctx, token),
+    )?;
+    let (token_impl, launcher_verified, implementation) = verified;
+    debug_assert_eq!(launcher, launcher_verified);
     if !address_at(&named, 0).eq_ignore_ascii_case(curve) || !address_at(&named_impl, 0).eq_ignore_ascii_case(&implementation.to_string()) {
         return Err(CoreError::Rejected("Hartii launcher does not authenticate this token, curve and implementation".into()));
     }
-    let named_token_impl = factory.call(caller, "tokenImplementation", &[], BlockTag::Latest).await?;
-    let token_code = ctx.node.provider.code(addr(token)?, BlockTag::Latest).await?;
     if !address_at(&named_token_impl, 0).eq_ignore_ascii_case(&token_impl.to_string())
         || !clone_matches(token_code.bytes(), &token_impl.to_string())
     {
         return Err(CoreError::Rejected("Hartii token is not the exact proxy of the launcher's pinned token implementation".into()));
     }
-    let address = addr(curve)?;
-    let code = ctx.node.provider.code(address, BlockTag::Latest).await?;
     if !clone_matches(code.bytes(), &implementation.to_string()) {
         return Err(CoreError::Rejected("Hartii curve is not the exact proxy of its pinned implementation".into()));
     }
-    let contract = Contract::new(address, interface(crate::hartii::CURVE_ABI)?, &ctx.node.provider);
-    let actual_token = contract.call(caller, "token", &[], BlockTag::Latest).await?;
-    let actual_factory = contract.call(caller, "factory", &[], BlockTag::Latest).await?;
     if !address_at(&actual_token, 0).eq_ignore_ascii_case(token)
         || !address_at(&actual_factory, 0).eq_ignore_ascii_case(&launcher.to_string())
     {
         return Err(CoreError::Rejected("Hartii curve does not name its token and launcher back".into()));
     }
-    let fee = uint(&contract.call(caller, "feeBps", &[], BlockTag::Latest).await?, 0);
-    let fee_bps = u16::try_from(fee).map_err(|_| CoreError::Invalid("Hartii fee is unreadable".into()))?;
+    let fee_bps = u16::try_from(uint(&fee, 0)).map_err(|_| CoreError::Invalid("Hartii fee is unreadable".into()))?;
     crate::hartii::after_fee(U256::from(1), fee_bps)?;
-    let graduated = contract
-        .call(caller, "graduated", &[], BlockTag::Latest)
-        .await?
-        .first()
-        .and_then(|v| v.as_bool())
-        .ok_or_else(|| CoreError::Invalid("Hartii graduation state is unreadable".into()))?;
-    let token = crate::markets::token_meta_required(ctx, token).await?;
+    let graduated =
+        graduated.first().and_then(|v| v.as_bool()).ok_or_else(|| CoreError::Invalid("Hartii graduation state is unreadable".into()))?;
+    let token = meta;
     Ok(VerifiedCurve { address, token, fee_bps, graduated })
 }
 
-/// Focused Hartii market data. `spot_price` is a fee-inclusive one-QUAI buy quote, not a spot
-/// reserve ratio; zero means the quote crosses graduation and has an unpriced native refund.
+/// Focused Hartii market data. `spot_price` is the reserve ratio once the reserves reproduce the
+/// curve's own one-QUAI quote, else that quote inverted (fee included); zero means the quote crosses
+/// graduation and has an unpriced native refund.
 ///
 /// Hartii has no graduation-target field and no `cumulativeTokensSold` sampler, so a
 /// Quainance-shaped read of one yields nothing to draw. Its curve is a constant product over
@@ -99,27 +111,39 @@ pub async fn market(ctx: &DataCtx, token: &str, curve: &str, owners: &[String]) 
     let target = verified_curve(ctx, token, curve).await?;
     let caller = addr(READ_CALLER)?;
     let contract = Contract::new(target.address, interface(crate::hartii::CURVE_ABI)?, &ctx.node.provider);
-    let (supply, sold, raised, virtual_quai, virtual_token) = tokio::try_join!(
+    let gross = crate::amount::parse_quai("1")?;
+    let (net, _) = crate::hartii::after_fee(gross, target.fee_bps)?;
+    // One round of reads, the quote with them: nothing here depends on another answer.
+    let quote_arg = [json!(net.to_string())];
+    let (supply, sold, raised, virtual_quai, virtual_token, pool_quai, pool_token, quoted) = tokio::try_join!(
         contract.call(caller, "curveSupply", &[], BlockTag::Latest),
         contract.call(caller, "tokensSold", &[], BlockTag::Latest),
         contract.call(caller, "realQuaiReserve", &[], BlockTag::Latest),
         contract.call(caller, "virtualQuaiReserve", &[], BlockTag::Latest),
         contract.call(caller, "virtualTokenReserve", &[], BlockTag::Latest),
+        contract.call(caller, "poolQuaiReserve", &[], BlockTag::Latest),
+        contract.call(caller, "poolTokenReserve", &[], BlockTag::Latest),
+        contract.call(caller, "quoteBuy", &quote_arg, BlockTag::Latest),
     )?;
     let (supply, sold, raised) = (uint(&supply, 0), uint(&sold, 0), uint(&raised, 0));
     let (virtual_quai, virtual_token) = (uint(&virtual_quai, 0), uint(&virtual_token, 0));
-    let gross = crate::amount::parse_quai("1")?;
-    let (net, _) = crate::hartii::after_fee(gross, target.fee_bps)?;
-    let quoted = uint(&contract.call(caller, "quoteBuy", &[json!(net.to_string())], BlockTag::Latest).await?, 0);
+    let (pool_quai, pool_token, quoted) = (uint(&pool_quai, 0), uint(&pool_token, 0), uint(&quoted, 0));
     let output = bounded_buy_output(quoted, supply, sold, target.graduated)?;
-    let spot_price = if output.is_zero() || output < quoted { 0.0 } else { 1.0 / crate::amount::to_f64(output, target.token.decimals) };
-    // Which reading of the virtual reserves the contract actually means is decided by the contract,
-    // not by the field names: whichever reproduces the `quoteBuy` just read is the live one.
     let decimals = target.token.decimals;
-    let current = [(virtual_quai, virtual_token), (virtual_quai.saturating_add(raised), virtual_token.saturating_sub(sold))]
-        .into_iter()
-        .find(|(q, t)| crate::hartii::reserves_reproduce_quote(*q, *t, net, quoted));
+    // Which reserves the curve trades against is decided by the contract, not by the field names:
+    // whichever reading reproduces the `quoteBuy` just read is the live one.
+    let current =
+        crate::hartii::live_reserves(target.graduated, virtual_quai, virtual_token, raised, sold, pool_quai, pool_token, net, quoted);
+    let spot_price = if output.is_zero() || output < quoted {
+        0.0
+    } else {
+        current
+            .and_then(|(q, t)| crate::hartii::reserve_spot(q, t, decimals))
+            .unwrap_or_else(|| 1.0 / crate::amount::to_f64(output, decimals))
+    };
+    // Only a curve still selling has a sell-out to draw toward; a bonded one's pool is past it.
     let (curve_target, points) = current
+        .filter(|_| !target.graduated)
         .and_then(|(q, t)| crate::hartii::launch_reserves(q, t, raised, sold))
         .and_then(|(q0, t0)| {
             let sellout = crate::hartii::raise_at_sellout(q0, t0, supply)?;
@@ -187,9 +211,13 @@ impl Session {
         let target = verified_curve(&self.data_ctx_at(Trust::FirstHand)?, token, curve).await?;
         let (net, fee) = crate::hartii::after_fee(gross, target.fee_bps)?;
         let contract = Contract::new(target.address, interface(crate::hartii::CURVE_ABI)?, &self.node.provider);
-        let raw = uint(&contract.call(owner, "quoteBuy", &[json!(net.to_string())], BlockTag::Latest).await?, 0);
-        let supply = uint(&contract.call(owner, "curveSupply", &[], BlockTag::Latest).await?, 0);
-        let sold = uint(&contract.call(owner, "tokensSold", &[], BlockTag::Latest).await?, 0);
+        let net_arg = [json!(net.to_string())];
+        let (raw, supply, sold, balance) = tokio::try_join!(
+            async { Ok::<_, CoreError>(uint(&contract.call(owner, "quoteBuy", &net_arg, BlockTag::Latest).await?, 0)) },
+            async { Ok::<_, CoreError>(uint(&contract.call(owner, "curveSupply", &[], BlockTag::Latest).await?, 0)) },
+            async { Ok::<_, CoreError>(uint(&contract.call(owner, "tokensSold", &[], BlockTag::Latest).await?, 0)) },
+            async { Ok::<_, CoreError>(self.node.provider.balance(owner, BlockTag::Latest).await?) },
+        )?;
         let expected = bounded_buy_output(raw, supply, sold, target.graduated)?;
         let refunds_excess = !target.graduated && raw >= supply.saturating_sub(sold);
         let mut warning = warnings();
@@ -198,7 +226,7 @@ impl Session {
         }
         let minimum = crate::swap::minimum_out(expected, slippage_bps);
         crate::swap::require_minimum(minimum)?;
-        if self.node.provider.balance(owner, BlockTag::Latest).await? < gross {
+        if balance < gross {
             return Err(CoreError::Insufficient("not enough QUAI for this Hartii purchase".into()));
         }
         let call = contract.prepare("buy", &[json!(minimum.to_string())], gross)?;
@@ -275,14 +303,21 @@ impl Session {
         let amount = crate::amount::parse_amount(value, target.token.decimals)?;
         crate::swap::require_minimum(amount)?;
         let erc = Erc20::new(addr(token)?, &self.node.provider)?;
-        if erc.balance_of(owner, owner, BlockTag::Latest).await? < amount {
+        let contract = Contract::new(target.address, interface(crate::hartii::CURVE_ABI)?, &self.node.provider);
+        let amount_arg = [json!(amount.to_string())];
+        let (balance, allowance, gross) = tokio::try_join!(
+            async { Ok::<_, CoreError>(erc.balance_of(owner, owner, BlockTag::Latest).await?) },
+            async { Ok::<_, CoreError>(erc.allowance(owner, owner, target.address, BlockTag::Latest).await?) },
+            // Its failure is reported after the balance and allowance checks, as it was when it ran last.
+            async { Ok::<_, CoreError>(contract.call(owner, "quoteSell", &amount_arg, BlockTag::Latest).await) },
+        )?;
+        if balance < amount {
             return Err(CoreError::Insufficient("not enough tokens for this Hartii sale".into()));
         }
-        if erc.allowance(owner, owner, target.address, BlockTag::Latest).await? < amount {
+        if allowance < amount {
             return Err(approval_needed(token, "approve the exact token amount for this Hartii curve first"));
         }
-        let contract = Contract::new(target.address, interface(crate::hartii::CURVE_ABI)?, &self.node.provider);
-        let gross = uint(&contract.call(owner, "quoteSell", &[json!(amount.to_string())], BlockTag::Latest).await?, 0);
+        let gross = uint(&gross?, 0);
         let (expected, fee) = crate::hartii::after_fee(gross, target.fee_bps)?;
         let minimum = crate::swap::minimum_out(expected, slippage_bps);
         crate::swap::require_minimum(minimum)?;

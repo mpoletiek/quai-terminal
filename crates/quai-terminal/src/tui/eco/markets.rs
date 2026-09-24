@@ -591,6 +591,40 @@ impl App {
             self.eco.markets_view.events_loading = Some(pool.address.clone());
             self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
             self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since });
+            return;
         }
+        if matches!(self.eco.markets_view.events.get(&pool.address), Some(Ok(_))) {
+            self.prefetch_neighbours(bucket, since);
+        }
+    }
+
+    /// Load the chart of a pair near the cursor before the cursor reaches it, so moving down the
+    /// list lands on a drawn chart instead of a spinner. Only pairs never loaded, one at a time, and
+    /// only once the selected pair has its own: the node caps concurrent log reads, and the pair on
+    /// screen comes first.
+    fn prefetch_neighbours(&mut self, bucket: u64, since: u64) {
+        let mv = &self.eco.markets_view;
+        if mv.events_loading.is_some() || mv.events_prefetching.is_some() {
+            return;
+        }
+        let at = self.markets_pair() as isize;
+        let rows = self.market_rows();
+        let next = super::PREFETCH_ROWS
+            .iter()
+            .filter_map(|d| usize::try_from(at + d).ok())
+            .filter_map(|i| rows.get(i))
+            .find(|p| !mv.events_at.contains_key(&p.address))
+            .map(|p| (*p).clone());
+        drop(rows);
+        let Some(pool) = next else { return };
+        let want_candles = wallet_core::subgraph::interval_for(bucket).is_some()
+            && !self.eco.markets_view.candles_requested.contains_key(&(pool.address.clone(), bucket));
+        if want_candles {
+            self.eco.markets_view.candles_requested.insert((pool.address.clone(), bucket), Instant::now());
+            self.send_data(DataCmd::PairCandles { pool: pool.address.clone(), bucket, count: MARKET_CANDLES });
+        }
+        self.eco.markets_view.events_prefetching = Some(pool.address.clone());
+        self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
+        self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since });
     }
 }

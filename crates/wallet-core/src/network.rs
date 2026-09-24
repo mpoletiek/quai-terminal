@@ -281,6 +281,10 @@ pub struct Ecosystem {
     /// Market data only: no address is ever sent to it.
     #[serde(default)]
     pub launch_subgraph: Option<String>,
+    /// HartiiLabs' public read API: its launchpad's 24h changes. Market data only: no address is
+    /// ever sent to it, only the one directory request.
+    #[serde(default)]
+    pub hartii_api: Option<String>,
     /// Bridged USDT.
     pub usdt: Option<PinnedContract>,
     /// Zora V3 Asks v1.1 module (Bazarr listings).
@@ -430,6 +434,7 @@ impl Ecosystem {
             )),
             quainance_subgraph: Some("https://graph.quai.network/subgraphs/name/quainance/v2".into()),
             launch_subgraph: Some("https://graph.quai.network/subgraphs/name/quainance/trade-zone-staging".into()),
+            hartii_api: Some("https://hartiilabs.com".into()),
             bazarr_indexer: Some("https://watcher.basedhash.cc".into()),
             bazarr_web: Some("https://bazarr.xyz".into()),
         }
@@ -684,6 +689,53 @@ impl Node {
     }
 }
 
+/// How many blocks behind the network's RPC a monitoring node may be before a review says so.
+/// A few seconds of lag is normal; three blocks is enough for a balance, a nonce or a pool's
+/// reserves to have moved since the monitor last saw them.
+pub const MONITOR_LAG_WARN: u64 = 3;
+
+/// A monitoring node and the RPC a transaction will be broadcast through, to compare their heads.
+#[derive(Clone)]
+pub struct LagProbe {
+    pub monitor: Node,
+    pub rpc: Node,
+    pub rpc_url: String,
+}
+
+impl LagProbe {
+    /// Both heads at once, bounded: `(monitor, rpc)`. None when either does not answer in time,
+    /// which says nothing about lag (a review cannot be built without the monitor, and a dead RPC
+    /// fails the broadcast on its own).
+    pub async fn heads(&self) -> Option<(u64, u64)> {
+        let head = |node: &Node| {
+            let provider = node.provider.clone();
+            async move { provider.latest_header(ZONE).await.ok().flatten().map(|h| h.number) }
+        };
+        let both = async { tokio::join!(head(&self.monitor), head(&self.rpc)) };
+        match tokio::time::timeout(Duration::from_secs(3), both).await {
+            Ok((Some(monitor), Some(rpc))) => Some((monitor, rpc)),
+            _ => None,
+        }
+    }
+
+    /// The review's warning when the monitor is [`MONITOR_LAG_WARN`] or more blocks behind.
+    pub async fn warning(&self) -> Option<String> {
+        let (monitor, rpc) = self.heads().await?;
+        lag_warning(monitor, rpc, &self.rpc_url)
+    }
+}
+
+/// The warning for a monitor at `monitor` while the broadcast RPC is at `rpc`.
+pub fn lag_warning(monitor: u64, rpc: u64, rpc_url: &str) -> Option<String> {
+    let behind = rpc.saturating_sub(monitor);
+    (behind >= MONITOR_LAG_WARN).then(|| {
+        format!(
+            "your monitoring node is {behind} blocks behind {} (block {monitor} against {rpc}): balances, nonces and prices in this review may be out of date",
+            rpc_origin(rpc_url).trim_start_matches("https://").trim_start_matches("http://")
+        )
+    })
+}
+
 /// Result of checking a node against a profile.
 #[derive(Clone, Debug, Serialize)]
 pub struct NodeHealth {
@@ -795,6 +847,20 @@ fn head_timestamp(header: &quai_sdk::provider::ZoneHeader) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    /// Two blocks behind is a monitor keeping up; three is where a review says so, with both
+    /// heights and the host it is behind (never a URL's credentials). Ahead is not behind.
+    #[test]
+    fn a_review_warns_from_three_blocks_behind() {
+        use super::{MONITOR_LAG_WARN, lag_warning};
+        let rpc = "https://user:key@rpc.quai.network/cyprus1";
+        assert_eq!(lag_warning(100, 102, rpc), None);
+        let warned = lag_warning(100, 103, rpc).expect("three blocks behind");
+        assert!(warned.contains("3 blocks behind rpc.quai.network") && warned.contains("100 against 103"), "{warned}");
+        assert!(!warned.contains("key"), "{warned}");
+        assert_eq!(lag_warning(110, 103, rpc), None, "a monitor ahead of the RPC is not behind it");
+        assert_eq!(MONITOR_LAG_WARN, 3);
+    }
+
     /// Node RPC takes the wallet's proxy to a public node and goes direct to one on this machine
     /// or the LAN; with no proxy set it is always direct.
     #[test]

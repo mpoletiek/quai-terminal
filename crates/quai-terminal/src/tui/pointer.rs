@@ -43,6 +43,8 @@ pub struct PointerState {
     pub at: Option<(u16, u16)>,
     /// Where the last drag step was (for panning the chart).
     pub drag_x: Option<u16>,
+    /// The explorer link the left button went down on, if any.
+    pressed_link: Option<String>,
 }
 
 impl ConfirmAction {
@@ -116,8 +118,23 @@ impl App {
                 self.last_input = Instant::now();
                 self.pointer.drag_x = Some(x);
                 self.pointer.pressed = if self.in_grace() { None } else { self.hits.borrow().at(x, y).cloned() };
+                self.pointer.pressed_link = if self.in_grace() { None } else { self.link_at(x, y) };
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                // Only something a click acts on counts as being under the link: a scrolling body
+                // or a backdrop does not.
+                let on_target = matches!(
+                    self.hits.borrow().at(x, y),
+                    Some(t) if !matches!(t, Target::Scroll(_) | Target::Swallow | Target::Backdrop)
+                );
+                if let Some(url) = self.pointer.pressed_link.take()
+                    && self.link_at(x, y).as_deref() == Some(url.as_str())
+                    && self.click_link(&url, m.modifiers, on_target)
+                {
+                    self.pointer.pressed = None;
+                    self.dirty = true;
+                    return;
+                }
                 let Some(pressed) = self.pointer.pressed.take() else { return };
                 let released = self.hits.borrow().at(x, y).cloned();
                 if released.as_ref() != Some(&pressed) {
@@ -166,6 +183,38 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The explorer link drawn at `(x, y)`, if any.
+    fn link_at(&self, x: u16, y: u16) -> Option<String> {
+        self.links_shown.borrow().iter().find(|l| l.y == y && (l.x..l.end).contains(&x)).map(|l| l.url.clone())
+    }
+
+    /// A click on an explorer link. Ctrl opens it in the browser, and so does a plain click where
+    /// nothing else is under the pointer. Alt copies the id it shows. A plain click on a row that
+    /// shows an id stays a click on the row, and never copies: a clipboard is where someone keeps
+    /// the address they are about to paste, and a click must not replace it unasked. Returns
+    /// whether the click was the link's.
+    fn click_link(&mut self, url: &str, modifiers: KeyModifiers, on_target: bool) -> bool {
+        if modifiers.contains(KeyModifiers::ALT) {
+            let Some(id) = url.rsplit('/').next().filter(|id| id.starts_with("0x")) else { return false };
+            let what = if id.len() == 66 { "hash" } else { "address" };
+            self.copy(super::clipboard::PublicText::shown(id), what);
+            return true;
+        }
+        if !modifiers.contains(KeyModifiers::CONTROL) && on_target {
+            return false;
+        }
+        match super::browser::open(url) {
+            Ok(_) => {
+                self.info(format!("opening the explorer · {}", wallet_core::session::short_address(url.rsplit('/').next().unwrap_or(url))))
+            }
+            Err(why) => {
+                self.toast(format!("couldn't open the browser ({why}); copied the link instead"), true);
+                self.copy(super::clipboard::PublicText::link(url), "link");
+            }
+        }
+        true
     }
 
     /// The one way the pointer presses a key. It refuses the keys that finish a review or a
