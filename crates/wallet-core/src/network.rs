@@ -428,9 +428,9 @@ impl Ecosystem {
                 "0x0002d1373b8bf88a03809eda30cb23815c2192b7".into(),
                 "0x0012f9ce8e7e0918bc22be5d6d0878ea523932cc".into(),
                 "0x002cf345a9ae76400662e87adf57ad278afd5752".into(),
-                // Q0/WQUAI and QPEPE/WQUAI: POOP_V1 graduates Quainance's trade zone trades on
-                // QuaiSwap (its catalog, 2026-09-24). Each is still checked to name the pinned
-                // factory before it is listed.
+                // Q0/WQUAI and QPEPE/WQUAI: QuaiSwap pools Quainance's trade zone lists (its catalog,
+                // 2026-09-24), for tokens that began on poop.fun. Only the pools are traded, never a
+                // POOP curve. Each is still checked to name the pinned factory before it is listed.
                 "0x003b4b96bf0793eb1d53b79f8c38746a298eeef8".into(),
                 "0x00240aaca3e2c74e09522025b6b948ecc8a0fb27".into(),
             ],
