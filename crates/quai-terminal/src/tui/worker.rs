@@ -431,6 +431,8 @@ impl Cmd {
 
 /// Events back to the UI.
 pub enum Ev {
+    /// A new block at this height, as soon as the worker sees one.
+    Head(u64),
     Orders {
         wallet: String,
         network: String,
@@ -1260,10 +1262,11 @@ impl Heads {
         }
     }
 
-    /// The newest height seen: polled from the monitoring node every 2 s (a ~1 ms read on a LAN
-    /// node), else the explorer stream's.
+    /// The newest height seen: the explorer stream's when it runs, else polled from the node
+    /// every 2 s (a ~1 ms read on a LAN node, one small call on the public RPC). Without either,
+    /// a wallet with explorer lookups off only refreshed on the 15 s idle timer.
     async fn latest(&mut self, session: &Session) -> u64 {
-        if session.monitoring() {
+        if session.monitoring() || self.stream.is_none() {
             let reader = &session.node;
             if self.last_poll.elapsed() >= Duration::from_secs(2) {
                 self.last_poll = std::time::Instant::now();
@@ -1278,10 +1281,16 @@ impl Heads {
         self.stream.as_ref().map_or(0, |(rx, _)| *rx.borrow())
     }
 
-    /// Least time between block-triggered refreshes: short on a monitoring node, longer on the
-    /// shared public RPC.
+    /// Whether the heads come from polling the node that serves the reads (the monitor, or the
+    /// RPC when the explorer's stream is off), so that it has every block announced.
+    fn polled_from_reader(&self, session: &Session) -> bool {
+        session.monitoring() || self.stream.is_none()
+    }
+
+    /// Least time between block-triggered refreshes: every block. A block every ~5 s is the
+    /// pace the chain moves at, on a monitoring node or the public RPC alike.
     fn min_gap(&self, session: &Session) -> Duration {
-        if session.monitoring() { Duration::from_secs(4) } else { Duration::from_secs(10) }
+        if session.monitoring() { Duration::from_secs(4) } else { Duration::from_secs(5) }
     }
 }
 
@@ -1427,10 +1436,18 @@ async fn run(
     // The newest height when the last block-triggered refresh started (sources can lead the
     // main RPC by a block, so compare with what the watcher saw, not the dashboard).
     let mut refreshed_head = 0u64;
+    // The newest height the screens have been told about.
+    let mut announced_head = 0u64;
     loop {
         let Ok(cmd) = inbox.next(Duration::from_millis(250)).await else { return };
         let now = std::time::Instant::now();
         let seen = heads.latest(&session).await;
+        // Every screen that shows chain state re-reads on a new block, so they hear about it the
+        // moment it is seen, not when this worker's own refresh finishes.
+        if seen > announced_head {
+            announced_head = seen;
+            send(Ev::Head(seen));
+        }
         let new_block = seen > refreshed_head;
         let gap = now.duration_since(last_refresh);
         let cmd = match cmd {
@@ -1493,18 +1510,25 @@ async fn run(
                 // Notifications wait for the refreshed dashboard, so a notice never announces
                 // something the screen does not show yet.
                 let mut deferred: Vec<Ev> = Vec::new();
-                last_refresh =
-                    if refresh(&mut session, &mut dash, full, false, &mut inbox, &mut stages, &mut deferred, &send, &mut lane).await {
-                        std::time::Instant::now()
-                    } else {
-                        // Cut short for the user: due again as soon as the queue is empty, not on a
-                        // timer. Backdating by a fixed 12 s of the 15 s gap meant an interrupted
-                        // refresh waited out the remaining 3 s doing nothing — and a command arriving
-                        // a couple of hundred milliseconds into a launch is enough to hit it, which is
-                        // exactly what put a 3.8 s tail on an otherwise 0.7 s warm start. The loop
-                        // only refreshes when nothing is queued, so this cannot spin.
-                        std::time::Instant::now() - IDLE_REFRESH
-                    };
+                // The dashboard's balances are read at the block the screens were just told about,
+                // so they and the prices beside them describe the same block.
+                // Only a head polled from the node that serves the reads: the explorer's stream
+                // can lead the RPC by a block, and a read at a block the node lacks costs a retry.
+                session.read_at_block(heads.polled_from_reader(&session).then_some(announced_head));
+                let refreshed =
+                    refresh(&mut session, &mut dash, full, false, &mut inbox, &mut stages, &mut deferred, &send, &mut lane).await;
+                session.read_at_block(None);
+                last_refresh = if refreshed {
+                    std::time::Instant::now()
+                } else {
+                    // Cut short for the user: due again as soon as the queue is empty, not on a
+                    // timer. Backdating by a fixed 12 s of the 15 s gap meant an interrupted
+                    // refresh waited out the remaining 3 s doing nothing — and a command arriving
+                    // a couple of hundred milliseconds into a launch is enough to hit it, which is
+                    // exactly what put a 3.8 s tail on an otherwise 0.7 s warm start. The loop
+                    // only refreshes when nothing is queued, so this cannot spin.
+                    std::time::Instant::now() - IDLE_REFRESH
+                };
                 send(Ev::Busy(None));
                 send(Ev::Dashboard(Box::new(dash.clone())));
                 for ev in deferred {
@@ -1884,9 +1908,11 @@ fn simple(send: &impl Fn(Ev), r: wallet_core::Result<String>) {
 /// saying nothing had changed. The two the user actually watches — the node's height and their
 /// QUAI balances — still run every time; the rest move at the speed they can actually change at.
 /// A refresh the user asked for, and the one after a commit, ignore all of this (`force`).
-const TOKENS_EVERY: Duration = Duration::from_secs(20);
-const QI_EVERY: Duration = Duration::from_secs(30);
-const PRICE_EVERY: Duration = Duration::from_secs(120);
+/// Token and wrapped balances: one multicall, so every block, like QUAI.
+const TOKENS_EVERY: Duration = Duration::from_secs(5);
+const QI_EVERY: Duration = Duration::from_secs(15);
+/// The price feed's own cache holds a minute; asking more often only reads the same answer.
+const PRICE_EVERY: Duration = Duration::from_secs(60);
 /// Locked conversion balances: three calls each, and they only move when a conversion settles.
 const LOCKED_EVERY: Duration = Duration::from_secs(60);
 /// The node's gas price, client version and block order: System-screen detail, not per-block news.
@@ -1894,7 +1920,7 @@ const NODE_DETAIL_EVERY: Duration = Duration::from_secs(60);
 /// How long the wallet waits before refreshing on its own when no block has arrived.
 const IDLE_REFRESH: Duration = Duration::from_secs(15);
 /// Reconciling open operations and observing incoming activity.
-const TRACK_EVERY: Duration = Duration::from_secs(10);
+const TRACK_EVERY: Duration = Duration::from_secs(5);
 /// Scanning payment channels for senders never seen before.
 const PAYMENT_SYNC_EVERY: Duration = Duration::from_secs(90);
 
@@ -2092,6 +2118,12 @@ async fn refresh(
     let t = std::time::Instant::now();
     // The node's gas price, client version and block order are System-screen detail that does not
     // change between blocks; the refresh reads them on their own schedule and carries them meanwhile.
+    // With a monitoring node, keep a block the network's RPC has confirmed ready for the next
+    // review, off this refresh's path: reviews on the signing lane share it.
+    if session.node.witness().is_some() {
+        let (node, network) = (session.node.clone(), session.network.clone());
+        tokio::spawn(async move { wallet_core::anchor::keep_warm(&node, &network).await });
+    }
     let detail = stages.due("node_detail", NODE_DETAIL_EVERY, force);
     let check =
         tokio::time::timeout(std::time::Duration::from_secs(12), network::check_node_detail(&session.network, &session.node, detail));

@@ -626,7 +626,7 @@ async fn principal_targets_at(ctx: &DataCtx, owner: &str, pair: &str, selected: 
             pid,
             staked: uint(&balance, 0),
             rewards: Vec::new(),
-            trust: pin.trust_label(),
+            trust: pin.trust_label_on(&ctx.node),
             stake_warning: None,
         });
     }
@@ -678,7 +678,7 @@ impl Session {
                                 .iter()
                                 .map(|r| TargetReward { token: r.token.clone(), earned: r.earned, period: r.period_text(now) })
                                 .collect(),
-                            trust: self.network.ecosystem.quainance_gauge.as_ref().map_or("", |p| p.trust_label()),
+                            trust: self.network.ecosystem.quainance_gauge.as_ref().map_or("", |p| p.trust_label_on(&self.node)),
                             stake_warning: None,
                         });
                     }
@@ -695,7 +695,7 @@ impl Session {
                 .zone_gauges
                 .iter()
                 .find(|p| p.address.eq_ignore_ascii_case(&pool.gauge))
-                .map_or("", |p| p.trust_label());
+                .map_or("", |p| p.trust_label_on(&self.node));
             let stake_warning = if pool.active(now) {
                 None
             } else if pool.campaign.state(now) == crate::zone::Genesis::AwaitingActivation {

@@ -214,6 +214,15 @@ impl PinnedContract {
         if self.code_hash.is_some() { "✓ pinned bytecode" } else { "configured, no bytecode pin" }
     }
 
+    /// The review label for a pin just checked through `node`: it says so when the code was
+    /// proven at a block the network's RPC confirmed, which a lying monitor cannot fake.
+    pub fn trust_label_on(&self, node: &Node) -> &'static str {
+        match (self.code_hash.is_some(), node.anchor_confirmation()) {
+            (true, Some(crate::anchor::Confirmation::Witnessed)) => "✓ pinned bytecode, confirmed by two nodes",
+            _ => self.trust_label(),
+        }
+    }
+
     fn new(address: &str, code_hash: &str) -> Self {
         PinnedContract { address: address.into(), code_hash: Some(code_hash.into()) }
     }
@@ -505,6 +514,13 @@ impl NetworkProfile {
         self.genesis.parse().map_err(|_| CoreError::Invalid(format!("network `{}` has an invalid genesis hash", self.id)))
     }
 
+    /// Whether reads here are proven against block headers. Only on networks this wallet ships
+    /// contract pins for: those are go-quai chains whose headers quai-sdk can hash. A custom or
+    /// development chain keeps plain reads.
+    pub fn proves_state(&self) -> bool {
+        self.ecosystem.wquai_code_hash.is_some()
+    }
+
     /// Storage scope for SDK stores.
     pub fn scope(&self) -> Result<NetworkScope> {
         Ok(NetworkScope { chain_id: U256::from(self.chain_id), genesis: self.genesis_hash()?, zone: ZONE })
@@ -524,7 +540,13 @@ impl NetworkProfile {
         let transport = WalletTransport::new(HttpTransport::new(config).map_err(|e| CoreError::Network(format!("http transport: {e}")))?);
         let routing = Routing::with_pathing(&self.rpc_url, ZONE.into(), self.use_pathing)?;
         let endpoint = routing.endpoint(ZONE.into())?.clone();
-        Ok(Node { provider: Provider::new(transport.clone(), routing, U256::from(self.chain_id)), transport, endpoint })
+        Ok(Node {
+            provider: Provider::new(transport.clone(), routing, U256::from(self.chain_id)),
+            transport,
+            endpoint,
+            witness: None,
+            anchor: std::sync::Arc::default(),
+        })
     }
 
     /// Node for read-only monitoring: the monitoring endpoint when one is set, else the main RPC.
@@ -659,9 +681,49 @@ pub struct Node {
     pub provider: WalletProvider,
     transport: WalletTransport,
     endpoint: quai_sdk::Endpoint,
+    /// A second, independent endpoint that confirms this node's state anchors: the network's RPC
+    /// while this node is the user's monitoring node. See [`crate::anchor`].
+    witness: Option<std::sync::Arc<Node>>,
+    /// The last anchor read through this node, shared by its clones.
+    anchor: std::sync::Arc<crate::anchor::AnchorSlot>,
 }
 
 impl Node {
+    /// This node, with `witness` confirming the blocks its state proofs are read at.
+    pub fn with_witness(mut self, witness: Node) -> Node {
+        self.anchor = crate::anchor::shared_slot(self.endpoint.as_str(), witness.endpoint.as_str());
+        self.witness = Some(std::sync::Arc::new(Node { witness: None, ..witness }));
+        self
+    }
+
+    /// The endpoint that confirms this node's anchors, when it has one.
+    pub fn witness(&self) -> Option<&Node> {
+        self.witness.as_deref()
+    }
+
+    /// How far the block this node's latest proofs were read at is vouched for, while that anchor
+    /// is still in use.
+    pub fn anchor_confirmation(&self) -> Option<crate::anchor::Confirmation> {
+        self.recent_anchor(crate::anchor::ANCHOR_REUSE).map(|a| a.confirmation)
+    }
+
+    pub(crate) fn anchor_slot(&self) -> &crate::anchor::AnchorSlot {
+        &self.anchor
+    }
+
+    pub(crate) fn recent_anchor(&self, within: Duration) -> Option<crate::anchor::Anchored> {
+        self.anchor.get(within)
+    }
+
+    pub(crate) fn remember_anchor(&self, anchored: &crate::anchor::Anchored) {
+        self.anchor.set(anchored);
+    }
+
+    /// Drop the remembered anchor, after a read at it found the block reorganized away.
+    pub(crate) fn forget_anchor(&self) {
+        self.anchor.clear();
+    }
+
     /// Warm this exact provider's HTTP connection pool, bypassing the identity memo.
     /// This is transport preparation only; it never substitutes for execution identity checks.
     pub async fn warm_transport(&self) -> Result<()> {

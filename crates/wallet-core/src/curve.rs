@@ -24,6 +24,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// The launcher's view of a token, and a curve's own surface, as deployed.
+/// Where the Quainance launcher keeps `launches(token)`: a mapping at slot 0 of structs whose second
+/// word is `market`, the curve. Read against `launches()` at the same block on mainnet
+/// (2026-09-24, Q9000 and SOAP); the live test `a_bonding_curve_reads_verifies_and_simulates`
+/// reads it again.
+pub const LAUNCHES_SLOT: u64 = 0;
+pub const LAUNCH_MARKET_FIELD: u64 = 1;
+
 pub const LAUNCHER_ABI: &[&str] = &[
     "function launches(address token) view returns (address creator, address market, address pair, uint256 curveTokenAmount, uint256 poolTokenAmount, uint256 incentiveAmount, uint64 campaignDuration, uint256 gaugePoolId, bool graduated)",
 ];
@@ -148,6 +155,20 @@ async fn verified_curve(
     let market = named.get(1).and_then(|v| v.as_str()).unwrap_or_default().to_lowercase();
     if !market.eq_ignore_ascii_case(curve) {
         return Err(CoreError::Rejected(format!("the Quainance launcher does not name {curve} as this token's curve; refusing to use it")));
+    }
+    // That answer is a call result: the node's word. The launcher's own storage, proven at a block
+    // the network's RPC confirms when a monitor serves the reads, is not. The curve is where a buy
+    // sends QUAI, so on a review it is taken from the proof.
+    if !trust.may_cache() {
+        let slot = crate::anchor::mapping_field_slot(addr(token)?, LAUNCHES_SLOT, LAUNCH_MARKET_FIELD);
+        if let Some((proven, _)) = crate::anchor::prove_state(node, network, &[(launcher, &[slot])], "Quainance curve").await? {
+            let stored = proven[0].storage_value(slot).map(crate::anchor::word_address).unwrap_or_default();
+            if !stored.eq_ignore_ascii_case(curve) {
+                return Err(CoreError::Rejected(format!(
+                    "the Quainance launcher's own records do not name {curve} as this token's curve; refusing to use it"
+                )));
+            }
+        }
     }
     let address = addr(curve)?;
     let c = Contract::new(address, interface(CURVE_ABI)?, &node.provider);
@@ -316,7 +337,7 @@ impl Session {
     }
 
     fn curve_trust(&self) -> &'static str {
-        self.network.ecosystem.curve_launcher.as_ref().map_or("", |p| p.trust_label())
+        self.network.ecosystem.curve_launcher.as_ref().map_or("", |p| p.trust_label_on(&self.node))
     }
 
     /// Review buying on a curve with `quai` QUAI. The curve quotes it first; the review names the

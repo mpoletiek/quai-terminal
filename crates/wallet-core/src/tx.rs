@@ -480,6 +480,7 @@ impl Session {
         };
         let policy = self.network.preparation_limits(req.max_gas, req.max_fee)?;
         let observation = self.network.observation_policy();
+        let mut rpc_gas: Option<U256> = None;
         let mut attempt = 0;
         let prepared = loop {
             attempt += 1;
@@ -498,7 +499,8 @@ impl Session {
                 };
                 let started = std::time::Instant::now();
                 let result = if attempt == 1 {
-                    let (result, _) = tokio::join!(prepare, self.rpc.warm_transport());
+                    let (result, rpc) = tokio::join!(prepare, witness_gas_price(&self.node, &self.rpc));
+                    rpc_gas = rpc;
                     result
                 } else {
                     prepare.await
@@ -522,6 +524,11 @@ impl Session {
         };
         if let Some((nonce, _)) = gap {
             req.warnings.push(format!("reuses nonce {nonce}, left unused by an earlier rejected review"));
+        }
+        if let Some(note) = rpc_gas.and_then(|rpc| gas_disagreement(prepared.transaction().gas_price, rpc, &self.network.rpc_url)) {
+            // Up front, after the recipient checks: it is about what this approval costs.
+            let after = req.warnings.iter().take_while(|w| crate::recipient::is_recipient_warning(w)).count();
+            req.warnings.insert(after, note);
         }
         commitments.native_value = prepared.transaction().value.to_string();
         commitments.fee = prepared.maximum_fee().to_string();
@@ -1578,6 +1585,19 @@ pub(crate) enum BroadcastOutcome {
 
 #[cfg(test)]
 mod tests {
+    /// A monitoring node's gas price well above the RPC's is called out on the review; a few
+    /// percent of drift between two nodes is not.
+    #[test]
+    fn a_gas_price_far_above_the_rpc_s_is_called_out() {
+        let gwei = |n: u64| super::U256::from(n) * super::U256::from(1_000_000_000u64);
+        let rpc = "https://rpc.quai.network/cyprus1";
+        assert_eq!(super::gas_disagreement(gwei(1_100), gwei(1_000), rpc), None, "10% is two nodes a moment apart");
+        assert_eq!(super::gas_disagreement(gwei(1_250), gwei(1_000), rpc), None, "the threshold itself passes");
+        let note = super::gas_disagreement(gwei(20_000), gwei(1_000), rpc).expect("20x is called out");
+        assert!(note.contains("20x what rpc.quai.network") && note.contains("20000 gwei"), "{note}");
+        assert_eq!(super::gas_disagreement(gwei(5), super::U256::ZERO, rpc), None, "no RPC price, no comparison");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -1899,4 +1919,39 @@ mod replacement_tests {
         assert!(new_fee > U256::from(34u64) * U256::from(2u64), "comfortably over the aggregated shape's floor");
         assert!(new_fee <= parent_fee + total, "and never more than the change could pay");
     }
+}
+
+/// How far above the network RPC's gas price the monitoring node's may be before a review says so.
+/// Two nodes a moment apart differ by a few percent; a node asking for a quarter more is either
+/// seeing a spike the RPC is not, or inflating the fee.
+pub const GAS_DISAGREE_PERCENT: u64 = 125;
+
+/// The network RPC's gas price, read beside a preparation when a monitoring node served it; the
+/// same round trip also warms the connection the transaction will be broadcast on. `None` without
+/// a monitor (the RPC is then the node that answered) or when it does not answer in time.
+async fn witness_gas_price(node: &crate::network::Node, rpc: &crate::network::Node) -> Option<U256> {
+    if node.witness().is_none() {
+        let _ = rpc.warm_transport().await;
+        return None;
+    }
+    let read = rpc.provider.gas_price(crate::network::ZONE);
+    tokio::time::timeout(std::time::Duration::from_secs(3), read).await.ok()?.ok()
+}
+
+/// The review's warning when the gas price the monitoring node set is well above the RPC's.
+///
+/// The fee policy only highlights a fee over policy, because a busy network is real and an approved
+/// transaction must go through. Two nodes disagreeing is a different signal: the node that prepared
+/// the transaction may be inflating the fee, which the ceilings allow up to twenty times policy.
+pub fn gas_disagreement(prepared: U256, rpc: U256, rpc_url: &str) -> Option<String> {
+    if rpc.is_zero() || prepared.saturating_mul(U256::from(100u64)) <= rpc.saturating_mul(U256::from(GAS_DISAGREE_PERCENT)) {
+        return None;
+    }
+    let ratio = amount::format_amount(prepared.saturating_mul(U256::from(100u64)) / rpc, 2);
+    Some(format!(
+        "your monitoring node set a gas price of {} gwei, {ratio}x what {} reports ({} gwei): the fee may be inflated; check it before approving",
+        amount::format_amount(prepared, 9),
+        crate::network::rpc_origin(rpc_url).trim_start_matches("https://").trim_start_matches("http://"),
+        amount::format_amount(rpc, 9),
+    ))
 }

@@ -414,6 +414,33 @@ pub fn validate_deadline(deadline_minutes: u32) -> Result<()> {
     Ok(())
 }
 
+/// The least disagreement between a quote and its proven pools that refuses a review: reserves
+/// are read a block or two apart from the router's quote, and a trade in between moves them.
+pub const POOL_CHECK_MIN_BPS: u64 = 50;
+
+/// How a router's quote compares with the output its proven pools give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuoteVerdict {
+    /// Within the tolerance: the slippage the user accepted, and at least [`POOL_CHECK_MIN_BPS`].
+    Agrees,
+    /// Below it: a minimum taken from this quote gives the difference away.
+    Understated,
+    /// Above it: the swap may revert at its minimum.
+    Overstated,
+}
+
+pub fn quote_verdict(quoted: U256, proven: U256, slippage_bps: u16) -> QuoteVerdict {
+    let tolerance = U256::from(u64::from(slippage_bps).max(POOL_CHECK_MIN_BPS));
+    let scale = U256::from(10_000u64);
+    if quoted < proven.saturating_mul(scale.saturating_sub(tolerance)) / scale {
+        QuoteVerdict::Understated
+    } else if quoted > proven.saturating_mul(scale.saturating_add(tolerance)) / scale {
+        QuoteVerdict::Overstated
+    } else {
+        QuoteVerdict::Agrees
+    }
+}
+
 pub(crate) fn require_minimum(value: U256) -> Result<()> {
     if value.is_zero() {
         return Err(CoreError::Invalid("the protected output rounds to zero; increase the amount or reduce slippage".into()));
@@ -497,6 +524,146 @@ pub fn venue_pins(network: &NetworkProfile, venue: Venue) -> Option<(&PinnedCont
         Venue::HartiiAmm => Some((eco.hartii_amm_router.as_ref()?, eco.hartii_amm_factory.as_ref()?)),
         Venue::Curve => None,
     }
+}
+
+/// Where a UniswapV2 factory keeps `getPair[a][b]`: slot 2 on Quainance and the legacy exchange,
+/// slot 4 on the launch AMM and Hartii's. Read against `getPair` at the same block on mainnet
+/// (2026-09-23); the live test `a_route_s_output_is_proven_from_its_pools` reads it again.
+pub fn get_pair_slot(venue: Venue) -> Option<u64> {
+    match venue {
+        Venue::Main | Venue::Legacy => Some(2),
+        Venue::LaunchAmm | Venue::HartiiAmm => Some(4),
+        Venue::Curve => None,
+    }
+}
+/// A UniswapV2 pair's `token0`, `token1`, and `reserve0 | reserve1 | blockTimestampLast` packed
+/// 112/112/32; the same on every venue here.
+pub const PAIR_TOKEN0_SLOT: u64 = 6;
+pub const PAIR_TOKEN1_SLOT: u64 = 7;
+pub const PAIR_RESERVES_SLOT: u64 = 8;
+
+/// A route's output computed from pools proven at one block, and how far it is vouched for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProvenRoute {
+    /// What the proven reserves give for the input, along the path.
+    pub amount_out: U256,
+    /// Whether the block was confirmed by a second node.
+    pub confirmation: crate::anchor::Confirmation,
+    /// The block the pools were proven at.
+    pub block: u64,
+}
+
+/// `(reserve0, reserve1)` from a pair's packed slot 8.
+pub fn unpack_reserves(word: U256) -> (U256, U256) {
+    let mask = (U256::from(1u64) << 112) - U256::from(1u64);
+    (word & mask, (word >> 112) & mask)
+}
+
+/// The slot of `getPair[a][b]` in a factory whose mapping sits at `base`.
+fn pair_slot(a: QuaiAddress, b: QuaiAddress, base: u64) -> quai_sdk::primitives::Hash32 {
+    use quai_sdk::provider::state_proof::{address_word, solidity_mapping_slot};
+    let inner = solidity_mapping_slot(address_word(a), U256::from(base));
+    solidity_mapping_slot(address_word(b), U256::from_be_bytes(inner.into_bytes()))
+}
+
+/// Compute a route's output from its pools as proven at the node's anchor: the factory's own
+/// record of each pair, and each pair's tokens and reserves.
+///
+/// `Ok(None)` when it cannot be proven here (a venue without a factory pin, a path the pools
+/// do not match, or a header this SDK cannot hash); the review then rests on the router's quote,
+/// as it did before proofs.
+pub async fn prove_route(
+    node: &Node,
+    network: &NetworkProfile,
+    venue: Venue,
+    path: &[String],
+    pairs: &[String],
+    amount_in: U256,
+) -> Result<Option<ProvenRoute>> {
+    let (Some((_, factory)), Some(base)) = (venue_pins(network, venue), get_pair_slot(venue)) else { return Ok(None) };
+    if factory.code_hash.is_none() || pairs.is_empty() || path.len() != pairs.len() + 1 {
+        return Ok(None);
+    }
+    let factory = addr(&factory.address)?;
+    let tokens: Vec<QuaiAddress> = path.iter().map(|t| addr(t)).collect::<Result<_>>()?;
+    let pair_addresses: Vec<QuaiAddress> = pairs.iter().map(|p| addr(p)).collect::<Result<_>>()?;
+    let hop_slots: Vec<quai_sdk::primitives::Hash32> = tokens.windows(2).map(|w| pair_slot(w[0], w[1], base)).collect();
+    let pair_fields = [PAIR_TOKEN0_SLOT, PAIR_TOKEN1_SLOT, PAIR_RESERVES_SLOT]
+        .map(|slot| quai_sdk::primitives::Hash32::from_bytes(U256::from(slot).to_be_bytes::<32>()));
+    let mut targets: Vec<(QuaiAddress, &[quai_sdk::primitives::Hash32])> = vec![(factory, hop_slots.as_slice())];
+    targets.extend(pair_addresses.iter().map(|p| (*p, &pair_fields[..])));
+    let Some((proven, confirmation)) = crate::anchor::prove_state(node, network, &targets, "the swap's pools").await? else {
+        return Ok(None);
+    };
+    let mut amount = amount_in;
+    for (hop, (pair, slot)) in pair_addresses.iter().zip(&hop_slots).enumerate() {
+        let named = proven[0].storage_value(*slot).map(crate::anchor::word_address).unwrap_or_default();
+        if !named.eq_ignore_ascii_case(&pair.to_string()) {
+            return Err(CoreError::Rejected(format!(
+                "the {} factory's own records do not list {} for this pair; refusing to quote through it",
+                venue.label(),
+                pair
+            )));
+        }
+        let state = &proven[hop + 1];
+        let value = |i: usize| state.storage_value(pair_fields[i]).unwrap_or_default();
+        let (token0, (reserve0, reserve1)) = (crate::anchor::word_address(value(0)), unpack_reserves(value(2)));
+        let (reserve_in, reserve_out) =
+            if token0.eq_ignore_ascii_case(&tokens[hop].to_string()) { (reserve0, reserve1) } else { (reserve1, reserve0) };
+        amount = amount_out(amount, reserve_in, reserve_out);
+    }
+    Ok(Some(ProvenRoute { amount_out: amount, confirmation, block: proven[0].block.number }))
+}
+
+/// The reserves along a path, oriented input to output, as the venue's factory and pairs prove
+/// them at one block: the factory's own `getPair` for each hop, then each pair's tokens and
+/// reserves. `Ok(None)` when this cannot be proven here (no factory pin, a header this SDK
+/// cannot hash).
+pub async fn prove_path_reserves(
+    node: &Node,
+    network: &NetworkProfile,
+    venue: Venue,
+    path: &[String],
+) -> Result<Option<(Vec<(U256, U256)>, crate::anchor::Anchored)>> {
+    let (Some((_, factory)), Some(base)) = (venue_pins(network, venue), get_pair_slot(venue)) else { return Ok(None) };
+    if factory.code_hash.is_none() || path.len() < 2 {
+        return Ok(None);
+    }
+    let what = "the swap's pools";
+    let Some(anchored) = crate::anchor::review_anchor(node, network, what).await? else { return Ok(None) };
+    let factory = addr(&factory.address)?;
+    let tokens: Vec<QuaiAddress> = path.iter().map(|t| addr(t)).collect::<Result<_>>()?;
+    let hop_slots: Vec<quai_sdk::primitives::Hash32> = tokens.windows(2).map(|w| pair_slot(w[0], w[1], base)).collect();
+    let listed = crate::anchor::prove_at(node, network, &anchored, &[(factory, hop_slots.as_slice())], what).await?;
+    let pairs: Vec<QuaiAddress> = hop_slots
+        .iter()
+        .map(|slot| {
+            let pair = listed[0].storage_value(*slot).map(crate::anchor::word_address).unwrap_or_default();
+            if crate::chain::is_zero_address(&pair) {
+                return Err(CoreError::Rejected(format!("the {} factory lists no pool for a hop of this route", venue.label())));
+            }
+            addr(&pair)
+        })
+        .collect::<Result<_>>()?;
+    let fields = [crate::anchor::slot(PAIR_TOKEN0_SLOT), crate::anchor::slot(PAIR_RESERVES_SLOT)];
+    let targets: Vec<(QuaiAddress, &[quai_sdk::primitives::Hash32])> = pairs.iter().map(|p| (*p, &fields[..])).collect();
+    let states = crate::anchor::prove_at(node, network, &anchored, &targets, what).await?;
+    let reserves = states
+        .iter()
+        .zip(&tokens)
+        .map(|(state, token_in)| {
+            let token0 = crate::anchor::word_address(state.storage_value(fields[0]).unwrap_or_default());
+            let (r0, r1) = unpack_reserves(state.storage_value(fields[1]).unwrap_or_default());
+            if token0.eq_ignore_ascii_case(&token_in.to_string()) { (r0, r1) } else { (r1, r0) }
+        })
+        .collect();
+    Ok(Some((reserves, anchored)))
+}
+
+/// What an exact output costs through `reserves` (oriented input to output): the router's
+/// `getAmountsIn`, hop by hop from the end.
+pub fn input_for_output(output: U256, reserves: &[(U256, U256)]) -> Option<U256> {
+    reserves.iter().rev().try_fold(output, |out, (reserve_in, reserve_out)| amount_in_for_output(out, *reserve_in, *reserve_out))
 }
 
 /// Verify only the exchange selected for an LP action. An unrelated unavailable exchange must
@@ -1307,8 +1474,8 @@ async fn verify_venue(
 }
 
 /// A router's review label: `0x… (launch AMM, ✓ pinned bytecode)`.
-pub(crate) fn router_field(network: &NetworkProfile, venue: Venue, router: &str) -> String {
-    let trust = venue_pins(network, venue).map_or("", |(r, _)| r.trust_label());
+pub(crate) fn router_field(network: &NetworkProfile, node: &Node, venue: Venue, router: &str) -> String {
+    let trust = venue_pins(network, venue).map_or("", |(r, _)| r.trust_label_on(node));
     format!("{router} ({}, {trust})", venue.label())
 }
 
@@ -1521,6 +1688,32 @@ impl Session {
         let quote = self.swap_exact_output_quote(account, from, to, output, maximum_input, Trust::FirstHand).await?;
         let owner = self.account(account)?;
         let maximum = u(&quote.maximum_input);
+        // The input the node's router quoted is a call result. What the pools need for this output,
+        // proven at the anchor, is not: a quote above it by more than half a percent is refused, so
+        // an inflated price cannot become the cap the user is invited to sign.
+        let mut exact_warnings = Vec::new();
+        if let Some((reserves, anchored)) = prove_path_reserves(&self.node, &self.network, quote.venue, &quote.path).await?
+            && let Some(needed) = input_for_output(u(&quote.amount_out), &reserves)
+        {
+            let quoted = u(&quote.required_input);
+            let scale = U256::from(10_000u64);
+            if quoted.saturating_mul(scale) > needed.saturating_mul(scale + U256::from(POOL_CHECK_MIN_BPS)) {
+                return Err(CoreError::Rejected(format!(
+                    "the node's quote needs {} {} for this output, more than the pools do ({}, {}); refusing to review it",
+                    amount::format_amount(quoted, quote.from.decimals()),
+                    quote.from.symbol(),
+                    amount::format_amount(needed, quote.from.decimals()),
+                    anchored.confirmation.text()
+                )));
+            }
+            if maximum < needed {
+                exact_warnings.push(format!(
+                    "the pools need {} {} for this output, above your maximum; the swap would revert",
+                    amount::format_amount(needed, quote.from.decimals()),
+                    quote.from.symbol()
+                ));
+            }
+        }
         if quote.approval_needed {
             let SwapAsset::Token { address, symbol, decimals } = &quote.from else {
                 return Err(CoreError::Invalid("native input cannot require allowance".into()));
@@ -1566,8 +1759,8 @@ impl Session {
                 field("Quoted input", amount::format_amount(u(&quote.required_input), quote.from.decimals())),
                 field("Exact recipient output", format!("{} {}", amount::format_amount(u(&quote.amount_out), quote.to.decimals()), quote.to.symbol())),
                 field("Recipient", recipient.clone()), field("Path contracts", quote.path.join(" → ")),
-                field("Router", router_field(&self.network, quote.venue, &quote.router)), field("Deadline", deadline.to_string())],
-            warnings: vec![refund.into(), "Conventional pinned-token semantics only. A price move beyond the input cap reverts the transaction; fees may still be spent.".into()],
+                field("Router", router_field(&self.network, &self.node, quote.venue, &quote.router)), field("Deadline", deadline.to_string())],
+            warnings: [exact_warnings, vec![refund.into(), "Conventional pinned-token semantics only. A price move beyond the input cap reverts the transaction; fees may still be spent.".into()]].concat(),
             detail: json!({"expires_at": deadline, "decimals": quote.from.decimals(), "from_token": token(&quote.from), "to_token": token(&quote.to),
                 "to_decimals": quote.to.decimals(), "to_symbol": quote.to.symbol(), "expected_out": quote.amount_out,
                 "minimum_out": quote.amount_out, "maximum_input": quote.maximum_input, "required_input": quote.required_input,
@@ -1755,6 +1948,32 @@ impl Session {
 
     /// Review the exact approval a token-input swap needs (step 1 of 2), for the router of the
     /// exchange the route starts on.
+    /// Hold a review's quote against its proven pools. A router quote below what the pools give,
+    /// by more than the slippage the user accepted, would lower the signed minimum and hand the
+    /// difference to whoever trades first: that refuses the review. A quote above them only risks
+    /// a revert, and says so.
+    async fn check_quote_against_pools(&self, quote: &mut SwapQuote, venue: Venue) -> Result<()> {
+        let (amount_in, quoted) = (u(&quote.amount_in), u(&quote.amount_out));
+        let pairs: Vec<String> = quote.pools.iter().map(|p| p.pair.clone()).collect();
+        let Some(proven) = prove_route(&self.node, &self.network, venue, &quote.path, &pairs, amount_in).await? else { return Ok(()) };
+        let verdict = quote_verdict(quoted, proven.amount_out, quote.slippage_bps);
+        if verdict == QuoteVerdict::Understated {
+            return Err(CoreError::Rejected(format!(
+                "the node's quote ({}) is below what the pools hold for this trade ({}, {}); refusing a minimum that low",
+                quote.receive_text(),
+                amount::format_amount(proven.amount_out, quote.to.decimals()),
+                proven.confirmation.text()
+            )));
+        }
+        if verdict == QuoteVerdict::Overstated {
+            quote.warnings.push(format!(
+                "the node's quote is above what the pools hold ({}); the swap may revert at its minimum",
+                amount::format_amount(proven.amount_out, quote.to.decimals())
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn review_swap_approval(
         &mut self,
         account: Option<&str>,
@@ -1803,7 +2022,7 @@ impl Session {
             counterparty: router.to_string(),
             fields: vec![
                 field("Token contract", address.clone()),
-                field("Spender", router_field(&self.network, venue, &router.to_string())),
+                field("Spender", router_field(&self.network, &self.node, venue, &router.to_string())),
                 field("Allowance", format!("exactly {} {symbol}", amount::format_amount(atoms, decimals))),
             ],
             warnings: quote.warnings.clone(),
@@ -1909,6 +2128,9 @@ impl Session {
             )));
         }
         let venue = quote.legs.first().map_or(Venue::Main, |l| l.venue);
+        let mut quote = quote;
+        self.check_quote_against_pools(&mut quote, venue).await?;
+        let quote = quote;
         let from_account = self.account(account)?;
         let recipient = from_account.address.clone();
         let contract = Contract::new(addr(&quote.router)?, interface(ROUTER_ABI)?, &self.node.provider);
@@ -1944,7 +2166,7 @@ impl Session {
             field("Price impact", format!("{:.2}%", quote.impact_bps as f64 / 100.0)),
             field("Output protection", "router checks received balance; transfer fees reduce the quoted estimate"),
             field("LP fee", format!("{:.1}%", quote.fee_bps as f64 / 100.0)),
-            field("Router", router_field(&self.network, venue, &quote.router)),
+            field("Router", router_field(&self.network, &self.node, venue, &quote.router)),
             field("Deadline", format!("{deadline_minutes} min")),
         ];
         for pool in &quote.pools {
@@ -1994,6 +2216,20 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A quote under its proven pools by more than the slippage refuses; within it agrees; above
+    /// it warns. Reserves a block apart never refuse inside half a percent.
+    #[test]
+    fn a_quote_is_held_to_its_proven_pools() {
+        let proven = U256::from(1_000_000u64);
+        assert_eq!(quote_verdict(U256::from(996_000u64), proven, 50), QuoteVerdict::Agrees);
+        assert_eq!(quote_verdict(U256::from(994_000u64), proven, 50), QuoteVerdict::Understated);
+        assert_eq!(quote_verdict(U256::from(994_000u64), proven, 100), QuoteVerdict::Agrees, "1% slippage accepts 0.6%");
+        assert_eq!(quote_verdict(U256::from(997_000u64), proven, 10), QuoteVerdict::Agrees, "never tighter than half a percent");
+        assert_eq!(quote_verdict(U256::from(1_010_000u64), proven, 50), QuoteVerdict::Overstated);
+        let packed = (U256::from(7u64) << 224) | (U256::from(5u64) << 112) | U256::from(3u64);
+        assert_eq!(unpack_reserves(packed), (U256::from(3u64), U256::from(5u64)), "reserve0 low, reserve1 next, time on top");
+    }
 
     /// A found pair is remembered for a long time but not forever, an absence only briefly, and a
     /// quote that is feeding a review reads every one of them again.

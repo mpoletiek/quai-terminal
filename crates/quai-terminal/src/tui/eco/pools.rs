@@ -7,7 +7,7 @@ impl App {
     /// moves when the user acts or the pool's reserves shift, so this is not a hot poll.
     pub(crate) fn tick_pools(&mut self) {
         let pv = &self.eco.pools_view;
-        let stale = pv.loaded_at.is_none_or(|t| t.elapsed() > Duration::from_secs(45));
+        let stale = pv.loaded_at.is_none_or(|t| t.elapsed() > self.feed_pace());
         if pv.loading || !stale {
             return;
         }

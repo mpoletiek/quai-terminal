@@ -1280,12 +1280,13 @@ impl App {
             self.send_data(DataCmd::MarketPools);
             return;
         }
+        self.unstick_markets();
+        // Live reserves keep the rate, the pool's TVL and the chart's last price moving.
+        self.tick_reserves();
         let Some((pool, _)) = self.swap_pool() else { return };
-        let fresh = matches!(&self.eco.swap.chart_asked, Some((a, at)) if *a == pool.address && at.elapsed() < MARKET_REFRESH);
-        if !fresh {
-            self.eco.swap.chart_asked = Some((pool.address.clone(), Instant::now()));
-            self.send_data(DataCmd::PairCandles { pool: pool.address, bucket: SWAP_CHART_BUCKET, count: MARKET_CANDLES });
-        }
+        // The chart reads the pool's own trades as Markets does, not only the indexer's candles:
+        // the indexer lags, and it has no candles at all for a launch-AMM, QuaiSwap or Hartii pair.
+        let _ = self.tick_pair(pool, SWAP_CHART_BUCKET);
     }
 
     pub(crate) fn swap_submit(&mut self) {

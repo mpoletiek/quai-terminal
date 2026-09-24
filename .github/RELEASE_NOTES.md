@@ -3,33 +3,34 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
-## What's new in 0.1.0-alpha.6
+## What's new in 0.1.0-alpha.7
 
-- **Your own node now serves every read, reviews included.** When a monitoring node is set
-  (`network monitor mainnet URL`, or the onboarding's "Your own node"), balances, quotes and the
-  numbers in a review all come from it once it proves it is on the same chain. Transactions are
-  still sent only through the network's RPC. A review opens with a warning when your node is 3 or
-  more blocks behind that RPC. **If you already had a monitoring node,** it now also answers your
-  reviews; `--trust-execution` is no longer needed and does nothing. A node on the internet must
-  use https.
-- **Onboarding says what each choice does.** The privacy step asks the question it actually answers,
-  whether explorer.qu.ai may look up your addresses, and states what each answer gets and costs.
-  The connections step shows what goes where (reads, sends, address lookups, market data) as you fill
-  it in. System › Data sources shows the same.
-- **HartiiLabs markets priced like pools.** A curve is priced from the reserves it trades against,
-  before the fee. A graduated curve shows the QUAI locked in its pool as TVL, with a 24h change, and
-  refreshes every few seconds along with the pools.
-- **Faster reviews.** Exchanges are quoted at once rather than one after another, and contract checks
-  take two round trips instead of five (quai-sdk 0.1.0-alpha.12). A swap review through the public
-  RPC went from 9 s to 5 s, and through a node of your own it takes under a second.
-- **Charts keep up.** A pair's chart refreshes every 5 seconds (it was every 10), and the pairs
-  beside the cursor load before you reach them.
-- **Explorer links are clickable.** Ctrl+click opens an address or transaction in your browser, and
-  alt+click copies it. The Markets header names the token's and the pool's contracts.
-- **Accounts.** Import a private key into an open wallet (Accounts › space › i), and add more
-  addresses to a watch-only wallet (`a`, or `account watch ADDRESS`).
-- **Safer media.** NFT metadata and pictures are read from your IPFS gateway only as the immutable
-  content they name, never an `/ipns/` name or anything else on that host.
+- **Reviews check the chain's own state, not only a node's answers** (quai-sdk 0.1.0-alpha.14).
+  The contracts a review relies on are proven at one block: their code, a bonding curve's
+  destination, the pools behind a swap or a liquidity change, and your nonce and balances before
+  any spend. A swap quote that falls short of what the proven pools give by more than your slippage
+  refuses the review, and so does an exact-output or liquidity review whose numbers disagree with
+  them.
+- **How far that goes depends on having your own node.** With a monitoring node set, the network's
+  RPC must hold the same block, and the review says "confirmed by two nodes". If the two disagree,
+  the review is refused; if your node is more than 8 blocks behind, its answers are not used.
+  **Without your own node there is no second opinion:** a proof then shows only that the answers
+  are consistent with the one node that gave them, and the review claims nothing more.
+- **Fees and token imports are cross-checked** when your own node serves reads. A gas price over
+  125% of the network RPC's opens the review with both numbers, and a token is imported only if the
+  RPC reports the same decimals. A contract you call by its own ABI must have the code the chain's
+  state holds.
+- **One block on screen.** The header names the newest block, and prices, balances, the trade tape
+  and a pair's trades are read at that block ("at #N" in Markets). Screens move when a block
+  arrives; through a node on your own network, a block's trades are on screen about a tenth of a
+  second after it.
+- **Markets.** The Exchange chart is live for every pair, launch-AMM, QuaiSwap and HartiiLabs
+  included. A market feed that stops answering recovers by itself. A pool's TVL no longer flips
+  between two USD prices, and says how old its QUAI price is. A pool 20 times shallower than
+  another for the same two tokens, and under $250, is listed only in Pools. `S` sells to a curve
+  from its row.
+- **Faster.** Node responses are compressed, and the block a review is proven at is kept ready, so
+  a review through your own node does not wait on the network's RPC.
 
 ## Download
 

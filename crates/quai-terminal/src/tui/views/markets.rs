@@ -170,14 +170,22 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         super::super::eco::MarketSort::Default => String::new(),
         sort => format!(" · by {}", sort.label()),
     };
+    // Shallow duplicates of a deeper market are left out of the list, not out of existence.
+    let shadows = match pools.len().saturating_sub(rows_pools.len()) {
+        0 => String::new(),
+        1 => " · 1 shallow copy in Pools".into(),
+        n => format!(" · {n} shallow copies in Pools"),
+    };
+    let ordered = format!("{ordered}{shadows}");
     let stale = overview.sources.is_empty() || overview.sources.iter().any(|source| !source.fresh_at(now));
     let freshness = if stale { " · stale/partial source" } else { "" };
-    let reserves = app
-        .eco
-        .markets_view
-        .reserves_at
-        .map(|at| format!(" · reserves {}s", at.elapsed().as_secs()))
-        .unwrap_or_else(|| " · reserves unverified".into());
+    // Prices say which block they are from when they were read at one: the header's, normally.
+    let mv = &app.eco.markets_view;
+    let reserves = match (mv.reserves_block, mv.reserves_at) {
+        (Some(block), Some(_)) => format!(" · at #{}", amount::group_thousands(&block.to_string())),
+        (None, Some(at)) => format!(" · reserves {}s", at.elapsed().as_secs()),
+        _ => " · reserves unverified".into(),
+    };
     let title = if overview.source == "chain" {
         format!("pairs{partial}{freshness}{reserves}{ordered} · {} · from the node", pools.len())
     } else {
@@ -275,7 +283,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         _ => None,
     };
     let loading = [&mv.events_loading, &mv.events_prefetching].iter().any(|slot| slot.as_deref() == Some(pool.address.as_str()));
-    let action = if pool.venue == Venue::Curve { "t buy on the curve" } else { "t trade" };
+    let action = if pool.venue == Venue::Curve { "t buy · S sell" } else { "t trade" };
     let title = format!(
         "{base_sym}/{quote_sym} · {} · {tf_label} · . timeframe · f flip · {action}{}",
         pool.venue.label(),
@@ -354,12 +362,23 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     if !set.is_empty() {
         line1.push(Span::styled(format!("   {} alert {}", t.icon(Icon::Bell), set.join(" · ")), Style::default().fg(t.attention)));
     }
-    let line2 = vec![
+    // A TVL priced off the QUAI/USD feed is only as current as that price: say how old it is.
+    let has_tvl = pool.curve.as_ref().is_none_or(|c| c.locked_quai.is_some());
+    let priced = tvl_price_taken(app, pool).filter(|_| has_tvl).map(|taken| {
+        let old = wallet_core::registry::now().saturating_sub(taken) >= TVL_PRICE_OLD;
+        let when = match ago(taken) {
+            now if now == "now" => " priced now".to_string(),
+            age => format!(" priced {age} ago"),
+        };
+        Span::styled(when, if old { Style::default().fg(t.attention) } else { t.dim_style() })
+    });
+    let mut line2 = vec![
         Span::styled(format!("vol {} {quote_sym}{}", fmt_qty(stats.volume_24h), usd(stats.volume_24h)), t.text_style()),
         Span::styled(format!(" · {}", amount::count(stats.trades_24h, "trade")), t.dim_style()),
         Span::styled(depth, if pool.curve.is_some() { Style::default().fg(t.attention) } else { t.dim_style() }),
-        Span::styled(holdings, t.dim_style()),
     ];
+    line2.extend(priced);
+    line2.push(Span::styled(holdings, t.dim_style()));
     let mut lines = vec![Line::from(line1), Line::from(line2)];
     if info_line {
         lines.push(Line::from(token_info(app, t, pool, base, &base_sym)));
@@ -400,6 +419,20 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             draw_trade_tape(f, app, t, tape_area, &app.market_trades(pool, base0), &base_sym, &quote_sym);
         }
     }
+}
+
+/// A QUAI price this old is called out: the portfolio reads it every few minutes, so an hour-old
+/// basis means the feed has stopped answering.
+const TVL_PRICE_OLD: u64 = 15 * 60;
+
+/// When the QUAI/USD price a pool's TVL rests on was read, if it rests on it: a pool with a WQUAI
+/// side (a bonded curve's locked pool included) is valued at the portfolio's QUAI price. Any other
+/// pool keeps the directory's own figure, which has no such age.
+fn tvl_price_taken(app: &App, pool: &wallet_core::markets::Pool) -> Option<u64> {
+    let wquai = app.net()?.wquai.clone()?;
+    let quai_side = [&pool.token0, &pool.token1].iter().any(|t| t.address.eq_ignore_ascii_case(&wquai));
+    let board = app.eco.portfolio.as_ref()?.prices.as_ref()?;
+    (quai_side && board.quai_usd.is_some() && board.taken_at > 0).then_some(board.taken_at)
 }
 
 /// A market's price before its history loads, base-per-quote as the list shows it: from the pool's

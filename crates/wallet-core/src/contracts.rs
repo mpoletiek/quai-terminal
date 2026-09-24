@@ -95,6 +95,11 @@ pub struct Discovered {
     pub code_len: usize,
     /// Keccak-256 of the runtime, as the chain reported it.
     pub code_hash: String,
+    /// When the runtime was proven to be the code the chain's state holds at the address: how far
+    /// that block is vouched for ("confirmed by two nodes", or "as this node reports"). `None`
+    /// when the node's code was taken as observed.
+    #[serde(default)]
+    pub code_proven: Option<String>,
     /// The compiler version the tail named, when it named one.
     pub solc: Option<String>,
     /// The metadata, when the tail carried a CID and it resolved and verified.
@@ -245,27 +250,13 @@ impl DataCtx {
         self.online()?;
         let parsed = crate::chain::addr(address)?;
         let key = address.to_lowercase();
-        // Against the trusted genesis, so a node on another network is refused before it learns
-        // which address was asked about. The untrusted single observation sent the address first.
-        let observation = self
-            .node
-            .provider
-            .observe_contract_codes(self.network.genesis_hash()?, &[(parsed, None)], quai_sdk::provider::BlockTag::Latest)
-            .await
-            .map_err(|e| match e {
-                quai_sdk::ProviderError::GenesisMismatch => {
-                    CoreError::Rejected(format!("the node is not on network `{}`; refusing to read from it", self.network.id))
-                }
-                other => other.into(),
-            })?
-            .into_iter()
-            .next()
-            .ok_or_else(|| CoreError::Network("the node returned no code observation".into()))?;
-        let runtime = observation.code.bytes.bytes();
+        let (runtime, code_hash, code_proven) = self.runtime(parsed).await?;
+        let runtime = runtime.as_slice();
         let mut found = Discovered {
             address: key.clone(),
             code_len: runtime.len(),
-            code_hash: observation.code.hash.to_string(),
+            code_hash,
+            code_proven,
             solc: None,
             metadata: None,
             metadata_error: None,
@@ -291,6 +282,53 @@ impl DataCtx {
         // A display path may answer this from the explorer's cache; a review path asks again.
         found.verified = self.explorer_verified(&key, trust).await;
         Ok(found)
+    }
+
+    /// The runtime bytecode at `address`, its hash, and how far the hash is vouched for.
+    ///
+    /// The code decides everything after it: the metadata CID in its tail, so the ABI, and the
+    /// selectors it dispatches on. On a network whose headers can be hashed, it is read at the
+    /// node's state anchor beside a proof of the account there, and must hash to the proof's code
+    /// hash, so a node cannot hand over another contract's code. Elsewhere, and after a go-quai
+    /// upgrade this SDK cannot hash yet, it is the genesis-checked observation.
+    async fn runtime(&self, address: quai_sdk::QuaiAddress) -> Result<(Vec<u8>, String, Option<String>)> {
+        let what = "the contract's code";
+        if self.network.proves_state()
+            && let Some(anchored) = crate::anchor::review_anchor(&self.node, &self.network, what).await?
+        {
+            let at = quai_sdk::provider::BlockTag::Number(quai_sdk::U256::from(anchored.anchor.block.number));
+            let target: [(quai_sdk::QuaiAddress, &[quai_sdk::primitives::Hash32]); 1] = [(address, &[])];
+            let (proven, code) = tokio::join!(
+                crate::anchor::prove_at(&self.node, &self.network, &anchored, &target, what),
+                self.node.provider.code(address, at)
+            );
+            let (proven, code) = (proven?, code?);
+            let runtime = code.bytes().to_vec();
+            let hash = quai_sdk::primitives::Hash32::from_bytes(quai_sdk::crypto::keccak256(&runtime));
+            if hash != proven[0].code_hash() {
+                return Err(CoreError::Rejected(format!(
+                    "the node's code for {address} is not the code the chain's state holds there; refusing to describe it"
+                )));
+            }
+            return Ok((runtime, hash.to_string(), Some(anchored.confirmation.text().to_string())));
+        }
+        // Against the trusted genesis, so a node on another network is refused before it learns
+        // which address was asked about. The untrusted single observation sent the address first.
+        let observation = self
+            .node
+            .provider
+            .observe_contract_codes(self.network.genesis_hash()?, &[(address, None)], quai_sdk::provider::BlockTag::Latest)
+            .await
+            .map_err(|e| match e {
+                quai_sdk::ProviderError::GenesisMismatch => {
+                    CoreError::Rejected(format!("the node is not on network `{}`; refusing to read from it", self.network.id))
+                }
+                other => other.into(),
+            })?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::Network("the node returned no code observation".into()))?;
+        Ok((observation.code.bytes.bytes().to_vec(), observation.code.hash.to_string(), None))
     }
 
     /// Metadata by CID, from the store when it is there.
@@ -496,6 +534,7 @@ mod tests {
             address: "0x00".into(),
             code_len: 10,
             code_hash: String::new(),
+            code_proven: None,
             solc: None,
             metadata: Some(metadata),
             metadata_error: None,
@@ -780,6 +819,23 @@ mod call_tests {
 #[cfg(test)]
 mod gateway_tests {
     use super::*;
+
+    /// On a network whose headers can be hashed, the code is proven to be what the chain's state
+    /// holds at the address: a plain account proves it has none, and a node that hands over some
+    /// other runtime is refused before its tail can name an ABI.
+    #[tokio::test]
+    async fn discovered_code_must_hash_to_the_proven_code_hash() {
+        use crate::anchor::tests::{Kind, PROVEN_OWNER, network, serve};
+        let (url, _) = serve(Kind::Honest).await;
+        let policy = crate::config::DataPolicy { explorer: false, market: false, images: false, icons: false };
+        let ctx = crate::data::DataCtx::with_app(crate::appdb::AppDb::memory().unwrap(), network(&url), policy).unwrap();
+        let plain = ctx.discover_contract(PROVEN_OWNER, Trust::FirstHand).await.unwrap();
+        assert!(!plain.is_contract());
+        assert_eq!(plain.code_proven.as_deref(), Some("as this node reports"), "one node's word, said as such");
+        // The captured block proves WQUAI's code hash; the node answers `0x6000` for its code.
+        let lied = ctx.discover_contract("0x006C3e2AaAE5DB1bCd11A1a097cE572312EADdBB", Trust::FirstHand).await.unwrap_err();
+        assert!(matches!(&lied, CoreError::Rejected(text) if text.contains("not the code the chain's state holds")), "{lied:?}");
+    }
 
     /// A gateway that answers a metadata CID with something else is refused, and a gateway that
     /// answers honestly is believed. This is the one link in the chain that is arithmetic rather

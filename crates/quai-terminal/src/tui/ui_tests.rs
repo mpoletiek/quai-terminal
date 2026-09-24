@@ -395,7 +395,7 @@ fn a_bonding_curve_market_shows_its_progress() {
     assert!(screen.contains("CHEEZ/"), "the curve is listed");
     assert!(screen.contains("68%"), "with its progress where a pool shows TVL");
     assert!(screen.contains("bonding curve"), "the chart names the venue");
-    assert!(screen.contains("t buy on the curve"), "and how to trade it");
+    assert!(screen.contains("t buy · S sell"), "and how to trade it");
     assert!(screen.contains("raised 17,132 of 25,000 QUAI (68%)"), "{screen}");
 }
 
@@ -819,7 +819,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
                 quai_source: "mexc".into(),
                 qi_usd: Some(0.9),
                 qi_source: "derived:protocol-rate".into(),
-                taken_at: 1,
+                taken_at: 1_789_705_234 - 180,
                 observed_at: 1,
             }),
             sources: vec!["explorer.qu.ai".into()],

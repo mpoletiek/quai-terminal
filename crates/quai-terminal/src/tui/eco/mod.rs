@@ -53,8 +53,6 @@ pub struct SwapCard {
     /// The share of the spendable maximum last set with `%` (25, 50, 75, 100), until the amount
     /// is typed over.
     pub preset: Option<u8>,
-    /// The pair chart last asked for, and when, so a sitting card does not re-ask every tick.
-    pub chart_asked: Option<(String, Instant)>,
 }
 
 impl Default for SwapCard {
@@ -75,7 +73,6 @@ impl Default for SwapCard {
             quoted_at: None,
             approving: false,
             preset: None,
-            chart_asked: None,
         }
     }
 }
@@ -258,6 +255,9 @@ pub struct MarketsView {
     pub reserves_loading: bool,
     pub reserves_at: Option<Instant>,
     pub reserves_attempted: Option<Instant>,
+    /// The block the reserve read in flight was asked for, and the block of the reserves shown.
+    pub reserves_asked_block: Option<u64>,
+    pub reserves_block: Option<u64>,
     pub events: HashMap<String, Result<Vec<wallet_core::markets::PoolEvent>, String>>,
     pub events_loading: Option<String>,
     /// A neighbour of the selected pair whose chart is loading before the cursor reaches it. It
@@ -287,6 +287,8 @@ pub struct MarketsView {
     /// Swaps across every pool, newest first (the flow column).
     pub flow: Vec<wallet_core::markets::DexSwap>,
     pub flow_loading: bool,
+    /// When the tape was last asked for, so a request that never answers can be let go.
+    pub flow_asked: Option<Instant>,
     pub flow_at: Option<Instant>,
     /// Why the last flow refresh failed, while the tape still shows what it has.
     pub flow_error: Option<String>,
@@ -358,6 +360,8 @@ impl Default for MarketsView {
             reserves_loading: false,
             reserves_at: None,
             reserves_attempted: None,
+            reserves_asked_block: None,
+            reserves_block: None,
             events: HashMap::new(),
             events_loading: None,
             events_prefetching: None,
@@ -372,6 +376,7 @@ impl Default for MarketsView {
             sort: MarketSort::default(),
             flow: Vec::new(),
             flow_loading: false,
+            flow_asked: None,
             flow_at: None,
             flow_error: None,
             selected_at: None,
@@ -434,6 +439,13 @@ pub const MARKET_CANDLES: usize = 64;
 /// is not what costs — each source's own TTL decides whether a tick reaches the network at all,
 /// and a tick inside that window is served from the store.
 pub const MARKET_REFRESH: Duration = Duration::from_secs(wallet_core::markets::MARKET_TICK_SECS);
+/// A market read still unanswered after this is taken as lost and asked again. Every source gives
+/// up well before it: the HTTP client after 20 s, a slow venue after `markets::VENUE_DEADLINE`.
+pub const MARKET_STUCK: Duration = Duration::from_secs(45);
+/// While blocks are arriving, a chain-backed feed is re-read on each block (`App::on_block`) and
+/// its own clock is only the safety net: between blocks the chain has not moved, and a read then
+/// returns what is already on screen. This is that net's interval.
+pub const BLOCK_PACED_FALLBACK: Duration = Duration::from_secs(20);
 /// How long a PnL answer is shown before opening the screen reads it again.
 pub const PNL_TTL: Duration = Duration::from_secs(30);
 /// The swap card's pair chart: hourly, which the indexer buckets, so it is one query.
@@ -784,6 +796,9 @@ pub struct Eco {
     pub alerts_loaded: bool,
     /// When the TUI last checked alerts itself (it does only when no daemon runs).
     pub alerts_checked: Option<Instant>,
+    /// The newest block height the wallet worker has seen (`Ev::Head`), and when it arrived.
+    pub head: u64,
+    pub head_at: Option<Instant>,
     pub pools_view: PoolsView,
     /// Zone gas price in wei, for the reserve MAX holds back. None until it loads, which makes
     /// MAX on native QUAI say so rather than guess.

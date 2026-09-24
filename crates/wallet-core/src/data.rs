@@ -10,7 +10,7 @@ use crate::network::{NetworkProfile, Node, PinnedContract};
 use crate::paths::Paths;
 use crate::registry::now;
 use quai_sdk::contracts::{Contract, Erc20};
-use quai_sdk::{BlockTag, QuaiAddress, U256};
+use quai_sdk::{BlockTag, ProviderError, QuaiAddress, U256};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -172,7 +172,10 @@ impl DataCtx {
             .unwrap_or_else(|_| Err(CoreError::Network("did not answer within 2 s".into())));
         match checked {
             Ok(node) => {
-                self.node = node;
+                // The network's RPC, which this context read through until now, confirms the
+                // blocks the monitor proves state at.
+                let rpc = std::mem::replace(&mut self.node, node);
+                self.node = self.node.clone().with_witness(rpc);
                 self.monitored = true;
                 None
             }
@@ -484,48 +487,146 @@ pub async fn verify_pinned(
     what: &str,
     trust: Trust,
 ) -> Result<QuaiAddress> {
-    let address: QuaiAddress =
-        contract.address.parse().map_err(|_| CoreError::Invalid(format!("{what} address is not a Cyprus-1 Quai address")))?;
-    let Some(hash) = &contract.code_hash else { return Ok(address) };
-    let key = format!("pinned:{}:{}:{}", network.id, contract.address.to_lowercase(), hash.to_lowercase());
-    // A match is trusted for a day on a display path, not forever, and not at all when the address
-    // is about to appear in a review.
-    if trust.may_cache() && pin_fresh(app.kv(&key)?.as_deref(), now()) {
-        return Ok(address);
+    Ok(verify_pinned_all(app, node, network, &[(contract, what)], trust).await?.remove(0))
+}
+
+/// A pinned contract that has to be read from the chain this time.
+struct PinCheck<'a> {
+    address: QuaiAddress,
+    expected: quai_sdk::primitives::Hash32,
+    memo: String,
+    what: &'a str,
+    shown: &'a str,
+}
+
+/// Verify several pinned contracts at once, in the order given.
+///
+/// Every contract not answered by the memo is checked at one block: the node proves each one's
+/// code hash against that block's state root, which quai-sdk binds to the block's header hash, so
+/// no bytecode is downloaded. When a monitoring node serves the reads, the network's RPC must hold
+/// the same header at that height ([`crate::anchor`]); a node that invents a state cannot pass
+/// that. Without one the answer is as good as the node, as it always was.
+pub async fn verify_pinned_all(
+    app: &AppDb,
+    node: &Node,
+    network: &NetworkProfile,
+    pins: &[(&PinnedContract, &str)],
+    trust: Trust,
+) -> Result<Vec<QuaiAddress>> {
+    let mut addresses = Vec::with_capacity(pins.len());
+    let mut checks = Vec::new();
+    for (contract, what) in pins {
+        let address: QuaiAddress =
+            contract.address.parse().map_err(|_| CoreError::Invalid(format!("{what} address is not a Cyprus-1 Quai address")))?;
+        addresses.push(address);
+        let Some(hash) = &contract.code_hash else { continue };
+        let memo = format!("pinned:{}:{}:{}", network.id, contract.address.to_lowercase(), hash.to_lowercase());
+        // A match is trusted for a day on a display path, not forever, and not at all when the
+        // address is about to appear in a review.
+        if trust.may_cache() && pin_fresh(app.kv(&memo)?.as_deref(), now()) {
+            continue;
+        }
+        let expected = hash.parse().map_err(|_| CoreError::Invalid(format!("{what} pinned hash is malformed")))?;
+        checks.push(PinCheck { address, expected, memo, what, shown: &contract.address });
     }
-    let expected: quai_sdk::primitives::Hash32 =
-        hash.parse().map_err(|_| CoreError::Invalid(format!("{what} pinned hash is malformed")))?;
-    let c = Contract::new(address, quai_sdk::abi::AbiInterface::default(), &node.provider);
+    if checks.is_empty() {
+        return Ok(addresses);
+    }
     let mut attempt = 0;
     loop {
         attempt += 1;
-        match c.verify_deployment(network.genesis_hash()?, Some(expected), BlockTag::Latest).await {
-            Ok(_) => {
-                app.set_kv(&key, &now().to_string())?;
-                return Ok(address);
+        match prove_pins(node, network, &checks).await {
+            Ok(()) => break,
+            // A go-quai upgrade added a header field this SDK cannot hash yet. The proof cannot
+            // be bound to its block, so fall back to reading the code, as before proofs existed.
+            Err(PinFailure::Provider(e)) if crate::anchor::unknown_header(&e) => {
+                futures::future::try_join_all(checks.iter().map(|c| verify_bytecode(node, network, c))).await?;
+                break;
             }
+            // Only a new block or reorg during the read, or a network blip, is worth another try.
+            // Everything else fails the same way every time, so it is reported at once, as what it
+            // is rather than as a connection problem.
+            Err(PinFailure::Provider(e))
+                if attempt < 4 && (matches!(e, ProviderError::ObservationChanged) || e.class() == quai_sdk::ErrorClass::Transient) =>
+            {
+                node.forget_anchor();
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await
+            }
+            Err(PinFailure::Provider(e)) => {
+                let what = checks.iter().map(|c| c.what).collect::<Vec<_>>().join(", ");
+                return Err(crate::anchor::explain(&e, &what, network));
+            }
+            Err(PinFailure::Rejected(e)) => return Err(e),
+        }
+    }
+    for check in &checks {
+        app.set_kv(&check.memo, &now().to_string())?;
+    }
+    Ok(addresses)
+}
+
+enum PinFailure {
+    Provider(ProviderError),
+    Rejected(CoreError),
+}
+
+/// Prove every check's code hash at the node's anchor, up to the SDK's accounts per call at a time.
+async fn prove_pins(node: &Node, network: &NetworkProfile, checks: &[PinCheck<'_>]) -> std::result::Result<(), PinFailure> {
+    let anchored = crate::anchor::anchor(node, network).await.map_err(PinFailure::Provider)?;
+    let batches = checks.chunks(quai_sdk::provider::MAX_PROVEN_ACCOUNTS).map(|batch| {
+        let targets: Vec<(QuaiAddress, &[quai_sdk::primitives::Hash32])> = batch.iter().map(|c| (c.address, &[][..])).collect();
+        let anchor = &anchored.anchor;
+        async move { node.provider.prove_accounts_at(anchor, &targets).await }
+    });
+    let proven = futures::future::try_join_all(batches).await.map_err(PinFailure::Provider)?;
+    for (check, account) in checks.iter().zip(proven.into_iter().flatten()) {
+        if !account.has_code() {
+            return Err(PinFailure::Rejected(CoreError::Rejected(format!("{} has no code at {}", check.what, check.shown))));
+        }
+        if account.code_hash() != check.expected {
+            return Err(PinFailure::Rejected(CoreError::Rejected(format!(
+                "{} at {} does not match its pinned bytecode; refusing to use it",
+                check.what, check.shown
+            ))));
+        }
+    }
+    crate::diag::mark(&format!(
+        "pins.{}",
+        if anchored.confirmation == crate::anchor::Confirmation::Witnessed { "witnessed" } else { "node_only" }
+    ));
+    Ok(())
+}
+
+/// The check before state proofs: download the runtime and hash it.
+async fn verify_bytecode(node: &Node, network: &NetworkProfile, check: &PinCheck<'_>) -> Result<()> {
+    let c = Contract::new(check.address, quai_sdk::abi::AbiInterface::default(), &node.provider);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match c.verify_deployment(network.genesis_hash()?, Some(check.expected), BlockTag::Latest).await {
+            Ok(_) => return Ok(()),
             Err(quai_sdk::contracts::ContractError::RuntimeMismatch) => {
                 return Err(CoreError::Rejected(format!(
-                    "{what} at {} does not match its pinned bytecode; refusing to use it",
-                    contract.address
+                    "{} at {} does not match its pinned bytecode; refusing to use it",
+                    check.what, check.shown
                 )));
             }
             Err(quai_sdk::contracts::ContractError::MissingCode) => {
-                return Err(CoreError::Rejected(format!("{what} has no code at {}", contract.address)));
+                return Err(CoreError::Rejected(format!("{} has no code at {}", check.what, check.shown)));
             }
             // A node on another network: saying so is the answer, and asking again only tells it
             // more. (Since SDK alpha.12 the address is not sent before the genesis is checked.)
             Err(quai_sdk::contracts::ContractError::GenesisMismatch) => {
-                return Err(CoreError::Rejected(format!("{what}: the node is not on network `{}`; refusing to read from it", network.id)));
+                return Err(CoreError::Rejected(format!(
+                    "{}: the node is not on network `{}`; refusing to read from it",
+                    check.what, network.id
+                )));
             }
-            // Only a new block or reorg during the observation, or a network blip, is worth another
-            // try. Everything else fails the same way every time, so it is reported at once, as
-            // what it is rather than as a connection problem.
             Err(e) if attempt < 4 && matches!(e.class(), quai_sdk::ErrorClass::Stale | quai_sdk::ErrorClass::Transient) => {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await
             }
             Err(e) => {
-                let text = format!("could not verify {what}: {e}");
+                let text = format!("could not verify {}: {e}", check.what);
                 return Err(match e.class() {
                     quai_sdk::ErrorClass::Stale | quai_sdk::ErrorClass::Transient => CoreError::Network(text),
                     quai_sdk::ErrorClass::NetworkMismatch => CoreError::Rejected(text),
@@ -534,23 +635,6 @@ pub async fn verify_pinned(
             }
         }
     }
-}
-
-/// Verify several pinned contracts at once, in the order given.
-///
-/// One verification is a genesis read, a head read, the code read and a re-read of the head to
-/// prove nothing moved underneath it — three or four round trips, which is ~140 ms against the
-/// public RPC and ~4 ms against a node on the LAN. A review path repeats all of them rather than
-/// trusting a memo, so doing them one after another is most of what a swap review spends before
-/// it can draw. They are independent reads of the same node, so they run together.
-pub async fn verify_pinned_all(
-    app: &AppDb,
-    node: &Node,
-    network: &NetworkProfile,
-    pins: &[(&PinnedContract, &str)],
-    trust: Trust,
-) -> Result<Vec<QuaiAddress>> {
-    futures::future::try_join_all(pins.iter().map(|(pin, what)| verify_pinned(app, node, network, pin, what, trust))).await
 }
 
 /// Minimal NFT ABI (ERC-721 + ERC-1155 reads and transfers).

@@ -178,7 +178,7 @@ impl App {
         match self.board_row() {
             Some(BoardRow::Channel(channel)) | Some(BoardRow::Unfollowed(channel, _)) => {
                 let board = &self.eco.board;
-                let fresh = board.at.get(&channel).is_some_and(|t| t.elapsed() < Duration::from_secs(10));
+                let fresh = board.at.get(&channel).is_some_and(|t| t.elapsed() < Duration::from_secs(5));
                 if board.loading.is_some() || fresh {
                     return;
                 }
@@ -190,7 +190,7 @@ impl App {
                     return;
                 }
                 let board = &self.eco.board;
-                let fresh = board.dm_at.get(&code).is_some_and(|t| t.elapsed() < Duration::from_secs(10));
+                let fresh = board.dm_at.get(&code).is_some_and(|t| t.elapsed() < Duration::from_secs(5));
                 if board.dm_loading.is_some() || fresh {
                     return;
                 }
@@ -212,7 +212,7 @@ impl App {
             return;
         }
         let looking = self.screen == Screen::Board;
-        let every = Duration::from_secs(if looking { 10 } else { 45 });
+        let every = Duration::from_secs(if looking { 5 } else { 45 });
         let board = &self.eco.board;
         if board.known_loading || board.known_at.is_some_and(|t| t.elapsed() < every) {
             return;

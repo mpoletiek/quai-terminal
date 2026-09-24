@@ -43,6 +43,261 @@ async fn pinned_ecosystem_bytecode_matches() {
     assert!(ctx.verify_pinned(&bad, "router").await.is_err());
 }
 
+/// With a monitoring node, every pin is proven at a block the network's RPC confirms, and a
+/// review's worth of pins shares one confirmation. `QW_MONITOR_RPC=http://host:9200`.
+#[tokio::test]
+#[ignore = "network"]
+async fn pins_are_proven_at_a_block_the_rpc_confirms() {
+    use wallet_core::anchor::Confirmation;
+    use wallet_core::data::{Trust, verify_pinned_all};
+    let Ok(url) = std::env::var("QW_MONITOR_RPC") else {
+        eprintln!("QW_MONITOR_RPC not set; skipping");
+        return;
+    };
+    let ctx = mainnet();
+    let rpc = ctx.network.node().unwrap();
+    let monitor =
+        wallet_core::network::NetworkProfile { rpc_url: url, use_pathing: false, monitor: None, ..ctx.network.clone() }.node().unwrap();
+    let node = monitor.with_witness(rpc);
+    let eco = ctx.network.ecosystem.clone();
+    let pins: Vec<(wallet_core::network::PinnedContract, &str)> = [
+        ("router", eco.quainance_router),
+        ("factory", eco.quainance_factory),
+        ("launch AMM router", eco.launch_amm_router),
+        ("launch AMM factory", eco.launch_amm_factory),
+        ("legacy router", eco.legacy_router),
+        ("legacy factory", eco.legacy_factory),
+        ("Hartii AMM router", eco.hartii_amm_router),
+        ("Hartii AMM factory", eco.hartii_amm_factory),
+        ("multicall3", eco.multicall3),
+    ]
+    .into_iter()
+    .map(|(name, c)| (c.unwrap(), name))
+    .collect();
+    let refs: Vec<(&wallet_core::network::PinnedContract, &str)> = pins.iter().map(|(c, n)| (c, *n)).collect();
+    let started = std::time::Instant::now();
+    verify_pinned_all(&ctx.app, &node, &ctx.network, &refs, Trust::FirstHand).await.unwrap();
+    let first = started.elapsed();
+    assert_eq!(node.anchor_confirmation(), Some(Confirmation::Witnessed), "the RPC confirmed the monitor's block");
+    let started = std::time::Instant::now();
+    verify_pinned_all(&ctx.app, &node, &ctx.network, &refs, Trust::FirstHand).await.unwrap();
+    eprintln!("9 pins: {first:?} with the confirmation, {:?} sharing it", started.elapsed());
+}
+
+/// The storage slots a review proves a curve's address from still hold what the launchers' own
+/// calls return, at the same block, for the launches listed now. A launcher upgrade that moved them
+/// would refuse every curve review; this says so first.
+#[tokio::test]
+#[ignore = "network"]
+async fn curve_destination_slots_match_the_launchers_calls() {
+    use wallet_core::capabilities::Family;
+    use wallet_core::sdk::BlockTag;
+    let ctx = mainnet();
+    let launches = wallet_core::launches::launches(&ctx, 200).await.unwrap();
+    let eco = ctx.network.ecosystem.clone();
+    for (family, launcher, base, field, selector) in [
+        (
+            Family::QuainanceCurve,
+            eco.curve_launcher.unwrap(),
+            wallet_core::curve::LAUNCHES_SLOT,
+            wallet_core::curve::LAUNCH_MARKET_FIELD,
+            "launches(address)",
+        ),
+        (Family::HartiiCurve, eco.hartii_launcher.unwrap(), wallet_core::hartii_tx::CURVE_OF_SLOT, 0, "curveOf(address)"),
+    ] {
+        let tokens: Vec<_> = launches.iter().filter(|l| l.venue_kind == Some(family) && l.curve.is_some()).take(3).collect();
+        assert!(!tokens.is_empty(), "{family:?}: no launches listed to check against");
+        let launcher: wallet_core::sdk::QuaiAddress = launcher.address.parse().unwrap();
+        for l in tokens {
+            let token: wallet_core::sdk::QuaiAddress = l.token.parse().unwrap();
+            let slot = wallet_core::anchor::mapping_field_slot(token, base, field);
+            let (proven, _) =
+                wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(launcher, &[slot])], "launcher").await.unwrap().unwrap();
+            let stored = wallet_core::anchor::word_address(proven[0].storage_value(slot).unwrap());
+            let block = BlockTag::Number(wallet_core::sdk::U256::from(proven[0].block.number));
+            let mut data = wallet_core::sdk::crypto::keccak256(selector.as_bytes())[..4].to_vec();
+            data.extend_from_slice(&[0u8; 12]);
+            data.extend_from_slice(token.bytes());
+            let mut request = wallet_core::sdk::provider::CallRequest::new(wallet_core::data::READ_CALLER.parse().unwrap(), launcher);
+            request.input = wallet_core::sdk::provider::RpcData::new(data).unwrap();
+            let answer = ctx.node.provider.call(&request, block).await.unwrap();
+            let word = |i: usize| format!("0x{}", hex::encode(&answer.bytes()[i * 32 + 12..(i + 1) * 32]));
+            let called = word(if family == Family::QuainanceCurve { 1 } else { 0 });
+            assert_eq!(stored, called, "{family:?} {}: the slot and the call disagree", l.symbol);
+            assert!(called.eq_ignore_ascii_case(l.curve.as_deref().unwrap()), "{family:?} {}: listed curve differs", l.symbol);
+            // And a review of it takes the curve from that proof, clones and all, and passes.
+            let review = mainnet().for_review();
+            wallet_core::curve::market(&review, &l.token, l.curve.as_deref().unwrap(), &[])
+                .await
+                .unwrap_or_else(|e| panic!("{family:?} {}: a first-hand read failed: {e}", l.symbol));
+        }
+    }
+}
+
+/// On every exchange, a trade's output computed from pools proven at one block equals the
+/// exchange's own router quote at that block: the factory's `getPair` slot, the pair layout and the
+/// 0.3% fee are what a review's minimum is checked against.
+#[tokio::test]
+#[ignore = "network"]
+async fn a_route_s_output_is_proven_from_its_pools() {
+    use wallet_core::markets::Venue;
+    use wallet_core::sdk::{BlockTag, U256};
+    let ctx = mainnet();
+    let wquai = ctx.network.wquai.clone().unwrap().to_lowercase();
+    let mut all = wallet_core::markets::pools(&ctx).await.unwrap().0;
+    for directory in [
+        wallet_core::markets::launch_amm_pools(&ctx).await,
+        wallet_core::markets::legacy_pools(&ctx).await,
+        wallet_core::markets::hartii_amm_pools(&ctx).await,
+    ] {
+        all.extend(directory.unwrap().pools);
+    }
+    for venue in [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm] {
+        let pool = all
+            .iter()
+            .filter(|p| p.venue == venue && (p.token0.address == wquai || p.token1.address == wquai))
+            .max_by(|a, b| {
+                let side = |p: &wallet_core::markets::Pool| if p.token0.address == wquai { p.reserve0 } else { p.reserve1 };
+                side(a).total_cmp(&side(b))
+            })
+            .unwrap_or_else(|| panic!("{venue:?}: no WQUAI pool"));
+        let other = if pool.token0.address == wquai { &pool.token1 } else { &pool.token0 };
+        let path = vec![wquai.clone(), other.address.clone()];
+        let amount = U256::from(10u128.pow(18)); // one QUAI
+        let proven = wallet_core::swap::prove_route(&ctx.node, &ctx.network, venue, &path, std::slice::from_ref(&pool.address), amount)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{venue:?}: not provable"));
+        let (router, _) = wallet_core::swap::venue_pins(&ctx.network, venue).unwrap();
+        let block = proven.block;
+        let contract = wallet_core::sdk::contracts::Contract::new(
+            router.address.parse().unwrap(),
+            wallet_core::sdk::abi::AbiInterface::from_human_readable(wallet_core::swap::ROUTER_ABI).unwrap(),
+            &ctx.node.provider,
+        );
+        let quoted = contract
+            .call(
+                wallet_core::data::READ_CALLER.parse().unwrap(),
+                "getAmountsOut",
+                &[serde_json::json!(amount.to_string()), serde_json::json!(path)],
+                BlockTag::Number(U256::from(block)),
+            )
+            .await
+            .unwrap();
+        let last = quoted[0].as_array().and_then(|a| a.last()).and_then(|v| v.as_str()).unwrap().to_string();
+        eprintln!("{venue:?} {}: proven {} router {last}", other.symbol, proven.amount_out);
+        assert_eq!(proven.amount_out.to_string(), last, "{venue:?}: the proven pools and the router disagree");
+
+        // Exact output: what the proven pools need for the router's own output, against its
+        // `getAmountsIn`, both at the anchor's block.
+        let (reserves, anchored) = wallet_core::swap::prove_path_reserves(&ctx.node, &ctx.network, venue, &path).await.unwrap().unwrap();
+        let out = U256::from_str_radix(&last, 10).unwrap() / U256::from(2u64);
+        let needed = wallet_core::swap::input_for_output(out, &reserves).unwrap();
+        let block = anchored.anchor.block.number;
+        let quoted = contract
+            .call(
+                wallet_core::data::READ_CALLER.parse().unwrap(),
+                "getAmountsIn",
+                &[serde_json::json!(out.to_string()), serde_json::json!(path)],
+                BlockTag::Number(U256::from(block)),
+            )
+            .await
+            .unwrap();
+        let first = quoted[0].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()).unwrap().to_string();
+        assert_eq!(needed.to_string(), first, "{venue:?}: exact-output input from the proven pools and the router disagree");
+
+        // LP: a review's quote reads the pool at the anchor and proves supply and reserves there.
+        let review = mainnet().for_review();
+        wallet_core::liquidity::quote(&review, &pool.address, "1", None, 50, None)
+            .await
+            .unwrap_or_else(|e| panic!("{venue:?}: a first-hand LP quote failed: {e}"));
+        // And the LP balance slot, read for address zero: every UniswapV2 pair mints its minimum
+        // liquidity there (and the launch AMM locks graduated liquidity there too), so it is never
+        // empty. The proven word must be the pair's own `balanceOf` at the same block.
+        let zero: wallet_core::sdk::QuaiAddress = "0x0000000000000000000000000000000000000000".parse().unwrap();
+        let pair: wallet_core::sdk::QuaiAddress = pool.address.parse().unwrap();
+        let slot = wallet_core::anchor::mapping_field_slot(zero, 1, 0);
+        let (proven, _) = wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(pair, &[slot])], "pair").await.unwrap().unwrap();
+        let at = BlockTag::Number(U256::from(proven[0].block.number));
+        let called = wallet_core::sdk::contracts::Erc20::new(pair, &ctx.node.provider)
+            .unwrap()
+            .balance_of(wallet_core::data::READ_CALLER.parse().unwrap(), zero, at)
+            .await
+            .unwrap();
+        assert!(!called.is_zero(), "{venue:?}: address zero holds no LP");
+        assert_eq!(proven[0].storage_value(slot), Some(called), "{venue:?}: balanceOf is not the mapping at slot 1");
+    }
+}
+
+/// A review's commitment check proves the owner's WQUAI balance as the mapping at slot 3. The
+/// biggest WQUAI pool holds WQUAI, so its proven word must equal WQUAI's own `balanceOf` there.
+#[tokio::test]
+#[ignore = "network"]
+async fn wquai_balances_are_the_mapping_at_slot_3() {
+    use wallet_core::sdk::{BlockTag, U256};
+    let ctx = mainnet();
+    let wquai = ctx.network.wquai.clone().unwrap().to_lowercase();
+    let pool = wallet_core::markets::pools(&ctx)
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .filter(|p| p.token0.address == wquai || p.token1.address == wquai)
+        .max_by(|a, b| {
+            let side = |p: &wallet_core::markets::Pool| if p.token0.address == wquai { p.reserve0 } else { p.reserve1 };
+            side(a).total_cmp(&side(b))
+        })
+        .expect("a WQUAI pool");
+    let holder: wallet_core::sdk::QuaiAddress = pool.address.parse().unwrap();
+    let token: wallet_core::sdk::QuaiAddress = wquai.parse().unwrap();
+    let slot = wallet_core::anchor::mapping_field_slot(holder, 3, 0);
+    let (proven, _) = wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(token, &[slot])], "WQUAI").await.unwrap().unwrap();
+    let at = BlockTag::Number(U256::from(proven[0].block.number));
+    let called = wallet_core::sdk::contracts::Erc20::new(token, &ctx.node.provider)
+        .unwrap()
+        .balance_of(wallet_core::data::READ_CALLER.parse().unwrap(), holder, at)
+        .await
+        .unwrap();
+    assert!(!called.is_zero(), "the pool holds no WQUAI");
+    assert_eq!(proven[0].storage_value(slot), Some(called), "WQUAI balanceOf is not the mapping at slot 3");
+}
+
+/// Reads asked for at a block describe that block: the tape ends there, and every pool's reserves
+/// are what the pair's own `getReserves` answers there. This is what lets the header, the prices
+/// and the tape name one block.
+#[tokio::test]
+#[ignore = "network"]
+async fn reads_at_the_announced_block_describe_that_block() {
+    use wallet_core::sdk::{BlockTag, U256};
+    let ctx = mainnet();
+    let head = ctx.node.provider.latest_header(wallet_core::network::ZONE).await.unwrap().unwrap().number;
+    let at = head - 2;
+    let pools: Vec<_> = wallet_core::markets::pools(&ctx).await.unwrap().0.into_iter().take(8).collect();
+    let tape = wallet_core::markets::dex_flow_at(&ctx, &pools, 300, Some(at)).await.unwrap();
+    let pool_rows: Vec<_> = tape.iter().filter(|s| pools.iter().any(|p| p.address == s.pool)).collect();
+    assert!(pool_rows.iter().all(|s| s.block <= at), "a pool swap after the asked block: {:?}", pool_rows.iter().map(|s| s.block).max());
+    let reserves = wallet_core::markets::refresh_reserves_at(&ctx, &pools, Some(at)).await.unwrap();
+    assert!(!reserves.is_empty());
+    for (address, r0, r1) in reserves.iter().take(4) {
+        let pool = pools.iter().find(|p| &p.address == address).unwrap();
+        let contract = wallet_core::sdk::contracts::Contract::new(
+            address.parse().unwrap(),
+            wallet_core::sdk::abi::AbiInterface::from_human_readable(&[
+                "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+            ])
+            .unwrap(),
+            &ctx.node.provider,
+        );
+        let answer = contract
+            .call(wallet_core::data::READ_CALLER.parse().unwrap(), "getReserves", &[], BlockTag::Number(U256::from(at)))
+            .await
+            .unwrap();
+        let units = |v: &serde_json::Value, d: u8| v.as_str().unwrap().parse::<f64>().unwrap() / 10f64.powi(i32::from(d));
+        assert!((units(&answer[0], pool.token0.decimals) - r0).abs() <= r0.abs() * 1e-12, "{address}: reserve0 at {at}");
+        assert!((units(&answer[1], pool.token1.decimals) - r1).abs() <= r1.abs() * 1e-12, "{address}: reserve1 at {at}");
+    }
+}
+
 /// A quote that is going into a review reads the pins and every pair address from the chain
 /// (`docs/REVIEW_TRUST.md`), so it must agree with the cached one and must still work when the
 /// memo and the pair cache are seeded with nothing. The timing is printed because the cost of

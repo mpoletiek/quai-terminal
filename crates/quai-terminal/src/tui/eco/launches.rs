@@ -64,7 +64,7 @@ impl App {
         }) else {
             return;
         };
-        if self.eco.curves_at.get(&l.token).is_none_or(|t| t.elapsed() >= Duration::from_secs(15)) {
+        if self.eco.curves_at.get(&l.token).is_none_or(|t| t.elapsed() >= self.feed_pace()) {
             self.eco.curves_at.insert(l.token.clone(), Instant::now());
             let owners = self.dash.accounts.first().map(|a| vec![a.address.clone()]).unwrap_or_default();
             self.send_data(DataCmd::CurveMarket { token: l.token, curve, owners });

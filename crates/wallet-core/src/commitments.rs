@@ -5,7 +5,7 @@ use crate::session::Session;
 use crate::tx::FinancialEffect;
 use quai_sdk::{BlockTag, QuaiAddress, U256};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions, TryLockError};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -208,8 +208,98 @@ impl Session {
         Ok((native, tokens))
     }
 
+    /// Refuse a spend the owner's balances cannot cover together with every open operation.
+    ///
+    /// The nonce and the balances are read at one block, since only a nonce consumed there says
+    /// an operation's debit is already out of the balance read there. On a network whose headers
+    /// this wallet can hash, that block is the node's state anchor (shared, and usually kept warm)
+    /// and the account and WQUAI balance are proven in one round trip; any other token is read with
+    /// a plain call at the same block, alongside the proof.
     pub(crate) async fn check_commitments(&self, owner: &str, own_id: &str, wanted: &Commitments) -> Result<()> {
         let address: QuaiAddress = owner.parse().map_err(|_| CoreError::Invalid("invalid commitment owner".into()))?;
+        let started = std::time::Instant::now();
+        let seen = self.observe_holdings(address, &self.likely_tokens(owner, wanted)?).await?;
+        let (native, tokens) = self.pending_commitments_at_nonce(owner, own_id, wanted, Some(seen.nonce))?;
+        if seen.native < native {
+            return Err(CoreError::Insufficient(format!(
+                "QUAI balance cannot cover this spend plus open commitments (requires {native} base units including fees)"
+            )));
+        }
+        let mut recheck = seen.recheck;
+        for (token, needed) in tokens {
+            let balance = match seen.tokens.get(&token) {
+                Some(balance) => *balance,
+                // An operation journaled between the two looks: rare enough to read on its own.
+                None => {
+                    recheck = true;
+                    let block = BlockTag::Number(U256::from(seen.block));
+                    self.held_tokens_at(address, &[&token], block).await?.remove(&token).unwrap_or_default()
+                }
+            };
+            if balance < needed {
+                return Err(CoreError::Insufficient(format!(
+                    "token {token} balance cannot cover this spend plus open commitments (requires {needed} base units)"
+                )));
+            }
+        }
+        // A proof is bound to its block; a plain call by number is not, until the block is shown
+        // to still be the chain's.
+        if recheck
+            && self.node.provider.header_at(crate::network::ZONE, seen.block).await?.is_none_or(|now| now.hash.to_string() != seen.hash)
+        {
+            return Err(CoreError::Rejected("commitment observation changed; refresh and review again".into()));
+        }
+        crate::diag::timing(if seen.proven { "review.commitments.proven" } else { "review.commitments" }, started);
+        Ok(())
+    }
+
+    /// The tokens a check will probably need: this spend's, and those of the owner's open
+    /// operations here. They are read beside the nonce, so the balances do not wait on it.
+    fn likely_tokens(&self, owner: &str, wanted: &Commitments) -> Result<BTreeSet<String>> {
+        let mut tokens: BTreeSet<String> = wanted.tokens.keys().cloned().collect();
+        for op in self.app.open_operations(&self.network.id)? {
+            if op.store == "quai"
+                && op.account.eq_ignore_ascii_case(owner)
+                && let Ok(other) = Commitments::from_operation(&op)
+            {
+                tokens.extend(other.tokens.into_keys());
+            }
+        }
+        Ok(tokens)
+    }
+
+    /// The owner's nonce, QUAI balance and `tokens` balances at one block.
+    async fn observe_holdings(&self, owner: QuaiAddress, tokens: &BTreeSet<String>) -> Result<Holdings> {
+        let what = "your balance";
+        if self.network.proves_state()
+            && let Some(anchored) = crate::anchor::review_anchor(&self.node, &self.network, what).await?
+        {
+            let block = anchored.anchor.block;
+            let wquai = self.network.wquai.as_deref().map(str::to_lowercase).filter(|w| tokens.contains(w));
+            let wquai_slot = [crate::anchor::mapping_field_slot(owner, WQUAI_BALANCE_SLOT, 0)];
+            let mut targets: Vec<(QuaiAddress, &[quai_sdk::primitives::Hash32])> = vec![(owner, &[])];
+            if let Some(wquai) = &wquai {
+                targets.push((wquai.parse().map_err(|_| CoreError::Invalid("WQUAI address is malformed".into()))?, &wquai_slot));
+            }
+            let others: Vec<&String> = tokens.iter().filter(|t| Some(*t) != wquai.as_ref()).collect();
+            let (proven, called) = tokio::join!(
+                crate::anchor::prove_at(&self.node, &self.network, &anchored, &targets, what),
+                self.held_tokens_at(owner, &others, BlockTag::Number(U256::from(block.number)))
+            );
+            let (proven, mut held) = (proven?, called?);
+            if let Some(wquai) = wquai {
+                held.insert(wquai, proven[1].storage_value(wquai_slot[0]).unwrap_or_default());
+            }
+            return Ok(Holdings {
+                block: block.number,
+                hash: block.hash.to_string(),
+                nonce: proven[0].nonce(),
+                native: proven[0].balance(),
+                tokens: held,
+                recheck: !others.is_empty(),
+                proven: true,
+            });
+        }
         let head = self
             .node
             .provider
@@ -217,31 +307,50 @@ impl Session {
             .await?
             .ok_or_else(|| CoreError::Network("no commitment observation header".into()))?;
         let block = BlockTag::Number(U256::from(head.number));
-        let nonce = self.node.provider.transaction_count(address, block).await?;
-        let (native, tokens) = self.pending_commitments_at_nonce(owner, own_id, wanted, Some(nonce))?;
-        let balance = self.node.provider.balance(address, block).await?;
-        if balance < native {
-            return Err(CoreError::Insufficient(format!(
-                "QUAI balance cannot cover this spend plus open commitments (requires {native} base units including fees)"
-            )));
-        }
-        for (token, needed) in tokens {
-            let contract = quai_sdk::contracts::Erc20::new(
-                token.parse().map_err(|_| CoreError::Storage("invalid commitment token".into()))?,
-                &self.node.provider,
-            )?;
-            let balance = contract.balance_of(address, address, block).await?;
-            if balance < needed {
-                return Err(CoreError::Insufficient(format!(
-                    "token {token} balance cannot cover this spend plus open commitments (requires {needed} base units)"
-                )));
-            }
-        }
-        if self.node.provider.header_at(crate::network::ZONE, head.number).await?.is_none_or(|now| now.hash != head.hash) {
-            return Err(CoreError::Rejected("commitment observation changed; refresh and review again".into()));
-        }
-        Ok(())
+        let all: Vec<&String> = tokens.iter().collect();
+        let (nonce, native, held) = tokio::join!(
+            self.node.provider.transaction_count(owner, block),
+            self.node.provider.balance(owner, block),
+            self.held_tokens_at(owner, &all, block)
+        );
+        Ok(Holdings {
+            block: head.number,
+            hash: head.hash.to_string(),
+            nonce: nonce?,
+            native: native?,
+            tokens: held?,
+            recheck: true,
+            proven: false,
+        })
     }
+
+    /// `owner`'s balance of each token at `block`, read together.
+    async fn held_tokens_at(&self, owner: QuaiAddress, tokens: &[&String], block: BlockTag) -> Result<BTreeMap<String, U256>> {
+        let reads = tokens.iter().map(|token| async move {
+            let address = token.parse().map_err(|_| CoreError::Storage("invalid commitment token".into()))?;
+            let contract = quai_sdk::contracts::Erc20::new(address, &self.node.provider)?;
+            Ok::<_, CoreError>(((*token).clone(), contract.balance_of(owner, owner, block).await?))
+        });
+        Ok(futures::future::try_join_all(reads).await?.into_iter().collect())
+    }
+}
+
+/// WQUAI (WETH9) keeps `balanceOf` in the mapping at slot 3.
+const WQUAI_BALANCE_SLOT: u64 = 3;
+
+/// What the owner held at one block.
+struct Holdings {
+    block: u64,
+    hash: String,
+    /// Transactions the chain has counted from this owner at `block`.
+    nonce: u64,
+    native: U256,
+    tokens: BTreeMap<String, U256>,
+    /// Some balance came from a plain call by block number, which a reorganization could have
+    /// answered from another block.
+    recheck: bool,
+    /// The nonce and QUAI balance were proven at a state anchor.
+    proven: bool,
 }
 
 #[cfg(test)]
@@ -364,6 +473,80 @@ mod tests {
         assert!(session.pending_commitments(&owner, "new", &wanted).unwrap_err().to_string().contains("no financial journal"));
         session.quai_store.release_unsigned(id).unwrap();
         assert_eq!(session.pending_commitments(&owner, "new", &wanted).unwrap().0, U256::from(2));
+    }
+
+    /// A session on mainnet whose node is the anchor tests' mock, serving a captured block.
+    async fn proving() -> (tempfile::TempDir, Session, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use crate::anchor::tests::{Kind, network, serve};
+        let (dir, orchard) = fixture();
+        let (url, log) = serve(Kind::Honest).await;
+        let session = Session::open(orchard.registry.clone(), orchard.config.clone(), orchard.meta.clone(), network(&url)).unwrap();
+        (dir, session, log)
+    }
+    fn journal_spend(session: &Session, n: u8, native: &str, nonce: u64) {
+        use crate::anchor::tests::PROVEN_OWNER;
+        let mut op = session.new_op(
+            ReservationId([n; 16]),
+            "send_quai",
+            "quai",
+            PROVEN_OWNER,
+            "QUAI",
+            U256::from_str_radix(native, 10).unwrap(),
+            TOKEN,
+            json!({"native_value": native, "nonce": nonce}),
+        );
+        op.fee = "0".into();
+        session.journal(op).unwrap();
+    }
+    fn methods(log: &std::sync::Mutex<Vec<String>>) -> Vec<String> {
+        let calls = |r: &String| match serde_json::from_str::<serde_json::Value>(r).unwrap() {
+            serde_json::Value::Array(batch) => batch,
+            call => vec![call],
+        };
+        log.lock().unwrap().iter().flat_map(calls).map(|c| c["method"].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// The owner's nonce and balance come from one proof at the anchor, and the proven nonce says
+    /// which journaled spends the proven balance already paid for.
+    #[tokio::test]
+    async fn a_review_proves_the_owner_nonce_and_balance_at_the_anchor() {
+        use crate::anchor::tests::PROVEN_OWNER;
+        let (_dir, session, log) = proving().await;
+        let quai = U256::from(10u64).pow(U256::from(18));
+        let wanted = Commitments::from_intent("send_quai", "1", quai, U256::ZERO, &json!({})).unwrap();
+        session.check_commitments(PROVEN_OWNER, "new", &wanted).await.unwrap();
+        let asked = methods(&log);
+        assert!(asked.contains(&"quai_getProof".to_string()), "{asked:?}");
+        for plain in ["quai_getBalance", "quai_getTransactionCount", "quai_call"] {
+            assert!(!asked.contains(&plain.to_string()), "{plain} was read without a proof: {asked:?}");
+        }
+        // The block proves 406 transactions sent: nonce 405 is spent and its debit is already out
+        // of the proven balance, so it commits nothing more.
+        journal_spend(&session, 1, "1000000000000000000000000", 405);
+        session.check_commitments(PROVEN_OWNER, "new", &wanted).await.unwrap();
+        // Nonce 406 is still open, and the ~30,567 QUAI proven cannot cover it.
+        journal_spend(&session, 2, "1000000000000000000000000", 406);
+        let refused = session.check_commitments(PROVEN_OWNER, "new", &wanted).await.unwrap_err();
+        assert!(matches!(refused, CoreError::Insufficient(_)), "{refused:?}");
+    }
+
+    /// A token with no known layout is read with a plain call at the proven block, beside the
+    /// proof, and the block is then shown to still be the chain's.
+    #[tokio::test]
+    async fn a_token_balance_is_read_at_the_proven_block_and_that_block_rechecked() {
+        use crate::anchor::tests::{PROVEN_OWNER, TOKEN_BALANCE};
+        let (_dir, session, log) = proving().await;
+        let spend = |atoms: u64| {
+            Commitments::from_intent("send_token", &atoms.to_string(), U256::ZERO, U256::ZERO, &json!({"token": TOKEN})).unwrap()
+        };
+        session.check_commitments(PROVEN_OWNER, "new", &spend(TOKEN_BALANCE)).await.unwrap();
+        let block = crate::anchor::tests::captured()["header"]["woHeader"]["number"].as_str().unwrap().to_string();
+        let calls: Vec<String> = log.lock().unwrap().iter().filter(|r| r.contains("quai_call")).cloned().collect();
+        assert!(!calls.is_empty() && calls.iter().all(|c| c.contains(&block)), "balanceOf read at {block}: {calls:?}");
+        let last = log.lock().unwrap().last().cloned().unwrap();
+        assert!(last.contains("quai_getHeaderByNumber") && last.contains(&block), "then the block rechecked: {last}");
+        let refused = session.check_commitments(PROVEN_OWNER, "new", &spend(TOKEN_BALANCE + 1)).await.unwrap_err();
+        assert!(matches!(refused, CoreError::Insufficient(text) if text.contains("token")));
     }
 
     #[tokio::test]

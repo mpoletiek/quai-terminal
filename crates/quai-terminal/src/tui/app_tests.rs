@@ -2630,6 +2630,7 @@ fn the_send_form_says_when_the_destination_is_a_contract() {
                 address: address.into(),
                 code_len: 610,
                 code_hash: "0x00".into(),
+                code_proven: None,
                 solc: Some("0.8.20".into()),
                 metadata: Some(
                     wallet_core::contracts::parse_metadata(
@@ -4424,4 +4425,140 @@ fn onboarding_refuses_a_plain_http_node_on_the_internet() {
     assert!(app.config.monitor_endpoints.is_empty());
     fields[0].value = "http://192.168.1.20:9200".into();
     assert!(super::super::onboarding::apply_connections(&mut app, &fields).is_ok(), "your own network may be plain http");
+}
+
+/// A bonded curve and a few dollars seeded in a pool beside it list as one market, not two, and
+/// the curve row sells as well as buys: `t` buys on it, `S` sells to it.
+#[test]
+fn a_shallow_copy_of_a_market_leaves_the_pairs_list_and_a_curve_sells_from_markets() {
+    use wallet_core::markets::{CurveMark, DexOverview, Pool, PoolToken, Venue};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.network_id = "mainnet".into();
+    app.dash.unlocked = true;
+    let wquai = wallet_core::sdk::wrappers::WQUAI_MAINNET_ADDRESS;
+    let qaxe = PoolToken { address: "0x0035187a7660f595d93cd53a4d16c635d6cffc8f".into(), symbol: "QAXE".into(), decimals: 18 };
+    let wq = PoolToken { address: wquai.into(), symbol: "WQUAI".into(), decimals: 18 };
+    let curve = Pool {
+        address: "0x004bc407903a51506bcf0b1ab423958c5991c237".into(),
+        token0: qaxe.clone(),
+        token1: wq.clone(),
+        tvl_usd: Some(3_640.0),
+        venue: Venue::Curve,
+        curve: Some(CurveMark {
+            price_quai: Some(0.0037),
+            launchpad: Some("HartiiLabs".into()),
+            locked_quai: Some(183_548.0),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let copy = Pool {
+        address: "0x005592ec74fb9690b7361b834bf38dc03537356f".into(),
+        token0: qaxe,
+        token1: wq,
+        reserve0: 1_900.0,
+        reserve1: 6.5,
+        tvl_usd: Some(12.97),
+        venue: Venue::HartiiAmm,
+        ..Default::default()
+    };
+    let mut pools = pool_shape();
+    pools.extend([curve.clone(), copy.clone()]);
+    app.eco.markets_view.pools = Some(Ok((pools, DexOverview::default())));
+    let listed: Vec<String> = app.market_rows().iter().map(|p| p.address.clone()).collect();
+    assert!(listed.contains(&curve.address), "the curve is the market");
+    assert!(!listed.contains(&copy.address), "its shallow copy is not a second pair: {listed:?}");
+    assert!(app.directory_rows().iter().any(|p| p.address == copy.address), "Pools still lists it");
+    // NVNT's pool is just as small, but it is the only market NVNT has: it stays.
+    assert!(listed.iter().any(|a| a.contains("NVNT")), "a small pool that is a token's only market stays");
+    // Watching the copy is asking to see it.
+    app.eco.watchlist.push(copy.address.clone());
+    assert!(app.market_rows().iter().any(|p| p.address == copy.address), "a watched pair is always listed");
+    app.eco.watchlist.clear();
+
+    app.switch(Screen::Markets);
+    app.pane = 0;
+    app.selected = app.market_rows().iter().position(|p| p.address == curve.address).expect("curve row");
+    press(&mut app, KeyCode::Char('S'));
+    assert!(
+        matches!(&app.modal, Modal::Form(f) if matches!(&f.kind, FormKind::CurveSell { symbol, curve: c, .. } if symbol == "QAXE" && *c == curve.address)),
+        "S sells to the curve from Markets"
+    );
+    app.modal = Modal::None;
+    press(&mut app, KeyCode::Char('t'));
+    assert!(matches!(&app.modal, Modal::Form(f) if matches!(f.kind, FormKind::CurveBuy { .. })), "t still buys");
+}
+
+/// A market read whose answer never came back is let go, so the next tick asks again. The data
+/// worker drops what it finished for a configuration it has left, and a source can hang; either
+/// used to freeze that feed (prices, TVL, tape or chart) until the wallet restarted.
+#[test]
+fn a_market_read_that_never_answers_is_asked_again() {
+    use crate::tui::eco::MARKET_STUCK;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    let long_ago = std::time::Instant::now().checked_sub(MARKET_STUCK + std::time::Duration::from_secs(1)).expect("clock");
+    let pool = app.market_rows()[0].address.clone();
+    let mv = &mut app.eco.markets_view;
+    mv.reserves_loading = true;
+    mv.reserves_attempted = Some(long_ago);
+    mv.flow_loading = true;
+    mv.flow_asked = Some(long_ago);
+    mv.events_loading = Some(pool.clone());
+    mv.events_at.insert(pool.clone(), (long_ago, 0));
+    mv.pools_loading = true;
+    mv.pools_attempted = Some(long_ago);
+    app.unstick_markets();
+    let mv = &app.eco.markets_view;
+    assert!(!mv.reserves_loading && !mv.flow_loading && !mv.pools_loading && mv.events_loading.is_none(), "every lost read is let go");
+
+    // One still within its time is left alone: two requests for the same thing would race.
+    app.eco.markets_view.reserves_loading = true;
+    app.eco.markets_view.reserves_attempted = Some(std::time::Instant::now());
+    app.unstick_markets();
+    assert!(app.eco.markets_view.reserves_loading, "a read in flight is not abandoned early");
+}
+
+/// The Exchange card's chart follows the pool as Markets does: its own trades and live reserves,
+/// not only the indexer's candles, which lag and do not exist for most venues.
+#[test]
+fn the_exchange_chart_reads_the_pool_s_trades_and_reserves() {
+    use wallet_core::swap::SwapAsset;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.eco.markets_view.pools_at = Some(std::time::Instant::now());
+    app.eco.swap.from = SwapAsset::Quai;
+    app.eco.swap.to = Some(SwapAsset::Token { address: "0x00b1".into(), symbol: "LAPTOP".into(), decimals: 18 });
+    let (pool, _) = app.swap_pool().expect("LAPTOP trades against WQUAI");
+    app.tick_swap();
+    assert_eq!(app.eco.markets_view.events_loading.as_deref(), Some(pool.address.as_str()), "the pool's trades are read");
+    assert!(app.eco.markets_view.reserves_loading, "and its reserves");
+}
+
+/// A new block makes every chain-backed feed on screen due at once, however recently it was
+/// read: prices, TVL and the tape move with the chain rather than with a timer beside it.
+#[test]
+fn a_new_block_refreshes_what_is_on_screen_at_once() {
+    use crate::tui::worker::Ev;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.switch(Screen::Markets);
+    let now = std::time::Instant::now();
+    let mv = &mut app.eco.markets_view;
+    mv.pools_at = Some(now);
+    mv.reserves_attempted = Some(now);
+    mv.reserves_at = Some(now);
+    mv.flow_at = Some(now);
+    app.tick_eco();
+    assert!(!app.eco.markets_view.reserves_loading, "within its pace, nothing is asked between blocks");
+    app.on_event(Ev::Head(10_300_000), (160, 48));
+    assert_eq!(app.eco.head, 10_300_000);
+    assert!(app.eco.markets_view.reserves_loading, "the block asked for reserves at once");
+    assert!(app.eco.markets_view.flow_loading, "and for the tape");
+    // The same height again is not a new block.
+    app.eco.markets_view.reserves_loading = false;
+    app.on_event(Ev::Head(10_300_000), (160, 48));
+    assert!(!app.eco.markets_view.reserves_loading);
+    // Nothing a block-triggered ask reads is cached for as long as a block.
+    const { assert!(wallet_core::launches::TRADES_TTL < 5 && wallet_core::markets::HISTORY_SHARE_SECS < 5) };
 }

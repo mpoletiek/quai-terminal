@@ -149,6 +149,7 @@ impl App {
     pub fn on_event(&mut self, ev: Ev, size: (u16, u16)) {
         self.dirty = true;
         match ev {
+            Ev::Head(height) => self.on_block(height),
             Ev::SplitQuote { key, result } => {
                 if self.screen != Screen::Swap || self.eco.split_request != self.swap_input_key().map(|identity| (key, identity)) {
                     return;
