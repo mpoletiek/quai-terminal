@@ -308,6 +308,31 @@ impl Gateway {
             && (host == self.host || (self.subdomain && host.ends_with(&format!(".{}", self.host))))
     }
 
+    /// The `<cid>/<path>` a URL on this gateway names, when it names immutable content: `/ipfs/`
+    /// under the gateway's prefix, or a CID subdomain. `/ipns/` names, the node's API and anything
+    /// else on the host give nothing, because following them asks the gateway to resolve (or do)
+    /// something a stranger chose. A query string is dropped.
+    pub fn cid_path(&self, url: &str) -> Option<String> {
+        if !self.serves(url) {
+            return None;
+        }
+        let parsed = reqwest::Url::parse(url).ok()?;
+        let path = parsed.path();
+        let named = if self.subdomain {
+            let host = parsed.host_str()?.to_lowercase();
+            let label = host.strip_suffix(&format!(".{}", self.host))?;
+            // `<cid>.ipfs.<host>` only; `<name>.ipns.<host>` is a name, not content.
+            let cid = label.strip_suffix(".ipfs").unwrap_or(label);
+            if cid.contains('.') {
+                return None;
+            }
+            format!("{cid}{}", if path == "/" { "" } else { path })
+        } else {
+            path.strip_prefix(self.prefix.as_str())?.strip_prefix("/ipfs/")?.to_string()
+        };
+        (!named.is_empty()).then_some(named)
+    }
+
     /// On this machine or a private network: not a third party, so it is not rate-limited like
     /// one and is reached directly rather than through a privacy proxy — the same as node RPC.
     pub fn is_local(&self) -> bool {

@@ -59,8 +59,12 @@ pub fn locate(uri: &str, token_id: &str) -> Result<Where> {
     if let Some(path) = ipfs::from_public_url(&uri) {
         return Ok(Where::Gateway(ipfs::locate(ipfs::Content::Media, path)?));
     }
-    if ipfs::gateway(ipfs::Content::Media).serves(&uri) {
-        return Ok(Where::Gateway(ipfs::Located { url: uri, verify: None }));
+    // A link to the configured gateway is read as the content it names, rebuilt so the CID is
+    // checked; anything else on that host (an `/ipns/` name to resolve, the node's API) is not.
+    let gateway = ipfs::gateway(ipfs::Content::Media);
+    if gateway.serves(&uri) {
+        let path = gateway.cid_path(&uri).ok_or_else(|| CoreError::Rejected("only /ipfs/ content is read from the gateway".into()))?;
+        return Ok(Where::Gateway(ipfs::locate(ipfs::Content::Media, &path)?));
     }
     let host = crate::http::host_of(&uri).unwrap_or_else(|_| "that address".into());
     Err(CoreError::Rejected(format!("NFT metadata is not fetched from {host}")))
@@ -142,6 +146,14 @@ mod tests {
         // Inline JSON, plain and base64.
         assert_eq!(locate(r#"data:application/json,{"name":"x"}"#, "1").unwrap(), Where::Inline(br#"{"name":"x"}"#.to_vec()));
         assert_eq!(locate("data:application/json;base64,eyJuYW1lIjoieCJ9", "1").unwrap(), Where::Inline(br#"{"name":"x"}"#.to_vec()));
+        // A link to the gateway itself is read as the CID it names; a name there is not resolved,
+        // and nothing else on the host is asked for.
+        match locate(&format!("http://10.0.0.13:8080/ipfs/{cid}/241.json?track=1"), "241").unwrap() {
+            Where::Gateway(l) => assert_eq!(l.url, format!("http://10.0.0.13:8080/ipfs/{cid}/241.json")),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(locate("http://10.0.0.13:8080/ipns/tracker.example/1.json", "1"), Err(CoreError::Rejected(_))));
+        assert!(matches!(locate("http://10.0.0.13:8080/api/v0/id", "1"), Err(CoreError::Rejected(_))));
         // A host the minter chose is never asked.
         assert!(matches!(locate("https://tracker.example/meta/1.json", "1"), Err(CoreError::Rejected(_))));
         assert!(locate("data:image/png;base64,AAAA", "1").is_err());

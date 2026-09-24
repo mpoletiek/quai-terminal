@@ -397,7 +397,8 @@ fn parse_changes(body: &serde_json::Value) -> Vec<(String, String, f64)> {
             let curve = item["curveAddress"].as_str().filter(|a| crate::chain::addr(a).is_ok())?.to_lowercase();
             let change = item["change24h"].as_f64().or_else(|| item["priceChange24h"].as_f64())?;
             // A price cannot fall more than 100%, and a figure that is not a number is no figure.
-            (change.is_finite() && change > -100.0).then_some((token, curve, change))
+            // Nor is a rise of more than a million percent in a day, which is a broken feed.
+            (change.is_finite() && change > -100.0 && change < 1e6).then_some((token, curve, change))
         })
         .collect()
 }
@@ -529,7 +530,8 @@ mod tests {
             {"address": "0x0035187a7660f595d93cd53a4d16c635d6cffc8f", "curveAddress": "0x004bc407903a51506bcf0b1ab423958c5991c237", "change24h": 47.61},
             {"address": "0x00aa000000000000000000000000000000000001", "curveAddress": "0x00bb000000000000000000000000000000000001", "change24h": -100.0},
             {"address": "not an address", "curveAddress": "0x00bb000000000000000000000000000000000002", "change24h": 3.0},
-            {"address": "0x00aa000000000000000000000000000000000003", "curveAddress": "0x00bb000000000000000000000000000000000003", "change24h": null}
+            {"address": "0x00aa000000000000000000000000000000000003", "curveAddress": "0x00bb000000000000000000000000000000000003", "change24h": null},
+            {"address": "0x00aa000000000000000000000000000000000004", "curveAddress": "0x00bb000000000000000000000000000000000004", "change24h": 1e308}
         ]});
         let rows = parse_changes(&body);
         assert_eq!(rows.len(), 1, "{rows:?}");

@@ -261,18 +261,32 @@ pub fn resolve(url: &str) -> Result<Source> {
     }
     // A link straight to the configured gateway (http is allowed only when that gateway is local,
     // which `Gateway::parse` already enforced).
+    // Only as the immutable content it names, rebuilt so a whole object is checked against its
+    // CID: an `/ipns/` name or the node's API on that host is a stranger's choice to resolve.
     let gateway = crate::ipfs::gateway(crate::ipfs::Content::Media);
     if gateway.serves(u) {
-        return Ok(Source::Ipfs(crate::ipfs::Located { url: u.to_string(), verify: None }));
+        let path = gateway.cid_path(u).ok_or_else(|| CoreError::Rejected("only /ipfs/ content is read from the gateway".into()))?;
+        return Ok(Source::Ipfs(crate::ipfs::locate(crate::ipfs::Content::Media, &path)?));
     }
     if u.starts_with("https://") {
         let host = http::host_of(u)?;
+        // Quainance's proxy fetches what it is asked for, so only the one shape the wallet builds
+        // itself is taken from a token: a CID, no query.
+        if host == "www.quainance.com" && !quainance_media(u) {
+            return Err(CoreError::Rejected("only a CID is fetched through Quainance's media proxy".into()));
+        }
         if MEDIA_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}"))) {
             return Ok(Source::Remote(u.to_string()));
         }
         return Err(CoreError::Rejected(format!("images are not fetched from {host}")));
     }
     Err(CoreError::Invalid("unsupported media URL".into()))
+}
+
+/// `https://www.quainance.com/api/media/<cid>`, exactly: what [`crate::launches`] builds.
+fn quainance_media(url: &str) -> bool {
+    url.strip_prefix(&format!("{}/", crate::launches::MEDIA_PROXY))
+        .is_some_and(|cid| !cid.is_empty() && cid.len() <= 128 && cid.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 /// Hosts pictures may be fetched from. A token or NFT names its own image URL, and anyone can
@@ -433,6 +447,21 @@ pub fn fixture_png(width: u32, height: u32, color: (u8, u8, u8)) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// Quainance's proxy fetches what it is asked for, so a token's image there is taken only in
+    /// the one shape the wallet builds: a CID, nothing after it.
+    #[test]
+    fn quainance_media_is_a_cid_or_nothing() {
+        assert!(matches!(resolve("https://www.quainance.com/api/media/QmAbc123"), Ok(Source::Remote(_))));
+        for url in [
+            "https://www.quainance.com/api/media/QmAbc?url=https://tracker.example/x.png",
+            "https://www.quainance.com/api/media/proxy/https://tracker.example/x.png",
+            "https://www.quainance.com/launch/0x00aa",
+            "https://www.quainance.com/api/media/",
+        ] {
+            assert!(matches!(resolve(url), Err(CoreError::Rejected(_))), "{url}");
+        }
+    }
+
     #[test]
     fn sniffing_ignores_declared_types() {
         assert_eq!(sniff(&fixture_png(2, 2, (1, 2, 3))), Some(Format::Png));
@@ -497,6 +526,10 @@ mod tests {
         assert_eq!(url("http://127.0.0.1:8080/ipfs/QmAbc"), "http://127.0.0.1:8080/ipfs/QmAbc");
         // Other local addresses are still not reachable from a minted URL.
         assert!(resolve("http://127.0.0.1:9200/").is_err() && resolve("http://10.0.0.12:8080/ipfs/QmAbc").is_err());
+        // On the gateway itself, only content: not a name to resolve, not the node's API.
+        assert_eq!(url("http://127.0.0.1:8080/ipns/tracker.example/1.png"), "refused");
+        assert_eq!(url("http://127.0.0.1:8080/api/v0/id"), "refused");
+        assert_eq!(url("http://127.0.0.1:8080/ipfs/QmAbc/1.png?seen=me"), "http://127.0.0.1:8080/ipfs/QmAbc/1.png", "no query rides along");
         // A subdomain gateway gets a CID label it can carry.
         crate::ipfs::set_gateway(crate::ipfs::Content::Media, Some("https://{cid}.ipfs.dweb.link")).unwrap();
         assert_eq!(
