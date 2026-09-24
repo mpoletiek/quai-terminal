@@ -362,12 +362,23 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     if !set.is_empty() {
         line1.push(Span::styled(format!("   {} alert {}", t.icon(Icon::Bell), set.join(" · ")), Style::default().fg(t.attention)));
     }
-    let line2 = vec![
+    // A TVL priced off the QUAI/USD feed is only as current as that price: say how old it is.
+    let has_tvl = pool.curve.as_ref().is_none_or(|c| c.locked_quai.is_some());
+    let priced = tvl_price_taken(app, pool).filter(|_| has_tvl).map(|taken| {
+        let old = wallet_core::registry::now().saturating_sub(taken) >= TVL_PRICE_OLD;
+        let when = match ago(taken) {
+            now if now == "now" => " priced now".to_string(),
+            age => format!(" priced {age} ago"),
+        };
+        Span::styled(when, if old { Style::default().fg(t.attention) } else { t.dim_style() })
+    });
+    let mut line2 = vec![
         Span::styled(format!("vol {} {quote_sym}{}", fmt_qty(stats.volume_24h), usd(stats.volume_24h)), t.text_style()),
         Span::styled(format!(" · {}", amount::count(stats.trades_24h, "trade")), t.dim_style()),
         Span::styled(depth, if pool.curve.is_some() { Style::default().fg(t.attention) } else { t.dim_style() }),
-        Span::styled(holdings, t.dim_style()),
     ];
+    line2.extend(priced);
+    line2.push(Span::styled(holdings, t.dim_style()));
     let mut lines = vec![Line::from(line1), Line::from(line2)];
     if info_line {
         lines.push(Line::from(token_info(app, t, pool, base, &base_sym)));
@@ -408,6 +419,20 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             draw_trade_tape(f, app, t, tape_area, &app.market_trades(pool, base0), &base_sym, &quote_sym);
         }
     }
+}
+
+/// A QUAI price this old is called out: the portfolio reads it every few minutes, so an hour-old
+/// basis means the feed has stopped answering.
+const TVL_PRICE_OLD: u64 = 15 * 60;
+
+/// When the QUAI/USD price a pool's TVL rests on was read, if it rests on it: a pool with a WQUAI
+/// side (a bonded curve's locked pool included) is valued at the portfolio's QUAI price. Any other
+/// pool keeps the directory's own figure, which has no such age.
+fn tvl_price_taken(app: &App, pool: &wallet_core::markets::Pool) -> Option<u64> {
+    let wquai = app.net()?.wquai.clone()?;
+    let quai_side = [&pool.token0, &pool.token1].iter().any(|t| t.address.eq_ignore_ascii_case(&wquai));
+    let board = app.eco.portfolio.as_ref()?.prices.as_ref()?;
+    (quai_side && board.quai_usd.is_some() && board.taken_at > 0).then_some(board.taken_at)
 }
 
 /// A market's price before its history loads, base-per-quote as the list shows it: from the pool's

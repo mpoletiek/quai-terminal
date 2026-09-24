@@ -819,7 +819,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
                 quai_source: "mexc".into(),
                 qi_usd: Some(0.9),
                 qi_source: "derived:protocol-rate".into(),
-                taken_at: 1,
+                taken_at: 1_789_705_234 - 180,
                 observed_at: 1,
             }),
             sources: vec!["explorer.qu.ai".into()],
