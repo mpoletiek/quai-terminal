@@ -2420,6 +2420,25 @@ fn pairs_sort_by_the_figures_their_rows_show() {
     assert!(depths.windows(2).all(|w| w[0] >= w[1]), "deepest first by what the rows show: {depths:?}");
 }
 
+/// The Pools cursor stays on its pool when the directory is read again in another order. It was a
+/// row number: a reload that ranked the pools differently put it, and `a` (add liquidity) or
+/// staking, on a different pool.
+#[test]
+fn a_directory_reload_keeps_the_pools_cursor_on_its_pool() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.switch(Screen::Pools);
+    app.pane = 1;
+    app.eco.pools_view.pool_selected = 1;
+    let held = app.focused_pool().expect("a focused pool").pair;
+    // The same pools, read again, ranked the other way round.
+    let mut reordered = app.directory_rows();
+    reordered.reverse();
+    assert_ne!(reordered.iter().position(|p| p.address == held), Some(1), "the reload moves the pool");
+    app.on_data_event(super::super::data::DataEv::MarketPools(Ok((reordered, wallet_core::markets::DexOverview::default()))));
+    assert_eq!(app.focused_pool().map(|f| f.pair), Some(held), "the cursor followed its pool");
+}
+
 /// Enter on a page that is already open does not stack another copy of it, so one Esc goes back.
 #[test]
 fn opening_the_page_you_are_on_does_not_stack_it() {
@@ -3169,6 +3188,42 @@ fn launches_lead_with_the_curve_nearest_graduation_and_drop_what_markets_already
     app.eco.markets_view.pools = None;
     let unloaded: Vec<String> = app.launch_rows().iter().map(|l| l.symbol.clone()).collect();
     assert!(unloaded.contains(&"SMOL".to_string()), "no directory, no filtering: {unloaded:?}");
+}
+
+/// The Launches cursor stays on its token when the list re-ranks: every buy moves a curve's
+/// stage, and a directory landing drops the launches Markets now carries. It was a row number, so
+/// the curve card and `b`/`S` moved to another token.
+#[test]
+fn launches_keep_the_cursor_on_its_token_when_the_list_reorders() {
+    use wallet_core::launches::{Launch, Phase};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let launch = |token: &str, symbol: &str, phase, bps: u64| Launch {
+        token: token.into(),
+        symbol: symbol.into(),
+        phase,
+        progress_bps: Some(bps),
+        ..Default::default()
+    };
+    app.eco.launches = Some(Ok(vec![
+        launch("0x00a1", "SMOL", Phase::Pooled, 10_000),
+        launch("0x00c1", "EARLY", Phase::Bonding, 1_200),
+        launch("0x00c3", "NEARLY", Phase::Bonding, 9_400),
+    ]));
+    app.switch(Screen::Launches);
+    app.selected = 1;
+    let on = |app: &App| app.launch_rows().get(app.selected).map(|l| l.symbol.clone());
+    assert_eq!(on(&app).as_deref(), Some("EARLY"));
+    // A buy on EARLY takes it past NEARLY: the next read ranks it first.
+    app.on_data_event(super::super::data::DataEv::Launches(Ok(vec![
+        launch("0x00a1", "SMOL", Phase::Pooled, 10_000),
+        launch("0x00c1", "EARLY", Phase::Bonding, 9_800),
+        launch("0x00c3", "NEARLY", Phase::Bonding, 9_400),
+    ])));
+    assert_eq!(on(&app).as_deref(), Some("EARLY"), "the cursor followed its token up the list");
+    // The directory lands and carries SMOL's pool: SMOL leaves Launches, and every row below moves.
+    app.selected = app.launch_rows().iter().position(|l| l.symbol == "NEARLY").unwrap();
+    app.on_data_event(super::super::data::DataEv::MarketPools(Ok((pool_shape(), wallet_core::markets::DexOverview::default()))));
+    assert_eq!(on(&app).as_deref(), Some("NEARLY"), "and stays put when a row above it leaves");
 }
 
 /// A curve trade reads like every other tape row, though no pair in the directory matches it.

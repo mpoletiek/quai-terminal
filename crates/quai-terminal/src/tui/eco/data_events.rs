@@ -336,7 +336,9 @@ impl App {
                 self.eco.launches_at = Some(Instant::now());
                 // Keep the last good list when a refresh fails.
                 if result.is_ok() || !matches!(self.eco.launches, Some(Ok(_))) {
+                    let holding = self.launch_under_cursor();
                     self.eco.launches = Some(result);
+                    self.keep_launch_cursor(holding);
                 }
             }
             DataEv::LaunchLogos(logos) => self.eco.launch_logos.extend(logos),
@@ -432,8 +434,17 @@ impl App {
                 // Keep showing the last good directory when a refresh fails.
                 if r.is_ok() || self.eco.markets_view.pools.as_ref().is_none_or(|p| p.is_err()) {
                     let holding = self.selected_pool().map(|p| p.address);
+                    // Pools keeps its own cursor into the same directory; it follows its pool too,
+                    // or a reload ranked differently would leave `a` and staking on another one.
+                    let pool_holding = self.directory_rows().into_iter().nth(self.eco.pools_view.pool_selected).map(|p| p.address);
+                    // And Launches, which drops the launches the directory now carries.
+                    let launch_holding = self.launch_under_cursor();
                     self.eco.markets_view.pools = Some(r);
                     self.keep_cursor_on(holding);
+                    self.keep_launch_cursor(launch_holding);
+                    if let Some(i) = pool_holding.and_then(|a| self.directory_rows().iter().position(|p| p.address == a)) {
+                        self.eco.pools_view.pool_selected = i;
+                    }
                 }
             }
             DataEv::PoolReserves(result) => {

@@ -994,7 +994,15 @@ pub(crate) fn draw_curve(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                if l.venue_kind == Some(wallet_core::capabilities::Family::HartiiCurve) { "1 QUAI quote " } else { "price   " },
+                // A HartiiLabs price is the reserve spot when the reserves reproduce the curve's
+                // own quote, and the inverted one-QUAI quote only when they do not.
+                if l.venue_kind == Some(wallet_core::capabilities::Family::HartiiCurve)
+                    && l.price_basis == wallet_core::markets::PriceBasis::OneQuaiBuyQuote
+                {
+                    "1 QUAI quote "
+                } else {
+                    "price   "
+                },
                 t.dim_style(),
             ),
             Span::styled(format!("{} QUAI", fmt_price(m.spot_price)), t.strong_style()),
