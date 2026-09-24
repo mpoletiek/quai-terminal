@@ -3759,7 +3759,7 @@ fn an_arrival_names_its_sender_and_marks_activity_until_seen() {
     assert!(app.gutter_flash.is_some() && app.row_flash.contains_key("native:0xabc:in"));
     assert!(app.first_payment.is_some(), "the first payment this wallet ever received");
     let before = app.toasts.len();
-    app.on_event(Ev::Notify { title: "Incoming payment".into(), body: "QUAI received".into() }, (120, 40));
+    app.on_event(Ev::Notify { title: "Incoming payment".into(), body: "QUAI received".into(), listed: true }, (120, 40));
     assert_eq!(app.toasts.len(), before, "said once");
     app.switch(Screen::Activity);
     assert!(!app.arrivals_unseen && app.first_payment.is_none(), "seen");

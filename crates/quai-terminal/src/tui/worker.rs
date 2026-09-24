@@ -472,6 +472,9 @@ pub enum Ev {
     Notify {
         title: String,
         body: String,
+        /// The same event was also written to the wallet's notification list, which a running
+        /// daemon forwards to the desktop; the terminal then leaves the desktop to it.
+        listed: bool,
     },
     /// Chat subscriptions and the pin as stored, and a line to show.
     Chat {
@@ -704,7 +707,7 @@ impl PendingLane {
                     super::term::wake();
                 }
                 for c in report.changes {
-                    let _ = events.send(Ev::Notify { title: format!("Transaction {}", c.to.as_str()), body: c.message });
+                    let _ = events.send(Ev::Notify { title: format!("Transaction {}", c.to.as_str()), body: c.message, listed: true });
                     super::term::wake();
                 }
                 // Balances moved with it: a refresh, in the background, merged with any queued.
@@ -1959,10 +1962,10 @@ async fn reconcile(
     wallet_core::diag::timing("refresh.track", t);
     if let Some(Ok(report)) = tracked {
         for sale in report.sales {
-            deferred.push(Ev::Notify { title: "NFT sold".into(), body: sale });
+            deferred.push(Ev::Notify { title: "NFT sold".into(), body: sale, listed: true });
         }
         for c in report.changes {
-            deferred.push(Ev::Notify { title: format!("Transaction {}", c.to.as_str()), body: c.message });
+            deferred.push(Ev::Notify { title: format!("Transaction {}", c.to.as_str()), body: c.message, listed: true });
         }
         match report.incoming.as_slice() {
             [] => {}
@@ -1972,9 +1975,13 @@ async fn reconcile(
                 } else {
                     format!("{} received", a.asset)
                 };
-                deferred.push(Ev::Notify { title: "Incoming payment".into(), body });
+                deferred.push(Ev::Notify { title: "Incoming payment".into(), body, listed: true });
             }
-            many => deferred.push(Ev::Notify { title: "Incoming payments".into(), body: format!("{} new incoming transfers", many.len()) }),
+            many => deferred.push(Ev::Notify {
+                title: "Incoming payments".into(),
+                body: format!("{} new incoming transfers", many.len()),
+                listed: true,
+            }),
         }
     }
     // Private payments from senders we have never seen arrive via the mailbox. It scans a chain
@@ -1997,7 +2004,8 @@ async fn reconcile(
                 }
                 for offer in &sync.new_offers {
                     let (title, body) = offer.notice();
-                    deferred.push(Ev::Notify { title, body });
+                    // Offers are not written to the list on this side: the desktop is the terminal's.
+                    deferred.push(Ev::Notify { title, body, listed: false });
                 }
             }
             Err(e) => send(Ev::Info(format!("payment sync: {e}"))),
