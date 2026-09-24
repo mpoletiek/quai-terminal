@@ -80,6 +80,8 @@ pub enum DataCmd {
     /// Live reserves for the pools on screen, read from the node in one multicall. Price and TVL
     /// come off these, and the explorer publishes its own copy only every 30 s.
     PoolReserves {
+        /// Read at this block when given: the head the screens were told about.
+        at: Option<u64>,
         pools: Vec<wallet_core::markets::Pool>,
     },
     /// Swaps across every pool over the last `blocks` blocks (Trade › Markets, the flow column).
@@ -1003,8 +1005,8 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
         DataCmd::DexFlow { pools, blocks } => {
             send(DataEv::DexFlow(wallet_core::markets::dex_flow(ctx, &pools, blocks).await.map_err(|e| e.to_string())));
         }
-        DataCmd::PoolReserves { pools } => {
-            send(DataEv::PoolReserves(wallet_core::markets::refresh_reserves(ctx, &pools).await.map_err(|e| e.to_string())));
+        DataCmd::PoolReserves { pools, at } => {
+            send(DataEv::PoolReserves(wallet_core::markets::refresh_reserves_at(ctx, &pools, at).await.map_err(|e| e.to_string())));
         }
         DataCmd::Board { channel, blocks } => {
             let result = match wallet_core::messages::channel_tag(&channel) {

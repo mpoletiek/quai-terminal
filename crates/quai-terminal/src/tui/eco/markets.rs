@@ -324,9 +324,11 @@ impl App {
             return;
         }
         let pools = pools.clone();
+        let at = (self.eco.head > 0).then_some(self.eco.head);
         self.eco.markets_view.reserves_loading = true;
         self.eco.markets_view.reserves_attempted = Some(Instant::now());
-        self.send_data(DataCmd::PoolReserves { pools });
+        self.eco.markets_view.reserves_asked_block = at;
+        self.send_data(DataCmd::PoolReserves { pools, at });
     }
 
     pub(crate) fn tick_dex_flow(&mut self) {

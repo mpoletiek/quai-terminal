@@ -179,12 +179,13 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let ordered = format!("{ordered}{shadows}");
     let stale = overview.sources.is_empty() || overview.sources.iter().any(|source| !source.fresh_at(now));
     let freshness = if stale { " · stale/partial source" } else { "" };
-    let reserves = app
-        .eco
-        .markets_view
-        .reserves_at
-        .map(|at| format!(" · reserves {}s", at.elapsed().as_secs()))
-        .unwrap_or_else(|| " · reserves unverified".into());
+    // Prices say which block they are from when they were read at one: the header's, normally.
+    let mv = &app.eco.markets_view;
+    let reserves = match (mv.reserves_block, mv.reserves_at) {
+        (Some(block), Some(_)) => format!(" · at #{}", amount::group_thousands(&block.to_string())),
+        (None, Some(at)) => format!(" · reserves {}s", at.elapsed().as_secs()),
+        _ => " · reserves unverified".into(),
+    };
     let title = if overview.source == "chain" {
         format!("pairs{partial}{freshness}{reserves}{ordered} · {} · from the node", pools.len())
     } else {

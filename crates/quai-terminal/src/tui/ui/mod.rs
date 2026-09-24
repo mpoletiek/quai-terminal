@@ -900,15 +900,18 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
         )
     });
     if let Some(h) = &d.health {
+        // The block the worker announced as soon as it saw it, not the one its last refresh
+        // finished reading: the header says where the chain is, and every screen follows it.
+        let height = h.height.max(app.eco.head);
         segs.push(Seg {
             joined: Some(node_at),
             ..seg(
                 5,
-                if milestone(h.height) {
+                if milestone(height) {
                     // A round height is a small occasion: marked for the one block it lasts.
-                    vec![Span::styled(format!("  ◆ #{}", amount::group_thousands(&h.height.to_string())), Style::default().fg(t.focus))]
+                    vec![Span::styled(format!("  ◆ #{}", amount::group_thousands(&height.to_string())), Style::default().fg(t.focus))]
                 } else {
-                    vec![Span::styled(format!("  #{}", amount::group_thousands(&h.height.to_string())), t.dim_style())]
+                    vec![Span::styled(format!("  #{}", amount::group_thousands(&height.to_string())), t.dim_style())]
                 },
             )
         });

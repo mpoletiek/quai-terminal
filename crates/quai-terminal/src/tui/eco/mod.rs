@@ -255,6 +255,9 @@ pub struct MarketsView {
     pub reserves_loading: bool,
     pub reserves_at: Option<Instant>,
     pub reserves_attempted: Option<Instant>,
+    /// The block the reserve read in flight was asked for, and the block of the reserves shown.
+    pub reserves_asked_block: Option<u64>,
+    pub reserves_block: Option<u64>,
     pub events: HashMap<String, Result<Vec<wallet_core::markets::PoolEvent>, String>>,
     pub events_loading: Option<String>,
     /// A neighbour of the selected pair whose chart is loading before the cursor reaches it. It
@@ -357,6 +360,8 @@ impl Default for MarketsView {
             reserves_loading: false,
             reserves_at: None,
             reserves_attempted: None,
+            reserves_asked_block: None,
+            reserves_block: None,
             events: HashMap::new(),
             events_loading: None,
             events_prefetching: None,

@@ -128,16 +128,23 @@ impl<'a> Multicall<'a> {
     /// The result is positional: `out[i]` is the return data of `calls[i]`, or `None` when that one
     /// reverted. Batches larger than [`CHUNK`] are split, still in order.
     pub async fn try_all(&self, calls: &[Call]) -> Result<Vec<Option<Vec<u8>>>> {
+        self.try_all_at(calls, BlockTag::Latest).await
+    }
+
+    /// [`Self::try_all`] at one block, so that everything read together describes the same state.
+    pub async fn try_all_at(&self, calls: &[Call], block: BlockTag) -> Result<Vec<Option<Vec<u8>>>> {
         use futures::{StreamExt, TryStreamExt};
         // The chunks are independent, so up to [`CHUNKS_IN_FLIGHT`] go out at once; `buffered`
         // keeps them in order. One after another, the launchpad's 385-call sweep was four round
         // trips of half a second each.
-        let chunks: Vec<Vec<Option<Vec<u8>>>> =
-            futures::stream::iter(calls.chunks(CHUNK).map(|chunk| self.aggregate3(chunk))).buffered(CHUNKS_IN_FLIGHT).try_collect().await?;
+        let chunks: Vec<Vec<Option<Vec<u8>>>> = futures::stream::iter(calls.chunks(CHUNK).map(|chunk| self.aggregate3(chunk, block)))
+            .buffered(CHUNKS_IN_FLIGHT)
+            .try_collect()
+            .await?;
         Ok(chunks.into_iter().flatten().collect())
     }
 
-    async fn aggregate3(&self, calls: &[Call]) -> Result<Vec<Option<Vec<u8>>>> {
+    async fn aggregate3(&self, calls: &[Call], block: BlockTag) -> Result<Vec<Option<Vec<u8>>>> {
         if calls.is_empty() {
             return Ok(Vec::new());
         }
@@ -147,7 +154,7 @@ impl<'a> Multicall<'a> {
         // true: one bad contract must not sink the batch.
         let list: Vec<Value> = calls.iter().map(|c| json!([c.target, true, c.data])).collect();
         let caller: QuaiAddress = crate::data::READ_CALLER.parse().map_err(|_| CoreError::Invalid("read caller".into()))?;
-        let out = contract.call(caller, "aggregate3", &[Value::Array(list)], BlockTag::Latest).await?;
+        let out = contract.call(caller, "aggregate3", &[Value::Array(list)], block).await?;
         let rows = out.first().and_then(Value::as_array).ok_or_else(|| CoreError::Network("multicall returned no results".into()))?;
         if rows.len() != calls.len() {
             return Err(CoreError::Network("multicall returned the wrong number of results".into()));

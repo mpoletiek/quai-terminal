@@ -440,6 +440,7 @@ impl App {
                 self.eco.markets_view.reserves_loading = false;
                 if result.as_ref().is_ok_and(|fresh| !fresh.is_empty()) {
                     self.eco.markets_view.reserves_at = Some(Instant::now());
+                    self.eco.markets_view.reserves_block = self.eco.markets_view.reserves_asked_block;
                 }
                 // Silent on failure: the directory's own numbers are still on screen, only a few
                 // seconds older. A node that cannot answer must not paint an error over a working

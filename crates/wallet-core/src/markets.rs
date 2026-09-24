@@ -1294,6 +1294,13 @@ async fn factory_pools(ctx: &DataCtx, factory: &crate::network::PinnedContract, 
 ///
 /// Failed or malformed reads are omitted; successful zero reserves explicitly empty the pool.
 pub async fn refresh_reserves(ctx: &DataCtx, pools: &[Pool]) -> Result<Vec<(String, f64, f64)>> {
+    refresh_reserves_at(ctx, pools, None).await
+}
+
+/// [`refresh_reserves`] at block `at` (the head the screens were told about), so every price on
+/// screen is from the block the header shows. A node that cannot answer for that block yet is
+/// asked for its latest instead.
+pub async fn refresh_reserves_at(ctx: &DataCtx, pools: &[Pool], at: Option<u64>) -> Result<Vec<(String, f64, f64)>> {
     use crate::multicall::Call;
     ctx.online()?;
     // A curve still selling has no pair to ask. A bonded Hartii curve does: the locked pool its
@@ -1309,7 +1316,13 @@ pub async fn refresh_reserves(ctx: &DataCtx, pools: &[Pool]) -> Result<Vec<(Stri
         calls.push(Call::view(&c.address, "poolTokenReserve()", &[]));
         calls.push(Call::view(&c.address, "poolQuaiReserve()", &[]));
     }
-    let out = mc.try_all(&calls).await?;
+    let out = match at {
+        Some(block) => match mc.try_all_at(&calls, BlockTag::Number(U256::from(block))).await {
+            Ok(out) => out,
+            Err(_) => mc.try_all(&calls).await?,
+        },
+        None => mc.try_all(&calls).await?,
+    };
     let (pair_out, curve_out) = out.split_at(pairs.len().min(out.len()));
     let mut fresh: Vec<(String, f64, f64)> = pairs
         .iter()
