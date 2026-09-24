@@ -283,7 +283,7 @@ pub async fn keep_warm(node: &Node, network: &NetworkProfile) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::appdb::AppDb;
     use crate::data::{Trust, verify_pinned_all};
@@ -293,7 +293,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// A mainnet block with its account proofs, captured by quai-sdk from rpc.quai.network.
-    fn captured() -> Value {
+    pub(crate) fn captured() -> Value {
         serde_json::from_str(include_str!("fixtures/state-proofs-mainnet.json")).unwrap()
     }
     /// Another real mainnet header (#10,259,520): its fields hash to its own `headerHash`.
@@ -301,9 +301,13 @@ mod tests {
         serde_json::from_str(include_str!("fixtures/header-mainnet-10259520.json")).unwrap()
     }
     const WQUAI: &str = "0x006C3e2AaAE5DB1bCd11A1a097cE572312EADdBB";
+    /// An account the captured block proves: nonce 406, about 30,540 QUAI.
+    pub(crate) const PROVEN_OWNER: &str = "0x0011d16c5f4801D8d7B2eD4A84fC98D114Cb85b8";
+    /// What the mock node answers for any `quai_call`, as a token balance.
+    pub(crate) const TOKEN_BALANCE: u64 = 1000;
 
     #[derive(Clone, Copy, PartialEq)]
-    enum Kind {
+    pub(crate) enum Kind {
         /// Serves the captured block at whatever height it is asked for.
         Honest,
         /// Serves another real block as the captured one's height: a header that recomputes, at a
@@ -316,7 +320,7 @@ mod tests {
     }
 
     /// A JSON-RPC node on a loopback port that logs every call it answers.
-    async fn serve(kind: Kind) -> (String, Arc<Mutex<Vec<String>>>) {
+    pub(crate) async fn serve(kind: Kind) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -405,13 +409,22 @@ mod tests {
                 proof
             }
             // The runtime the fallback test pins: keccak256(0x6000).
+            // An account without code has none; anything else answers with a runtime that is not
+            // what the captured state holds.
+            "quai_getCode" if params[0].as_str().is_some_and(|a| a.eq_ignore_ascii_case(PROVEN_OWNER)) => json!("0x"),
             "quai_getCode" => json!("0x6000"),
+            // `decimals()`: 18, or 6 from a node that lies about the chain.
+            "quai_call" if ["data", "input"].iter().any(|k| params[0][k].as_str().is_some_and(|d| d.starts_with("0x313ce567"))) => {
+                json!(format!("0x{:064x}", if kind == Kind::Forger { 6 } else { 18 }))
+            }
+            // Any token's `balanceOf`: 1000 atoms.
+            "quai_call" => json!(format!("0x{:064x}", TOKEN_BALANCE)),
             other => panic!("unexpected {other}"),
         };
         json!({"jsonrpc": "2.0", "id": call["id"], "result": result})
     }
 
-    fn network(url: &str) -> NetworkProfile {
+    pub(crate) fn network(url: &str) -> NetworkProfile {
         let mainnet = NetworkProfile::builtins().into_iter().find(|n| n.id == "mainnet").unwrap();
         NetworkProfile { rpc_url: url.into(), monitor: None, ..mainnet }
     }

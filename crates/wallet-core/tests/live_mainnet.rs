@@ -229,6 +229,39 @@ async fn a_route_s_output_is_proven_from_its_pools() {
     }
 }
 
+/// A review's commitment check proves the owner's WQUAI balance as the mapping at slot 3. The
+/// biggest WQUAI pool holds WQUAI, so its proven word must equal WQUAI's own `balanceOf` there.
+#[tokio::test]
+#[ignore = "network"]
+async fn wquai_balances_are_the_mapping_at_slot_3() {
+    use wallet_core::sdk::{BlockTag, U256};
+    let ctx = mainnet();
+    let wquai = ctx.network.wquai.clone().unwrap().to_lowercase();
+    let pool = wallet_core::markets::pools(&ctx)
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .filter(|p| p.token0.address == wquai || p.token1.address == wquai)
+        .max_by(|a, b| {
+            let side = |p: &wallet_core::markets::Pool| if p.token0.address == wquai { p.reserve0 } else { p.reserve1 };
+            side(a).total_cmp(&side(b))
+        })
+        .expect("a WQUAI pool");
+    let holder: wallet_core::sdk::QuaiAddress = pool.address.parse().unwrap();
+    let token: wallet_core::sdk::QuaiAddress = wquai.parse().unwrap();
+    let slot = wallet_core::anchor::mapping_field_slot(holder, 3, 0);
+    let (proven, _) = wallet_core::anchor::prove_state(&ctx.node, &ctx.network, &[(token, &[slot])], "WQUAI").await.unwrap().unwrap();
+    let at = BlockTag::Number(U256::from(proven[0].block.number));
+    let called = wallet_core::sdk::contracts::Erc20::new(token, &ctx.node.provider)
+        .unwrap()
+        .balance_of(wallet_core::data::READ_CALLER.parse().unwrap(), holder, at)
+        .await
+        .unwrap();
+    assert!(!called.is_zero(), "the pool holds no WQUAI");
+    assert_eq!(proven[0].storage_value(slot), Some(called), "WQUAI balanceOf is not the mapping at slot 3");
+}
+
 /// Reads asked for at a block describe that block: the tape ends there, and every pool's reserves
 /// are what the pair's own `getReserves` answers there. This is what lets the header, the prices
 /// and the tape name one block.

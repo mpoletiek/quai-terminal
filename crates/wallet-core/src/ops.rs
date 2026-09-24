@@ -434,21 +434,41 @@ impl Session {
         let caller = self.caller()?;
         let erc = Erc20::new(contract, &self.node.provider)?;
         let read_str = |values: Vec<serde_json::Value>| values.first().and_then(|v| v.as_str()).map(sanitize_display);
-        let symbol =
-            erc.contract().call(caller, "symbol", &[], BlockTag::Latest).await.ok().and_then(read_str).unwrap_or_else(|| "TOKEN".into());
-        let name =
-            erc.contract().call(caller, "name", &[], BlockTag::Latest).await.ok().and_then(read_str).unwrap_or_else(|| symbol.clone());
-        let decimals = erc
-            .contract()
-            .call(caller, "decimals", &[], BlockTag::Latest)
-            .await
-            .map_err(|e| CoreError::Network(format!("token did not return decimals (not an ERC-20?): {e}")))?
-            .first()
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<u8>().ok())
+        let read_decimals = |values: Vec<serde_json::Value>| values.first().and_then(|v| v.as_str()).and_then(|s| s.parse::<u8>().ok());
+        // Decimals are read once and kept: every later amount of this token is scaled by them, so
+        // a monitoring node's answer is held to the network RPC's, which another operator runs.
+        let witnessed = async {
+            let witness = self.node.witness()?;
+            let erc = Erc20::new(contract, &witness.provider).ok()?;
+            let read = erc.contract().call(caller, "decimals", &[], BlockTag::Latest);
+            Some(tokio::time::timeout(std::time::Duration::from_secs(5), read).await.ok().and_then(|r| r.ok()).and_then(read_decimals))
+        };
+        let (symbol, name, decimals, witnessed) = tokio::join!(
+            erc.contract().call(caller, "symbol", &[], BlockTag::Latest),
+            erc.contract().call(caller, "name", &[], BlockTag::Latest),
+            erc.contract().call(caller, "decimals", &[], BlockTag::Latest),
+            witnessed,
+        );
+        let symbol = symbol.ok().and_then(read_str).unwrap_or_else(|| "TOKEN".into());
+        let name = name.ok().and_then(read_str).unwrap_or_else(|| symbol.clone());
+        let decimals = decimals
+            .map_err(|e| CoreError::Network(format!("token did not return decimals (not an ERC-20?): {e}")))
+            .map(read_decimals)?
             .ok_or_else(|| CoreError::Invalid("token decimals invalid".into()))?;
         if decimals > 77 {
             return Err(CoreError::Invalid("token decimals out of range".into()));
+        }
+        if let Some(witnessed) = witnessed {
+            let rpc = crate::network::rpc_origin(&self.network.rpc_url);
+            match witnessed {
+                Some(theirs) if theirs == decimals => {}
+                Some(theirs) => {
+                    return Err(CoreError::Rejected(format!(
+                        "your monitoring node says this token has {decimals} decimals and {rpc} says {theirs}; refusing to import it"
+                    )));
+                }
+                None => return Err(CoreError::Network(format!("could not confirm this token's decimals with {rpc}; try again"))),
+            }
         }
         let token = Token { network: self.network.id.clone(), address: contract.to_string(), symbol, name, decimals, hidden: false };
         self.app.upsert_token(&token)?;
@@ -2480,6 +2500,29 @@ fn no_payment() -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A token imported through a monitoring node keeps its decimals only when the network's RPC
+    /// reports the same: every later amount of it is scaled by them.
+    #[tokio::test]
+    async fn imported_decimals_are_held_to_the_rpc_when_a_monitor_serves() {
+        use crate::anchor::tests::{Kind, network, serve};
+        let dir = tempfile::tempdir().unwrap();
+        let registry = crate::registry::Registry::new(crate::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap());
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let meta = registry.create_hd("w", phrase, "english", "", "password123", true).unwrap();
+        let (monitor, _) = serve(Kind::Honest).await;
+        let mut session = Session::open(registry, crate::config::AppConfig::default(), meta, network(&monitor)).unwrap();
+        let token = "0x0000000000000000000000000000000000000abc";
+        for (rpc, imports) in [(Kind::Honest, true), (Kind::Forger, false)] {
+            let (rpc_url, _) = serve(rpc).await;
+            session.node = network(&monitor).node().unwrap().with_witness(network(&rpc_url).node().unwrap());
+            match session.import_token(token).await {
+                Ok(t) => assert!(imports && t.decimals == 18, "{t:?}"),
+                Err(CoreError::Rejected(text)) => assert!(!imports && text.contains("18 decimals") && text.contains("says 6"), "{text}"),
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
 
     /// Change addresses a transaction never signed for come back. Allocating a pool, releasing
     /// it and allocating again hands out the same indexes instead of deriving fresh ones, so

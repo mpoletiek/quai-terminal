@@ -514,6 +514,13 @@ impl NetworkProfile {
         self.genesis.parse().map_err(|_| CoreError::Invalid(format!("network `{}` has an invalid genesis hash", self.id)))
     }
 
+    /// Whether reads here are proven against block headers. Only on networks this wallet ships
+    /// contract pins for: those are go-quai chains whose headers quai-sdk can hash. A custom or
+    /// development chain keeps plain reads.
+    pub fn proves_state(&self) -> bool {
+        self.ecosystem.wquai_code_hash.is_some()
+    }
+
     /// Storage scope for SDK stores.
     pub fn scope(&self) -> Result<NetworkScope> {
         Ok(NetworkScope { chain_id: U256::from(self.chain_id), genesis: self.genesis_hash()?, zone: ZONE })

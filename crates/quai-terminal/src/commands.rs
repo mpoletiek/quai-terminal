@@ -2269,6 +2269,7 @@ pub async fn contract(ctx: &Ctx, cmd: crate::args::ContractCmd) -> Result<()> {
                         "is_contract": found.is_contract(),
                         "code_len": found.code_len,
                         "code_hash": found.code_hash,
+                        "code_proven": found.code_proven,
                         "solc": found.solc,
                         "abi_cid": found.metadata.as_ref().map(|m| m.cid.clone()),
                         "abi_checked_against_cid": found.metadata.as_ref().map(|m| m.checked_against_cid),
@@ -2290,6 +2291,9 @@ pub async fn contract(ctx: &Ctx, cmd: crate::args::ContractCmd) -> Result<()> {
             let name = found.metadata.as_ref().map(|m| m.name.as_str()).unwrap_or("contract");
             println!("{} {}", ctx.out.bold(name), ctx.out.dim(&found.address));
             println!("  code        {} bytes · {}", found.code_len, found.code_hash);
+            if let Some(confirmed) = &found.code_proven {
+                println!("              {}", ctx.out.green(&format!("proven to be the chain's code here, {confirmed}")));
+            }
             if let Some(v) = &found.solc {
                 println!("  compiler    solc {v}");
             }

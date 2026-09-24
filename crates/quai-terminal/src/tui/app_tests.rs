@@ -2630,6 +2630,7 @@ fn the_send_form_says_when_the_destination_is_a_contract() {
                 address: address.into(),
                 code_len: 610,
                 code_hash: "0x00".into(),
+                code_proven: None,
                 solc: Some("0.8.20".into()),
                 metadata: Some(
                     wallet_core::contracts::parse_metadata(
