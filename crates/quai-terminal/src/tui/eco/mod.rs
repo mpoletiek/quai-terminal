@@ -787,6 +787,8 @@ pub struct Eco {
     pub alerts_loaded: bool,
     /// When the TUI last checked alerts itself (it does only when no daemon runs).
     pub alerts_checked: Option<Instant>,
+    /// The newest block height the wallet worker has seen (`Ev::Head`).
+    pub head: u64,
     pub pools_view: PoolsView,
     /// Zone gas price in wei, for the reserve MAX holds back. None until it loads, which makes
     /// MAX on native QUAI say so rather than guess.

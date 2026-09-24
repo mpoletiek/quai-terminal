@@ -699,6 +699,36 @@ impl App {
         }
     }
 
+    /// A new block: everything on screen that reads chain state is due now.
+    ///
+    /// Each feed keeps its own clock, which paces it between blocks and keeps a failing source
+    /// from being hammered. A block is the event those clocks approximate, so it expires them:
+    /// reserves (prices, TVL), the DEX tape, the selected pair's trades, LP positions, the curve
+    /// being looked at and the board, then asks at once. A feed still in flight is left to land;
+    /// the block after next catches anything it missed.
+    pub fn on_block(&mut self, height: u64) {
+        if height <= self.eco.head {
+            return;
+        }
+        self.eco.head = height;
+        let due = Instant::now().checked_sub(MARKET_STUCK);
+        let mv = &mut self.eco.markets_view;
+        mv.reserves_attempted = None;
+        mv.flow_at = None;
+        for (at, _) in mv.events_at.values_mut() {
+            if let Some(due) = due {
+                *at = due;
+            }
+        }
+        self.eco.pools_view.loaded_at = None;
+        self.eco.curves_at.clear();
+        self.eco.board.at.clear();
+        self.eco.board.dm_at.clear();
+        if !self.locked {
+            self.tick_eco();
+        }
+    }
+
     /// Periodic ecosystem work: debounced swap quotes and re-quotes while waiting on approval.
     pub fn tick_eco(&mut self) {
         self.advance_flow();
@@ -731,6 +761,10 @@ impl App {
         }
         if self.screen == Screen::Network && !self.locked {
             self.tick_chain_stats();
+        }
+        // PnL is re-read on its own freshness window while it is on screen, not only when opened.
+        if self.screen == Screen::Pnl && !self.locked {
+            self.load_pnl(false);
         }
         if self.screen == Screen::Launches && !self.locked {
             self.load_launches(false);

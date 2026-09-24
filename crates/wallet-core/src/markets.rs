@@ -2179,7 +2179,9 @@ pub async fn dex_flow(ctx: &DataCtx, pools: &[Pool], blocks: u64) -> Result<Vec<
     addresses.sort();
     addresses.dedup();
     let key = format!("dex_flow:{}:{}", hex::encode(Sha256::digest(addresses.join(",").as_bytes())), blocks);
-    let result = ctx.cached(&key, 5, || refresh_dex_flow(ctx, pools, blocks)).await?;
+    // Shared between processes for a moment, never long enough to answer a block-triggered ask
+    // with the tape from before that block.
+    let result = ctx.cached(&key, HISTORY_SHARE_SECS, || refresh_dex_flow(ctx, pools, blocks)).await?;
     if result.stale {
         return Err(CoreError::Network("DEX flow source is not updating; showing the previous tape".into()));
     }

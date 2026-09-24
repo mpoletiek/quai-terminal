@@ -208,7 +208,8 @@ const QUERY: &str = "query($venues: [String!]!, $first: Int!) { tradeLaunches(fi
 /// not the launch directory's: caching them for the minute the directory uses left five-second-old
 /// pool rows sitting beside minute-old curve rows, which reads as the curves having gone quiet.
 /// Unlike the explorer's pool page, this index publishes no cache window of its own to respect.
-pub const TRADES_TTL: u64 = 5;
+/// Two seconds, like the pool history: a block-triggered ask must never be answered from before that block.
+pub const TRADES_TTL: u64 = crate::markets::HISTORY_SHARE_SECS;
 
 /// How long a launch directory read is served from cache.
 ///

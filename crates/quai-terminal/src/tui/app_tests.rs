@@ -4533,3 +4533,31 @@ fn the_exchange_chart_reads_the_pool_s_trades_and_reserves() {
     assert_eq!(app.eco.markets_view.events_loading.as_deref(), Some(pool.address.as_str()), "the pool's trades are read");
     assert!(app.eco.markets_view.reserves_loading, "and its reserves");
 }
+
+/// A new block makes every chain-backed feed on screen due at once, however recently it was
+/// read: prices, TVL and the tape move with the chain rather than with a timer beside it.
+#[test]
+fn a_new_block_refreshes_what_is_on_screen_at_once() {
+    use crate::tui::worker::Ev;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    app.switch(Screen::Markets);
+    let now = std::time::Instant::now();
+    let mv = &mut app.eco.markets_view;
+    mv.pools_at = Some(now);
+    mv.reserves_attempted = Some(now);
+    mv.reserves_at = Some(now);
+    mv.flow_at = Some(now);
+    app.tick_eco();
+    assert!(!app.eco.markets_view.reserves_loading, "within its pace, nothing is asked between blocks");
+    app.on_event(Ev::Head(10_300_000), (160, 48));
+    assert_eq!(app.eco.head, 10_300_000);
+    assert!(app.eco.markets_view.reserves_loading, "the block asked for reserves at once");
+    assert!(app.eco.markets_view.flow_loading, "and for the tape");
+    // The same height again is not a new block.
+    app.eco.markets_view.reserves_loading = false;
+    app.on_event(Ev::Head(10_300_000), (160, 48));
+    assert!(!app.eco.markets_view.reserves_loading);
+    // Nothing a block-triggered ask reads is cached for as long as a block.
+    const { assert!(wallet_core::launches::TRADES_TTL < 5 && wallet_core::markets::HISTORY_SHARE_SECS < 5) };
+}
