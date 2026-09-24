@@ -73,6 +73,11 @@ pub struct WalletMeta {
     /// Monotonically increasing committed wallet revision (legacy wallets start at zero).
     #[serde(default)]
     pub generation: u64,
+    /// The generation at which the encrypted custody (the vault) last changed: a password change
+    /// or an imported key. Keys unlocked before it must be unlocked again; keys unlocked before a
+    /// public change (a new account, a label) are still this wallet's keys.
+    #[serde(default)]
+    pub custody_generation: u64,
     /// Stable random identifier.
     pub id: String,
     /// Unique display name.
@@ -323,6 +328,17 @@ impl Registry {
         let mut next = meta.clone();
         next.version = META_VERSION;
         next.generation = next.generation.checked_add(1).ok_or_else(|| CoreError::Storage("wallet generation exhausted".into()))?;
+        // Every commit rewrites the vault; only a different one changes custody.
+        let custody_changed = match &vault {
+            None => false,
+            Some(v) => match VaultFile::read(&self.vault_path(&meta.id)) {
+                Ok(current) => current.to_json()? != v.to_json()?,
+                Err(_) => true,
+            },
+        };
+        if custody_changed {
+            next.custody_generation = next.generation;
+        }
         let mutation = Mutation { format: MUTATION_FORMAT.into(), metadata: next.clone(), vault };
         wallet_vault::write_private_atomic(&self.journal_path(&meta.id), &serde_json::to_vec_pretty(&mutation)?)?;
         mutation_fault("journal")?;
@@ -469,6 +485,7 @@ impl Registry {
         let meta = WalletMeta {
             version: META_VERSION,
             generation: 0,
+            custody_generation: 0,
             id: random_id()?,
             name: name.trim().to_string(),
             created_at: now(),
@@ -503,6 +520,7 @@ impl Registry {
         let mut meta = WalletMeta {
             version: META_VERSION,
             generation: 0,
+            custody_generation: 0,
             id: random_id()?,
             name: name.trim().to_string(),
             created_at: now(),
@@ -537,6 +555,7 @@ impl Registry {
         let meta = WalletMeta {
             version: META_VERSION,
             generation: 0,
+            custody_generation: 0,
             id: random_id()?,
             name: name.trim().to_string(),
             created_at: now(),
@@ -930,6 +949,31 @@ mod tests {
         let before = reg.load(&a.id).unwrap();
         assert!(reg.add_key(&mut a, &mut a_keys, "password123", &imported_fixture_keys()[0], "old password").is_err());
         assert_eq!(reg.load(&a.id).unwrap().generation, before.generation);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A new account or a label is a public change: keys unlocked before it are still this
+    /// wallet's keys. A new password (a new vault) is not: keys from before it must unlock again.
+    #[test]
+    fn only_a_custody_change_makes_unlocked_keys_stale() {
+        let (reg, dir) = registry();
+        let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
+        let unlocked = reg.unlock(&meta, "password123").unwrap();
+        let held = unlocked.vault_generation.unwrap();
+        reg.add_quai_account(&mut meta, Some("messaging")).unwrap();
+        reg.update_meta(&mut meta, |m| {
+            m.backed_up = true;
+            Ok(())
+        })
+        .unwrap();
+        let current = reg.load(&meta.id).unwrap();
+        assert!(current.generation > held, "public changes still move the generation");
+        assert!(held >= current.custody_generation, "but not custody: the keys held stay good");
+        reg.change_password(&meta, "password123", "rotatedpassword").unwrap();
+        let current = reg.load(&meta.id).unwrap();
+        assert!(held < current.custody_generation, "a new vault makes them stale");
+        let (_, fresh) = reg.unlock_current(&meta.id, "rotatedpassword").unwrap();
+        assert!(fresh.vault_generation.unwrap() >= current.custody_generation);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

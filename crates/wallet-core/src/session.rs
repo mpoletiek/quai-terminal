@@ -424,7 +424,10 @@ impl Session {
 
     pub(crate) fn keys(&self) -> Result<&Unlocked> {
         let keys = self.unlocked.as_ref().ok_or_else(|| CoreError::Locked("wallet is locked; unlock with your password".into()))?;
-        if keys.vault_generation != Some(self.registry.load(&self.meta.id)?.generation) {
+        let current = self.registry.load(&self.meta.id)?;
+        // Keys from before the vault last changed (a new password, an imported key) are refused;
+        // a public change since (a new account, a label) leaves them this wallet's keys.
+        if keys.vault_generation.is_none_or(|g| g < current.custody_generation) {
             return Err(CoreError::Locked("wallet changed in another session; unlock again before signing".into()));
         }
         Ok(keys)
@@ -888,6 +891,29 @@ pub fn short_address(address: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The TUI holds two sessions of one wallet: one adds an account, the other signs. Adding an
+    /// account used to make the signer's keys look stale ("wallet changed in another session"),
+    /// so funding a new account failed until the wallet was unlocked again. A new password still
+    /// does make them stale.
+    #[test]
+    fn a_new_account_leaves_another_session_s_keys_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap();
+        let registry = Registry::fast(paths);
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let meta = registry.create_hd("bob", phrase, "english", "", "password123", true).unwrap();
+        let network = crate::network::NetworkProfile::builtins().into_iter().next().unwrap();
+        let mut worker = Session::open(registry.clone(), crate::config::AppConfig::default(), meta.clone(), network.clone()).unwrap();
+        worker.unlock("password123").unwrap();
+        let mut signer = Session::open(registry.clone(), crate::config::AppConfig::default(), meta, network).unwrap();
+        signer.use_keys(worker.duplicate_keys().unwrap());
+        worker.add_account(Some("messaging")).unwrap();
+        assert!(worker.keys().is_ok(), "the session that added it");
+        assert!(signer.keys().is_ok(), "and the one that signs");
+        registry.change_password(&worker.meta, "password123", "rotatedpassword").unwrap();
+        assert!(signer.keys().is_err(), "a new password still asks for the unlock again");
+    }
 
     /// Every way a Qi read goes stale is retried: the tip moving across it, another writer
     /// committing to the same store first (what the daemon and the terminal do to each other),
