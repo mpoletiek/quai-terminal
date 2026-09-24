@@ -3226,6 +3226,45 @@ fn launches_keep_the_cursor_on_its_token_when_the_list_reorders() {
     assert_eq!(on(&app).as_deref(), Some("NEARLY"), "and stays put when a row above it leaves");
 }
 
+/// The flow's cursor stays on its trade as new ones arrive above it. It was a row number into a
+/// newest-first tape, so every block moved the highlight to an older trade, and Enter opened that
+/// trade's pair rather than the one the user was looking at.
+#[test]
+fn the_flow_cursor_stays_on_its_trade_as_new_trades_arrive() {
+    use wallet_core::markets::{DexSwap, PoolToken};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    let tok = |a: &str, s: &str| PoolToken { address: a.into(), symbol: s.into(), decimals: 18 };
+    let trade = |block: u64, tx: &str| DexSwap {
+        at: 1_790_026_405 + block,
+        timed: true,
+        block,
+        tx: tx.into(),
+        index: 0,
+        pool: "0x00pairSMOLWQI".into(),
+        token_in: tok("0x00a1", "SMOL"),
+        token_out: tok("0x00b1", "WQI"),
+        amount_in: 1.0,
+        amount_out: 1.0,
+        trader: "0x0051".into(),
+    };
+    app.eco.markets_view.flow = vec![trade(3, "0xc"), trade(2, "0xb"), trade(1, "0xa")];
+    app.eco.markets_view.flow_min_usd = 0.0;
+    app.switch(Screen::Markets);
+    app.pane = 1;
+    app.selected = 1;
+    assert_eq!(app.flow_rows()[app.selected].tx, "0xb");
+    // Two new blocks land at the top of the tape.
+    let tape = vec![trade(5, "0xe"), trade(4, "0xd"), trade(3, "0xc"), trade(2, "0xb"), trade(1, "0xa")];
+    app.on_data_event(super::super::data::DataEv::DexFlow(Ok(tape.clone())));
+    assert_eq!(app.flow_rows()[app.selected].tx, "0xb", "the highlight stayed on its trade");
+    // The same with the cursor parked while the pairs list has it.
+    app.pane = 0;
+    app.eco.markets_view.flow_selected = 0;
+    app.on_data_event(super::super::data::DataEv::DexFlow(Ok([vec![trade(6, "0xf")], tape].concat())));
+    assert_eq!(app.flow_rows()[app.eco.markets_view.flow_selected].tx, "0xe", "a parked cursor follows its trade too");
+}
+
 /// A curve trade reads like every other tape row, though no pair in the directory matches it.
 ///
 /// The tape asks the directory which side of a swap is the base, and a bonding curve has no pair

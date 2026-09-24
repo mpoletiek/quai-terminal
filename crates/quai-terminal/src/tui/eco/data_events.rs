@@ -478,7 +478,21 @@ impl App {
                     Ok(flow) => {
                         self.eco.markets_view.flow_error = None;
                         if !flow.is_empty() || self.eco.markets_view.flow.is_empty() {
+                            // New trades arrive above the cursor every block; it follows its trade
+                            // rather than its row number, so Enter opens the pair that was lit.
+                            let active = self.screen == Screen::Markets && self.pane == 1;
+                            let at = if active { self.selected } else { self.eco.markets_view.flow_selected };
+                            let holding = self.flow_rows().get(at).map(|s| (s.tx.clone(), s.index));
                             self.eco.markets_view.flow = flow;
+                            if let Some(i) =
+                                holding.and_then(|(tx, index)| self.flow_rows().iter().position(|s| s.tx == tx && s.index == index))
+                            {
+                                if active {
+                                    self.selected = i;
+                                } else {
+                                    self.eco.markets_view.flow_selected = i;
+                                }
+                            }
                         }
                     }
                     Err(e) => self.eco.markets_view.flow_error = Some(e),
