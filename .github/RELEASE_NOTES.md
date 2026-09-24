@@ -3,23 +3,33 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
-## What's new in 0.1.0-alpha.5
+## What's new in 0.1.0-alpha.6
 
-- **Limit orders that explain themselves and are watched.** Quai has no order book, so an order is
-  the wallet waiting for a price on your behalf. Nothing is posted on-chain and nothing is signed
-  without you. Set a target as `+5%` or an amount to receive. The dialog shows the price now and
-  at the target, and what the order guarantees after slippage. Active orders are re-checked every
-  30 seconds by the open terminal or, when it is closed, the background daemon. You are told once
-  when one is reachable, and Trade › Orders prepares the review. From the shell:
-  `quai-terminal order create quai usdt 1 --target +5%`.
-- **NFTs the explorer lost are filled in.** When explorer.qu.ai failed to read an NFT's metadata,
-  it showed as just "#241". It is now read from where the NFT's contract says it is, through your
-  IPFS gateway (`ipfs://` only, never a host the creator chose).
-- **Collections show every item.** Explore loads a collection's items as you scroll, instead of
-  stopping at the first 48.
-- **Esc leaves a conversion.** On Convert or Wrap, Esc goes back to the swap card and its pair.
-- **The lock screen loops its animations again.** Settings › "Loop the lock screen animation"
-  turns it off to play one per lock.
+- **Your own node now serves every read, reviews included.** When a monitoring node is set
+  (`network monitor mainnet URL`, or the onboarding's "Your own node"), balances, quotes and the
+  numbers in a review all come from it once it proves it is on the same chain. Transactions are
+  still sent only through the network's RPC. A review opens with a warning when your node is 3 or
+  more blocks behind that RPC. **If you already had a monitoring node,** it now also answers your
+  reviews; `--trust-execution` is no longer needed and does nothing. A node on the internet must
+  use https.
+- **Onboarding says what each choice does.** The privacy step asks the question it actually answers,
+  whether explorer.qu.ai may look up your addresses, and states what each answer gets and costs.
+  The connections step shows what goes where (reads, sends, address lookups, market data) as you fill
+  it in. System › Data sources shows the same.
+- **HartiiLabs markets priced like pools.** A curve is priced from the reserves it trades against,
+  before the fee. A graduated curve shows the QUAI locked in its pool as TVL, with a 24h change, and
+  refreshes every few seconds along with the pools.
+- **Faster reviews.** Exchanges are quoted at once rather than one after another, and contract checks
+  take two round trips instead of five (quai-sdk 0.1.0-alpha.12). A swap review through the public
+  RPC went from 9 s to 5 s, and through a node of your own it takes under a second.
+- **Charts keep up.** A pair's chart refreshes every 5 seconds (it was every 10), and the pairs
+  beside the cursor load before you reach them.
+- **Explorer links are clickable.** Ctrl+click opens an address or transaction in your browser, and
+  alt+click copies it. The Markets header names the token's and the pool's contracts.
+- **Accounts.** Import a private key into an open wallet (Accounts › space › i), and add more
+  addresses to a watch-only wallet (`a`, or `account watch ADDRESS`).
+- **Safer media.** NFT metadata and pictures are read from your IPFS gateway only as the immutable
+  content they name, never an `/ipns/` name or anything else on that host.
 
 ## Download
 

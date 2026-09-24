@@ -3136,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "quai-terminal-cli"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-core"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -4960,7 +4960,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-vault"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "argon2",
  "base64 0.22.1",
