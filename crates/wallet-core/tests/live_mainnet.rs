@@ -43,6 +43,47 @@ async fn pinned_ecosystem_bytecode_matches() {
     assert!(ctx.verify_pinned(&bad, "router").await.is_err());
 }
 
+/// With a monitoring node, every pin is proven at a block the network's RPC confirms, and a
+/// review's worth of pins shares one confirmation. `QW_MONITOR_RPC=http://host:9200`.
+#[tokio::test]
+#[ignore = "network"]
+async fn pins_are_proven_at_a_block_the_rpc_confirms() {
+    use wallet_core::anchor::Confirmation;
+    use wallet_core::data::{Trust, verify_pinned_all};
+    let Ok(url) = std::env::var("QW_MONITOR_RPC") else {
+        eprintln!("QW_MONITOR_RPC not set; skipping");
+        return;
+    };
+    let ctx = mainnet();
+    let rpc = ctx.network.node().unwrap();
+    let monitor =
+        wallet_core::network::NetworkProfile { rpc_url: url, use_pathing: false, monitor: None, ..ctx.network.clone() }.node().unwrap();
+    let node = monitor.with_witness(rpc);
+    let eco = ctx.network.ecosystem.clone();
+    let pins: Vec<(wallet_core::network::PinnedContract, &str)> = [
+        ("router", eco.quainance_router),
+        ("factory", eco.quainance_factory),
+        ("launch AMM router", eco.launch_amm_router),
+        ("launch AMM factory", eco.launch_amm_factory),
+        ("legacy router", eco.legacy_router),
+        ("legacy factory", eco.legacy_factory),
+        ("Hartii AMM router", eco.hartii_amm_router),
+        ("Hartii AMM factory", eco.hartii_amm_factory),
+        ("multicall3", eco.multicall3),
+    ]
+    .into_iter()
+    .map(|(name, c)| (c.unwrap(), name))
+    .collect();
+    let refs: Vec<(&wallet_core::network::PinnedContract, &str)> = pins.iter().map(|(c, n)| (c, *n)).collect();
+    let started = std::time::Instant::now();
+    verify_pinned_all(&ctx.app, &node, &ctx.network, &refs, Trust::FirstHand).await.unwrap();
+    let first = started.elapsed();
+    assert_eq!(node.anchor_confirmation(), Some(Confirmation::Witnessed), "the RPC confirmed the monitor's block");
+    let started = std::time::Instant::now();
+    verify_pinned_all(&ctx.app, &node, &ctx.network, &refs, Trust::FirstHand).await.unwrap();
+    eprintln!("9 pins: {first:?} with the confirmation, {:?} sharing it", started.elapsed());
+}
+
 /// A quote that is going into a review reads the pins and every pair address from the chain
 /// (`docs/REVIEW_TRUST.md`), so it must agree with the cached one and must still work when the
 /// memo and the pair cache are seeded with nothing. The timing is printed because the cost of

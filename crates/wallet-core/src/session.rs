@@ -311,7 +311,8 @@ impl Session {
             .unwrap_or_else(|_| Err(CoreError::Network("did not answer within 2 s".into())));
         match checked {
             Ok(node) => {
-                self.node = node;
+                // The RPC transactions go to confirms the blocks the monitor proves state at.
+                self.node = node.with_witness(self.rpc.clone());
                 self.monitored = true;
                 None
             }

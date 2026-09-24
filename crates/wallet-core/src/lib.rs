@@ -2,6 +2,7 @@
 
 pub mod alerts;
 pub mod amount;
+pub mod anchor;
 pub mod appdb;
 pub mod capabilities;
 mod chain;
