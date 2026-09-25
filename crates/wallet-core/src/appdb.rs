@@ -380,8 +380,8 @@ pub struct Operation {
     pub id: String,
     /// Network id.
     pub network: String,
-    /// Operation kind (e.g. `send_quai`, `convert_quai_to_qi`).
-    pub kind: String,
+    /// Operation kind (stored as its name, e.g. `send_quai`).
+    pub kind: crate::journal::OpKind,
     /// SDK store holding custody (`quai` or `qi`).
     pub store: String,
     /// Source account address or `qi`.
@@ -398,8 +398,8 @@ pub struct Operation {
     pub counterparty: String,
     /// Fee (base units of the fee asset), when known.
     pub fee: String,
-    /// JSON detail.
-    pub detail: serde_json::Value,
+    /// Detail (stored as JSON).
+    pub detail: crate::journal::Detail,
     /// Created (unix seconds).
     pub created: u64,
     /// Updated (unix seconds).
@@ -425,8 +425,8 @@ pub struct Activity {
     pub tx_hash: Option<String>,
     /// Block number.
     pub block: Option<u64>,
-    /// JSON detail.
-    pub detail: serde_json::Value,
+    /// Detail (stored as JSON).
+    pub detail: crate::journal::Detail,
     /// First observed (unix seconds).
     pub observed: u64,
 }
@@ -605,13 +605,13 @@ impl AppDb {
         let rows =
             stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
         for (id, detail) in rows {
-            let Ok(mut detail) = serde_json::from_str::<serde_json::Value>(&detail) else { continue };
-            if let Some(fields) = detail.pointer_mut("/review/fields").and_then(|f| f.as_array_mut()) {
+            let Ok(mut detail) = serde_json::from_str::<crate::journal::Detail>(&detail) else { continue };
+            if let Some(fields) = detail.json_mut().pointer_mut("/review/fields").and_then(|f| f.as_array_mut()) {
                 for f in fields.iter_mut().filter(|f| f["label"] == "Message") {
                     f["value"] = serde_json::json!(crate::tx::PRIVATE_FIELD);
                 }
             }
-            detail["private_fields"] = serde_json::json!(["Message"]);
+            detail.set_private_fields(serde_json::json!(["Message"]));
             tx.execute("UPDATE operations SET detail=?1 WHERE id=?2", params![detail.to_string(), id])?;
         }
         Ok(())
@@ -852,9 +852,11 @@ impl AppDb {
     /// Insert a new operation.
     pub fn insert_operation(&self, op: &Operation) -> Result<()> {
         // Its timeline starts here; each status change adds a stage (see `update_operation`).
-        let mut detail = if op.detail.is_object() { op.detail.clone() } else { serde_json::json!({}) };
-        if detail.get(TIMELINE).is_none() {
-            detail[TIMELINE] = serde_json::json!([{"s": op.status.as_str(), "at": op.created}]);
+        let mut detail = op.detail.clone();
+        detail.json_mut();
+        detail.check_keys();
+        if detail.timeline().is_null() {
+            detail.set_timeline(serde_json::json!([{"s": op.status.as_str(), "at": op.created}]));
         }
         let op = &Operation { detail, ..op.clone() };
         self.conn.execute(
@@ -863,7 +865,7 @@ impl AppDb {
             params![
                 op.id,
                 op.network,
-                op.kind,
+                op.kind.as_str(),
                 op.store,
                 op.account,
                 op.status.as_str(),
@@ -887,7 +889,7 @@ impl AppDb {
         status: OpStatus,
         tx_hash: Option<&str>,
         fee: Option<&str>,
-        detail_patch: Option<&serde_json::Value>,
+        detail_patch: Option<&crate::journal::Detail>,
     ) -> Result<()> {
         self.write_operation(id, None, status, tx_hash, fee, detail_patch).map(|_| ())
     }
@@ -903,7 +905,7 @@ impl AppDb {
         to: OpStatus,
         tx_hash: Option<&str>,
         fee: Option<&str>,
-        detail_patch: Option<&serde_json::Value>,
+        detail_patch: Option<&crate::journal::Detail>,
     ) -> Result<bool> {
         self.write_operation(id, Some(from), to, tx_hash, fee, detail_patch)
     }
@@ -913,18 +915,14 @@ impl AppDb {
     pub fn record_signed_candidate(&self, id: &str, hash: &str, fee: Option<&str>) -> Result<()> {
         let tx = self.immediate()?;
         let mut op = Self::operation_in(&tx, id)?.ok_or_else(|| CoreError::NotFound(format!("operation {id}")))?;
-        if !op.detail.is_object() {
-            op.detail = serde_json::json!({});
+        if op.detail.original_tx().is_null() {
+            op.detail.set_original_tx(serde_json::json!(op.tx_hash));
         }
-        if op.detail.get("original_tx").is_none() {
-            op.detail["original_tx"] = serde_json::json!(op.tx_hash);
-        }
-        let mut candidates: Vec<String> =
-            op.detail.get("candidates").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        let mut candidates: Vec<String> = serde_json::from_value(op.detail.candidates().clone()).unwrap_or_default();
         if !candidates.iter().any(|candidate| candidate.eq_ignore_ascii_case(hash)) {
             candidates.push(hash.to_string());
         }
-        op.detail["candidates"] = serde_json::json!(candidates);
+        op.detail.set_candidates(serde_json::json!(candidates));
         if !(op.status.is_terminal() || matches!(op.status, OpStatus::Settling | OpStatus::Locked)) {
             op.status = OpStatus::Submitted;
             op.tx_hash = Some(hash.into());
@@ -947,7 +945,7 @@ impl AppDb {
         status: OpStatus,
         tx_hash: Option<&str>,
         fee: Option<&str>,
-        detail_patch: Option<&serde_json::Value>,
+        detail_patch: Option<&crate::journal::Detail>,
     ) -> Result<bool> {
         // `detail` is a JSON blob, so a patch is a read, a merge and a write. Read it under the
         // write lock: the tracker and the committing thread both patch operations, and in
@@ -957,15 +955,9 @@ impl AppDb {
         if expect.is_some_and(|e| e != op.status) {
             return Ok(false);
         }
-        if !op.detail.is_object() {
-            op.detail = serde_json::json!({});
-        }
-        if let Some(patch) = detail_patch.and_then(|p| p.as_object())
-            && let Some(obj) = op.detail.as_object_mut()
-        {
-            for (k, v) in patch {
-                obj.insert(k.clone(), v.clone());
-            }
+        if let Some(patch) = detail_patch {
+            patch.check_keys();
+            op.detail.merge(patch.clone());
         }
         // The timeline: a stage per status change, and a note when a replacement's hash won.
         let at = now();
@@ -979,7 +971,7 @@ impl AppDb {
             stages.push(serde_json::json!({"s": "replaced", "at": at, "tx": new}));
         }
         if !stages.is_empty() {
-            let timeline = op.detail.as_object_mut().map(|o| o.entry(TIMELINE).or_insert_with(|| serde_json::json!([])));
+            let timeline = op.detail.json_mut().as_object_mut().map(|o| o.entry(TIMELINE).or_insert_with(|| serde_json::json!([])));
             if let Some(serde_json::Value::Array(list)) = timeline {
                 list.extend(stages);
             }
@@ -1012,7 +1004,7 @@ impl AppDb {
                 amount: r.get(8)?,
                 counterparty: r.get(9)?,
                 fee: r.get(10)?,
-                detail: serde_json::Value::Null,
+                detail: crate::journal::Detail::from(serde_json::Value::Null),
                 created: r.get::<_, i64>(12)? as u64,
                 updated: r.get::<_, i64>(13)? as u64,
             },
@@ -1024,7 +1016,7 @@ impl AppDb {
     fn finish_op(raw: (Operation, String, String)) -> Result<Operation> {
         let (mut op, status, detail) = raw;
         op.status = OpStatus::parse(&status)?;
-        op.detail = serde_json::from_str(&detail).unwrap_or(serde_json::Value::Null);
+        op.detail = serde_json::from_str(&detail).unwrap_or(crate::journal::Detail::from(serde_json::Value::Null));
         Ok(op)
     }
 
@@ -1537,7 +1529,7 @@ mod tests {
         Operation {
             id: id.into(),
             network: "orchard".into(),
-            kind: "send_quai".into(),
+            kind: crate::journal::OpKind::SendQuai,
             store: "quai".into(),
             account: "0xabc".into(),
             status,
@@ -1546,7 +1538,7 @@ mod tests {
             amount: "1".into(),
             counterparty: "0xdef".into(),
             fee: String::new(),
-            detail: serde_json::json!({"a":1}),
+            detail: serde_json::json!({"note":1}).into(),
             created: now(),
             updated: now(),
         }
@@ -1609,13 +1601,13 @@ mod tests {
             db.notify("info", "Payment offer", "0.1 Qi waiting").unwrap();
             // The sealed message's review, journaled with its operation, text and all.
             let mut dm = op("dm1", OpStatus::Confirmed);
-            dm.kind = "board_post".into();
+            dm.kind = crate::journal::OpKind::BoardPost;
             dm.detail = serde_json::json!({"sealed": true, "review": {"fields": [
-                {"label": "To", "value": "PM8T…abcd"}, {"label": "Message", "value": secret}]}});
+                {"label": "To", "value": "PM8T…abcd"}, {"label": "Message", "value": secret}]}}).into();
             db.insert_operation(&dm).unwrap();
             let mut post = op("post1", OpStatus::Confirmed);
-            post.kind = "board_post".into();
-            post.detail = serde_json::json!({"channel": "general", "review": {"fields": [{"label": "Message", "value": "gm all"}]}});
+            post.kind = crate::journal::OpKind::BoardPost;
+            post.detail = serde_json::json!({"channel": "general", "review": {"fields": [{"label": "Message", "value": "gm all"}]}}).into();
             db.insert_operation(&post).unwrap();
             db.conn.pragma_update(None, "user_version", 7).unwrap();
             db.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
@@ -1630,7 +1622,7 @@ mod tests {
                 ("Payment offer".to_string(), "0.1 Qi waiting".to_string()),
             ]
         );
-        let fields = |id: &str| db.operation(id).unwrap().unwrap().detail["review"]["fields"].clone();
+        let fields = |id: &str| db.operation(id).unwrap().unwrap().detail.review()["fields"].clone();
         assert_eq!(fields("dm1")[1]["value"], crate::tx::PRIVATE_FIELD, "the sealed message's text is gone from its operation");
         assert_eq!(fields("dm1")[0]["value"], "PM8T…abcd", "the rest of the review stays");
         assert_eq!(fields("post1")[0]["value"], "gm all", "a public post is public anyway");
@@ -1848,7 +1840,7 @@ mod tests {
         let left: i64 =
             db.conn.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('schedules','schedule_runs')", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0);
-        assert_eq!(db.operation("aa11").unwrap().unwrap().kind, "convert_quai_to_qi", "history is kept");
+        assert_eq!(db.operation("aa11").unwrap().unwrap().kind.as_str(), "convert_quai_to_qi", "history is kept");
         db.insert_operation(&op("bb22", OpStatus::Signed)).unwrap();
     }
 
@@ -1873,7 +1865,7 @@ mod tests {
         db.insert_operation(&op("dd44", OpStatus::Submitted)).unwrap();
         db.insert_operation(&op("ee55", OpStatus::Confirmed)).unwrap();
         assert_eq!(db.awaiting_inclusion("orchard").unwrap().iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["dd44"]);
-        let patch = serde_json::json!({"included_block": 7});
+        let patch = crate::journal::Detail::from(serde_json::json!({"included_block": 7}));
         assert!(db.transition_operation("dd44", OpStatus::Submitted, OpStatus::Confirmed, None, None, Some(&patch)).unwrap());
         // A second tracker read it as submitted too: it neither moves it again nor puts it back.
         assert!(!db.transition_operation("dd44", OpStatus::Submitted, OpStatus::Confirmed, None, None, None).unwrap());
@@ -1881,7 +1873,7 @@ mod tests {
         let moved = db.operation("dd44").unwrap().unwrap();
         assert_eq!(moved.status, OpStatus::Confirmed);
         assert_eq!(moved.fee, "", "the late fee write did not land");
-        let stages: Vec<&str> = moved.detail[TIMELINE].as_array().unwrap().iter().filter_map(|s| s["s"].as_str()).collect();
+        let stages: Vec<&str> = moved.detail.timeline().as_array().unwrap().iter().filter_map(|s| s["s"].as_str()).collect();
         assert_eq!(stages, ["submitted", "confirmed"], "confirmed once, not twice");
         assert!(db.awaiting_inclusion("orchard").unwrap().is_empty());
     }
@@ -1891,10 +1883,10 @@ mod tests {
         let db = AppDb::memory().unwrap();
         db.insert_operation(&op("cc33", OpStatus::Signed)).unwrap();
         db.update_operation("cc33", OpStatus::Submitted, Some("0xhash"), None, None).unwrap();
-        db.update_operation("cc33", OpStatus::Submitted, Some("0xhash"), None, Some(&serde_json::json!({"x": 1}))).unwrap();
+        db.update_operation("cc33", OpStatus::Submitted, Some("0xhash"), None, Some(&crate::journal::Detail::from(serde_json::json!({"note": 1})))).unwrap();
         db.update_operation("cc33", OpStatus::Submitted, Some("0xother"), None, None).unwrap();
         db.update_operation("cc33", OpStatus::Confirmed, None, None, None).unwrap();
-        let stages: Vec<String> = db.operation("cc33").unwrap().unwrap().detail[TIMELINE]
+        let stages: Vec<String> = db.operation("cc33").unwrap().unwrap().detail.timeline()
             .as_array()
             .unwrap()
             .iter()
@@ -1908,11 +1900,11 @@ mod tests {
         let db = AppDb::memory().unwrap();
         db.insert_operation(&op("aa11", OpStatus::Signed)).unwrap();
         db.insert_operation(&op("bb22", OpStatus::Confirmed)).unwrap();
-        db.update_operation("aa11", OpStatus::Submitted, Some("0xhash"), Some("5"), Some(&serde_json::json!({"b":2}))).unwrap();
+        db.update_operation("aa11", OpStatus::Submitted, Some("0xhash"), Some("5"), Some(&crate::journal::Detail::from(serde_json::json!({"label":2})))).unwrap();
         let got = db.operation("aa11").unwrap().unwrap();
         assert_eq!(got.status, OpStatus::Submitted);
-        assert_eq!(got.detail["a"], 1);
-        assert_eq!(got.detail["b"], 2);
+        assert_eq!(*got.detail.note(), 1);
+        assert_eq!(*got.detail.label(), 2);
         assert_eq!(db.open_operations("orchard").unwrap().len(), 1);
         assert_eq!(db.find_operation("orchard", "0xHASH").unwrap().id, "aa11");
         assert_eq!(db.clear_history("orchard").unwrap(), 1);

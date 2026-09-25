@@ -2,6 +2,7 @@
 //! asks. The indexer only suggests; before any transfer or purchase the wallet re-reads
 //! ownership and the ask on-chain, and the SDK simulates the exact call.
 
+use crate::journal::OpKind;
 use crate::amount::{self, QUAI_DECIMALS};
 use crate::appdb::AppDb;
 use crate::chain::{addr, interface, is_zero_address};
@@ -730,11 +731,11 @@ pub fn local_nft_candidates(app: &AppDb, network: &str, owner: &str) -> Vec<(Str
             _ => false,
         })
         .filter_map(|o| {
-            let contract = o.detail["contract"].as_str()?.to_lowercase();
-            let token_id = o.detail["token_id"].as_str()?.to_string();
+            let contract = o.detail.contract().as_str()?.to_lowercase();
+            let token_id = o.detail.token_id().as_str()?.to_string();
             let kind =
-                if o.detail["standard"].as_str() == Some(TokenKind::Erc1155.label()) { TokenKind::Erc1155 } else { TokenKind::Erc721 };
-            let quantity = o.detail["quantity"].as_str().unwrap_or("1").to_string();
+                if o.detail.standard().as_str() == Some(TokenKind::Erc1155.label()) { TokenKind::Erc1155 } else { TokenKind::Erc721 };
+            let quantity = o.detail.quantity().as_str().unwrap_or("1").to_string();
             Some((contract, token_id, kind, quantity))
         })
         .collect()
@@ -939,7 +940,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: "Approve the marketplace for this collection (once)".into(),
             asset: "NFT".into(),
             amount: U256::ZERO,
@@ -961,7 +962,7 @@ impl Session {
                 "the helper can move any of your items in this collection, but only the Asks module can ask it to, and only to fill an ask you created".into(),
                 "revoke it later with setApprovalForAll(helper, false) if you stop selling; the contracts are unaudited".into(),
             ],
-            detail: json!({"purpose": "nft_list", "contract": contract.to_lowercase(), "operator": zora.erc721_helper.to_string()}),
+            detail: json!({"purpose": "nft_list", "contract": contract.to_lowercase(), "operator": zora.erc721_helper.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1023,7 +1024,7 @@ impl Session {
                 .prepare_account(AccountRequest {
                     from,
                     intent: call.into_account_intent(),
-                    kind: "nft_unlist".into(),
+                    kind: OpKind::NftUnlist,
                     title: format!("Cancel the listing of {shown}"),
                     asset: "NFT".into(),
                     amount: U256::ZERO,
@@ -1031,7 +1032,7 @@ impl Session {
                     counterparty: zora.asks.to_string(),
                     fields: vec![field("Collection", contract.to_lowercase()), field("Token id", token_id), field("Marketplace", marketplace)],
                     warnings: vec![],
-                    detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "name": name, "price": ask.price, "currency": ask.currency}),
+                    detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "name": name, "price": ask.price, "currency": ask.currency}).into(),
                     max_gas: 150_000,
                     max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
                 })
@@ -1084,7 +1085,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: if repricing { "nft_reprice" } else { "nft_list" }.into(),
+            kind: if repricing { OpKind::NftReprice } else { OpKind::NftList },
             title: if repricing { format!("Change the price of {shown}") } else { format!("List {shown} for sale") },
             asset: symbol.clone(),
             amount: amount_base,
@@ -1095,7 +1096,7 @@ impl Session {
                 format!("anyone can buy it for {price_shown} until you cancel; the sale settles on-chain without asking you again"),
                 "Zora V3 fork contracts are unaudited".into(),
             ],
-            detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "name": name, "price": amount_base.to_string(), "currency": currency, "symbol": symbol, "decimals": decimals}),
+            detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "name": name, "price": amount_base.to_string(), "currency": currency, "symbol": symbol, "decimals": decimals}).into(),
             max_gas: 250_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1116,24 +1117,24 @@ impl Session {
         // Newest listing-related operation per item decides whether it is still being watched.
         let mut latest: Vec<&crate::appdb::Operation> = Vec::new();
         for op in
-            ops.iter().filter(|o| matches!(o.kind.as_str(), "nft_list" | "nft_reprice" | "nft_unlist") && o.status == OpStatus::Confirmed)
+            ops.iter().filter(|o| matches!(o.kind, OpKind::NftList | OpKind::NftReprice | OpKind::NftUnlist) && o.status == OpStatus::Confirmed)
         {
             let same = |o: &&crate::appdb::Operation| {
-                o.detail["contract"] == op.detail["contract"] && o.detail["token_id"] == op.detail["token_id"]
+                o.detail.contract() == op.detail.contract() && o.detail.token_id() == op.detail.token_id()
             };
             if !latest.iter().any(same) {
                 latest.push(op);
             }
         }
         let watched: Vec<crate::appdb::Operation> =
-            latest.into_iter().filter(|o| o.kind != "nft_unlist" && o.detail["closed"].is_null()).cloned().collect();
+            latest.into_iter().filter(|o| o.kind != OpKind::NftUnlist && o.detail.closed().is_null()).cloned().collect();
         if watched.is_empty() {
             return Ok(Vec::new());
         }
         let zora = Zora::open(&self.app, &self.node, &self.network).await?;
         let mut sold = Vec::new();
         for op in watched {
-            let (Some(contract), Some(token_id)) = (op.detail["contract"].as_str(), op.detail["token_id"].as_str()) else { continue };
+            let (Some(contract), Some(token_id)) = (op.detail.contract().as_str(), op.detail.token_id().as_str()) else { continue };
             let state = match zora.seller_state(&self.node, contract, token_id, &op.account).await {
                 Ok(s) => s,
                 Err(_) => continue,
@@ -1141,19 +1142,19 @@ impl Session {
             if state.ask.is_some() {
                 continue;
             }
-            let name = op.detail["name"].as_str().map(str::to_string).unwrap_or_else(|| format!("NFT #{token_id}"));
+            let name = op.detail.name().as_str().map(str::to_string).unwrap_or_else(|| format!("NFT #{token_id}"));
             let outcome = if state.owns { "ended" } else { "sold" };
             self.app.update_operation(
                 &op.id,
                 op.status,
                 None,
                 None,
-                Some(&json!({"closed": outcome, "closed_at": crate::registry::now(), "buyer": state.owner})),
+                Some(&crate::journal::Detail::from(json!({"closed": outcome, "closed_at": crate::registry::now(), "buyer": state.owner}))),
             )?;
             if outcome == "sold" {
-                let decimals = op.detail["decimals"].as_u64().unwrap_or(18) as u8;
-                let symbol = op.detail["symbol"].as_str().unwrap_or("QUAI").to_string();
-                let price = U256::from_str_radix(op.detail["price"].as_str().unwrap_or("0"), 10).unwrap_or_default();
+                let decimals = op.detail.decimals().as_u64().unwrap_or(18) as u8;
+                let symbol = op.detail.symbol().as_str().unwrap_or("QUAI").to_string();
+                let price = U256::from_str_radix(op.detail.price().as_str().unwrap_or("0"), 10).unwrap_or_default();
                 let body = format!(
                     "{name} sold for {} {symbol} · buyer {}",
                     amount::format_amount(price, decimals),
@@ -1169,7 +1170,7 @@ impl Session {
                     address: op.account.clone(),
                     tx_hash: None,
                     block: None,
-                    detail: json!({"source": "marketplace", "sale": true, "contract": contract, "token_id": token_id, "name": name, "buyer": state.owner, "decimals": decimals}),
+                    detail: json!({"source": "marketplace", "sale": true, "contract": contract, "token_id": token_id, "name": name, "buyer": state.owner, "decimals": decimals}).into(),
                     observed: crate::registry::now(),
                 })?;
                 sold.push(body);
@@ -1257,7 +1258,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "nft_transfer".into(),
+            kind: OpKind::NftTransfer,
             title: format!("Transfer {}", name.clone().unwrap_or_else(|| format!("NFT #{token_id}"))),
             asset: "NFT".into(),
             amount: qty,
@@ -1270,7 +1271,7 @@ impl Session {
                 field("Recipient", recipient.to_string()),
             ],
             warnings,
-            detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "standard": kind.label(), "name": name, "quantity": qty.to_string()}),
+            detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "standard": kind.label(), "name": name, "quantity": qty.to_string()}).into(),
             max_gas: 250_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1298,7 +1299,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: "Approve marketplace module (once)".into(),
             asset: "NFT".into(),
             amount: U256::ZERO,
@@ -1323,7 +1324,7 @@ impl Session {
                 ),
             ],
             warnings: vec!["lets the Zora Asks module move tokens you approve to its transfer helpers; the contracts are unaudited".into()],
-            detail: json!({"purpose": "nft_buy", "module": zora.asks.to_string()}),
+            detail: json!({"purpose": "nft_buy", "module": zora.asks.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1352,7 +1353,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: format!("Approve {symbol} for NFT purchase"),
             asset: symbol.clone(),
             amount: price,
@@ -1371,7 +1372,7 @@ impl Session {
                 field("Allowance", format!("exactly {} {symbol}", amount::format_amount(price, decimals))),
             ],
             warnings: vec![],
-            detail: json!({"token": ask.currency, "purpose": "nft_buy", "decimals": decimals}),
+            detail: json!({"token": ask.currency, "purpose": "nft_buy", "decimals": decimals}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1439,7 +1440,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "nft_buy".into(),
+            kind: OpKind::NftBuy,
             title,
             asset: symbol.clone(),
             amount: price,
@@ -1455,7 +1456,7 @@ impl Session {
                 field("Royalties and fees", "paid from the price by the contract"),
             ],
             warnings: vec!["Zora V3 fork contracts are unaudited; the purchase executes exactly as simulated or reverts".into()],
-            detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "name": name, "seller": ask.seller, "currency": ask.currency, "decimals": decimals}),
+            detail: json!({"contract": contract.to_lowercase(), "token_id": token_id, "name": name, "seller": ask.seller, "currency": ask.currency, "decimals": decimals}).into(),
             max_gas: 600_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1514,7 +1515,7 @@ mod tests {
         let op = |id: &str, kind: &str, status: OpStatus, account: &str, counterparty: &str, detail: Value| Operation {
             id: id.into(),
             network: "mainnet".into(),
-            kind: kind.into(),
+            kind: crate::journal::OpKind::parse(kind),
             store: "quai".into(),
             account: account.into(),
             status,
@@ -1523,7 +1524,7 @@ mod tests {
             amount: "1".into(),
             counterparty: counterparty.into(),
             fee: String::new(),
-            detail,
+            detail: detail.into(),
             created: crate::registry::now(),
             updated: crate::registry::now(),
         };

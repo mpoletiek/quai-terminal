@@ -1,5 +1,6 @@
 //! The activity list: operations and observed transfers, newest first.
 
+use wallet_core::journal::OpKind;
 use super::*;
 
 impl App {
@@ -31,9 +32,6 @@ impl App {
     }
 
     pub(crate) fn build_activity_rows(&self, filter: ActivityFilter) -> Vec<(u64, bool, usize)> {
-        let nft_kind = |k: &str| k.starts_with("nft");
-        let trade_kind =
-            |k: &str| k == "swap" || k.starts_with("curve") || k.starts_with("convert") || k.contains("wrap") || k.contains("claim");
         let mut rows: Vec<(u64, bool, usize)> = self
             .dash
             .ops
@@ -42,10 +40,10 @@ impl App {
             .filter(|(_, o)| o.status != OpStatus::Cancelled)
             .filter(|(_, o)| match filter {
                 ActivityFilter::All => true,
-                ActivityFilter::Sends => o.kind.starts_with("send") || o.kind == "nft_transfer",
+                ActivityFilter::Sends => o.kind.is_send() || o.kind == OpKind::NftTransfer,
                 ActivityFilter::Receipts => false,
-                ActivityFilter::Trades => trade_kind(&o.kind),
-                ActivityFilter::Nfts => nft_kind(&o.kind),
+                ActivityFilter::Trades => o.kind.is_trade(),
+                ActivityFilter::Nfts => o.kind.is_nft(),
             })
             .map(|(i, o)| (o.created, true, i))
             .collect();
@@ -55,7 +53,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .filter(|(_, a)| {
-                    let nft = a.detail["standard"].as_str().is_some_and(|s| s != "ERC-20");
+                    let nft = a.detail.standard().as_str().is_some_and(|s| s != "ERC-20");
                     match filter {
                         ActivityFilter::All => true,
                         ActivityFilter::Sends => a.direction == "out",

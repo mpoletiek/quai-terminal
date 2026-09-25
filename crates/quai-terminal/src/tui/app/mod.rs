@@ -1295,7 +1295,7 @@ pub struct App {
     /// Background data worker (explorer, prices, images, quotes).
     pub data: Option<super::data::DataWorker>,
     /// Kind of the review being committed (follow-ups after submission).
-    pub committing_kind: Option<String>,
+    pub committing_kind: Option<wallet_core::journal::OpKind>,
     /// The help overlay shows the one-time "what moved" note.
     pub help_moved: bool,
 }

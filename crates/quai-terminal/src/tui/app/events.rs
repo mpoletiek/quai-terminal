@@ -1,5 +1,6 @@
 //! What happens to the app: worker events, locking and unlocking, onboarding, and the celebrations.
 
+use wallet_core::journal::OpKind;
 use super::*;
 
 impl App {
@@ -362,7 +363,7 @@ impl App {
                     self.after_submit(kind);
                 }
                 // A step in a sequence continues on its own; only the last step shows the result.
-                if !self.flow_on_submitted(&s.op_id, kind.as_deref().unwrap_or_default()) && !self.locked {
+                if !self.flow_on_submitted(&s.op_id, &kind.unwrap_or(OpKind::Other(String::new()))) && !self.locked {
                     self.modal = Modal::Result(s);
                 }
             }
@@ -641,7 +642,7 @@ impl App {
             };
             self.pill_resolved = Some((text, now));
         }
-        let confirmed: Vec<String> = next
+        let confirmed: Vec<OpKind> = next
             .ops
             .iter()
             .filter(|op| {
@@ -660,7 +661,7 @@ impl App {
             .ops
             .iter()
             .filter(|op| {
-                matches!(op.kind.as_str(), "swap" | "swap_exact_output")
+                matches!(op.kind, OpKind::Swap | OpKind::SwapExactOutput)
                     && matches!(op.status, OpStatus::Confirmed | OpStatus::Settled)
                     && self.dash.ops.iter().any(|o| o.id == op.id && !o.status.is_terminal())
             })
@@ -702,7 +703,7 @@ impl App {
         if wallet_core::registry::now().saturating_sub(a.observed) > RECENT_SECS {
             return false;
         }
-        match a.detail["token"].as_str() {
+        match a.detail.token().as_str() {
             // Native QUAI and Qi carry no token contract.
             None => matches!(a.asset.as_str(), "QUAI" | "QI" | "Qi"),
             Some(token) => {
@@ -989,18 +990,18 @@ pub(crate) fn swap_receipt(op: &wallet_core::appdb::Operation) -> String {
     use wallet_core::sdk::U256;
     let d = &op.detail;
     let atoms = |v: &serde_json::Value| v.as_str().and_then(|s| U256::from_str_radix(s, 10).ok()).or_else(|| v.as_u64().map(U256::from));
-    let from_decimals = d["decimals"].as_u64().unwrap_or(18) as u8;
-    let to_decimals = d["to_decimals"].as_u64().unwrap_or(18) as u8;
-    let to = d["to_symbol"].as_str().unwrap_or("?");
+    let from_decimals = d.decimals().as_u64().unwrap_or(18) as u8;
+    let to_decimals = d.to_decimals().as_u64().unwrap_or(18) as u8;
+    let to = d.to_symbol().as_str().unwrap_or("?");
     let paid = U256::from_str_radix(&op.amount, 10).ok().map(|v| super::super::num::short(v, from_decimals, 6));
-    let pair = match (paid, atoms(&d["actual_out"])) {
+    let pair = match (paid, atoms(d.actual_out())) {
         (Some(paid), Some(out)) => {
             format!("{paid} {} → {} {to}", super::super::num::unit(&op.asset), super::super::num::short(out, to_decimals, 6))
         }
         _ => format!("{} → {to}", super::super::num::unit(&op.asset)),
     };
     let f = |v: U256| wallet_core::amount::to_f64(v, to_decimals);
-    let versus = match (atoms(&d["actual_out"]), atoms(&d["expected_out"]), atoms(&d["minimum_out"])) {
+    let versus = match (atoms(d.actual_out()), atoms(d.expected_out()), atoms(d.minimum_out())) {
         (Some(out), Some(expected), minimum) if !expected.is_zero() => {
             let delta = (f(out) - f(expected)) / f(expected) * 100.0;
             if delta >= 0.005 {

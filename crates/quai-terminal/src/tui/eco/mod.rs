@@ -1,6 +1,7 @@
 //! Ecosystem state and interaction: portfolio, images, exchange cards (swap, convert, wrap),
 //! NFTs, listings and the detail stack. Rendering lives in `views`.
 
+use wallet_core::journal::OpKind;
 use super::app::{App, Detail, FormKind, Modal, Screen};
 use super::data::{DataCmd, DataEv};
 use super::worker::{Cmd, Prepare};
@@ -573,17 +574,17 @@ impl Flow {
 }
 
 /// A step, in the words the stepper uses, from the operation kind that was sent.
-pub fn step_name(kind: &str) -> String {
+pub fn step_name(kind: &OpKind) -> String {
     match kind {
-        "approve" => "approve".into(),
-        "wrap_quai" => "wrap QUAI".into(),
-        "unwrap_quai" => "unwrap WQUAI".into(),
-        "wrap_qi" => "wrap Qi".into(),
-        "unwrap_wqi" => "redeem WQI".into(),
-        "claim_wqi" => "claim".into(),
-        k if k.starts_with("nft_buy") => "buy".into(),
-        k if k.starts_with("nft_list") => "list".into(),
-        k => k.replace('_', " "),
+        OpKind::Approve => "approve".into(),
+        OpKind::WrapQuai => "wrap QUAI".into(),
+        OpKind::UnwrapQuai => "unwrap WQUAI".into(),
+        OpKind::WrapQi => "wrap Qi".into(),
+        OpKind::UnwrapWqi => "redeem WQI".into(),
+        OpKind::ClaimWqi => "claim".into(),
+        k if k.as_str().starts_with("nft_buy") => "buy".into(),
+        k if k.as_str().starts_with("nft_list") => "list".into(),
+        k => k.as_str().replace('_', " "),
     }
 }
 
@@ -645,7 +646,7 @@ pub struct Flow {
     pub last_poll: Instant,
 }
 
-type ResumableFlow = (Flow, Option<(String, String)>);
+type ResumableFlow = (Flow, Option<(String, wallet_core::journal::OpKind)>);
 
 /// A PNG ready for the terminal and its content key (kitty transmits each key once).
 pub type KittyPng = (Arc<Vec<u8>>, u64);
@@ -1571,7 +1572,7 @@ impl App {
         if a.direction != "in" {
             return false;
         }
-        let Some(from) = a.detail["counterparty"].as_str().map(str::to_lowercase) else { return false };
+        let Some(from) = a.detail.counterparty().as_str().map(str::to_lowercase) else { return false };
         if !wallet_core::recipient::is_dust(a) {
             return false;
         }
@@ -1579,7 +1580,7 @@ impl App {
         let own = self.meta.as_ref().is_some_and(|m| m.quai_accounts.iter().any(|x| known(&x.address)));
         let contact = self.dash.contacts.iter().any(|c| c.address.as_deref().is_some_and(known));
         let sent_to = self.dash.ops.iter().any(|o| known(&o.counterparty))
-            || self.dash.activity.iter().any(|x| x.direction == "out" && x.detail["counterparty"].as_str().is_some_and(known));
+            || self.dash.activity.iter().any(|x| x.direction == "out" && x.detail.counterparty().as_str().is_some_and(known));
         !(own || contact || sent_to)
     }
 }

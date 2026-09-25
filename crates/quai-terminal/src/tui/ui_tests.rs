@@ -1,3 +1,4 @@
+use wallet_core::journal::OpKind;
 use super::*;
 
 /// The receive tab reads " QUAI " in bold on the QUAI color, the same style as the QUAI
@@ -84,7 +85,7 @@ fn pending_transactions_take_one_corner_line() {
     let op = |status| Operation {
         id: "a1".into(),
         network: "local".into(),
-        kind: "send_quai".into(),
+        kind: OpKind::SendQuai,
         store: "quai".into(),
         account: "0x00".into(),
         status,
@@ -93,7 +94,7 @@ fn pending_transactions_take_one_corner_line() {
         amount: "1500000000000000000".into(),
         counterparty: String::new(),
         fee: "0".into(),
-        detail: serde_json::json!({}),
+        detail: serde_json::json!({}).into(),
         created: 0,
         updated: wallet_core::registry::now(),
     };
@@ -500,7 +501,7 @@ fn activity_names_contacts() {
     let op = |kind: &str, counterparty: &str, detail: serde_json::Value| Operation {
         id: "x".into(),
         network: "local".into(),
-        kind: kind.into(),
+        kind: wallet_core::journal::OpKind::parse(kind),
         store: "quai".into(),
         account: "0x00".into(),
         status: OpStatus::Confirmed,
@@ -509,7 +510,7 @@ fn activity_names_contacts() {
         amount: "1000000000000000000".into(),
         counterparty: counterparty.into(),
         fee: "0".into(),
-        detail,
+        detail: detail.into(),
         created: 0,
         updated: 0,
     };
@@ -533,7 +534,7 @@ fn activity_names_contacts() {
         address: "0x00F4945eAC522b7C8D2FA80d569aA2854dbb804B".into(),
         tx_hash: None,
         block: None,
-        detail,
+        detail: detail.into(),
         observed: 0,
     };
     assert_eq!(activity_contact(&app, &received(serde_json::json!({"peer": code}))), Some("bob"));
@@ -566,7 +567,7 @@ pub(crate) fn modals(app: &App) -> Vec<Modal> {
         Modal::Review(ReviewState {
             review: wallet_core::tx::Review {
                 op_id: "x".into(),
-                kind: "send_quai".into(),
+                kind: OpKind::SendQuai,
                 title: "Send QUAI".into(),
                 network: "Local dev".into(),
                 from: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a (Account 1)".into(),
@@ -590,13 +591,13 @@ pub(crate) fn modals(app: &App) -> Vec<Modal> {
                 ],
                 fee_over_policy: true,
                 changes: wallet_core::tx::balance_changes(
-                    "send_quai",
+                    &wallet_core::journal::OpKind::SendQuai,
                     "QUAI",
                     U256::from(10u64).pow(U256::from(18u8)),
                     18,
                     U256::from(10u64).pow(U256::from(18u8)),
                     (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
-                    &serde_json::Value::Null,
+                    &wallet_core::journal::Detail::new(),
                 ),
             },
             scroll: 0,
@@ -608,7 +609,7 @@ pub(crate) fn modals(app: &App) -> Vec<Modal> {
         Modal::Review(ReviewState {
             review: wallet_core::tx::Review {
                 op_id: "y".into(),
-                kind: "nft_buy".into(),
+                kind: OpKind::NftBuy,
                 title: "Buy Quai Pepe #212".into(),
                 network: "Quai Mainnet".into(),
                 from: "0x00 (Account 1)".into(),
@@ -629,13 +630,13 @@ pub(crate) fn modals(app: &App) -> Vec<Modal> {
                 }],
                 fee_over_policy: false,
                 changes: wallet_core::tx::balance_changes(
-                    "nft_buy",
+                    &wallet_core::journal::OpKind::NftBuy,
                     "QUAI",
                     U256::from(1000u64) * U256::from(10u64).pow(U256::from(18u8)),
                     18,
                     U256::from(1000u64) * U256::from(10u64).pow(U256::from(18u8)),
                     (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
-                    &serde_json::json!({"name": "Quai Pepe #212", "token_id": "212"}),
+                    &wallet_core::journal::Detail::from(serde_json::json!({"name": "Quai Pepe #212", "token_id": "212"})),
                 ),
             },
             scroll: 0,
@@ -1130,7 +1131,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
                 address: "0x00".into(),
                 tx_hash: Some("0x1".into()),
                 block: Some(1),
-                detail: serde_json::json!({"source": "explorer", "standard": "ERC-721", "token_id": "12", "name": "Quai Miners", "counterparty": "0x00cc"}),
+                detail: serde_json::json!({"source": "explorer", "standard": "ERC-721", "token_id": "12", "name": "Quai Miners", "counterparty": "0x00cc"}).into(),
                 // Two hours before the frozen clock.
                 observed: 1_789_705_234 - 7200,
             });
@@ -1753,7 +1754,7 @@ fn confirmation_tally() {
     let mut op = wallet_core::appdb::Operation {
         id: "a".into(),
         network: "local".into(),
-        kind: "send_quai".into(),
+        kind: OpKind::SendQuai,
         store: "quai".into(),
         account: "0x00".into(),
         status: OpStatus::Confirmed,
@@ -1762,7 +1763,7 @@ fn confirmation_tally() {
         amount: "1".into(),
         counterparty: String::new(),
         fee: String::new(),
-        detail: serde_json::json!({"included_block": 100}),
+        detail: serde_json::json!({"included_block": 100}).into(),
         created: 0,
         updated: 0,
     };
@@ -2008,7 +2009,7 @@ fn sample_pnl() -> wallet_core::pnl::Pnl {
         op_id: id.into(),
         at,
         tx: Some(format!("0x{id}")),
-        kind: "swap".into(),
+        kind: OpKind::Swap,
         account: "0xme".into(),
         quai,
         legs,
@@ -2086,7 +2087,7 @@ fn an_operation_shows_its_timeline() {
     app.dash.ops = vec![Operation {
         id: "op1".into(),
         network: "local".into(),
-        kind: "send_quai".into(),
+        kind: OpKind::SendQuai,
         store: "quai".into(),
         account: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(),
         status: OpStatus::Submitted,
@@ -2100,7 +2101,7 @@ fn an_operation_shows_its_timeline() {
             {"s": "signed", "at": t0 + 19},
             {"s": "submitted", "at": t0 + 20},
             {"s": "replaced", "at": t0 + 68, "tx": "0x00bbccddeeff00112233445566778899aabbccdd"},
-        ]}),
+        ]}).into(),
         created: t0,
         updated: t0 + 68,
     }];

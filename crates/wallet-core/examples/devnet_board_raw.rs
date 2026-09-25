@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .prepare_account(AccountRequest {
             from: from.clone(),
             intent: call.into_account_intent(),
-            kind: "board_post".into(),
+            kind: wallet_core::journal::OpKind::BoardPost,
             title: "Raw board post (dev chain)".into(),
             asset: "QUAI".into(),
             amount: U256::ZERO,
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             counterparty: "raw".into(),
             fields: vec![],
             warnings: vec![],
-            detail: serde_json::json!({"raw": true}),
+            detail: serde_json::json!({"raw": true}).into(),
             max_gas: 400_000,
             max_fee: None,
         })

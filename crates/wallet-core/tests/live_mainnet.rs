@@ -703,12 +703,12 @@ async fn swap_output_decodes_real_receipts() {
     // swapExactTokensForETH by 0x004a1e… (USDT → QUAI), 2026-09-15.
     let hash = "0x00550009b278724f0d95fd7c137b4a21391970692ac88659111b6e9619b13605".parse().unwrap();
     let receipt = ctx.node.provider.receipt(wallet_core::network::ZONE, hash).await.unwrap().unwrap();
-    let detail = serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "quai"});
+    let detail = wallet_core::journal::Detail::from(serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "quai"}));
     let out = wallet_core::track::swap_output(&receipt, &detail, ctx.network.wquai.as_deref()).expect("withdrawal found");
     eprintln!("native out: {} QUAI", wallet_core::amount::quai(out));
     assert!(!out.is_zero());
     // Asking for a token the swap did not pay out finds nothing.
-    let wrong = serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "0x002b2596ecf05c93a31ff916e8b456df6c77c750"});
+    let wrong = wallet_core::journal::Detail::from(serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "0x002b2596ecf05c93a31ff916e8b456df6c77c750"}));
     assert!(wallet_core::track::swap_output(&receipt, &wrong, ctx.network.wquai.as_deref()).is_none());
 }
 

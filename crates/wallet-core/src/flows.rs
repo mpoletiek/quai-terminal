@@ -2,6 +2,7 @@
 //! sign — the approval while one is missing, then the action — so the CLI and the TUI walk the
 //! same steps: sign what comes back, wait for it to confirm, and ask again.
 
+use crate::journal::OpKind;
 use crate::error::{CoreError, Result};
 use crate::session::Session;
 use crate::tx::Review;
@@ -14,8 +15,8 @@ pub fn is_step(review: &Review) -> bool {
 /// [`is_step`] for a recorded operation's kind: an approval, or the QUAI wrapped to fund the
 /// action ([`Session::prewrap_quai`]). No sequence ends on a wrap — Trade › Wrap is prepared on
 /// its own, never through a sequence — so inside one a wrap is always a step.
-pub fn is_step_kind(kind: &str) -> bool {
-    kind == "approve" || kind == "wrap_quai"
+pub fn is_step_kind(kind: &OpKind) -> bool {
+    kind.is_sequence_step()
 }
 
 /// Gas a sequence may still spend once the shortfall is wrapped: the wrap itself, an approval
@@ -282,10 +283,10 @@ mod allowance_tests {
     /// A funding wrap continues a sequence as an approval does; nothing else is a step.
     #[test]
     fn a_funding_wrap_is_a_step_and_the_action_is_not() {
-        assert!(is_step_kind("approve"));
-        assert!(is_step_kind("wrap_quai"));
+        assert!(is_step_kind(&crate::journal::OpKind::Approve));
+        assert!(is_step_kind(&crate::journal::OpKind::WrapQuai));
         for kind in ["swap", "swap_exact_output", "add_liquidity", "wrap_qi", "unwrap_quai", "curve_buy"] {
-            assert!(!is_step_kind(kind), "{kind}");
+            assert!(!is_step_kind(&crate::journal::OpKind::parse(kind)), "{kind}");
         }
     }
 }

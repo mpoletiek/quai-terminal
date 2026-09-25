@@ -26,6 +26,7 @@ pub mod hartii_tx;
 pub mod http;
 pub mod identity;
 pub mod ipfs;
+pub mod journal;
 pub mod launches;
 pub mod liquidity;
 pub mod market;
@@ -51,6 +52,8 @@ pub mod registry;
 pub mod routes;
 pub mod ser;
 pub mod session;
+#[cfg(test)]
+mod testutil;
 pub mod spendable;
 pub mod split_routes;
 pub mod subgraph;

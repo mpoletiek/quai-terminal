@@ -113,9 +113,9 @@ pub(crate) fn contract_of(r: &AssetRow) -> String {
 
 /// One-line activity description for token/NFT transfer rows and receipts.
 pub fn activity_text(a: &Activity) -> String {
-    if a.detail["sale"].as_bool() == Some(true) {
-        let name = a.detail["name"].as_str().unwrap_or("NFT");
-        let decimals = a.detail["decimals"].as_u64().unwrap_or(18) as u8;
+    if a.detail.sale().as_bool() == Some(true) {
+        let name = a.detail.name().as_str().unwrap_or("NFT");
+        let decimals = a.detail.decimals().as_u64().unwrap_or(18) as u8;
         let v: U256 = a.amount.parse().unwrap_or_default();
         return format!(
             "sold {name} for {} {}",
@@ -123,14 +123,14 @@ pub fn activity_text(a: &Activity) -> String {
             num::unit(&a.asset)
         );
     }
-    if a.detail["source"].as_str() == Some("explorer") {
-        let standard = a.detail["standard"].as_str().unwrap_or("ERC-20");
+    if a.detail.source().as_str() == Some("explorer") {
+        let standard = a.detail.standard().as_str().unwrap_or("ERC-20");
         let verb = if a.direction == "in" { "received" } else { "sent" };
         if standard != "ERC-20" {
-            let name = a.detail["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(&a.asset);
-            return format!("{verb} {name} #{}", a.detail["token_id"].as_str().unwrap_or("?"));
+            let name = a.detail.name().as_str().filter(|n| !n.is_empty()).unwrap_or(&a.asset);
+            return format!("{verb} {name} #{}", a.detail.token_id().as_str().unwrap_or("?"));
         }
-        let decimals = a.detail["decimals"].as_u64().unwrap_or(18) as u8;
+        let decimals = a.detail.decimals().as_u64().unwrap_or(18) as u8;
         let v: U256 = a.amount.parse().unwrap_or_default();
         return format!("{verb} {} {}", amount::group_thousands(&amount::format_amount_short(v, decimals, 4)), num::unit(&a.asset));
     }

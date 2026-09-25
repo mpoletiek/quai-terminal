@@ -113,57 +113,49 @@ impl TradingIntent {
             )
     }
 
+    /// Move a saved plan past the operation that just completed, on its typed receipt. Anything
+    /// the receipt cannot prove (another signer, another token, an output never attributed) stops
+    /// the plan with the reason; nothing is inferred from an absent field.
     pub fn advance_allocation(&mut self, op: &crate::appdb::Operation) -> Result<bool> {
+        use crate::journal::{ReceiptError, SwapReceipt, WqiClaim, WrapDeposit};
+        let rejected = |why: &str| CoreError::Rejected(why.into());
         if let TradingAction::MarketConversion { direction, amount, stage, wqi, residual_atoms, .. } = &mut self.action {
             use crate::qi_market::Direction;
             use crate::sdk::U256;
-            let included = matches!(op.status, crate::appdb::OpStatus::Confirmed | crate::appdb::OpStatus::Settled);
-            let owned = op.account.eq_ignore_ascii_case(&self.account);
-            let receipt_atoms = || {
-                op.detail["actual_out"]
-                    .as_str()
-                    .and_then(|v| U256::from_str_radix(v, 10).ok())
-                    .ok_or_else(|| CoreError::Rejected("receipt-attributed conversion output remains unavailable".into()))
-            };
+            let output_unknown = || rejected("receipt-attributed conversion output remains unavailable");
+            let names_wqi = op.detail.to_token().as_str().is_some_and(|t| t.eq_ignore_ascii_case(wqi));
             match (*direction, *stage) {
                 (Direction::QuaiToQi, 0) => {
-                    if !included
-                        || !owned
-                        || op.kind != "swap"
-                        || !op.detail["to_token"].as_str().is_some_and(|v| v.eq_ignore_ascii_case(wqi))
-                    {
-                        return Err(CoreError::Rejected("market swap receipt does not match the conversion plan".into()));
-                    }
-                    let paid = receipt_atoms()?;
+                    let receipt = match SwapReceipt::of(op, &self.account) {
+                        Ok(r) if r.delivered(wqi) => r,
+                        Err(ReceiptError::OutputUnknown) if names_wqi => return Err(output_unknown()),
+                        _ => return Err(rejected("market swap receipt does not match the conversion plan")),
+                    };
                     let unit = U256::from(10).pow(U256::from(18));
-                    let whole = paid / unit;
-                    *residual_atoms = (paid % unit).to_string();
+                    let whole = receipt.actual_out / unit;
+                    *residual_atoms = (receipt.actual_out % unit).to_string();
                     *amount = whole.to_string();
                     *stage = if whole.is_zero() { 2 } else { 1 };
                     return Ok(!whole.is_zero());
                 }
                 (Direction::QiToQuai, 0) => {
-                    if op.kind != "wrap_qi"
-                        || op.status != crate::appdb::OpStatus::Settled
-                        || !op.detail["beneficiary"].as_str().is_some_and(|v| v.eq_ignore_ascii_case(&self.account))
-                        || op.amount != crate::amount::parse_qi(amount)?.to_string()
-                    {
-                        return Err(CoreError::Rejected("the saved Qi deposit has not settled for this beneficiary".into()));
+                    let wanted = crate::amount::parse_qi(amount)?;
+                    let settled = WrapDeposit::of(op).is_ok_and(|d| d.beneficiary.eq_ignore_ascii_case(&self.account) && d.qits == wanted);
+                    if !settled {
+                        return Err(rejected("the saved Qi deposit has not settled for this beneficiary"));
                     }
                     *stage = 1;
                     return Ok(true);
                 }
                 (Direction::QiToQuai, 1) => {
-                    if !included
-                        || !owned
-                        || op.kind != "claim_wqi"
-                        || !op.detail["to_token"].as_str().is_some_and(|v| v.eq_ignore_ascii_case(wqi))
-                    {
-                        return Err(CoreError::Rejected("wrapped-token claim receipt does not match this plan".into()));
-                    }
+                    let claim = match WqiClaim::of(op, &self.account) {
+                        Ok(c) if c.to_token.eq_ignore_ascii_case(wqi) => c,
+                        Err(ReceiptError::OutputUnknown) if names_wqi => return Err(output_unknown()),
+                        _ => return Err(rejected("wrapped-token claim receipt does not match this plan")),
+                    };
                     let expected = crate::sdk::wrappers::qits_to_wqi_atoms(crate::amount::parse_qi(amount)?)?;
-                    if receipt_atoms()? < expected {
-                        return Err(CoreError::Rejected("claim did not deliver the plan's wrapped tokens".into()));
+                    if claim.actual_out < expected {
+                        return Err(rejected("claim did not deliver the plan's wrapped tokens"));
                     }
                     // Other claimable deposits remain in the wallet; only this plan's amount is spent.
                     *amount = crate::amount::format_amount(expected, 18);
@@ -177,23 +169,20 @@ impl TradingIntent {
             if *stage != 0 {
                 return Ok(false);
             }
-            let paid = op.detail["actual_out"]
-                .as_str()
-                .and_then(|v| crate::sdk::U256::from_str_radix(v, 10).ok())
-                .filter(|v| !v.is_zero())
-                .ok_or_else(|| CoreError::Rejected("first swap has no attributable onward output".into()))?;
-            let decimals = op.detail["to_decimals"]
-                .as_u64()
-                .filter(|v| *v <= 77)
-                .ok_or_else(|| CoreError::Rejected("first swap output units are unknown".into()))? as u8;
-            if !matches!(op.status, crate::appdb::OpStatus::Confirmed | crate::appdb::OpStatus::Settled)
-                || op.kind != "swap"
-                || !op.account.eq_ignore_ascii_case(&self.account)
-                || !op.detail["to_token"].as_str().is_some_and(|v| v.eq_ignore_ascii_case(hub))
-            {
-                return Err(CoreError::Rejected("first swap receipt does not match the saved route".into()));
+            // What the second leg would spend must be attributed, non-zero and in known units
+            // before the route's identity is even compared.
+            if op.detail.actual_out_atoms().is_none_or(|v| v.is_zero()) {
+                return Err(rejected("first swap has no attributable onward output"));
             }
-            *amount = crate::amount::format_amount(paid, decimals);
+            if op.detail.to_decimals_u8().is_none() {
+                return Err(rejected("first swap output units are unknown"));
+            }
+            let receipt = SwapReceipt::of(op, &self.account)
+                .ok()
+                .filter(|r| r.delivered(hub))
+                .ok_or_else(|| rejected("first swap receipt does not match the saved route"))?;
+            let decimals = receipt.decimals().map_err(|_| rejected("first swap output units are unknown"))?;
+            *amount = crate::amount::format_amount(receipt.actual_out, decimals);
             *from = hub.clone();
             *stage = 1;
             return Ok(true);
@@ -203,19 +192,14 @@ impl TradingIntent {
             return Ok(false);
         }
         let selected = &plan.allocations[*index];
-        let paid = op.detail["actual_out"].as_str().and_then(|v| crate::sdk::U256::from_str_radix(v, 10).ok());
         let minimum =
             crate::sdk::U256::from_str_radix(&selected.minimum_out, 10).map_err(|_| CoreError::Invalid("split minimum".into()))?;
-        if !matches!(op.status, crate::appdb::OpStatus::Confirmed | crate::appdb::OpStatus::Settled)
-            || op.kind != "swap"
-            || op.detail["split"]["allocation_index"].as_u64() != Some(*index as u64)
-            || !op.account.eq_ignore_ascii_case(&self.account)
+        let paid = SwapReceipt::of(op, &self.account).ok().map(|r| r.actual_out);
+        if paid.is_none_or(|paid| paid < minimum)
+            || op.detail.split_allocation_index() != Some(*index as u64)
             || op.amount != selected.amount_in
-            || paid.is_none_or(|paid| paid < minimum)
         {
-            return Err(CoreError::Rejected(
-                "split receipt is not attributed to the confirmed allocation; reconcile before continuing".into(),
-            ));
+            return Err(rejected("split receipt is not attributed to the confirmed allocation; reconcile before continuing"));
         }
         *index += 1;
         Ok(true)
@@ -560,7 +544,7 @@ mod tests {
         intent.action = action.clone();
         let mut op = session.new_op(
             crate::sdk::wallet::storage::ReservationId([63; 16]),
-            "swap",
+            crate::journal::OpKind::Swap,
             "quai",
             &intent.account,
             "QUAI",
@@ -576,7 +560,7 @@ mod tests {
         assert_eq!(residual_atoms, "750000000000000000");
         assert!(!intent.advance_allocation(&op).unwrap(), "a previous receipt cannot repeat the swap stage");
         intent.action = action.clone();
-        op.detail["actual_out"] = json!("750000000000000000");
+        op.detail.set_actual_out(json!("750000000000000000"));
         assert!(!intent.advance_allocation(&op).unwrap(), "sub-one-Qi fills finish with WQI residuals");
         assert!(
             matches!(&intent.action,TradingAction::MarketConversion{stage:2,residual_atoms,..} if residual_atoms=="750000000000000000")
@@ -602,7 +586,7 @@ mod tests {
         };
         let mut op = session.new_op(
             crate::sdk::wallet::storage::ReservationId([64; 16]),
-            "wrap_qi",
+            crate::journal::OpKind::WrapQi,
             "qi",
             "Qi wallet",
             "Qi",
@@ -616,7 +600,7 @@ mod tests {
         assert!(intent.advance_allocation(&op).unwrap());
         let mut claim = session.new_op(
             crate::sdk::wallet::storage::ReservationId([65; 16]),
-            "claim_wqi",
+            crate::journal::OpKind::ClaimWqi,
             "quai",
             &intent.account,
             "WQI",
@@ -639,7 +623,7 @@ mod tests {
         session.begin_plan_preparation(&id).unwrap();
         let mut op = session.new_op(
             crate::sdk::wallet::storage::ReservationId([77; 16]),
-            "swap",
+            crate::journal::OpKind::Swap,
             "quai",
             &intent.account,
             "QUAI",

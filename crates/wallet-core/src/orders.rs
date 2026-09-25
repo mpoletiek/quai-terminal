@@ -1,5 +1,6 @@
 //! Durable client-side limit triggers. No daemon receives signing authority. A fixed input and
 //! minimum output define the limit price; each signing client re-quotes and checks frozen bounds.
+use crate::journal::OpKind;
 use crate::appdb::{OpStatus, Operation};
 use crate::data::Trust;
 use crate::error::{CoreError, Result};
@@ -402,29 +403,29 @@ impl Spec {
             || now >= self.expires_at
             || op.network != self.network
             || !op.account.eq_ignore_ascii_case(&self.account)
-            || (atoms(&op.amount)? != atoms(&self.input_atoms)? && !(op.kind == "approve" && atoms(&op.amount)?.is_zero()))
+            || (atoms(&op.amount)? != atoms(&self.input_atoms)? && !(op.kind == OpKind::Approve && atoms(&op.amount)?.is_zero()))
             || atoms(&op.fee)? > atoms(&self.maximum_fee_atoms)?
         {
             return Err(CoreError::Rejected("order expired or prepared owner/input/fee exceeds its authorization".into()));
         }
-        let text = |key| op.detail[key].as_str().unwrap_or_default();
-        if op.kind == "approve" {
-            if op.detail["decimals"].as_u64() != Some(u64::from(self.input_decimals))
-                || !text("token").eq_ignore_ascii_case(&self.from)
-                || !text("spender").eq_ignore_ascii_case(&self.router)
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        if op.kind == OpKind::Approve {
+            if op.detail.decimals().as_u64() != Some(u64::from(self.input_decimals))
+                || !text(op.detail.token()).eq_ignore_ascii_case(&self.from)
+                || !text(op.detail.spender()).eq_ignore_ascii_case(&self.router)
             {
                 return Err(CoreError::Rejected("order approval token or spender changed".into()));
             }
-        } else if op.kind == "swap" {
-            if op.detail["decimals"].as_u64() != Some(u64::from(self.input_decimals))
-                || op.detail["to_decimals"].as_u64() != Some(u64::from(self.output_decimals))
+        } else if op.kind == OpKind::Swap {
+            if op.detail.decimals().as_u64() != Some(u64::from(self.input_decimals))
+                || op.detail.to_decimals().as_u64() != Some(u64::from(self.output_decimals))
                 || !op.counterparty.eq_ignore_ascii_case(&self.router)
-                || !text("router").eq_ignore_ascii_case(&self.router)
-                || !text("recipient").eq_ignore_ascii_case(&self.account)
-                || !text("from_token").eq_ignore_ascii_case(&self.from)
-                || !text("to_token").eq_ignore_ascii_case(&self.to)
-                || atoms(text("minimum_out"))? < atoms(&self.minimum_output_atoms)?
-                || op.detail["expires_at"].as_u64().is_none_or(|deadline| deadline > self.expires_at || deadline <= now)
+                || !text(op.detail.router()).eq_ignore_ascii_case(&self.router)
+                || !text(op.detail.recipient()).eq_ignore_ascii_case(&self.account)
+                || !text(op.detail.from_token()).eq_ignore_ascii_case(&self.from)
+                || !text(op.detail.to_token()).eq_ignore_ascii_case(&self.to)
+                || atoms(&text(op.detail.minimum_out()))? < atoms(&self.minimum_output_atoms)?
+                || op.detail.expires_at().as_u64().is_none_or(|deadline| deadline > self.expires_at || deadline <= now)
             {
                 return Err(CoreError::Rejected("frozen swap does not preserve the order's venue, recipient, limit or expiry".into()));
             }
@@ -546,7 +547,7 @@ fn reconcile(session: &Session, plan: &mut TradePlan, value: &mut Record) -> Res
     let mut ready = true;
     for id in &plan.operations {
         let op = session.app.operation(id)?.ok_or_else(|| CoreError::Rejected("order operation history is missing".into()))?;
-        if op.network != plan.network || op.detail["plan_id"].as_str() != Some(plan.id.as_str()) {
+        if op.network != plan.network || op.detail.plan_id().as_str() != Some(plan.id.as_str()) {
             return Err(CoreError::Rejected("order operation history belongs to another plan".into()));
         }
     }
@@ -563,7 +564,7 @@ fn reconcile(session: &Session, plan: &mut TradePlan, value: &mut Record) -> Res
         }
         match op.status {
             OpStatus::Cancelled if op.tx_hash.is_none() => {}
-            OpStatus::Confirmed | OpStatus::Settled if op.kind == "approve" => {}
+            OpStatus::Confirmed | OpStatus::Settled if op.kind == OpKind::Approve => {}
             OpStatus::Confirmed | OpStatus::Settled => {
                 value.state = State::Complete;
                 ready = false;
@@ -719,7 +720,7 @@ pub async fn prepare(session: &mut Session, id: &str) -> Result<Option<Review>> 
 /// Commit hook: hold this guard through signing/broadcast. Cancellation uses the same lease,
 /// so it either prevents signing or reports that another client is advancing the order.
 pub fn submission_guard(session: &Session, op: &Operation) -> Result<Option<std::fs::File>> {
-    let Some(id) = op.detail["plan_id"].as_str() else { return Ok(None) };
+    let Some(id) = op.detail.plan_id().as_str() else { return Ok(None) };
     let Some(candidate) = session.app.trade_plan(id)? else {
         return Err(CoreError::Rejected("operation plan is missing".into()));
     };
@@ -740,12 +741,8 @@ pub fn submission_guard(session: &Session, op: &Operation) -> Result<Option<std:
     // Compare the review payload, while allowing that bookkeeping-only field.
     let mut current_detail = current.detail.clone();
     let mut reviewed_detail = op.detail.clone();
-    if let Some(detail) = current_detail.as_object_mut() {
-        detail.remove(crate::appdb::TIMELINE);
-    }
-    if let Some(detail) = reviewed_detail.as_object_mut() {
-        detail.remove(crate::appdb::TIMELINE);
-    }
+    current_detail.take_timeline();
+    reviewed_detail.take_timeline();
     if current_detail != reviewed_detail || current.account != op.account || current.amount != op.amount || current.fee != op.fee {
         return Err(CoreError::Rejected("order review changed after it was displayed".into()));
     }
@@ -895,7 +892,7 @@ mod tests {
         Operation {
             id: id.into(),
             network: spec.network.clone(),
-            kind: "swap".into(),
+            kind: OpKind::Swap,
             store: "quai".into(),
             account: spec.account.clone(),
             status: OpStatus::Prepared,
@@ -904,7 +901,7 @@ mod tests {
             amount: spec.input_atoms.clone(),
             counterparty: spec.router.clone(),
             fee: "9".into(),
-            detail: json!({"plan_id":plan,"router":spec.router,"recipient":spec.account,"from_token":spec.from,"to_token":spec.to,"decimals":18,"to_decimals":6,"minimum_out":"200","expires_at":spec.expires_at}),
+            detail: json!({"plan_id":plan,"router":spec.router,"recipient":spec.account,"from_token":spec.from,"to_token":spec.to,"decimals":18,"to_decimals":6,"minimum_out":"200","expires_at":spec.expires_at}).into(),
             created: now,
             updated: now,
         }
@@ -984,7 +981,7 @@ mod tests {
             ("router", json!("another")),
         ] {
             let mut bad = base.clone();
-            bad.detail[key] = value;
+            bad.detail.test_set(key, value);
             assert!(s.check_operation(&bad, 100).is_err(), "{key}");
         }
         let mut bad = base.clone();

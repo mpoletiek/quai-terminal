@@ -12,6 +12,7 @@
 //! Staking, unstaking and claiming also serve the launch-zone gauges (`zone.rs`), which share
 //! those four signatures: `Session::stake_target` decides which gauge a pair belongs to.
 
+use crate::journal::OpKind;
 use crate::amount;
 use crate::markets::PoolToken;
 use quai_sdk::U256;
@@ -761,7 +762,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: "Approve LP for staking (step 1 of 2)".into(),
             asset: "LP".into(),
             amount: atoms,
@@ -773,7 +774,7 @@ impl Session {
                 field("Allowance", format!("exactly {} LP", crate::amount::format_amount(atoms, 18))),
             ],
             warnings: vec![],
-            detail: serde_json::json!({"token": pair, "purpose": "stake", "spender": gauge_address.to_string()}),
+            detail: serde_json::json!({"token": pair, "purpose": "stake", "spender": gauge_address.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -823,7 +824,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "stake".into(),
+            kind: OpKind::Stake,
             title: format!("Stake LP in the {}", target.kind.label()),
             asset: "LP".into(),
             amount: atoms,
@@ -832,7 +833,7 @@ impl Session {
             fields,
             warnings,
             detail: serde_json::json!({"pair": pair, "pid": target.pid, "gauge": gauge_address.to_string(), "kind": target.kind,
-                "financial_effects":[{"direction":"out","asset":"LP","token":pair,"decimals":18,"amount":atoms.to_string(),"note":"principal held by the gauge until withdrawal"}]}),
+                "financial_effects":[{"direction":"out","asset":"LP","token":pair,"decimals":18,"amount":atoms.to_string(),"note":"principal held by the gauge until withdrawal"}]}).into(),
             max_gas: gauge_gas(260_000, target.rewards.len()),
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -868,7 +869,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "unstake".into(),
+            kind: OpKind::Unstake,
             title: format!("Unstake LP from the {}", target.kind.label()),
             asset: "LP".into(),
             amount: atoms,
@@ -881,7 +882,7 @@ impl Session {
             ],
             warnings: vec![],
             detail: serde_json::json!({"pair": pair, "pid": target.pid, "gauge": gauge_address.to_string(), "kind": target.kind,
-                "financial_effects": [{"direction":"in", "asset":"LP", "token":pair, "decimals":18, "amount":atoms.to_string(), "estimated":false, "note":"unstaked principal"}]}),
+                "financial_effects": [{"direction":"in", "asset":"LP", "token":pair, "decimals":18, "amount":atoms.to_string(), "estimated":false, "note":"unstaked principal"}]}).into(),
             max_gas: gauge_gas(260_000, MAX_REWARD_STREAMS as usize),
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -942,7 +943,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: format!("Approve {} to fund rewards (step 1 of 2)", reward.symbol),
             asset: reward.symbol.clone(),
             amount: atoms,
@@ -954,7 +955,7 @@ impl Session {
                 field("Allowance", format!("exactly {} {}", crate::amount::format_amount(atoms, reward.decimals), reward.symbol)),
             ],
             warnings: vec![],
-            detail: serde_json::json!({"token": reward.address, "purpose": "incentivize", "spender": gauge_address.to_string()}),
+            detail: serde_json::json!({"token": reward.address, "purpose": "incentivize", "spender": gauge_address.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -1008,7 +1009,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "incentivize".into(),
+            kind: OpKind::Incentivize,
             title: format!("Fund {} rewards on {pair}", reward.symbol),
             asset: reward.symbol.clone(),
             amount: atoms,
@@ -1027,7 +1028,7 @@ impl Session {
             detail: serde_json::json!({
                 "pair": pair, "pid": pool.pid, "reward": reward.address, "amount": atoms.to_string(), "duration": duration,
                 "financial_effects":[{"direction":"out","asset":reward.symbol,"token":reward.address,"decimals":reward.decimals,"amount":atoms.to_string(),"note":"irrevocable gauge reward funding"}],
-            }),
+            }).into(),
             max_gas: gauge_gas(300_000, pool.rewards.len().max(1)),
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -1092,7 +1093,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: if exit { "exit".into() } else { "harvest".into() },
+            kind: if exit { OpKind::Exit } else { OpKind::Harvest },
             title: if exit {
                 format!("Exit the {}: unstake everything and claim", target.kind.label())
             } else {
@@ -1104,7 +1105,7 @@ impl Session {
             counterparty: gauge_address.to_string(),
             fields,
             warnings: vec![],
-            detail: serde_json::json!({"pair": pair, "pid": target.pid, "gauge": gauge_address.to_string(), "exit": exit, "kind": target.kind, "financial_effects":effects}),
+            detail: serde_json::json!({"pair": pair, "pid": target.pid, "gauge": gauge_address.to_string(), "exit": exit, "kind": target.kind, "financial_effects":effects}).into(),
             max_gas: gauge_gas(220_000, target.rewards.len()),
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })

@@ -1,5 +1,6 @@
 //! Rendering. Widgets use semantic theme roles only; color never carries meaning alone.
 
+use wallet_core::journal::OpKind;
 use super::app::{self, ACTIONS, App, FieldKind, Modal, OnboardKind, Onboarding, Picker, Screen};
 use super::hit::{HeaderPart, Target};
 use super::icons::Icon;
@@ -108,34 +109,34 @@ pub(crate) fn ago_short(secs: u64) -> String {
 }
 
 /// Plain-language outcome of an operation kind, shown in every review.
-fn review_story(kind: &str) -> Vec<String> {
+fn review_story(kind: &OpKind) -> Vec<String> {
     let locks = format!("the time locks under {}", Screen::Accounts.place());
     let steps: Vec<String> = match kind {
-        "convert_quai_to_qi" => vec![
+        OpKind::ConvertQuaiToQi => vec![
             "signed and broadcast; included within a few blocks".into(),
             "if the block's shared discount exceeds your slippage, it refunds (the fee is spent)".into(),
             format!("otherwise Qi arrives time-locked and counts down to spendable in {locks}"),
         ],
-        "convert_qi_to_quai" => {
+        OpKind::ConvertQiToQuai => {
             vec![
                 "signed and broadcast; included within a few blocks".into(),
                 format!("QUAI arrives time-locked in the account; it counts down in {locks}"),
             ]
         }
-        "send_qi" => vec![
+        OpKind::SendQi => vec![
             "each output lands on a fresh one-time address".into(),
             "the recipient finds it with their payment code (mailbox or channel scan)".into(),
         ],
-        "wrap_qi" => vec![format!("Qi moves into the wrapper; once settled, claim WQI in {}", Screen::Wrap.place())],
-        "nft_list" | "nft_reprice" => vec![
+        OpKind::WrapQi => vec![format!("Qi moves into the wrapper; once settled, claim WQI in {}", Screen::Wrap.place())],
+        OpKind::NftList | OpKind::NftReprice => vec![
             "a Zora ask goes live on-chain; Bazarr shows it within a minute".into(),
             "the item stays in your wallet until someone buys it at this price".into(),
             "when it sells, the proceeds arrive and the wallet notifies you (NFT sold)".into(),
         ],
-        "nft_unlist" => vec!["the ask is removed on-chain; nobody can buy the item at the old price".into()],
-        "unwrap_wqi" => vec!["WQI is burned; Qi returns after the protocol lock".into()],
-        "fill_gap" => vec!["uses the unused nonce; transactions queued behind it can then be mined".into()],
-        "aggregate_qi" | "sweep_qi" => {
+        OpKind::NftUnlist => vec!["the ask is removed on-chain; nobody can buy the item at the old price".into()],
+        OpKind::UnwrapWqi => vec!["WQI is burned; Qi returns after the protocol lock".into()],
+        OpKind::FillGap => vec!["uses the unused nonce; transactions queued behind it can then be mined".into()],
+        OpKind::AggregateQi | OpKind::SweepQi => {
             vec!["coins merge into fewer outputs you own; aggregation must be first in a block, so it may wait".into()]
         }
         _ => vec![format!("signed and broadcast; included within a few blocks and tracked in {}", Screen::Activity.place())],
@@ -260,8 +261,9 @@ pub(crate) fn status_style(t: &Theme, s: OpStatus) -> Style {
     Style::default().fg(c)
 }
 
-pub(crate) fn kind_icon(t: &Theme, kind: &str) -> &'static str {
-    t.icon(match kind {
+/// The glyph for an operation, by its name (so a kind from a newer build still gets one).
+pub(crate) fn kind_icon(t: &Theme, kind: &OpKind) -> &'static str {
+    t.icon(match kind.as_str() {
         k if k.starts_with("convert") => Icon::Convert,
         k if k.contains("swap") => Icon::Swap,
         k if k.contains("unwrap") => Icon::Unwrap,

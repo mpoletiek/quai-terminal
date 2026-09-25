@@ -1,5 +1,6 @@
 //! Authenticated Hartii curve adapter. Its quote methods exclude the fee; buy takes native
 //! QUAI and sell pays native QUAI directly to the signer. Neither method takes a deadline.
+use crate::journal::OpKind;
 use crate::chain::{addr, address_at, interface, uint};
 use crate::data::{DataCtx, READ_CALLER, Trust};
 use crate::error::{CoreError, Result, approval_needed};
@@ -276,7 +277,7 @@ impl Session {
         let call = crate::data::with_access_list(&self.node.provider, owner, call).await?;
         let symbol = &target.token.symbol;
         self.prepare_account(AccountRequest {
-            from, intent: call.into_account_intent(), kind: "hartii_buy".into(), title: format!("Buy {symbol} on Hartii"),
+            from, intent: call.into_account_intent(), kind: OpKind::HartiiBuy, title: format!("Buy {symbol} on Hartii"),
             asset: "QUAI".into(), amount: gross, decimals: crate::amount::QUAI_DECIMALS, counterparty: curve.into(),
             fields: vec![field("Token", format!("{symbol} ({token})")), field(if refunds_excess { "Maximum payment" } else { "You pay" }, format!("{} QUAI", crate::amount::quai(gross))),
                 field("Expected", format!("{} {symbol}", crate::amount::format_amount(expected,target.token.decimals))),
@@ -286,7 +287,7 @@ impl Session {
             warnings: warning,
             detail: json!({"recipient":owner.to_string(),"to_token":token,"token":token,"curve":curve,"to_symbol":symbol,"to_decimals":target.token.decimals,"expected_out":expected.to_string(),"minimum_out":minimum.to_string(),"refunds_excess":refunds_excess,
                 "financial_effects":[{"direction":"out","asset":"QUAI","token":"quai","decimals":18,"amount":gross.to_string(),"estimated":refunds_excess,"note":if refunds_excess { "maximum native payment; excess refunded directly" } else { "native curve payment" }},
-                {"direction":"in","asset":symbol,"token":token,"decimals":target.token.decimals,"amount":expected.to_string(),"minimum":minimum.to_string(),"estimated":true,"note":"protected curve output"}]}),
+                {"direction":"in","asset":symbol,"token":token,"decimals":target.token.decimals,"amount":expected.to_string(),"minimum":minimum.to_string(),"estimated":true,"note":"protected curve output"}]}).into(),
             max_gas: 500_000, max_fee:self.parse_fee_cap(max_fee,crate::amount::QUAI_DECIMALS)?,
         }).await
     }
@@ -311,7 +312,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: format!("Approve {symbol} for Hartii"),
             asset: symbol.clone(),
             amount,
@@ -323,7 +324,7 @@ impl Session {
                 field("Allowance", format!("exactly {} {symbol}", crate::amount::format_amount(amount, target.token.decimals))),
             ],
             warnings: warnings(),
-            detail: json!({"token":token,"spender":curve,"purpose":"hartii_sell","decimals":target.token.decimals}),
+            detail: json!({"token":token,"spender":curve,"purpose":"hartii_sell","decimals":target.token.decimals}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -368,11 +369,11 @@ impl Session {
         let call = crate::data::with_access_list(&self.node.provider, owner, call).await?;
         let symbol = &target.token.symbol;
         self.prepare_account(AccountRequest{
-            from,intent:call.into_account_intent(),kind:"hartii_sell".into(),title:format!("Sell {symbol} on Hartii"),asset:symbol.clone(),amount,decimals:target.token.decimals,counterparty:curve.into(),
+            from,intent:call.into_account_intent(),kind:OpKind::HartiiSell,title:format!("Sell {symbol} on Hartii"),asset:symbol.clone(),amount,decimals:target.token.decimals,counterparty:curve.into(),
             fields:vec![field("Token",format!("{symbol} ({token})")),field("You sell",format!("{} {symbol}",crate::amount::format_amount(amount,target.token.decimals))),field("Expected",format!("{} QUAI",crate::amount::quai(expected))),field("Minimum received",format!("{} QUAI",crate::amount::quai(minimum))),field("Curve fee",format!("{} QUAI",crate::amount::quai(fee))),field("Recipient",owner.to_string()),field("Deadline","not provided by this contract")],
             warnings:warnings(),detail:json!({"recipient":owner.to_string(),"to_token":"quai","token":token,"curve":curve,"decimals":target.token.decimals,
                 "financial_effects":[{"direction":"out","asset":symbol,"token":token,"decimals":target.token.decimals,"amount":amount.to_string(),"estimated":false,"note":"curve sale"},
-                {"direction":"in","asset":"QUAI","token":"quai","decimals":18,"amount":expected.to_string(),"minimum":minimum.to_string(),"estimated":true,"note":"native proceeds sent directly to signer"}]}),
+                {"direction":"in","asset":"QUAI","token":"quai","decimals":18,"amount":expected.to_string(),"minimum":minimum.to_string(),"estimated":true,"note":"native proceeds sent directly to signer"}]}).into(),
             max_gas:500_000,max_fee:self.parse_fee_cap(max_fee,crate::amount::QUAI_DECIMALS)?,
         }).await
     }

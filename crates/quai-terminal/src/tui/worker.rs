@@ -2057,7 +2057,7 @@ pub(crate) fn incoming_amount(a: &Activity) -> String {
     match a.asset.as_str() {
         "QI" => wallet_core::amount::qi(v),
         "QUAI" => wallet_core::amount::quai(v),
-        _ => wallet_core::amount::format_amount_short(v, a.detail.get("decimals").and_then(|d| d.as_u64()).unwrap_or(18) as u8, 6),
+        _ => wallet_core::amount::format_amount_short(v, a.detail.decimals().as_u64().unwrap_or(18) as u8, 6),
     }
 }
 

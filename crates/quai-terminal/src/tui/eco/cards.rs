@@ -1505,7 +1505,7 @@ impl App {
             .ops
             .iter()
             .find(|o| o.id == first)
-            .and_then(|o| o.detail["actual_out"].as_str())
+            .and_then(|o| o.detail.actual_out().as_str())
             .and_then(|v| U256::from_str_radix(v, 10).ok())
             .filter(|v| !v.is_zero());
         let Some(paid) = paid else { return false };

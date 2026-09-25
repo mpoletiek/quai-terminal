@@ -232,7 +232,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         .ops
         .iter()
         .filter(|o| o.status == wallet_core::appdb::OpStatus::Locked)
-        .filter_map(|o| o.detail["unlock_height"].as_u64())
+        .filter_map(|o| o.detail.unlock_height().as_u64())
         .collect();
     for news in &app.unlocked_news {
         items.push(Line::from(vec![Span::styled(t.lead(Icon::Ok), Style::default().fg(t.ok)), Span::raw(news.clone())]));
@@ -286,7 +286,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         ]));
     }
     for o in open.iter().filter(|o| o.status == OpStatus::Locked).take(2) {
-        let eta = o.detail["unlock_height"]
+        let eta = o.detail.unlock_height()
             .as_u64()
             .filter(|u| *u > head && head > 0)
             .map(|u| format!(" in ~{}", wallet_core::track::human_duration((u - head) * 5)))
@@ -819,7 +819,7 @@ pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect,
     };
     let mut lines: Vec<Line> = Vec::new();
     for a in app.dash.activity.iter().filter(|a| match token {
-        Some(addr) => a.detail["token"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(addr)),
+        Some(addr) => a.detail.token().as_str().is_some_and(|x| x.eq_ignore_ascii_case(addr)),
         None => a.asset.eq_ignore_ascii_case(&r.symbol),
     }) {
         lines.push(Line::from(vec![
@@ -831,7 +831,7 @@ pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect,
         .dash
         .ops
         .iter()
-        .filter(|o| o.asset.eq_ignore_ascii_case(&r.symbol) || o.detail["token"].as_str().is_some_and(|x| Some(x) == token))
+        .filter(|o| o.asset.eq_ignore_ascii_case(&r.symbol) || o.detail.token().as_str().is_some_and(|x| Some(x) == token))
     {
         lines.push(Line::from(vec![Span::styled(format!("{:<6} ", ago(o.created)), t.dim_style()), Span::raw(truncate(&describe(o), 34))]));
     }

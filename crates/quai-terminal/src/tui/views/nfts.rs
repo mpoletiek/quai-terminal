@@ -688,8 +688,8 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
                 lines.push(kv(t, "explorer", Span::styled(url, Style::default().fg(t.link))));
             }
         }
-        if let Some(obj) = op.detail.as_object() {
-            for (k, v) in obj.iter().filter(|(k, _)| !matches!(k.as_str(), "native_value" | wallet_core::appdb::TIMELINE)).take(14) {
+        {
+            for (k, v) in op.detail.entries().filter(|(k, _)| !matches!(*k, "native_value" | wallet_core::appdb::TIMELINE)).take(14) {
                 lines.push(kv(
                     t,
                     k,
@@ -703,10 +703,10 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
         lines.push(Line::from(Span::styled(activity_text(a), t.strong_style())));
         lines.push(Line::from(""));
         lines.push(kv(t, "account", Span::raw(a.address.clone())));
-        if let Some(cp) = a.detail["counterparty"].as_str() {
+        if let Some(cp) = a.detail.counterparty().as_str() {
             lines.push(kv(t, if a.direction == "in" { "from" } else { "to" }, Span::raw(cp.to_string())));
         }
-        if let Some(token) = a.detail["token"].as_str() {
+        if let Some(token) = a.detail.token().as_str() {
             lines.push(kv(t, "token", Span::raw(token.to_string())));
         }
         for (label, value) in super::super::ui::cost_lines(app, t, None, Some(a)) {
@@ -721,7 +721,7 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
         if let Some(b) = a.block {
             lines.push(kv(t, "block", Span::raw(amount::group_thousands(&b.to_string()))));
         }
-        lines.push(kv(t, "source", Span::styled(a.detail["source"].as_str().unwrap_or("node").to_string(), t.dim_style())));
+        lines.push(kv(t, "source", Span::styled(a.detail.source().as_str().unwrap_or("node").to_string(), t.dim_style())));
     } else {
         lines.push(Line::from(Span::styled("this row is no longer in the recent list", t.dim_style())));
     }
@@ -732,7 +732,7 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
 /// before; an open operation ends on what it is waiting for.
 pub(crate) fn op_timeline(t: &Theme, op: &wallet_core::appdb::Operation) -> Vec<Line<'static>> {
     use chrono::TimeZone;
-    let recorded: Vec<(String, u64, Option<String>)> = op.detail[wallet_core::appdb::TIMELINE]
+    let recorded: Vec<(String, u64, Option<String>)> = op.detail.timeline()
         .as_array()
         .map(|list| {
             list.iter()

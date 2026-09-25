@@ -471,8 +471,8 @@ impl Session {
         }
         let weekly = hex::encode(newest.public);
         let in_flight = self.app.open_operations(&self.network.id)?.into_iter().any(|op| {
-            op.detail["messaging"] == "keys"
-                && op.detail["weekly"] == weekly
+            op.detail.messaging() == "keys"
+                && *op.detail.weekly() == weekly
                 && matches!(op.status, OpStatus::Signed | OpStatus::Submitted | OpStatus::Unknown)
         });
         Ok(if in_flight { KeyNeed::Publishing } else { KeyNeed::Publish })

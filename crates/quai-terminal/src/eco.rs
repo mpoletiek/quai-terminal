@@ -1,5 +1,6 @@
 //! Ecosystem commands: portfolio, prices, token discovery, swaps, NFTs, marketplace, data sources.
 
+use wallet_core::journal::OpKind;
 use crate::args::*;
 use crate::commands::Ctx;
 use serde_json::json;
@@ -133,7 +134,7 @@ async fn continue_plan(
             }
         };
         runner.submitted(s)?;
-        ctx.print_submitted(step.as_deref().unwrap_or(&runner.plan.label), &submitted);
+        ctx.print_submitted(step.as_ref().map(|k| k.as_str()).unwrap_or(&runner.plan.label), &submitted);
         let intent: wallet_core::execution::TradingIntent = serde_json::from_value(runner.plan.intent["intent"].clone())?;
         if step.is_none() && !intent.has_more_allocations() {
             return Ok(Some(submitted));
@@ -474,7 +475,7 @@ async fn wait_confirmed(ctx: &Ctx, s: &mut Session, op_id: &str, timeout: u64) -
         let op = s.app.find_operation(&s.network.id, op_id)?;
         match op.status {
             OpStatus::Settled => return Ok(()),
-            OpStatus::Confirmed if op.kind != "wrap_qi" => return Ok(()),
+            OpStatus::Confirmed if op.kind != OpKind::WrapQi => return Ok(()),
             OpStatus::Failed | OpStatus::Replaced | OpStatus::Cancelled => {
                 return Err(CoreError::Execution(format!("{} ended {}", describe(&op), op.status.as_str())));
             }

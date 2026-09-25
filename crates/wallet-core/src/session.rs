@@ -813,24 +813,22 @@ impl Session {
     pub(crate) fn new_op(
         &self,
         id: ReservationId,
-        kind: &str,
+        kind: crate::journal::OpKind,
         store: &str,
         account: &str,
         asset: &str,
         amount: U256,
         counterparty: &str,
-        mut detail: serde_json::Value,
+        detail: impl Into<crate::journal::Detail>,
     ) -> Operation {
+        let mut detail = detail.into();
         if let Some(plan) = &self.preparing_plan {
-            if !detail.is_object() {
-                detail = serde_json::json!({});
-            }
-            detail["plan_id"] = plan.clone().into();
+            detail.set_plan_id(plan.clone());
         }
         Operation {
             id: op_hex(id),
             network: self.network.id.clone(),
-            kind: kind.into(),
+            kind,
             store: store.into(),
             account: account.into(),
             status: OpStatus::Prepared,

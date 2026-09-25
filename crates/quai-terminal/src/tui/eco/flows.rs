@@ -1,5 +1,6 @@
 //! Multi-step trades: checkpoints, advancing a flow and what each review outcome does to it.
 
+use wallet_core::journal::OpKind;
 use super::*;
 
 impl App {
@@ -206,7 +207,7 @@ impl App {
                         && intent.has_more_allocations()
                         && let Some(op) = self.dash.ops.iter().find(|op| op.id == op_id && !wallet_core::flows::is_step_kind(&op.kind))
                     {
-                        if op.kind == "wrap_qi" && op.status != OpStatus::Settled {
+                        if op.kind == OpKind::WrapQi && op.status != OpStatus::Settled {
                             if flow.last_poll.elapsed() > Duration::from_secs(5) {
                                 flow.last_poll = Instant::now();
                                 self.send(Cmd::Refresh { full: false });
@@ -373,7 +374,7 @@ impl App {
         if !matches!(op.status, wallet_core::appdb::OpStatus::Confirmed | wallet_core::appdb::OpStatus::Settled) {
             return None;
         }
-        op.detail["actual_out"].as_str().and_then(|s| U256::from_str_radix(s, 10).ok())
+        op.detail.actual_out().as_str().and_then(|s| U256::from_str_radix(s, 10).ok())
     }
 
     /// Start the market route for the amount on the Convert card.
@@ -433,7 +434,7 @@ impl App {
             return;
         }
         // A claim already on its way.
-        if self.dash.ops.iter().any(|o| o.kind == "claim_wqi" && !o.status.is_terminal()) {
+        if self.dash.ops.iter().any(|o| o.kind == OpKind::ClaimWqi && !o.status.is_terminal()) {
             return;
         }
         let account = self.dash.wrap.as_ref().map(|w| w.account.clone());
@@ -525,7 +526,7 @@ impl App {
 
     /// A step was signed and broadcast. Returns true when the sequence continues (so the caller
     /// shows a toast instead of the result dialog).
-    pub fn flow_on_submitted(&mut self, op_id: &str, kind: &str) -> bool {
+    pub fn flow_on_submitted(&mut self, op_id: &str, kind: &OpKind) -> bool {
         let Some(mut flow) = self.eco.flow.clone() else {
             self.eco.flow_summary = None;
             return false;
@@ -552,7 +553,7 @@ impl App {
             return true;
         }
         // The first of two swaps: wait for it, then size the second from what it paid.
-        if kind == "swap"
+        if *kind == OpKind::Swap
             && let FlowKind::Swap { then: Some(next), .. } = &mut flow.kind
             && next.first.is_none()
         {
@@ -567,11 +568,11 @@ impl App {
         }
         // The pre-wrap and the swap both continue the sequence.
         if let FlowKind::Swap { prewrap, unwrap_after, .. } = &mut flow.kind {
-            let wrapped = kind == "wrap_quai" && prewrap.is_some();
+            let wrapped = *kind == OpKind::WrapQuai && prewrap.is_some();
             if wrapped {
                 *prewrap = None;
             }
-            let swapped = kind == "swap" && *unwrap_after;
+            let swapped = *kind == OpKind::Swap && *unwrap_after;
             if wrapped || swapped {
                 flow.swapped |= swapped;
                 flow.waiting = Some(op_id.to_string());
@@ -589,7 +590,7 @@ impl App {
             }
         }
         if wallet_core::flows::is_step_kind(kind) {
-            if kind == "approve"
+            if *kind == OpKind::Approve
                 && let FlowKind::Swap { .. } = flow.kind
             {
                 self.eco.swap.approving = true;
@@ -599,7 +600,7 @@ impl App {
             let label = flow.kind.label();
             self.eco.flow = Some(flow);
             self.checkpoint_flow();
-            let step = if kind == "approve" { "approval" } else { "wrap" };
+            let step = if *kind == OpKind::Approve { "approval" } else { "wrap" };
             self.toast(format!("{step} sent · {label} continues when it confirms (you can keep using the wallet)"), false);
             true
         } else {
@@ -627,24 +628,24 @@ impl App {
     }
 
     /// Re-check asks and holdings after an NFT operation is submitted.
-    pub fn after_submit(&mut self, kind: &str) {
+    pub fn after_submit(&mut self, kind: &OpKind) {
         match kind {
-            "approve" if self.screen == Screen::Swap => {
+            OpKind::Approve if self.screen == Screen::Swap => {
                 self.eco.swap.approving = true;
                 self.eco.swap.quoted_at = Some(Instant::now());
             }
-            "approve" | "nft_buy" | "nft_transfer" => {
+            OpKind::Approve | OpKind::NftBuy | OpKind::NftTransfer => {
                 if let Some(Detail::Nft(c, id)) = self.detail.last().cloned() {
                     let buyer = self.dash.accounts.first().map(|a| a.address.clone());
                     self.send_data(DataCmd::CheckAsk { contract: c, token_id: id, buyer });
                 }
                 // Holdings reload when the operation confirms (see `after_confirm`): reloading
                 // now would cache a list from before the transfer was mined.
-                if kind != "approve" {
+                if *kind != OpKind::Approve {
                     self.eco.listings.clear();
                 }
             }
-            "swap" => {
+            OpKind::Swap => {
                 self.eco.swap.amount.clear();
                 self.eco.swap.quote = None;
                 self.eco.portfolio_signature = None;
@@ -654,12 +655,12 @@ impl App {
     }
 
     /// Reload what a confirmed operation changed.
-    pub fn after_confirm(&mut self, kind: &str) {
-        if matches!(kind, "nft_list" | "nft_reprice" | "nft_unlist") {
+    pub fn after_confirm(&mut self, kind: &OpKind) {
+        if matches!(kind, OpKind::NftList | OpKind::NftReprice | OpKind::NftUnlist) {
             self.eco.listings.clear();
             self.load_my_listings();
         }
-        if matches!(kind, "nft_buy" | "nft_transfer") {
+        if matches!(kind, OpKind::NftBuy | OpKind::NftTransfer) {
             self.eco.listings.clear();
             if self.screen == Screen::Collected || self.eco.nfts.is_some() {
                 self.load_nfts(true);

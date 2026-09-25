@@ -2,6 +2,7 @@
 //!
 //! Tracking never releases claims or rebroadcasts. Missing receipts leave operations open.
 
+use crate::journal::{Detail, OpKind};
 use crate::amount;
 use crate::appdb::{Activity, OpStatus, Operation};
 use crate::error::{CoreError, Result};
@@ -42,7 +43,7 @@ pub struct StatusChange {
     /// Operation id.
     pub op_id: String,
     /// Kind.
-    pub kind: String,
+    pub kind: OpKind,
     /// Previous status.
     pub from: OpStatus,
     /// New status.
@@ -182,7 +183,7 @@ impl Session {
                 Ok(Some((status, message, patch))) if status != op.status || patch.is_some() => {
                     // Only if nobody moved it meanwhile: another tracker that got there first
                     // has announced it already.
-                    let canonical = patch.as_ref().and_then(|p| p["canonical_tx"].as_str());
+                    let canonical = patch.as_ref().and_then(|p| p.canonical_tx().as_str());
                     let moved = self.app.transition_operation(&op.id, op.status, status, canonical, None, patch.as_ref())?;
                     if moved && status != op.status {
                         let level = match status {
@@ -300,7 +301,7 @@ impl Session {
                         "token_id": t.token_id,
                         "name": t.name,
                         "counterparty": if incoming { t.from.clone() } else { t.to.clone() },
-                    }),
+                    }).into(),
                     observed: if t.timestamp > 0 { t.timestamp } else { now() },
                 };
                 if self.app.record_activity(&activity)? && seeded && incoming {
@@ -314,7 +315,7 @@ impl Session {
         Ok(new)
     }
 
-    async fn track_account_op(&mut self, op: &Operation, head: u64) -> Result<Option<(OpStatus, String, Option<serde_json::Value>)>> {
+    async fn track_account_op(&mut self, op: &Operation, head: u64) -> Result<Option<(OpStatus, String, Option<Detail>)>> {
         let id = parse_op_id(&op.id)?;
         match op.status {
             OpStatus::Signed | OpStatus::Submitted | OpStatus::Unknown => {
@@ -337,38 +338,38 @@ impl Session {
                         _ => None,
                     })
                     .ok_or_else(|| CoreError::Network("canonical candidate lost its inclusion".into()))?;
-                let original = op.detail["original_tx"].as_str().or(op.tx_hash.as_deref());
+                let original = op.detail.original_tx().as_str().or(op.tx_hash.as_deref());
                 let replaced = original.is_some_and(|o| !o.eq_ignore_ascii_case(&canonical.to_string()));
-                let patch = serde_json::json!({
+                let patch = Detail::from(serde_json::json!({
                     "included_block": block.number,
                     "included_hash": block.hash.to_string(),
                     "canonical_tx": canonical.to_string(),
                     "replacement_won": replaced,
                     "finality": "unverified", "source_canonicality": "observed",
-                });
+                }));
                 let receipt = canonical_receipt(self.provider(), canonical, block, outcome).await?;
                 let mut patch = patch;
                 let mut receipt_detail = op.detail.clone();
-                if matches!(op.kind.as_str(), "swap" | "swap_exact_output") && receipt_detail["router"].is_null() {
-                    receipt_detail["router"] = serde_json::json!(op.counterparty);
+                if matches!(op.kind, OpKind::Swap | OpKind::SwapExactOutput) && receipt_detail.router().is_null() {
+                    receipt_detail.set_router(serde_json::json!(op.counterparty));
                 }
-                if matches!(op.kind.as_str(), "swap" | "swap_exact_output" | "claim_wqi" | "curve_buy")
+                if matches!(op.kind, OpKind::Swap | OpKind::SwapExactOutput | OpKind::ClaimWqi | OpKind::CurveBuy)
                     && let Some(r) = &receipt
                     && let Some(out) = swap_output(r, &receipt_detail, self.network.wquai.as_deref())
                 {
-                    patch["actual_out"] = serde_json::json!(out.to_string());
+                    patch.set_actual_out(serde_json::json!(out.to_string()));
                 }
                 if let Some(receipt) = &receipt
                     && let Some((input, output, fee)) = hartii_fill(receipt, op)
                 {
-                    patch["actual_in"] = serde_json::json!(input.to_string());
-                    patch["actual_out"] = serde_json::json!(output.to_string());
-                    patch["curve_fee"] = serde_json::json!(fee.to_string());
-                    if op.kind == "hartii_buy"
+                    patch.set_actual_in(serde_json::json!(input.to_string()));
+                    patch.set_actual_out(serde_json::json!(output.to_string()));
+                    patch.set_curve_fee(serde_json::json!(fee.to_string()));
+                    if op.kind == OpKind::HartiiBuy
                         && let Ok(offered) = U256::from_str_radix(&op.amount, 10)
                         && offered >= input
                     {
-                        patch["native_refund"] = serde_json::json!((offered - input).to_string());
+                        patch.set_native_refund(serde_json::json!((offered - input).to_string()));
                     }
                 }
                 let fee = receipt.as_ref().and_then(|r| r.fee().ok()).map(|f| f.to_string());
@@ -381,7 +382,7 @@ impl Session {
                         (OpStatus::Unknown, "source included with a legacy receipt; execution outcome is unverified".into(), Some(patch))
                     }
                     ReceiptOutcome::Succeeded => {
-                        if matches!(op.kind.as_str(), "convert_quai_to_qi" | "unwrap_wqi") {
+                        if matches!(op.kind, OpKind::ConvertQuaiToQi | OpKind::UnwrapWqi) {
                             (
                                 OpStatus::Settling,
                                 format!("included at block {}; waiting for destination settlement", block.number),
@@ -399,11 +400,11 @@ impl Session {
                     }
                 }))
             }
-            OpStatus::Settling | OpStatus::Locked if matches!(op.kind.as_str(), "convert_quai_to_qi" | "unwrap_wqi") => {
+            OpStatus::Settling | OpStatus::Locked if matches!(op.kind, OpKind::ConvertQuaiToQi | OpKind::UnwrapWqi) => {
                 let kind = match op.kind.as_str() {
                     "convert_quai_to_qi" => SettlementKind::Conversion,
                     "unwrap_wqi" => SettlementKind::WqiRedemption {
-                        contract: op.detail["contract"]
+                        contract: op.detail.contract()
                             .as_str()
                             .and_then(|s| s.parse().ok())
                             .ok_or_else(|| CoreError::Storage("missing WQI contract".into()))?,
@@ -411,7 +412,7 @@ impl Session {
                     },
                     _ => return Ok(None),
                 };
-                let hash = op.detail["canonical_tx"]
+                let hash = op.detail.canonical_tx()
                     .as_str()
                     .or(op.tx_hash.as_deref())
                     .and_then(|h| h.parse().ok())
@@ -440,7 +441,7 @@ impl Session {
         &mut self,
         op: &Operation,
         id: quai_sdk::wallet::storage::ReservationId,
-    ) -> Result<Option<(OpStatus, String, Option<serde_json::Value>)>> {
+    ) -> Result<Option<(OpStatus, String, Option<Detail>)>> {
         let keys = NoQiKeys;
         let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
         let family = session.observe_candidates(id).await;
@@ -457,14 +458,14 @@ impl Session {
             })
             .ok_or_else(|| CoreError::Network("the canonical Qi candidate lost its inclusion".into()))?;
         let height = block.number;
-        let original = op.detail["original_tx"].as_str();
-        let patch = serde_json::json!({
+        let original = op.detail.original_tx().as_str();
+        let patch = Detail::from(serde_json::json!({
             "included_block": height,
             "included_hash": block.hash.to_string(),
             "canonical_tx": canonical.to_string(),
             "replacement_won": original.is_some_and(|o| !o.eq_ignore_ascii_case(&canonical.to_string())),
             "finality": "unverified", "source_canonicality": "observed",
-        });
+        }));
         Ok(Some(match outcome {
             ReceiptOutcome::Failed => (OpStatus::Failed, format!("{} failed at block {height}", describe(op)), Some(patch)),
             ReceiptOutcome::PostState(_) => {
@@ -473,27 +474,27 @@ impl Session {
             ReceiptOutcome::Locked => {
                 (OpStatus::Locked, "source receipt reports locked value; current maturity is unverified".into(), Some(patch))
             }
-            ReceiptOutcome::Succeeded if matches!(op.kind.as_str(), "convert_qi_to_quai" | "wrap_qi") => {
+            ReceiptOutcome::Succeeded if matches!(op.kind, OpKind::ConvertQiToQuai | OpKind::WrapQi) => {
                 (OpStatus::Settling, format!("included at block {height}; waiting for destination settlement"), Some(patch))
             }
             ReceiptOutcome::Succeeded => (OpStatus::Confirmed, format!("{} included at block {height}", describe(op)), Some(patch)),
         }))
     }
 
-    async fn track_qi_op(&mut self, op: &Operation, head: u64) -> Result<Option<(OpStatus, String, Option<serde_json::Value>)>> {
+    async fn track_qi_op(&mut self, op: &Operation, head: u64) -> Result<Option<(OpStatus, String, Option<Detail>)>> {
         let id = parse_op_id(&op.id)?;
         match op.status {
             OpStatus::Signed | OpStatus::Submitted | OpStatus::Unknown => {
                 // Once a replacement has been broadcast the root hash no longer says what became
                 // of this operation, so the family is the only thing worth asking.
-                if op.detail["candidates"].as_array().is_some_and(|c| !c.is_empty()) {
+                if op.detail.candidates().as_array().is_some_and(|c| !c.is_empty()) {
                     return self.track_qi_family(op, id).await;
                 }
                 match reconcile_operation(&self.node.provider, &mut self.qi_store, id).await? {
                     OperationObservation::Included { block, outcome, .. } => {
                         let height = u64::try_from(block.height).unwrap_or(0);
-                        let patch = serde_json::json!({"included_block": height, "included_hash": block.hash.to_string(),
-                            "canonical_tx": op.tx_hash, "finality": "unverified", "source_canonicality": "observed"});
+                        let patch = Detail::from(serde_json::json!({"included_block": height, "included_hash": block.hash.to_string(),
+                            "canonical_tx": op.tx_hash, "finality": "unverified", "source_canonicality": "observed"}));
                         Ok(Some(match outcome {
                             ReceiptOutcome::Failed => (OpStatus::Failed, format!("{} failed at block {height}", describe(op)), Some(patch)),
                             ReceiptOutcome::PostState(_) => (
@@ -506,7 +507,7 @@ impl Session {
                                 "source receipt reports locked value; current maturity is unverified".into(),
                                 Some(patch),
                             ),
-                            ReceiptOutcome::Succeeded if matches!(op.kind.as_str(), "convert_qi_to_quai" | "wrap_qi") => {
+                            ReceiptOutcome::Succeeded if matches!(op.kind, OpKind::ConvertQiToQuai | OpKind::WrapQi) => {
                                 (OpStatus::Settling, format!("included at block {height}; waiting for destination settlement"), Some(patch))
                             }
                             ReceiptOutcome::Succeeded => {
@@ -523,9 +524,9 @@ impl Session {
                     _ => Ok(None),
                 }
             }
-            OpStatus::Settling | OpStatus::Locked if matches!(op.kind.as_str(), "convert_qi_to_quai" | "wrap_qi") => {
-                let kind = if op.kind == "wrap_qi" { SettlementKind::QiWrapping } else { SettlementKind::Conversion };
-                let hash = op.detail["canonical_tx"]
+            OpStatus::Settling | OpStatus::Locked if matches!(op.kind, OpKind::ConvertQiToQuai | OpKind::WrapQi) => {
+                let kind = if op.kind == OpKind::WrapQi { SettlementKind::QiWrapping } else { SettlementKind::Conversion };
+                let hash = op.detail.canonical_tx()
                     .as_str()
                     .or(op.tx_hash.as_deref())
                     .and_then(|hash| hash.parse().ok())
@@ -553,9 +554,9 @@ impl Session {
             .operations(&network, 10_000)?
             .into_iter()
             .flat_map(|o| {
-                ["destination", "refund", "beneficiary"]
-                    .iter()
-                    .filter_map(|k| o.detail[*k].as_str().map(str::to_lowercase))
+                [o.detail.destination(), o.detail.refund(), o.detail.beneficiary()]
+                    .into_iter()
+                    .filter_map(|v| v.as_str().map(str::to_lowercase))
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -576,7 +577,7 @@ impl Session {
                     address: coin.address.clone(),
                     tx_hash: Some(hash),
                     block: None,
-                    detail: serde_json::json!({"origin": coin.origin, "peer": coin.peer, "unlock_height": coin.unlock_height.to_string()}),
+                    detail: serde_json::json!({"origin": coin.origin, "peer": coin.peer, "unlock_height": coin.unlock_height.to_string()}).into(),
                     observed: now(),
                 };
                 if self.app.record_activity(&activity)? && seeded {
@@ -611,7 +612,7 @@ impl Session {
                         address: account.address.clone(),
                         tx_hash: None,
                         block: None,
-                        detail: serde_json::json!({"note": "balance increase"}),
+                        detail: serde_json::json!({"note": "balance increase"}).into(),
                         observed: now(),
                     };
                     if self.app.record_activity(&activity)? && seeded {
@@ -732,14 +733,14 @@ async fn recheck_operation_anchors<T: Transport>(
     op: &Operation,
     report: &mut TrackReport,
 ) -> Result<bool> {
-    let source = (op.detail["included_block"].as_u64(), op.detail["included_hash"].as_str());
-    let destination = (op.detail["execution_block"].as_u64(), op.detail["execution_hash"].as_str());
+    let source = (op.detail.included_block().as_u64(), op.detail.included_hash().as_str());
+    let destination = (op.detail.execution_block().as_u64(), op.detail.execution_hash().as_str());
     let final_source = if destination.0.is_some() && destination.1.is_some() { source } else { (None, None) };
     for (stage, (height, expected)) in [("source", source), ("destination", destination), ("source", final_source)] {
         let (Some(height), Some(expected)) = (height, expected) else { continue };
         let Some(header) = provider.header_at(ZONE, height).await? else {
             app.transition_operation(&op.id, op.status, op.status, None, None,
-                Some(&serde_json::json!({format!("{stage}_canonicality"):"unverified", "spendability":"unverified", "finality":"unverified"})))?;
+                Some(&crate::journal::Detail::from(serde_json::json!({format!("{stage}_canonicality"):"unverified", "spendability":"unverified", "finality":"unverified"}))))?;
             report
                 .errors
                 .push(format!("{}: {stage} anchor is currently unavailable; retaining historical observation without advancing", op.id));
@@ -748,7 +749,7 @@ async fn recheck_operation_anchors<T: Transport>(
         if header.hash.to_string().eq_ignore_ascii_case(expected) {
             continue;
         }
-        let mut patch = serde_json::json!({
+        let mut patch = Detail::from(serde_json::json!({
             "reorged_anchor": {"stage":stage, "block":height, "hash":expected},
             "actual_out":null, "actual_in":null, "native_refund":null, "curve_fee":null, "credited_qits":null, "observed_credit_qits":null,
             "unobserved_qits":null, "credit_partial":null, "credit_head":null, "credit_head_hash":null,
@@ -758,12 +759,12 @@ async fn recheck_operation_anchors<T: Transport>(
             "quai_lock":null, "account_credit":null, "refund_credit":null,
             "scan_next":null, "scan_last_number":null, "scan_last_hash":null,
             "spendability":"unverified", "finality":"unverified"
-        });
+        }));
         let next = if stage == "source" {
-            patch["included_block"] = serde_json::Value::Null;
-            patch["included_hash"] = serde_json::Value::Null;
-            patch["canonical_tx"] = serde_json::Value::Null;
-            patch["source_canonicality"] = serde_json::json!("unverified");
+            patch.set_included_block(serde_json::Value::Null);
+            patch.set_included_hash(serde_json::Value::Null);
+            patch.set_canonical_tx(serde_json::Value::Null);
+            patch.set_source_canonicality(serde_json::json!("unverified"));
             OpStatus::Submitted
         } else {
             OpStatus::Settling
@@ -781,27 +782,27 @@ async fn recheck_operation_anchors<T: Transport>(
     }
     if destination.0.is_some()
         && destination.1.is_none()
-        && matches!(op.kind.as_str(), "convert_quai_to_qi" | "convert_qi_to_quai" | "wrap_qi" | "unwrap_wqi")
+        && matches!(op.kind, OpKind::ConvertQuaiToQi | OpKind::ConvertQiToQuai | OpKind::WrapQi | OpKind::UnwrapWqi)
     {
         // Old rows recorded a height without its hash. Keep their historical observation separate
         // and restart a bounded, intent-bound scan; a height alone cannot be audited for reorgs.
-        let patch = serde_json::json!({
-            "legacy_destination_observation": {"block":destination.0,"credited_qits":op.detail["credited_qits"],"actual_out":op.detail["actual_out"]},
+        let patch = Detail::from(serde_json::json!({
+            "legacy_destination_observation": {"block":destination.0,"credited_qits":op.detail.credited_qits(),"actual_out":op.detail.actual_out()},
             "execution_block":null,"execution_hash":null,"execution_tx":null,"credited_qits":null,"actual_out":null,
             "unlock_height":null,"quai_lock":null,"scan_next":null,"scan_last_number":null,"scan_last_hash":null,
             "destination_canonicality":"unverified","spendability":"unverified","finality":"unverified"
-        });
+        }));
         app.transition_operation(&op.id, op.status, OpStatus::Settling, None, None, Some(&patch))?;
         return Ok(true);
     }
-    let mut patch = serde_json::json!({"finality":"unverified"});
+    let mut patch = Detail::from(serde_json::json!({"finality":"unverified"}));
     if source.0.is_some() && source.1.is_some() {
-        patch["source_canonicality"] = serde_json::json!("observed");
+        patch.set_source_canonicality(serde_json::json!("observed"));
     }
     if destination.0.is_some() && destination.1.is_some() {
-        patch["destination_canonicality"] = serde_json::json!("observed");
+        patch.set_destination_canonicality(serde_json::json!("observed"));
     }
-    if patch.as_object().unwrap().iter().any(|(key, value)| op.detail.get(key) != Some(value)) {
+    if patch.entries().any(|(key, value)| op.detail.entries().find(|(k, _)| *k == key).map(|(_, v)| v) != Some(value)) {
         app.transition_operation(&op.id, op.status, op.status, None, None, Some(&patch))?;
     }
     Ok(false)
@@ -825,7 +826,7 @@ async fn observe_settlement<T: Transport>(
         }
         return Ok(Some(cursor.track(provider, store, head.min(from.saturating_add(SCAN_PAGE)), 4096, 65_536, 512).await?));
     }
-    let from = op.detail["included_block"].as_u64().unwrap_or(head).max(1);
+    let from = op.detail.included_block().as_u64().unwrap_or(head).max(1);
     if from > head {
         return Ok(None);
     }
@@ -845,35 +846,35 @@ impl<'a> From<&'a SettlementUpdate> for SettlementEvidence<'a> {
     }
 }
 
-fn settlement_patch(update: SettlementEvidence<'_>) -> serde_json::Value {
+fn settlement_patch(update: SettlementEvidence<'_>) -> Detail {
     let scan = update.conversion.as_ref().and_then(|c| c.scan.as_ref()).or_else(|| update.external.as_ref().and_then(|e| e.scan.as_ref()));
-    let mut patch = serde_json::json!({"finality":"unverified", "spendability":"unverified"});
+    let mut patch = Detail::from(serde_json::json!({"finality":"unverified", "spendability":"unverified"}));
     if let Some(last) = scan.and_then(|scan| scan.last_block) {
-        patch["scan_next"] = serde_json::json!(last.number.saturating_add(1));
-        patch["scan_last_number"] = serde_json::json!(last.number);
-        patch["scan_last_hash"] = serde_json::json!(last.hash.to_string());
+        patch.set_scan_next(serde_json::json!(last.number.saturating_add(1)));
+        patch.set_scan_last_number(serde_json::json!(last.number));
+        patch.set_scan_last_hash(serde_json::json!(last.hash.to_string()));
     }
     if let Some(execution) = scan.and_then(|scan| scan.execution.as_ref()) {
         if let Some(inclusion) = execution.transaction.inclusion {
-            patch["execution_block"] = serde_json::json!(inclusion.block_number);
-            patch["execution_hash"] = serde_json::json!(inclusion.block_hash.to_string());
-            patch["execution_tx"] = serde_json::json!(execution.transaction.hash.to_string());
-            patch["destination_canonicality"] = serde_json::json!("observed");
+            patch.set_execution_block(serde_json::json!(inclusion.block_number));
+            patch.set_execution_hash(serde_json::json!(inclusion.block_hash.to_string()));
+            patch.set_execution_tx(serde_json::json!(execution.transaction.hash.to_string()));
+            patch.set_destination_canonicality(serde_json::json!("observed"));
         }
-        patch["destination_receipt"] = serde_json::json!(execution.receipt.as_ref().map(|r| match r.outcome {
+        patch.set_destination_receipt(serde_json::json!(execution.receipt.as_ref().map(|r| match r.outcome {
             ReceiptOutcome::Succeeded => "succeeded",
             ReceiptOutcome::Failed => "failed",
             ReceiptOutcome::Locked => "locked",
             ReceiptOutcome::PostState(_) => "legacy",
-        }));
+        })));
     }
     patch
 }
 
-fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Option<(OpStatus, String, Option<serde_json::Value>)>> {
+fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Option<(OpStatus, String, Option<Detail>)>> {
     let mut patch = settlement_patch(update);
     let credit = update.qi_credit.as_ref();
-    if op.kind == "wrap_qi" {
+    if op.kind == OpKind::WrapQi {
         let outcome = update.external.as_ref().and_then(|e| e.outcome);
         let (status, message) = match outcome {
             Some(ReceiptOutcome::Succeeded) => (OpStatus::Settled, "wrapped Qi deposit executed; claim WQI separately"),
@@ -882,11 +883,11 @@ fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Optio
             _ => (OpStatus::Settling, "destination execution or receipt remains unverified"),
         };
         if status == OpStatus::Settled {
-            patch["spendability"] = serde_json::json!("requires_wqi_claim");
+            patch.set_spendability(serde_json::json!("requires_wqi_claim"));
         }
         return Ok(Some((status, message.into(), Some(patch))));
     }
-    if op.kind == "unwrap_wqi" {
+    if op.kind == OpKind::UnwrapWqi {
         match update.external.and_then(|external| external.outcome) {
             Some(ReceiptOutcome::Failed) => {
                 if let Some(c) = credit {
@@ -906,7 +907,7 @@ fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Optio
     }
     let effect = update.conversion.as_ref().and_then(|c| c.effect);
     if let Some(effect) = effect {
-        patch["conversion_effect"] = serde_json::json!(format!("{effect:?}"));
+        patch.set_conversion_effect(serde_json::json!(format!("{effect:?}")));
         match effect {
             ConversionEffect::ExecutionFailed { .. } => {
                 if let Some(c) = credit {
@@ -927,7 +928,7 @@ fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Optio
                 )));
             }
             ConversionEffect::RefundReported { .. } if credit.is_none() => {
-                patch["refund_credit"] = serde_json::json!("unverified");
+                patch.set_refund_credit(serde_json::json!("unverified"));
                 return Ok(Some((
                     OpStatus::Refunded,
                     "refund processing reported; account credit and spendability remain unverified".into(),
@@ -945,9 +946,9 @@ fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Optio
         merge_patch(&mut patch, observed);
         return Ok(Some((status, message, Some(patch))));
     }
-    if op.kind == "convert_qi_to_quai" && effect.is_some() {
+    if op.kind == OpKind::ConvertQiToQuai && effect.is_some() {
         let locked = matches!(effect, Some(ConversionEffect::Locked { .. }));
-        patch["quai_lock"] = serde_json::json!(locked);
+        patch.set_quai_lock(serde_json::json!(locked));
         // The destination of this direction is a Quai account, so there is no attributed credit
         // observation to wait for: the SDK resolves a beneficiary only through `QiAddress`
         // (quai-provider `qi_credit.rs`), which a Quai destination can never satisfy, and the one
@@ -961,23 +962,23 @@ fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Optio
         // is unattributed. A locked receipt keeps the operation open, since its maturity is a real
         // future event even though only the aggregate lock balance reports it.
         if matches!(effect, Some(ConversionEffect::ConversionReported))
-            && patch["destination_canonicality"] == serde_json::json!("observed")
+            && patch.destination_canonicality().as_str() == Some("observed")
         {
             // The proceeds of this direction are held by the protocol's conversion lockup — the
             // wallet says so in its own review ("locked ~2 weeks") — so a succeeded receipt reports
             // execution, not maturity, and the account's spendable balance does not move yet.
             // `Locked` is what that is; `Settled` would promise a spendable credit that is not
             // there. No unlock height is claimed, because none is attributable to this operation.
-            patch["quai_lock"] = serde_json::json!(true);
-            patch["account_credit"] = serde_json::json!("reported_by_destination_receipt");
-            patch["spendability"] = serde_json::json!("held_by_conversion_lockup");
+            patch.set_quai_lock(serde_json::json!(true));
+            patch.set_account_credit(serde_json::json!("reported_by_destination_receipt"));
+            patch.set_spendability(serde_json::json!("held_by_conversion_lockup"));
             return Ok(Some((
                 OpStatus::Locked,
                 "account conversion executed at the destination; its credit is reported by that receipt and held by the protocol conversion lockup, whose maturity this operation cannot observe".into(),
                 Some(patch),
             )));
         }
-        patch["account_credit"] = serde_json::json!("unverified");
+        patch.set_account_credit(serde_json::json!("unverified"));
         return Ok(Some((
             if locked { OpStatus::Locked } else { OpStatus::Settling },
             "account conversion processing observed; operation-specific credit and spendability are unverified".into(),
@@ -987,24 +988,22 @@ fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Optio
     Ok(Some((OpStatus::Settling, "destination execution or current credit remains unverified".into(), Some(patch))))
 }
 
-fn merge_patch(target: &mut serde_json::Value, source: serde_json::Value) {
-    if let (Some(target), Some(source)) = (target.as_object_mut(), source.as_object()) {
-        target.extend(source.iter().map(|(key, value)| (key.clone(), value.clone())));
-    }
+fn merge_patch(target: &mut Detail, source: Detail) {
+    target.merge(source);
 }
 
-fn credit_status(c: &quai_sdk::provider::QiCreditObservation) -> (OpStatus, String, serde_json::Value) {
+fn credit_status(c: &quai_sdk::provider::QiCreditObservation) -> (OpStatus, String, Detail) {
     let observed = c.locked_qits + c.unlocked_qits;
     let unlock = c.outputs.iter().map(|o| u64::try_from(o.lock).unwrap_or(u64::MAX)).max().unwrap_or(0);
     let complete = !c.outputs.is_empty() && c.unobserved_qits.is_zero();
-    let mut patch = serde_json::json!({
+    let mut patch = Detail::from(serde_json::json!({
         "observed_credit_qits": observed.to_string(), "unobserved_qits": c.unobserved_qits.to_string(),
         "credit_partial": !complete, "credit_head": c.head.number, "credit_head_hash": c.head.hash.to_string(),
         "execution_block": c.execution.number, "execution_hash": c.execution.hash.to_string(),
         "execution_tx": c.transaction_hash.to_string(), "unlock_height": unlock,
         "credit_visibility": if complete { "currently_indexed" } else { "partial_or_spent_trimmed_unindexed" },
         "spendability": "unverified"
-    });
+    }));
     if !complete {
         return (
             OpStatus::Settling,
@@ -1012,9 +1011,9 @@ fn credit_status(c: &quai_sdk::provider::QiCreditObservation) -> (OpStatus, Stri
             patch,
         );
     }
-    patch["credited_qits"] = serde_json::json!(observed.to_string());
+    patch.set_credited_qits(serde_json::json!(observed.to_string()));
     if c.locked_qits.is_zero() && unlock <= c.head.number {
-        patch["spendability"] = serde_json::json!("indexed_unlocked_at_observed_head");
+        patch.set_spendability(serde_json::json!("indexed_unlocked_at_observed_head"));
         (
             OpStatus::Settled,
             format!("{} Qi currently indexed as unlocked; wallet claims and later spends still apply", amount::qi(observed)),
@@ -1025,8 +1024,8 @@ fn credit_status(c: &quai_sdk::provider::QiCreditObservation) -> (OpStatus, Stri
     }
 }
 
-fn lock_progress(op: &Operation, head: u64) -> Result<Option<(OpStatus, String, Option<serde_json::Value>)>> {
-    match op.detail["unlock_height"].as_u64() {
+fn lock_progress(op: &Operation, head: u64) -> Result<Option<(OpStatus, String, Option<Detail>)>> {
+    match op.detail.unlock_height().as_u64() {
         Some(unlock) if unlock <= head => Ok(Some((OpStatus::Settled, format!("{} is now spendable", describe(op)), None))),
         _ => Ok(None),
     }
@@ -1083,7 +1082,7 @@ fn notice_for(items: &[&crate::appdb::Activity]) -> Option<(&'static str, String
 }
 
 pub fn is_balance_increase(a: &crate::appdb::Activity) -> bool {
-    a.detail["note"].as_str() == Some("balance increase")
+    a.detail.note().as_str() == Some("balance increase")
 }
 
 /// How to describe an incoming activity: what was received, or what the balance did.
@@ -1146,7 +1145,7 @@ const TOKEN_ONLY_KINDS: &[&str] = &[
 pub fn op_cost(op: &Operation) -> TxCost {
     let qi = op.store == "qi";
     let parse = |t: &str| U256::from_str_radix(t, 10).ok();
-    let value = match op.detail["native_value"].as_str() {
+    let value = match op.detail.native_value().as_str() {
         Some(v) => parse(v),
         None if qi && op.asset.eq_ignore_ascii_case("QI") => parse(&op.amount),
         None if !qi && op.asset.eq_ignore_ascii_case("QUAI") => parse(&op.amount),
@@ -1156,7 +1155,7 @@ pub fn op_cost(op: &Operation) -> TxCost {
     // An account transaction's stored fee is its maximum until the receipt replaces it; a Qi
     // transaction's fee is fixed by its inputs and outputs the moment it is signed.
     let fee = parse(&op.fee).filter(|_| !op.fee.is_empty());
-    let fee_final = if qi { !matches!(op.status, OpStatus::Prepared) } else { op.detail["included_block"].is_number() };
+    let fee_final = if qi { !matches!(op.status, OpStatus::Prepared) } else { op.detail.included_block().is_number() };
     TxCost { value, fee, fee_final, qi }
 }
 
@@ -1183,7 +1182,7 @@ pub fn describe(op: &Operation) -> String {
         "QUAI" => format!("{} QUAI", amount::quai(op.amount.parse().unwrap_or_default())),
         "QI" => format!("{} Qi", amount::qi(op.amount.parse().unwrap_or_default())),
         other => {
-            let decimals = op.detail["decimals"].as_u64().unwrap_or(if other == "WQUAI" || other == "WQI" { 18 } else { 0 });
+            let decimals = op.detail.decimals().as_u64().unwrap_or(if other == "WQUAI" || other == "WQI" { 18 } else { 0 });
             format!("{} {other}", amount::format_amount(op.amount.parse().unwrap_or_default(), decimals as u8))
         }
     };
@@ -1213,19 +1212,19 @@ pub fn describe(op: &Operation) -> String {
         "nft_transfer" => "sent",
         other => other,
     };
-    if op.kind == "approve" && op.detail["module"].is_string() {
+    if op.kind == OpKind::Approve && op.detail.module().is_string() {
         return "marketplace module approval".into();
     }
-    if op.kind == "approve" && op.detail["operator"].is_string() {
+    if op.kind == OpKind::Approve && op.detail.operator().is_string() {
         return "marketplace collection approval".into();
     }
     // Board posts: a private message says neither who it was for nor what it said.
-    if op.kind == "board_post" {
-        return match (op.detail["messaging"].as_str(), op.detail["channel"].as_str()) {
+    if op.kind == OpKind::BoardPost {
+        return match (op.detail.messaging().as_str(), op.detail.channel().as_str()) {
             (Some("dm"), _) => "private message".into(),
             (Some("keys"), _) => "messaging key published".into(),
             (_, Some(channel)) => format!("post in #{channel}"),
-            _ if op.detail["sealed"] == true => "sealed message (old format)".into(),
+            _ if op.detail.sealed() == true => "sealed message (old format)".into(),
             _ => "board post".into(),
         };
     }
@@ -1233,31 +1232,31 @@ pub fn describe(op: &Operation) -> String {
         "notify" => format!("{verb} to {}", crate::session::short_code(&op.counterparty)),
         "fill_gap" => verb.to_string(),
         "curve_buy" => {
-            let to_symbol = op.detail["to_symbol"].as_str().unwrap_or("?");
-            let decimals = op.detail["to_decimals"].as_u64().and_then(|value| u8::try_from(value).ok()).unwrap_or(18);
+            let to_symbol = op.detail.to_symbol().as_str().unwrap_or("?");
+            let decimals = op.detail.to_decimals().as_u64().and_then(|value| u8::try_from(value).ok()).unwrap_or(18);
             let out =
-                amount::format_amount_short(op.detail["expected_out"].as_str().unwrap_or("0").parse().unwrap_or_default(), decimals, 2);
+                amount::format_amount_short(op.detail.expected_out().as_str().unwrap_or("0").parse().unwrap_or_default(), decimals, 2);
             format!("bought ≈{} {to_symbol} with {amount_text} on its curve", amount::group_thousands(&out))
         }
         "curve_sell" => format!("sold {amount_text} to its curve"),
         "curve_claim" => format!("claimed {amount_text} from a curve"),
         "swap" | "swap_exact_output" => {
-            let to_symbol = op.detail["to_symbol"].as_str().unwrap_or("?");
-            let to_decimals = op.detail["to_decimals"].as_u64().unwrap_or(18) as u8;
-            let (out, approx) = match op.detail["actual_out"].as_str() {
+            let to_symbol = op.detail.to_symbol().as_str().unwrap_or("?");
+            let to_decimals = op.detail.to_decimals().as_u64().unwrap_or(18) as u8;
+            let (out, approx) = match op.detail.actual_out().as_str() {
                 Some(a) => (a, ""),
-                None => (op.detail["expected_out"].as_str().unwrap_or("0"), "≈"),
+                None => (op.detail.expected_out().as_str().unwrap_or("0"), "≈"),
             };
             let out = amount::format_amount_short(out.parse().unwrap_or_default(), to_decimals, 4);
-            let paid = if op.kind == "swap_exact_output" { format!("up to {amount_text}") } else { amount_text };
+            let paid = if op.kind == OpKind::SwapExactOutput { format!("up to {amount_text}") } else { amount_text };
             format!("swap {paid} → {approx}{} {to_symbol}", amount::group_thousands(&out))
         }
         "nft_list" | "nft_reprice" | "nft_unlist" => {
-            let name = op.detail["name"]
+            let name = op.detail.name()
                 .as_str()
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("NFT #{}", op.detail["token_id"].as_str().unwrap_or("?")));
-            match (op.kind.as_str(), op.detail["closed"].as_str()) {
+                .unwrap_or_else(|| format!("NFT #{}", op.detail.token_id().as_str().unwrap_or("?")));
+            match (op.kind.as_str(), op.detail.closed().as_str()) {
                 ("nft_unlist", _) => format!("cancelled the listing of {name}"),
                 (_, Some("sold")) => format!("sold {name} for {amount_text}"),
                 (_, Some(_)) => format!("listing of {name} ended"),
@@ -1266,24 +1265,24 @@ pub fn describe(op: &Operation) -> String {
             }
         }
         "nft_buy" | "nft_transfer" => {
-            let name = op.detail["name"]
+            let name = op.detail.name()
                 .as_str()
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("NFT #{}", op.detail["token_id"].as_str().unwrap_or("?")));
-            if op.kind == "nft_buy" { format!("bought {name} for {amount_text}") } else { format!("sent {name}") }
+                .unwrap_or_else(|| format!("NFT #{}", op.detail.token_id().as_str().unwrap_or("?")));
+            if op.kind == OpKind::NftBuy { format!("bought {name} for {amount_text}") } else { format!("sent {name}") }
         }
         _ => format!("{verb} of {amount_text}"),
     }
 }
 
-fn title_for(kind: &str, status: OpStatus) -> String {
+fn title_for(kind: &OpKind, status: OpStatus) -> String {
     let what = match kind {
-        "convert_quai_to_qi" | "convert_qi_to_quai" => "Conversion",
-        "wrap_qi" | "claim_wqi" | "unwrap_wqi" | "wrap_quai" | "unwrap_quai" => "Wrap",
-        "send_qi" | "send_quai" | "send_token" | "nft_transfer" => "Transfer",
-        "swap" | "swap_exact_output" => "Swap",
-        "nft_buy" => "Purchase",
-        "nft_list" | "nft_reprice" | "nft_unlist" => "Listing",
+        OpKind::ConvertQuaiToQi | OpKind::ConvertQiToQuai => "Conversion",
+        OpKind::WrapQi | OpKind::ClaimWqi | OpKind::UnwrapWqi | OpKind::WrapQuai | OpKind::UnwrapQuai => "Wrap",
+        OpKind::SendQi | OpKind::SendQuai | OpKind::SendToken | OpKind::NftTransfer => "Transfer",
+        OpKind::Swap | OpKind::SwapExactOutput => "Swap",
+        OpKind::NftBuy => "Purchase",
+        OpKind::NftList | OpKind::NftReprice | OpKind::NftUnlist => "Listing",
         _ => "Transaction",
     };
     format!("{what} {}", status.as_str())
@@ -1305,8 +1304,8 @@ fn hartii_fill(receipt: &quai_sdk::provider::Receipt, op: &Operation) -> Option<
     if receipt.outcome != ReceiptOutcome::Succeeded {
         return None;
     }
-    let curve: quai_sdk::Address = op.detail["curve"].as_str()?.parse().ok()?;
-    let owner: quai_sdk::Address = op.detail["recipient"].as_str()?.parse().ok()?;
+    let curve: quai_sdk::Address = op.detail.curve().as_str()?.parse().ok()?;
+    let owner: quai_sdk::Address = op.detail.recipient().as_str()?.parse().ok()?;
     if receipt.to != Some(curve) || !op.account.eq_ignore_ascii_case(&owner.to_string()) {
         return None;
     }
@@ -1329,18 +1328,18 @@ fn hartii_fill(receipt: &quai_sdk::provider::Receipt, op: &Operation) -> Option<
         }
     }
     let fill = found?;
-    if op.kind == "hartii_buy" && swap_output(receipt, &op.detail, None) != Some(fill.1) {
+    if op.kind == OpKind::HartiiBuy && swap_output(receipt, &op.detail, None) != Some(fill.1) {
         return None;
     }
     Some(fill)
 }
 
-pub fn swap_output(receipt: &quai_sdk::provider::Receipt, detail: &serde_json::Value, wquai: Option<&str>) -> Option<U256> {
+pub fn swap_output(receipt: &quai_sdk::provider::Receipt, detail: &Detail, wquai: Option<&str>) -> Option<U256> {
     if receipt.outcome != ReceiptOutcome::Succeeded {
         return None;
     }
-    let recipient: QuaiAddress = detail["recipient"].as_str()?.parse().ok()?;
-    let to_token = detail["to_token"].as_str()?;
+    let recipient: QuaiAddress = detail.recipient().as_str()?.parse().ok()?;
+    let to_token = detail.to_token().as_str()?;
     let topic_address = |topic: &Hash32| -> Option<quai_sdk::Address> {
         let bytes = topic.bytes();
         if bytes[..12].iter().any(|b| *b != 0) {
@@ -1351,7 +1350,7 @@ pub fn swap_output(receipt: &quai_sdk::provider::Receipt, detail: &serde_json::V
     let native = to_token.eq_ignore_ascii_case("quai");
     let token: quai_sdk::Address = if native { wquai?.parse().ok()? } else { to_token.parse().ok()? };
     let router = if native {
-        Some(match detail["router"].as_str() {
+        Some(match detail.router().as_str() {
             Some(router) => router.parse::<quai_sdk::Address>().ok()?,
             None => receipt.to?,
         })
@@ -1433,7 +1432,7 @@ mod incoming_wording {
             address: "0x000b".into(),
             tx_hash: None,
             block: None,
-            detail,
+            detail: detail.into(),
             observed: 0,
         }
     }
@@ -1460,7 +1459,7 @@ mod tests {
         let op = |detail: serde_json::Value| crate::appdb::Operation {
             id: "x".into(),
             network: "local".into(),
-            kind: "board_post".into(),
+            kind: OpKind::BoardPost,
             store: "quai".into(),
             account: "0xabc".into(),
             status: crate::appdb::OpStatus::Confirmed,
@@ -1469,7 +1468,7 @@ mod tests {
             amount: "0".into(),
             counterparty: "sealed message".into(),
             fee: String::new(),
-            detail,
+            detail: detail.into(),
             created: 0,
             updated: 0,
         };
@@ -1489,7 +1488,7 @@ mod tests {
         let op = |store: &str, status: OpStatus| Operation {
             id: "aa".into(),
             network: "mainnet".into(),
-            kind: "send_quai".into(),
+            kind: OpKind::SendQuai,
             store: store.into(),
             account: "0xabc".into(),
             status,
@@ -1498,7 +1497,7 @@ mod tests {
             amount: "1".into(),
             counterparty: String::new(),
             fee: String::new(),
-            detail: serde_json::json!({}),
+            detail: serde_json::json!({}).into(),
             created: 0,
             updated: 0,
         };
@@ -1549,7 +1548,7 @@ mod tests {
         let mut op = Operation {
             id: "x".into(),
             network: "mainnet".into(),
-            kind: "send_quai".into(),
+            kind: OpKind::SendQuai,
             store: "quai".into(),
             account: "0x00".into(),
             status: OpStatus::Submitted,
@@ -1558,28 +1557,28 @@ mod tests {
             amount: e18(5),
             counterparty: "0x00".into(),
             fee: "21000000000000".into(),
-            detail: serde_json::json!({}),
+            detail: serde_json::json!({}).into(),
             created: 0,
             updated: 0,
         };
         let cost = op_cost(&op);
         assert_eq!((cost.value, cost.qi, cost.fee_final), (Some(U256::from(5u128 * 10u128.pow(18))), false, false));
         assert_eq!(cost.text(cost.fee.unwrap()), "0.000021 QUAI");
-        op.detail["included_block"] = serde_json::json!(100);
+        op.detail.set_included_block(serde_json::json!(100));
         assert!(op_cost(&op).fee_final, "mined: the fee is the receipt's");
         // A token send carries no QUAI, but still paid gas in it.
-        op.kind = "send_token".into();
+        op.kind = crate::journal::OpKind::SendToken;
         op.asset = "USDT".into();
         assert_eq!(op_cost(&op).value, Some(U256::ZERO));
         // Whatever the kind, a recorded native value wins (a swap from QUAI, a marketplace buy).
-        op.kind = "swap".into();
-        op.detail["native_value"] = serde_json::json!(e18(2));
+        op.kind = crate::journal::OpKind::Swap;
+        op.detail.set_native_value(serde_json::json!(e18(2)));
         assert_eq!(op_cost(&op).value, Some(U256::from(2u128 * 10u128.pow(18))));
-        op.detail = serde_json::json!({});
+        op.detail = serde_json::json!({}).into();
         assert_eq!(op_cost(&op).value, None, "an unknown value is not guessed as zero");
         // The UTXO ledger counts both in Qi, and its fee is fixed once signed.
         let qi =
-            Operation { store: "qi".into(), kind: "send_qi".into(), asset: "QI".into(), amount: "12345".into(), fee: "5".into(), ..op };
+            Operation { store: "qi".into(), kind: OpKind::SendQi, asset: "QI".into(), amount: "12345".into(), fee: "5".into(), ..op };
         let cost = op_cost(&qi);
         assert!(cost.qi && cost.fee_final);
         assert_eq!((cost.text(cost.value.unwrap()), cost.text(cost.fee.unwrap())), ("12.345 Qi".to_string(), "0.005 Qi".to_string()));
@@ -1590,7 +1589,7 @@ mod tests {
         let mut op = Operation {
             id: "x".into(),
             network: "mainnet".into(),
-            kind: "swap".into(),
+            kind: OpKind::Swap,
             store: "quai".into(),
             account: "0x00".into(),
             status: OpStatus::Submitted,
@@ -1599,17 +1598,17 @@ mod tests {
             amount: (50u128 * 10u128.pow(18)).to_string(),
             counterparty: "0x00".into(),
             fee: String::new(),
-            detail: serde_json::json!({"decimals": 18, "to_symbol": "USDT", "to_decimals": 6, "expected_out": "51940000"}),
+            detail: serde_json::json!({"decimals": 18, "to_symbol": "USDT", "to_decimals": 6, "expected_out": "51940000"}).into(),
             created: 0,
             updated: 0,
         };
         assert_eq!(describe(&op), "swap 50 WQI → ≈51.94 USDT");
-        op.detail["actual_out"] = serde_json::json!("51900000");
+        op.detail.set_actual_out(serde_json::json!("51900000"));
         assert_eq!(describe(&op), "swap 50 WQI → 51.9 USDT");
-        op.kind = "nft_buy".into();
+        op.kind = crate::journal::OpKind::NftBuy;
         op.asset = "QUAI".into();
         op.amount = (1000u128 * 10u128.pow(18)).to_string();
-        op.detail = serde_json::json!({"name": "Quai Pepe #212", "token_id": "212"});
+        op.detail = serde_json::json!({"name": "Quai Pepe #212", "token_id": "212"}).into();
         assert_eq!(describe(&op), "bought Quai Pepe #212 for 1000 QUAI");
     }
 
@@ -1639,7 +1638,7 @@ mod notice_tests {
             address: address.into(),
             tx_hash: Some(tx.into()),
             block: None,
-            detail: serde_json::json!({}),
+            detail: serde_json::json!({}).into(),
             observed: 0,
         }
     }
@@ -1699,7 +1698,7 @@ mod notice_tests {
             address: address.into(),
             tx_hash: None,
             block: None,
-            detail: serde_json::json!({"note": "balance increase"}),
+            detail: serde_json::json!({"note": "balance increase"}).into(),
             observed: 0,
         };
         let notices = incoming_notices(&[rise("0x0011", "1000000000000000000"), rise("0x0022", "2000000000000000000")]);

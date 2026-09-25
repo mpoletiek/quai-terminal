@@ -1,3 +1,4 @@
+use wallet_core::journal::OpKind;
 use super::*;
 use wallet_core::sdk::U256;
 
@@ -117,7 +118,7 @@ fn strength_and_paths() {
 fn review_requires_scroll() {
     let review = Review {
         op_id: "x".into(),
-        kind: "send_quai".into(),
+        kind: OpKind::SendQuai,
         title: "t".into(),
         network: "n".into(),
         from: "a".into(),
@@ -304,7 +305,7 @@ fn op(id: &str, kind: &str, status: wallet_core::appdb::OpStatus) -> wallet_core
     wallet_core::appdb::Operation {
         id: id.into(),
         network: "local".into(),
-        kind: kind.into(),
+        kind: wallet_core::journal::OpKind::parse(kind),
         store: "quai".into(),
         account: "0x00".into(),
         status,
@@ -313,7 +314,7 @@ fn op(id: &str, kind: &str, status: wallet_core::appdb::OpStatus) -> wallet_core
         amount: "1".into(),
         counterparty: String::new(),
         fee: "0".into(),
-        detail: serde_json::json!({}),
+        detail: serde_json::json!({}).into(),
         created: 0,
         updated: 0,
     }
@@ -388,7 +389,7 @@ fn confirmations_and_coins_light_once() {
         label: None,
     };
     let mut mined = op("aa", "send_quai", OpStatus::Confirmed);
-    mined.detail = serde_json::json!({"included_block": 100});
+    mined.detail = serde_json::json!({"included_block": 100}).into();
     let mut dash = app.dash.clone();
     dash.network_id = "local".into();
     dash.refreshed_at = 1;
@@ -410,7 +411,7 @@ fn confirmations_and_coins_light_once() {
 fn review(id: &str, kind: &str) -> Ev {
     Ev::Review(Box::new(Review {
         op_id: id.into(),
-        kind: kind.into(),
+        kind: wallet_core::journal::OpKind::parse(kind),
         title: "t".into(),
         network: "n".into(),
         from: "a".into(),
@@ -508,7 +509,7 @@ fn swap_sequence_waits_for_the_approval_then_opens_the_swap_on_any_screen() {
     app.on_event(review("a1", "approve"), size);
     assert!(matches!(app.modal, Modal::Review(_)));
     app.modal = Modal::None;
-    app.committing_kind = Some("approve".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Approve);
     app.on_event(submitted("a1"), size);
     assert!(matches!(app.modal, Modal::None), "an intermediate step shows no result dialog");
     assert_eq!(app.eco.flow.as_ref().unwrap().waiting.as_deref(), Some("a1"));
@@ -524,7 +525,7 @@ fn swap_sequence_waits_for_the_approval_then_opens_the_swap_on_any_screen() {
     assert!(flow.requested && flow.waiting.is_none());
     app.on_event(review("s1", "swap"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("swap".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
     app.on_event(submitted("s1"), size);
     assert!(app.eco.flow.is_none(), "the swap finishes the sequence");
     assert!(matches!(app.modal, Modal::Result(_)), "the final step shows its result");
@@ -556,7 +557,7 @@ fn a_deposit_walks_both_approvals_and_then_deposits() {
         app.on_event(review(id, "approve"), size);
         assert!(matches!(app.modal, Modal::Review(_)), "approval {i} opens a review");
         app.modal = Modal::None;
-        app.committing_kind = Some("approve".into());
+        app.committing_kind = Some(wallet_core::journal::OpKind::Approve);
         app.on_event(submitted(id), size);
         assert_eq!(app.eco.flow.as_ref().unwrap().waiting.as_deref(), Some(*id), "waits for approval {i}");
         app.dash.ops = vec![op(id, "approve", OpStatus::Submitted)];
@@ -570,7 +571,7 @@ fn a_deposit_walks_both_approvals_and_then_deposits() {
     // The deposit itself ends the sequence and shows its result.
     app.on_event(review("add1", "add_liquidity"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("add_liquidity".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::AddLiquidity);
     app.on_event(submitted("add1"), size);
     assert!(app.eco.flow.is_none(), "the deposit finishes the sequence");
     assert!(matches!(app.modal, Modal::Result(_)), "and shows its result");
@@ -599,7 +600,7 @@ fn a_deposit_short_of_wquai_wraps_then_approves_then_deposits() {
         app.on_event(review(id, kind), size);
         assert!(matches!(app.modal, Modal::Review(_)), "{kind} opens a review");
         app.modal = Modal::None;
-        app.committing_kind = Some(kind.into());
+        app.committing_kind = Some(wallet_core::journal::OpKind::parse(kind));
         app.on_event(submitted(id), size);
         let flow = app.eco.flow.as_ref().unwrap_or_else(|| panic!("the {kind} does not end the deposit"));
         assert_eq!(flow.waiting.as_deref(), Some(id), "the sequence waits for the {kind}");
@@ -614,7 +615,7 @@ fn a_deposit_short_of_wquai_wraps_then_approves_then_deposits() {
     }
     app.on_event(review("add1", "add_liquidity"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("add_liquidity".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::AddLiquidity);
     app.on_event(submitted("add1"), size);
     assert!(app.eco.flow.is_none(), "the deposit finishes the sequence");
     assert!(matches!(app.modal, Modal::Result(_)), "and shows its result");
@@ -672,14 +673,14 @@ fn qi_market_route_runs_wrap_swap_unwrap() {
     // The market swap is signed: the route waits for it rather than announcing a result.
     app.on_event(review("s1", "swap"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("swap".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
     app.on_event(submitted("s1"), size);
     assert!(matches!(app.modal, Modal::None), "an intermediate step shows no result dialog");
     assert_eq!(app.eco.flow.as_ref().unwrap().waiting.as_deref(), Some("s1"));
     // 8.285 WQI arrives: whole Qi are redeemed and the remainder is recorded, not silently kept.
     let mut paid = op("s1", "swap", OpStatus::Confirmed);
     paid.account = "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into();
-    paid.detail = serde_json::json!({"to_token": wqi, "actual_out": "8285000000000000000"});
+    paid.detail = serde_json::json!({"to_token": wqi, "actual_out": "8285000000000000000"}).into();
     app.dash.ops = vec![paid];
     app.dash.wrap = wrap("8285000000000000000", "0");
     app.advance_flow();
@@ -701,7 +702,7 @@ fn qi_market_route_runs_wrap_swap_unwrap() {
     // The redemption is the last allocation, so it ends the route and shows its result.
     app.on_event(review("u1", "unwrap_wqi"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("unwrap_wqi".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::UnwrapWqi);
     app.on_event(submitted("u1"), size);
     assert!(app.eco.flow.is_none(), "the redemption ends the route");
     assert!(matches!(app.modal, Modal::Result(_)), "the final step shows its result");
@@ -814,7 +815,7 @@ fn sequences_stop_on_reject_failure_and_errors() {
     app.start_flow(swap());
     app.on_event(review("a2", "approve"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("approve".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Approve);
     app.on_event(submitted("a2"), size);
     app.dash.ops = vec![op("a2", "approve", OpStatus::Failed)];
     app.advance_flow();
@@ -1849,7 +1850,7 @@ fn a_two_exchange_route_swaps_to_the_hub_then_sizes_the_second_swap_from_the_fir
     // The first swap is signed: the sequence waits for it rather than finishing.
     app.on_event(review("s1", "swap"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("swap".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
     app.on_event(submitted("s1"), size);
     assert!(matches!(app.modal, Modal::None), "no result dialog between the two swaps");
     let flow = app.eco.flow.as_ref().expect("still running");
@@ -1862,7 +1863,7 @@ fn a_two_exchange_route_swaps_to_the_hub_then_sizes_the_second_swap_from_the_fir
     // that is the second swap, on to USDT, sized from the receipt rather than from the quote.
     let mut paid = op("s1", "swap", OpStatus::Confirmed);
     paid.account = owner.clone();
-    paid.detail = serde_json::json!({"actual_out": "61250000000000000000", "to_decimals": 18, "to_token": wquai});
+    paid.detail = serde_json::json!({"actual_out": "61250000000000000000", "to_decimals": 18, "to_token": wquai}).into();
     app.dash.ops = vec![paid];
     app.advance_flow();
     let flow = app.eco.flow.as_ref().unwrap();
@@ -1885,7 +1886,7 @@ fn a_two_exchange_route_swaps_to_the_hub_then_sizes_the_second_swap_from_the_fir
     // The second swap finishes the route.
     app.on_event(review("s2", "swap"), size);
     app.modal = Modal::None;
-    app.committing_kind = Some("swap".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
     app.on_event(submitted("s2"), size);
     assert!(app.eco.flow.is_none());
     assert!(matches!(app.modal, Modal::Result(_)));
@@ -2075,7 +2076,7 @@ fn markets_alerts_and_watching() {
 fn a_send_review_copies_as_a_command() {
     let review = |kind: &str, to: &str, amount: &str, fields: Vec<wallet_core::tx::Field>| wallet_core::tx::Review {
         op_id: "x".into(),
-        kind: kind.into(),
+        kind: wallet_core::journal::OpKind::parse(kind),
         title: String::new(),
         network: String::new(),
         from: "0x00aa (Main)".into(),
@@ -2710,10 +2711,10 @@ fn the_send_form_says_when_the_destination_is_a_contract() {
                 metadata: Some(
                     wallet_core::contracts::parse_metadata(
                         "QmTest",
-                        &serde_json::to_vec(&serde_json::json!({
+                        &serde_json::to_vec(&wallet_core::journal::Detail::from(serde_json::json!({
                             "settings": {"compilationTarget": {"a.sol": "Messages"}},
                             "output": {"abi": []},
-                        }))
+                        })))
                         .unwrap(),
                     )
                     .unwrap(),
@@ -3459,7 +3460,7 @@ fn review_probe_commit_failure_must_release_or_recover_flow() {
     app.on_event(review("probe", "swap"), (100, 30));
     // Approve has closed the modal; commit now fails (e.g. its snapshot expired).
     app.modal = Modal::None;
-    app.committing_kind = Some("swap".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
     app.on_event(
         Ev::CommitError { op_id: "probe".into(), message: "snapshot expired while committing".into(), ambiguous: false },
         (100, 30),
@@ -3477,7 +3478,7 @@ fn review_probe_lock_during_commit_must_keep_submission() {
     review_probe_flow(&mut app);
     app.on_event(review("probe", "swap"), (100, 30));
     app.modal = Modal::None;
-    app.committing_kind = Some("swap".into());
+    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
     // Lock occurs while an already-approved commit is finishing.
     app.enter_lock(None);
     app.on_event(submitted("probe"), (100, 30));
@@ -3689,7 +3690,7 @@ fn market_conversion_checkpoints_receipt_and_residual_while_locked_without_prepa
         let (_dir, mut app, owner, wqi) = market_conversion_app(Direction::QuaiToQi);
         let mut operation = op("market-swap", "swap", wallet_core::appdb::OpStatus::Confirmed);
         operation.account = owner;
-        operation.detail = serde_json::json!({"to_token":wqi,"actual_out":paid});
+        operation.detail = serde_json::json!({"to_token":wqi,"actual_out":paid}).into();
         app.dash.ops = vec![operation];
         let flow = app.eco.flow.as_mut().unwrap();
         flow.requested = false;
@@ -3723,7 +3724,7 @@ fn market_conversion_requires_wrap_settlement_before_claim_review() {
     let (_dir, mut app, owner, _) = market_conversion_app(Direction::QiToQuai);
     let mut operation = op("deposit", "wrap_qi", wallet_core::appdb::OpStatus::Confirmed);
     operation.amount = wallet_core::amount::parse_qi("2").unwrap().to_string();
-    operation.detail = serde_json::json!({"beneficiary":owner});
+    operation.detail = serde_json::json!({"beneficiary":owner}).into();
     app.dash.ops = vec![operation];
     let flow = app.eco.flow.as_mut().unwrap();
     flow.requested = false;
@@ -4031,7 +4032,7 @@ fn an_arrival_names_its_sender_and_marks_activity_until_seen() {
         address: "0x00F41a2B3c4D5e6F7a8B9c0D1e2F3a4B5c6D804B".into(),
         tx_hash: Some("0xabc".into()),
         block: Some(10),
-        detail: serde_json::json!({}),
+        detail: serde_json::json!({}).into(),
         observed: wallet_core::registry::now(),
     });
     app.observe_changes(&next);
@@ -4224,13 +4225,13 @@ fn a_landed_swap_reads_like_a_fill_ticket() {
     s.amount = "120000000000000000000".into();
     let e18 = |whole: u64, _tenths: u64| format!("{whole}000000000000000000");
     s.detail = serde_json::json!({"decimals": 18, "to_decimals": 18, "to_symbol": "WQI",
-        "expected_out": e18(4200, 0), "minimum_out": e18(4179, 0), "actual_out": e18(4205, 0)});
+        "expected_out": e18(4200, 0), "minimum_out": e18(4179, 0), "actual_out": e18(4205, 0)}).into();
     let said = super::events::swap_receipt(&s);
     assert!(said.starts_with("Swap landed · 120 QUAI → 4,205 WQI") && said.ends_with("0.12% better than quoted"), "{said}");
-    s.detail["actual_out"] = serde_json::json!(e18(4195, 0));
+    s.detail.set_actual_out(serde_json::json!(e18(4195, 0)));
     let said = super::events::swap_receipt(&s);
     assert!(said.ends_with("0.12% under the quote, inside your 0.5%"), "{said}");
-    s.detail["actual_out"] = serde_json::Value::Null;
+    s.detail.set_actual_out(serde_json::Value::Null);
     assert_eq!(super::events::swap_receipt(&s), "Swap landed · QUAI → WQI", "older operations lack the amounts");
 }
 

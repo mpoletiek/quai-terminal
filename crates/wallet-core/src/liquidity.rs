@@ -6,6 +6,7 @@
 //! from reserves rather than typed, minimums come from the user's slippage, and the first deposit
 //! into an empty pool is refused rather than silently letting the depositor set the price.
 
+use crate::journal::OpKind;
 use crate::amount;
 use crate::markets::{Pool, PoolToken};
 use quai_sdk::U256;
@@ -915,7 +916,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: format!("Approve {} for liquidity ({step})", approved.symbol),
             asset: approved.symbol.clone(),
             amount: atoms,
@@ -927,7 +928,7 @@ impl Session {
                 field("Allowance", format!("exactly {} {}", amount::format_amount(atoms, approved.decimals), approved.symbol)),
             ],
             warnings: quote.warnings.clone(),
-            detail: serde_json::json!({"token": approved.address, "purpose": "add_liquidity", "spender": router.to_string()}),
+            detail: serde_json::json!({"token": approved.address, "purpose": "add_liquidity", "spender": router.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })
@@ -991,7 +992,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "add_liquidity".into(),
+            kind: OpKind::AddLiquidity,
             title: format!("Add liquidity to {}/{}", quote.token0.symbol, quote.token1.symbol),
             asset: quote.token0.symbol.clone(),
             amount: quote.amount0,
@@ -1029,7 +1030,7 @@ impl Session {
                     {"direction":"out", "asset":quote.token1.symbol, "token":quote.token1.address, "decimals":quote.token1.decimals, "amount":quote.amount1.to_string(), "estimated":false, "note":"deposit"},
                     {"direction":"in", "asset":"LP", "token":pair, "decimals":18, "amount":quote.liquidity.to_string(), "estimated":true, "note":"estimated minted liquidity"}
                 ],
-            }),
+            }).into(),
             max_gas: 400_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })
@@ -1094,7 +1095,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "remove_liquidity".into(),
+            kind: OpKind::RemoveLiquidity,
             title: format!("Remove {percent}% of {}/{}", quote.token0.symbol, quote.token1.symbol),
             asset: "LP".into(),
             amount: quote.liquidity,
@@ -1126,7 +1127,7 @@ impl Session {
                     {"direction":"out", "asset":"LP", "token":pair, "decimals":18, "amount":quote.liquidity.to_string(), "estimated":false, "note":"burned liquidity"},
                     {"direction":"in", "asset":quote.token0.symbol, "token":quote.token0.address, "decimals":quote.token0.decimals, "amount":quote.amount0.to_string(), "estimated":true, "note":"estimated recipient credit; pool bound is before token transfer fees"},
                     {"direction":"in", "asset":quote.token1.symbol, "token":quote.token1.address, "decimals":quote.token1.decimals, "amount":quote.amount1.to_string(), "estimated":true, "note":"estimated recipient credit; pool bound is before token transfer fees"}
-                ]}),
+                ]}).into(),
             max_gas: 400_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })
@@ -1162,7 +1163,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: "Approve LP for withdrawal (step 1 of 2)".into(),
             asset: "LP".into(),
             amount: liquidity,
@@ -1174,7 +1175,7 @@ impl Session {
                 field("Allowance", format!("exactly {} LP", amount::format_amount_short(liquidity, 18, 6))),
             ],
             warnings: vec![],
-            detail: serde_json::json!({"token": pair, "purpose": "remove_liquidity", "spender": router.to_string()}),
+            detail: serde_json::json!({"token": pair, "purpose": "remove_liquidity", "spender": router.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })

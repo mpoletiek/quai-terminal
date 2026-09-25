@@ -1251,7 +1251,7 @@ pub fn draw_wrap_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         ))),
     }
     s.push(Line::from(""));
-    for o in app.dash.ops.iter().filter(|o| o.kind.contains("wrap") || o.kind.contains("claim")).take(5) {
+    for o in app.dash.ops.iter().filter(|o| o.kind.as_str().contains("wrap") || o.kind.as_str().contains("claim")).take(5) {
         s.push(Line::from(vec![
             Span::styled(format!("{} ", status_glyph(t, o.status)), t.dim_style()),
             Span::raw(truncate(&describe(o), 40)),

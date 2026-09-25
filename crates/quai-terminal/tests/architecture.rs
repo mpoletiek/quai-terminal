@@ -119,8 +119,15 @@ fn count(dirs: &[&str], needles: &[&str]) -> usize {
 /// (what, directories, patterns, ceiling). Lower a ceiling when a phase removes some; never raise
 /// one.
 const RATCHETS: &[(&str, &[&str], &[&str], usize)] = &[
-    ("untyped journal detail reads (phase 1)", &["crates/wallet-core/src"], &["detail[\""], 115),
-    ("operation kinds compared as text (phase 1)", &["crates/wallet-core/src"], &["kind == \"", "kind != \""], 31),
+    // Phase 1 removed these: journal facts are reached through `journal::Detail`'s accessors and
+    // kinds are `journal::OpKind`. The ceiling is zero; the compiler now refuses most of them.
+    ("untyped journal detail reads", &["crates/wallet-core/src", "crates/quai-terminal/src"], &["detail[\"", "detail.get(\""], 0),
+    (
+        "operation kinds compared as text",
+        &["crates/wallet-core/src", "crates/quai-terminal/src"],
+        &["kind == \"", "kind != \"", "kind.as_str() ==", "OpKind::parse(\""],
+        0,
+    ),
     ("the TUI acting from the first account (phase 3)", &["crates/quai-terminal/src/tui"], &["accounts.first()"], 27),
 ];
 

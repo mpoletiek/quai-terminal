@@ -1,5 +1,6 @@
 //! The core screens: activity, accounts, Qi coins, locks, contacts and channels, network, settings.
 
+use wallet_core::journal::OpKind;
 use super::*;
 
 // ---------------------------------------------------------------- screens
@@ -10,7 +11,7 @@ pub(crate) fn incoming_text(a: &Activity) -> String {
         "QI" => format!("{} Qi", qi(v)),
         "QUAI" => format!("{} QUAI", q(v)),
         other => {
-            let dec = a.detail.get("decimals").and_then(|d| d.as_u64()).unwrap_or(18) as u8;
+            let dec = a.detail.decimals().as_u64().unwrap_or(18) as u8;
             format!("{} {other}", super::super::num::short(v, dec, 4))
         }
     }
@@ -31,23 +32,25 @@ pub(crate) fn contact_matching<'a>(app: &'a App, key: &str) -> Option<&'a str> {
 
 /// The contact an operation was with: its payment-code peer, else its counterparty.
 pub(crate) fn op_contact<'a>(app: &'a App, op: &Operation) -> Option<&'a str> {
-    op.detail["peer"].as_str().and_then(|p| contact_matching(app, p)).or_else(|| contact_matching(app, &op.counterparty))
+    op.detail.peer().as_str().and_then(|p| contact_matching(app, p)).or_else(|| contact_matching(app, &op.counterparty))
 }
 
 /// The contact who sent an incoming payment, when the channel is known.
 pub(crate) fn activity_contact<'a>(app: &'a App, a: &Activity) -> Option<&'a str> {
-    if let Some(peer) = a.detail["peer"].as_str() {
+    if let Some(peer) = a.detail.peer().as_str() {
         return contact_matching(app, peer);
     }
     // Rows recorded before the full code was kept only carry `payment from <short code>`.
-    let short = a.detail["origin"].as_str()?.strip_prefix("payment from ")?;
+    let short = a.detail.origin().as_str()?.strip_prefix("payment from ")?;
     app.dash.contacts.iter().find(|c| c.payment_code.as_deref().is_some_and(|code| short_code(code) == short)).map(|c| c.name.as_str())
 }
 
 /// Icon for the token, NFT collection or native coin an activity row is about.
-pub(crate) fn row_badge(app: &App, t: &Theme, symbol: &str, detail: &serde_json::Value) -> Option<Span<'static>> {
-    let Some(contract) =
-        ["contract", "token", "to_token"].iter().find_map(|k| detail[*k].as_str().filter(|c| c.starts_with("0x"))).map(str::to_lowercase)
+pub(crate) fn row_badge(app: &App, t: &Theme, symbol: &str, detail: &wallet_core::journal::Detail) -> Option<Span<'static>> {
+    let Some(contract) = [detail.contract(), detail.token(), detail.to_token()]
+        .into_iter()
+        .find_map(|v| v.as_str().filter(|c| c.starts_with("0x")))
+        .map(str::to_lowercase)
     else {
         return match symbol.to_ascii_lowercase().as_str() {
             native @ ("quai" | "qi") => Some(super::super::images::native_span(app, t, native)),
@@ -55,8 +58,8 @@ pub(crate) fn row_badge(app: &App, t: &Theme, symbol: &str, detail: &serde_json:
         };
     };
     // NFTs are badged by collection name; fungible tokens by symbol (their name may differ).
-    let nft = detail["token_id"].as_str().is_some_and(|id| !id.is_empty());
-    let name = detail["name"].as_str().filter(|n| nft && !n.is_empty()).unwrap_or(symbol);
+    let nft = detail.token_id().as_str().is_some_and(|id| !id.is_empty());
+    let name = detail.name().as_str().filter(|n| nft && !n.is_empty()).unwrap_or(symbol);
     let icon = app.asset_icon_url(&contract);
     Some(super::super::images::badge_span(app, t, icon.as_deref(), name, &contract))
 }
@@ -76,7 +79,7 @@ pub(crate) fn confirmations(op: &Operation, head: u64) -> Option<(u64, u64)> {
     if !matches!(op.status, OpStatus::Confirmed | OpStatus::Settled | OpStatus::Settling | OpStatus::Locked) {
         return None;
     }
-    let included = op.detail["included_block"].as_u64()?;
+    let included = op.detail.included_block().as_u64()?;
     let n = head.checked_sub(included)? + 1;
     (n < CONFIRM_TARGET + 1).then_some((n.min(CONFIRM_TARGET), CONFIRM_TARGET))
 }
@@ -107,7 +110,7 @@ pub(crate) fn tally(n: u64, target: u64) -> String {
 
 /// What is happening with an unfinished operation, and whether it waits on the user.
 pub(crate) fn op_next_step(op: &Operation, head: u64) -> String {
-    let unlock = op.detail["unlock_height"].as_u64().filter(|u| *u > head);
+    let unlock = op.detail.unlock_height().as_u64().filter(|u| *u > head);
     match op.status {
         OpStatus::Prepared | OpStatus::Signed => "not sent yet · it is submitted when you approve the review".into(),
         // Both ledgers can be replaced now, so neither arm singles one out. A Qi replacement pays
@@ -135,7 +138,7 @@ pub(crate) fn op_row_parts(app: &App, t: &Theme, op: &Operation) -> (Span<'stati
     };
     let icon_color = if op.asset.eq_ignore_ascii_case("QI") { t.qi } else { t.quai };
     let what = match op_contact(app, op) {
-        Some(name) if op.kind != "notify" => format!("{} → {name}", describe(op)),
+        Some(name) if op.kind != OpKind::Notify => format!("{} → {name}", describe(op)),
         Some(name) => format!("mailbox notify to {name}"),
         None => describe(op),
     };
@@ -468,11 +471,9 @@ pub(crate) fn draw_activity(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     lines.push(kv("explorer", format!("{}/tx/{h}", e.trim_end_matches('/'))));
                 }
             }
-            if let Some(obj) = op.detail.as_object() {
-                // `native_value` is stated above as the value, in QUAI rather than wei.
-                for (k, v) in obj.iter().filter(|(k, _)| k.as_str() != "native_value").take(10) {
-                    lines.push(kv(k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())));
-                }
+            // `native_value` is stated above as the value, in QUAI rather than wei.
+            for (k, v) in op.detail.entries().filter(|(k, _)| *k != "native_value").take(10) {
+                lines.push(kv(k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())));
             }
             if !op.status.is_terminal() {
                 let head = app.dash.health.as_ref().map(|h| h.height).unwrap_or(0);
@@ -823,7 +824,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
                     .dash
                     .activity
                     .iter()
-                    .filter(|a| a.detail["counterparty"].as_str().is_some_and(|cp| cp.eq_ignore_ascii_case(addr)))
+                    .filter(|a| a.detail.counterparty().as_str().is_some_and(|cp| cp.eq_ignore_ascii_case(addr)))
                     .take(4)
                     .collect();
                 if !with.is_empty() {

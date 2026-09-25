@@ -199,7 +199,7 @@ impl AuthorizationPolicy {
             || !self.genesis.eq_ignore_ascii_case(&network.genesis)
             || self.network_id != op.network
             || !has(&self.accounts, &op.account)
-            || !self.kinds.contains(&op.kind)
+            || !self.kinds.iter().any(|kind| kind == op.kind.as_str())
             || op.kind != review.kind
             || !has(&self.destinations, &review.to)
             || digest.is_empty()
@@ -1440,10 +1440,8 @@ pub async fn tx(ctx: &Ctx, cmd: TxCmd) -> Result<()> {
                 );
             }
             println!("  created    {}", ts(op.created));
-            if let Some(obj) = op.detail.as_object() {
-                for (k, v) in obj {
-                    println!("  {:<10} {}", k, v);
-                }
+            for (k, v) in op.detail.entries() {
+                println!("  {:<10} {}", k, v);
             }
             Ok(())
         }
@@ -2386,7 +2384,7 @@ mod tests {
         let mut op = wallet_core::appdb::Operation {
             id: "op".into(),
             network: network.id.clone(),
-            kind: "send_quai".into(),
+            kind: wallet_core::journal::OpKind::SendQuai,
             store: "quai".into(),
             account: "0x0011".into(),
             status: OpStatus::Prepared,
@@ -2395,7 +2393,7 @@ mod tests {
             amount: "100".into(),
             counterparty: "0x0022".into(),
             fee: "10".into(),
-            detail: json!({}),
+            detail: json!({}).into(),
             created: 100,
             updated: 100,
         };
