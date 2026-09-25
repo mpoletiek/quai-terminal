@@ -9,8 +9,8 @@
 > split swaps, and the automatic wrap before a trade have not: they are qualified by simulation
 > against the deployed contracts and by execution on a disposable local chain.
 >
-> **0.1.0-alpha.9's own transactions have not yet run on mainnet.** This version rebuilds how
-> transactions are built, reviewed and signed. Its swaps (with their approvals), adding and removing
+> **This version's own transactions have not yet run on mainnet.** Since 0.1.0-alpha.9 the wallet
+> builds, reviews and signs transactions in a new way. Its swaps (with their approvals), adding and removing
 > liquidity, and QUAI → Qi conversion ran end to end on a local chain, and its reviews were checked
 > read-only against mainnet's contracts; the mainnet runs above were made with earlier versions.
 > Start with small amounts.

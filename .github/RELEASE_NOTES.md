@@ -3,6 +3,17 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
+## What's new in 0.1.0-alpha.10
+
+- **The terminal no longer loses its connection to the daemon under load.** In 0.1.0-alpha.9 it
+  could lock, most likely on a first open, with "engine stopped (a frame of … bytes is over the
+  limit)": a message from the daemon could be cut short when the terminal was busy sending one of
+  its own, and the rest of the stream no longer made sense. No funds or keys were at risk: the
+  terminal locked and reconnected. Each end now reads the other's messages whole, whatever else
+  it is doing.
+
+Everything else is 0.1.0-alpha.9, below.
+
 ## What's new in 0.1.0-alpha.9
 
 This release rebuilds how the wallet is put together. Most of it is underneath; what you will see:
@@ -93,8 +104,8 @@ Read this part.
   split swaps, and the automatic wrap before a trade have not: they are qualified by simulation against the deployed contracts and by execution on a
   disposable local chain. A limit order's swap is an ordinary swap once you approve its review,
   but no order has yet been run to completion on mainnet.
-- **This version's own transactions have not yet run on mainnet.** 0.1.0-alpha.9 rebuilds how
-  transactions are built, reviewed and signed. Its swaps (with their approvals), adding and removing
+- **This version's own transactions have not yet run on mainnet.** Since 0.1.0-alpha.9 the wallet
+  builds, reviews and signs transactions in a new way. Its swaps (with their approvals), adding and removing
   liquidity, and QUAI → Qi conversion were run end to end on a disposable local chain, and its
   reviews checked read-only against the deployed mainnet contracts; the mainnet runs above were
   made with earlier versions. Start with small amounts.
