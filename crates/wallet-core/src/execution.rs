@@ -32,6 +32,9 @@ pub enum TradingAction {
         stage: u8,
         slippage: u16,
         deadline: u32,
+        /// The route ends in WQUAI, redeemed for QUAI afterwards (stage 2).
+        #[serde(default)]
+        redeem: bool,
     },
     Split {
         plan: Box<crate::split_routes::SplitPlan>,
@@ -92,6 +95,39 @@ pub enum TradingAction {
         slippage: u16,
         deadline: u32,
     },
+    /// A swap into WQUAI, then the WQUAI it paid out redeemed for QUAI: for pools that trade
+    /// WQUAI when QUAI is what the user asked for. `amount` is the swap's input at stage 0 and
+    /// the WQUAI to redeem at stage 1.
+    SwapThenUnwrap {
+        from: String,
+        wquai: String,
+        amount: String,
+        slippage: u16,
+        deadline: u32,
+        stage: u8,
+    },
+    /// Buy a listed NFT: the marketplace's approvals while needed, then the buy.
+    NftBuy {
+        contract: String,
+        token_id: String,
+        price: Option<String>,
+    },
+    /// List an NFT (or change its price): the approvals while needed, then the listing. No price
+    /// cancels the listing.
+    NftList {
+        contract: String,
+        token_id: String,
+        price: Option<String>,
+        currency: String,
+    },
+    /// Claim settled wrapped Qi as WQI.
+    ClaimWqi,
+    /// Take staked LP out of a gauge (`gauge`: the one it is in, when there are several).
+    Unstake {
+        pair: String,
+        gauge: Option<String>,
+        amount: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -105,7 +141,8 @@ pub struct TradingIntent {
 impl TradingIntent {
     pub fn has_more_allocations(&self) -> bool {
         matches!(&self.action, TradingAction::Split { plan, index, .. } if index + 1 < plan.allocations.len())
-            || matches!(&self.action, TradingAction::CrossVenue { stage: 0, .. })
+            || matches!(&self.action, TradingAction::CrossVenue { stage: 0, .. } | TradingAction::SwapThenUnwrap { stage: 0, .. })
+            || matches!(&self.action, TradingAction::CrossVenue { stage: 1, redeem: true, .. })
             || matches!(
                 &self.action,
                 TradingAction::MarketConversion { direction: crate::qi_market::Direction::QuaiToQi, stage: 0, .. }
@@ -165,6 +202,29 @@ impl TradingIntent {
                 _ => return Ok(false),
             }
         }
+        if let TradingAction::SwapThenUnwrap { wquai, amount, stage, .. } = &mut self.action {
+            if *stage != 0 {
+                return Ok(false);
+            }
+            // Redeem exactly what the swap paid out, as its receipt attributes it.
+            let receipt = SwapReceipt::of(op, &self.account)
+                .ok()
+                .filter(|r| r.delivered(wquai) && !r.actual_out.is_zero())
+                .ok_or_else(|| rejected("the swap's receipt does not show the WQUAI it paid out"))?;
+            *amount = crate::amount::format_amount(receipt.actual_out, 18);
+            *stage = 1;
+            return Ok(true);
+        }
+        if let TradingAction::CrossVenue { to, amount, stage: stage @ 1, redeem: true, .. } = &mut self.action {
+            // The second swap paid out WQUAI: redeem exactly that.
+            let receipt = SwapReceipt::of(op, &self.account)
+                .ok()
+                .filter(|r| r.delivered(to) && !r.actual_out.is_zero())
+                .ok_or_else(|| rejected("the second swap's receipt does not show the WQUAI it paid out"))?;
+            *amount = crate::amount::format_amount(receipt.actual_out, 18);
+            *stage = 2;
+            return Ok(true);
+        }
         if let TradingAction::CrossVenue { from, hub, amount, stage, .. } = &mut self.action {
             if *stage != 0 {
                 return Ok(false);
@@ -211,6 +271,7 @@ impl TradingIntent {
     async fn prewrap(&self, session: &mut Session) -> Result<Option<Review>> {
         let (from, needed, purpose) = match &self.action {
             TradingAction::Swap { from, amount, .. } | TradingAction::BoundedSwap { from, amount, .. } => (from.clone(), amount, "swap"),
+            TradingAction::SwapThenUnwrap { from, amount, stage: 0, .. } => (from.clone(), amount, "swap"),
             TradingAction::CrossVenue { from, amount, stage: 0, .. } => (from.clone(), amount, "first swap"),
             TradingAction::ExactOutput { from, max_input, .. } => (from.clone(), max_input, "swap"),
             TradingAction::Split { plan, index, .. } => {
@@ -283,10 +344,11 @@ impl TradingIntent {
                     _ => Err(CoreError::Invalid("conversion plan has no remaining executable stage".into())),
                 }
             }
-            TradingAction::CrossVenue { from, hub, to, amount, stage, slippage, deadline } => {
+            TradingAction::CrossVenue { from, hub, to, amount, stage, slippage, deadline, redeem } => {
                 let destination = match stage {
                     0 => hub,
                     1 => to,
+                    2 if *redeem => return session.review_unwrap_quai(account, amount, fee).await,
                     _ => return Err(CoreError::Invalid("invalid route stage".into())),
                 };
                 session
@@ -328,6 +390,27 @@ impl TradingIntent {
             }
             TradingAction::CurveSell { token, symbol, curve, amount, slippage, deadline } => {
                 session.curve_sell_next(account, token, symbol, curve, amount, *slippage, *deadline, fee).await
+            }
+            TradingAction::SwapThenUnwrap { from, wquai, amount, slippage, deadline, stage } => match stage {
+                0 => {
+                    let q = session.swap_quote(account, from, wquai, amount, *slippage, crate::data::Trust::FirstHand).await?;
+                    if q.approval_needed {
+                        session.review_swap_approval(account, from, wquai, amount, fee).await
+                    } else {
+                        session.review_swap(account, from, wquai, amount, *slippage, *deadline, fee).await
+                    }
+                }
+                _ => session.review_unwrap_quai(account, amount, fee).await,
+            },
+            TradingAction::NftBuy { contract, token_id, price } => {
+                session.nft_buy_next(account, contract, token_id, price.as_deref(), fee).await
+            }
+            TradingAction::NftList { contract, token_id, price, currency } => {
+                session.nft_list_next(account, contract, token_id, price.as_deref(), currency, fee).await
+            }
+            TradingAction::ClaimWqi => session.review_claim_wqi(account, fee).await,
+            TradingAction::Unstake { pair, gauge, amount } => {
+                session.review_unstake_in_gauge(account, pair, gauge.as_deref(), amount, fee).await
             }
         }
     }
@@ -568,6 +651,107 @@ mod tests {
         intent.action = action;
         op.status = OpStatus::Unknown;
         assert!(intent.advance_allocation(&op).is_err(), "noncanonical prerequisite cannot advance");
+    }
+
+    /// A swap into WQUAI moves on to redeem exactly the WQUAI its receipt says it paid out, and
+    /// nothing else: another token, an unattributed output or a zero output stop the plan.
+    #[test]
+    fn swap_then_unwrap_redeems_what_the_receipt_attributes() {
+        let (_dir, session, mut intent) = fixture();
+        let wquai = session.network.wquai.clone().unwrap();
+        let action = TradingAction::SwapThenUnwrap {
+            from: "USDT".into(),
+            wquai: wquai.clone(),
+            amount: "10".into(),
+            slippage: 50,
+            deadline: 10,
+            stage: 0,
+        };
+        intent.action = action.clone();
+        assert!(intent.has_more_allocations());
+        let owner = intent.account.clone();
+        let swap = |detail: serde_json::Value| {
+            let mut op = session.new_op(
+                crate::sdk::wallet::storage::ReservationId([66; 16]),
+                crate::journal::OpKind::Swap,
+                "quai",
+                &owner,
+                "USDT",
+                crate::sdk::U256::from(10),
+                "router",
+                detail,
+            );
+            op.status = OpStatus::Confirmed;
+            op
+        };
+        let paid = swap(json!({"actual_out":"1250000000000000000","to_token":wquai,"to_decimals":18}));
+        assert!(intent.advance_allocation(&paid).unwrap());
+        assert!(matches!(&intent.action, TradingAction::SwapThenUnwrap { stage: 1, amount, .. } if amount == "1.25"));
+        assert!(!intent.has_more_allocations(), "the redemption is the last step");
+        assert!(!intent.advance_allocation(&paid).unwrap(), "a receipt cannot move it twice");
+        for detail in [
+            json!({"actual_out":"1250000000000000000","to_token":"0x0000000000000000000000000000000000000001"}),
+            json!({"to_token":wquai}),
+            json!({"actual_out":"0","to_token":wquai}),
+        ] {
+            intent.action = action.clone();
+            assert!(intent.advance_allocation(&swap(detail.clone())).is_err(), "{detail}");
+        }
+    }
+
+    /// A route across both exchanges: the second swap is sized from exactly what the first paid
+    /// out, by its receipt, and a route ending in WQUAI redeems what the second paid.
+    #[test]
+    fn a_two_exchange_route_sizes_each_leg_from_the_receipt_before_it() {
+        let (_dir, session, mut intent) = fixture();
+        let wquai = session.network.wquai.clone().unwrap().to_lowercase();
+        let usdt = "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5".to_string();
+        let owner = intent.account.clone();
+        let swap = |n: u8, detail: serde_json::Value| {
+            let mut op = session.new_op(
+                crate::sdk::wallet::storage::ReservationId([n; 16]),
+                crate::journal::OpKind::Swap,
+                "quai",
+                &owner,
+                "QOGE",
+                crate::sdk::U256::from(1),
+                "router",
+                detail,
+            );
+            op.status = OpStatus::Confirmed;
+            op
+        };
+        intent.action = TradingAction::CrossVenue {
+            from: "0x0048".into(),
+            hub: wquai.clone(),
+            to: usdt.clone(),
+            amount: "10000".into(),
+            stage: 0,
+            slippage: 50,
+            deadline: 10,
+            redeem: false,
+        };
+        assert!(intent.advance_allocation(&swap(70, json!({"to_token": wquai}))).is_err(), "no attributed output, no second leg");
+        let paid = swap(71, json!({"actual_out": "61250000000000000000", "to_decimals": 18, "to_token": wquai}));
+        assert!(intent.advance_allocation(&paid).unwrap());
+        assert!(matches!(&intent.action, TradingAction::CrossVenue { from, amount, stage: 1, .. } if *from == wquai && amount == "61.25"));
+        assert!(!intent.has_more_allocations(), "the second leg is the last");
+        // Ending in WQUAI: the second leg's receipt sizes the redemption.
+        intent.action = TradingAction::CrossVenue {
+            from: wquai.clone(),
+            hub: wquai.clone(),
+            to: wquai.clone(),
+            amount: "61.25".into(),
+            stage: 1,
+            slippage: 50,
+            deadline: 10,
+            redeem: true,
+        };
+        assert!(intent.has_more_allocations());
+        let paid = swap(72, json!({"actual_out": "2000000000000000000", "to_decimals": 18, "to_token": wquai}));
+        assert!(intent.advance_allocation(&paid).unwrap());
+        assert!(matches!(&intent.action, TradingAction::CrossVenue { amount, stage: 2, .. } if amount == "2"));
+        assert!(!intent.has_more_allocations());
     }
 
     #[test]

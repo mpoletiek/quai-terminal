@@ -12,8 +12,8 @@ pub mod cockpit;
 mod commitments;
 pub mod config;
 pub mod contracts;
-pub mod custody;
 pub mod curve;
+pub mod custody;
 pub mod data;
 pub mod diag;
 pub mod error;
@@ -54,14 +54,15 @@ pub mod review_decoder;
 pub mod routes;
 pub mod ser;
 pub mod session;
-#[cfg(test)]
-mod testutil;
 pub mod spendable;
 pub mod split_routes;
 pub mod subgraph;
 pub mod swap;
+#[cfg(test)]
+mod testutil;
 pub mod track;
 pub mod tx;
+pub mod venues;
 pub mod zone;
 
 pub use error::{CoreError, Result};

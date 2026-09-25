@@ -110,15 +110,14 @@ async fn connection(stream: tokio::net::UnixStream, registry: Registry, build: S
         Err(_) => return "attach timed out".into(),
     };
     // The engine, for this client alone.
-    let started = registry
-        .load(&wallet)
-        .and_then(|meta| AppConfig::load(registry.paths()).map(|config| (meta, config)))
-        .and_then(|(meta, config)| {
+    let started = registry.load(&wallet).and_then(|meta| AppConfig::load(registry.paths()).map(|config| (meta, config))).and_then(
+        |(meta, config)| {
             config.network(&network)?;
             // Whether keys go to the daemon's own watcher too is read at each unlock.
             Host::attach(registry.clone(), config, &format!("engine:{id}"), true, meta, network, || {})
                 .map_err(|e| wallet_core::CoreError::Storage(format!("engine: {e}")))
-        });
+        },
+    );
     let mut host = match started {
         Ok(host) => host,
         Err(e) => {

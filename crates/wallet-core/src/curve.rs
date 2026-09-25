@@ -11,10 +11,10 @@
 //! approval to the curve, and credits the proceeds rather than sending them: they are collected
 //! with `claimQuote`. A buy that overshoots the graduation target credits the excess the same way.
 
-use crate::journal::OpKind;
 use crate::chain::{addr, interface};
 use crate::data::{DataCtx, READ_CALLER};
 use crate::error::{CoreError, Result, approval_needed};
+use crate::journal::OpKind;
 use crate::multicall::{Arg, Call, Multicall, word};
 use crate::network::PinnedContract;
 use crate::session::Session;

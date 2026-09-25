@@ -110,7 +110,8 @@ impl OpKind {
 
     /// Sends value to someone: QUAI, Qi or a token.
     pub fn is_send(&self) -> bool {
-        matches!(self, OpKind::SendQuai | OpKind::SendQi | OpKind::SendToken) || matches!(self, OpKind::Other(name) if name.starts_with("send"))
+        matches!(self, OpKind::SendQuai | OpKind::SendQi | OpKind::SendToken)
+            || matches!(self, OpKind::Other(name) if name.starts_with("send"))
     }
 
     /// Exchanges one asset for another: a swap, a curve trade, a conversion, a wrap or a claim.
@@ -266,7 +267,10 @@ impl Detail {
             && let Some(map) = self.0.as_object()
         {
             for key in map.keys() {
-                debug_assert!(DETAIL_KEYS.contains(&key.as_str()) || EXTRA_KEYS.contains(&key.as_str()), "journal detail key `{key}` has no accessor");
+                debug_assert!(
+                    DETAIL_KEYS.contains(&key.as_str()) || EXTRA_KEYS.contains(&key.as_str()),
+                    "journal detail key `{key}` has no accessor"
+                );
             }
         }
     }
@@ -642,7 +646,11 @@ mod tests {
             _ => {
                 let mut map = serde_json::Map::new();
                 for _ in 0..rng.below(6) {
-                    let key = if rng.below(2) == 0 { DETAIL_KEYS[rng.below(DETAIL_KEYS.len())].to_string() } else { format!("k{}", rng.below(50)) };
+                    let key = if rng.below(2) == 0 {
+                        DETAIL_KEYS[rng.below(DETAIL_KEYS.len())].to_string()
+                    } else {
+                        format!("k{}", rng.below(50))
+                    };
                     map.insert(key, random_json(rng, depth + 1));
                 }
                 Value::Object(map)
@@ -738,9 +746,14 @@ mod tests {
             assert_eq!(SwapReceipt::of(&op(OpKind::Swap, Confirmed, broken.clone()), "0x00aa"), Err(why), "{broken}");
         }
         // Zero is an answer; missing or impossible decimals are unknown units.
-        let zero = SwapReceipt::of(&op(OpKind::Swap, Confirmed, serde_json::json!({"to_token": "0xT", "actual_out": "0"})), "0x00aa").unwrap();
+        let zero =
+            SwapReceipt::of(&op(OpKind::Swap, Confirmed, serde_json::json!({"to_token": "0xT", "actual_out": "0"})), "0x00aa").unwrap();
         assert_eq!((zero.actual_out, zero.decimals()), (U256::ZERO, Err(ReceiptError::UnitsUnknown)));
-        let huge = SwapReceipt::of(&op(OpKind::Swap, Confirmed, serde_json::json!({"to_token": "0xT", "actual_out": "1", "to_decimals": 99})), "0x00aa").unwrap();
+        let huge = SwapReceipt::of(
+            &op(OpKind::Swap, Confirmed, serde_json::json!({"to_token": "0xT", "actual_out": "1", "to_decimals": 99})),
+            "0x00aa",
+        )
+        .unwrap();
         assert_eq!(huge.decimals(), Err(ReceiptError::UnitsUnknown));
     }
 
@@ -751,9 +764,13 @@ mod tests {
         assert_eq!((d.beneficiary.as_str(), d.qits), ("0xB", U256::from(1000)));
         assert!(WrapDeposit::of(&op(OpKind::WrapQi, Confirmed, serde_json::json!({"beneficiary": "0xB"}))).is_err());
         assert!(WrapDeposit::of(&op(OpKind::WrapQi, Settled, serde_json::json!({}))).is_err());
-        let c = WqiClaim::of(&op(OpKind::ClaimWqi, Confirmed, serde_json::json!({"to_token": "0xW", "actual_out": "7"})), "0x00AA").unwrap();
+        let c =
+            WqiClaim::of(&op(OpKind::ClaimWqi, Confirmed, serde_json::json!({"to_token": "0xW", "actual_out": "7"})), "0x00AA").unwrap();
         assert_eq!(c.actual_out, U256::from(7));
-        assert_eq!(WqiClaim::of(&op(OpKind::ClaimWqi, Confirmed, serde_json::json!({"to_token": "0xW"})), "0x00AA"), Err(ReceiptError::OutputUnknown));
+        assert_eq!(
+            WqiClaim::of(&op(OpKind::ClaimWqi, Confirmed, serde_json::json!({"to_token": "0xW"})), "0x00AA"),
+            Err(ReceiptError::OutputUnknown)
+        );
         assert_eq!(
             WqiClaim::of(&op(OpKind::ClaimWqi, Submitted, serde_json::json!({"to_token": "0xW", "actual_out": "7"})), "0x00AA"),
             Err(ReceiptError::NotMatching)

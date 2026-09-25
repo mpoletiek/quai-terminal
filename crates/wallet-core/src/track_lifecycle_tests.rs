@@ -1,6 +1,6 @@
 //! Faults exercise the production tracker interpretation and durable anchor transitions.
-use crate::journal::OpKind;
 use super::*;
+use crate::journal::OpKind;
 use quai_sdk::provider::{
     AddressOutpoint, ConversionObservation, ConversionOriginObservation, ConversionSpendability, EtxExecutionObservation, EtxScanResult,
     Extensions, OutPoint, QiCreditObservation, Receipt, ScanCoverage, Transaction,
@@ -58,7 +58,8 @@ fn op(status: OpStatus) -> Operation {
         detail: json!({"included_block":10, "included_hash":hash(1).to_string(), "canonical_tx":hash(3).to_string(),
             "execution_block":20, "execution_hash":hash(2).to_string(), "execution_tx":hash(4).to_string(),
             "credited_qits":"1000", "unlock_height":30, "actual_out":"1000", "scan_next":21,
-            "scan_last_number":20, "scan_last_hash":hash(2).to_string(), "finality":"unverified"}).into(),
+            "scan_last_number":20, "scan_last_hash":hash(2).to_string(), "finality":"unverified"})
+        .into(),
     }
 }
 fn db() -> (tempfile::TempDir, crate::appdb::AppDb) {
@@ -133,7 +134,8 @@ async fn origin_is_rechecked_after_destination_and_reincluded_anchor_remains_pro
         ("quai_getHeaderByNumber", header(10, 9)),
     ]);
     assert!(recheck_operation_anchors(&raced, &db, &original, &mut report).await.unwrap());
-    let reincluded = crate::journal::Detail::from(json!({"included_block":12,"included_hash":hash(8).to_string(),"canonical_tx":hash(3).to_string()}));
+    let reincluded =
+        crate::journal::Detail::from(json!({"included_block":12,"included_hash":hash(8).to_string(),"canonical_tx":hash(3).to_string()}));
     db.transition_operation(&original.id, OpStatus::Submitted, OpStatus::Confirmed, None, None, Some(&reincluded)).unwrap();
     let current = db.operation(&original.id).unwrap().unwrap();
     let same = provider(vec![("quai_getHeaderByNumber", header(12, 8))]);

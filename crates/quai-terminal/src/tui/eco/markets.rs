@@ -6,18 +6,17 @@ impl App {
     /// Alerts: read them once, and check them every minute while no daemon is running (the
     /// daemon checks them itself, and two checkers would each fire).
     pub(crate) fn tick_alerts(&mut self) {
-        if self.locked || self.meta.is_none() {
+        if self.lock.locked || self.meta.is_none() {
             return;
         }
-        if !self.eco.alerts_loaded {
-            self.eco.alerts_loaded = true;
+        let clock = self.eco.clock;
+        if self.eco.alerts.list.take_due(fresh::ALERT_LIST, &clock) {
             self.send_data(DataCmd::Alerts(super::super::data::AlertOp::Load));
             return;
         }
-        if self.eco.alerts.is_empty() || self.eco.alerts_checked.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+        if self.eco.alerts.list.value().is_none_or(Vec::is_empty) || !self.eco.alerts.check.take_due(fresh::ALERTS, &clock) {
             return;
         }
-        self.eco.alerts_checked = Some(Instant::now());
         // Whether the daemon already covers them is read by the data worker, not here: opening
         // the database is not the UI thread's to do.
         self.send_data(DataCmd::Alerts(super::super::data::AlertOp::Check { pairs: self.config.features.trading, unless_daemon: true }));
@@ -34,7 +33,7 @@ impl App {
             SwapAsset::Token { address, .. } => Some(address.to_lowercase()),
         };
         let (pay, get) = (address(&self.eco.swap.from)?, address(to)?);
-        let Some(Ok((pools, _))) = &self.eco.markets_view.pools else { return None };
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return None };
         // The deepest market for the pair, a bonding curve included: QAXE's chart and rate come
         // from its curve ($3.9k), not a $13 pool beside it. A curve still raising has no TVL, so
         // it counts what it has raised.
@@ -61,7 +60,7 @@ impl App {
     pub fn markets_pair(&self) -> usize {
         // Off Markets (the trader layout draws it beside the swap card) the cursor belongs to that
         // screen, so the chart keeps the pair it was left on.
-        if self.screen != Screen::Markets || self.pane == 1 { self.eco.markets_view.pair_selected } else { self.selected }
+        if self.nav.screen != Screen::Markets || self.nav.pane == 1 { self.eco.markets_view.pair_selected } else { self.nav.selected }
     }
 
     /// The pairs list in the order it is shown. A pair with no figure to sort on goes last, so
@@ -71,22 +70,22 @@ impl App {
     /// and used to clone and sort the whole directory each time.
     pub fn market_rows(&self) -> Vec<&wallet_core::markets::Pool> {
         let mv = &self.eco.markets_view;
-        let Some(Ok((pools, _))) = &mv.pools else { return Vec::new() };
+        let Some(Ok((pools, _))) = mv.pools.shown() else { return Vec::new() };
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (mv.sort as u8).hash(&mut h);
-            self.eco.watchlist.hash(&mut h);
+            self.eco.alerts.watchlist.hash(&mut h);
             let now = wallet_core::registry::now();
             for p in pools {
                 (p.address.as_str(), self.row_tvl_usd(p).map(f64::to_bits), self.row_change(p, now).map(f64::to_bits)).hash(&mut h);
             }
             h.finish()
         };
-        if self.eco.market_order.borrow().as_ref().is_none_or(|(k, _)| *k != key) {
-            *self.eco.market_order.borrow_mut() = Some((key, self.sort_markets_order(pools)));
+        if self.eco.markets_view.order.borrow().as_ref().is_none_or(|(k, _)| *k != key) {
+            *self.eco.markets_view.order.borrow_mut() = Some((key, self.sort_markets_order(pools)));
         }
-        let order = self.eco.market_order.borrow();
+        let order = self.eco.markets_view.order.borrow();
         order.as_ref().map(|(_, o)| o.iter().filter_map(|i| pools.get(*i)).collect()).unwrap_or_default()
     }
 
@@ -96,7 +95,7 @@ impl App {
         // It stays in Pools and the router still sees it; the pairs list shows the market, unless
         // the pair is watched.
         let shadowed = wallet_core::markets::shadowed(pools);
-        let watched = |i: &usize| self.eco.watchlist.iter().any(|w| w.eq_ignore_ascii_case(&pools[*i].address));
+        let watched = |i: &usize| self.eco.alerts.watchlist.iter().any(|w| w.eq_ignore_ascii_case(&pools[*i].address));
         let mut rows: Vec<usize> = (0..pools.len()).filter(|i| !shadowed.contains(i) || watched(i)).collect();
         // What the rows show, not a figure beside it: the column and the order must agree.
         let now = wallet_core::registry::now();
@@ -120,7 +119,7 @@ impl App {
         }
         // Watched pairs stay at the top whatever the order: watching one is the user saying it
         // belongs in front. The sort still decides the order within each group (a stable sort).
-        if !self.eco.watchlist.is_empty() {
+        if !self.eco.alerts.watchlist.is_empty() {
             rows.sort_by_key(|i| !watched(i));
         }
         rows
@@ -166,10 +165,10 @@ impl App {
                 return Some(1.0);
             }
             if network.wquai.as_ref().is_some_and(|w| w.eq_ignore_ascii_case(&token.address)) {
-                return self.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+                return self.eco.feeds.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
             }
         }
-        self.eco.markets.iter().find(|m| m.address.eq_ignore_ascii_case(&token.address)).and_then(|m| m.price_usd)
+        self.eco.feeds.markets.iter().find(|m| m.address.eq_ignore_ascii_case(&token.address)).and_then(|m| m.price_usd)
     }
 
     /// What a swap was worth, priced from whichever side has a price.
@@ -184,7 +183,14 @@ impl App {
     /// can price is kept — hiding what cannot be judged would drop real trades silently.
     pub fn flow_rows(&self) -> Vec<&wallet_core::markets::DexSwap> {
         let min = self.eco.markets_view.flow_min_usd;
-        self.eco.markets_view.flow.iter().filter(|s| min <= 0.0 || self.swap_usd(s).is_none_or(|v| v >= min)).collect()
+        self.eco
+            .markets_view
+            .flow
+            .value()
+            .into_iter()
+            .flatten()
+            .filter(|s| min <= 0.0 || self.swap_usd(s).is_none_or(|v| v >= min))
+            .collect()
     }
 
     /// The base of a tape row — the side the row is about, and the side a green or red arrow
@@ -356,35 +362,28 @@ impl App {
     /// its pool page `max-age=30`, so no client-side tuning gets price or TVL under half a minute.
     /// The node has no such floor, and one multicall covers the whole directory.
     pub(crate) fn tick_reserves(&mut self) {
-        let Some(Ok((pools, _))) = self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) else { return };
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return };
         if pools.is_empty() {
             return;
         }
-        let mv = &self.eco.markets_view;
-        if mv.reserves_loading || mv.reserves_attempted.is_some_and(|t| t.elapsed() < self.feed_pace()) {
+        let pools = pools.clone();
+        if !self.eco.markets_view.reserves.take_due(fresh::RESERVES, &self.eco.clock) {
             return;
         }
-        let pools = pools.clone();
         let at = (self.eco.clock.head > 0).then_some(self.eco.clock.head);
-        self.eco.markets_view.reserves_loading = true;
-        self.eco.markets_view.reserves_attempted = Some(Instant::now());
-        self.eco.markets_view.reserves_asked_block = at;
         self.send_data(DataCmd::PoolReserves { pools, at });
     }
 
     pub(crate) fn tick_dex_flow(&mut self) {
         use wallet_core::markets::FLOW_BLOCKS;
-        let Some(Ok((pools, _))) = &self.eco.markets_view.pools else { return };
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return };
         if pools.is_empty() {
             return;
         }
-        let mv = &self.eco.markets_view;
-        if mv.flow_loading || mv.flow_at.is_some_and(|t| t.elapsed() < self.feed_pace()) {
+        let pools = pools.clone();
+        if !self.eco.markets_view.flow.take_due(fresh::DEX_FLOW, &self.eco.clock) {
             return;
         }
-        let pools = pools.clone();
-        self.eco.markets_view.flow_loading = true;
-        self.eco.markets_view.flow_asked = Some(Instant::now());
         let at = (self.eco.clock.head > 0).then_some(self.eco.clock.head);
         self.send_data(DataCmd::DexFlow { pools, blocks: FLOW_BLOCKS, at });
     }
@@ -392,7 +391,7 @@ impl App {
     pub(crate) fn markets_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             // Watch the pair: it moves to the top and stays there.
-            KeyCode::Char('w') if self.pane == 0 => {
+            KeyCode::Char('w') if self.nav.pane == 0 => {
                 if let Some(pool) = self.selected_pool() {
                     let name = self.pair_name(&pool);
                     self.send_data(DataCmd::Alerts(super::super::data::AlertOp::ToggleWatch { pool: pool.address, name }));
@@ -400,7 +399,7 @@ impl App {
                 true
             }
             // Set an alert on the pair, starting from its price now.
-            KeyCode::Char('A') if self.pane == 0 => {
+            KeyCode::Char('A') if self.nav.pane == 0 => {
                 if let Some(pool) = self.selected_pool() {
                     let base0 = self.pool_base0(&pool);
                     let name = self.pair_name(&pool);
@@ -432,22 +431,22 @@ impl App {
                 true
             }
             KeyCode::Char('R') => {
-                self.eco.markets_view.pools_at = None;
-                self.eco.markets_view.events_at.clear();
-                self.eco.markets_view.flow_at = None;
+                self.eco.markets_view.pools.invalidate();
+                self.eco.markets_view.event_reads.clear();
+                self.eco.markets_view.flow.invalidate();
                 self.tick_markets();
                 true
             }
             // The cursor belongs to one pane at a time; each keeps its place while the other has it.
             KeyCode::Tab | KeyCode::BackTab => {
                 let mv = &mut self.eco.markets_view;
-                if self.pane == 0 {
-                    mv.pair_selected = self.selected;
+                if self.nav.pane == 0 {
+                    mv.pair_selected = self.nav.selected;
                 } else {
-                    mv.flow_selected = self.selected;
+                    mv.flow_selected = self.nav.selected;
                 }
-                self.pane = 1 - self.pane;
-                self.selected = if self.pane == 0 {
+                self.nav.pane = 1 - self.nav.pane;
+                self.nav.selected = if self.nav.pane == 0 {
                     self.eco.markets_view.pair_selected
                 } else {
                     self.eco.markets_view.flow_selected.min(self.flow_rows().len().saturating_sub(1))
@@ -464,8 +463,8 @@ impl App {
                     _ => 0.0,
                 };
                 let floor = mv.flow_min_usd;
-                if self.pane == 1 {
-                    self.selected = self.selected.min(self.flow_rows().len().saturating_sub(1));
+                if self.nav.pane == 1 {
+                    self.nav.selected = self.nav.selected.min(self.flow_rows().len().saturating_sub(1));
                 }
                 self.toast(
                     if floor <= 0.0 { "flow: every swap".to_string() } else { format!("flow: swaps over {}", amount::usd(floor)) },
@@ -473,10 +472,10 @@ impl App {
                 );
                 true
             }
-            KeyCode::Char('t') | KeyCode::Enter if self.pane == 1 => {
+            KeyCode::Char('t') | KeyCode::Enter if self.nav.pane == 1 => {
                 // A swap in the flow names its pair: take the chart there.
-                let Some(pool) = self.flow_rows().get(self.selected).map(|s| s.pool.clone()) else { return true };
-                if let Some(Ok((pools, _))) = &self.eco.markets_view.pools {
+                let Some(pool) = self.flow_rows().get(self.nav.selected).map(|s| s.pool.clone()) else { return true };
+                if let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() {
                     match pools.iter().position(|p| p.address == pool) {
                         Some(i) => {
                             self.eco.markets_view.pair_selected = i;
@@ -493,7 +492,7 @@ impl App {
                 true
             }
             // A curve takes both sides; `t` buys on it, `S` sells to it.
-            KeyCode::Char('S') if self.pane == 0 => {
+            KeyCode::Char('S') if self.nav.pane == 0 => {
                 self.sell_to_selected_curve();
                 true
             }
@@ -516,6 +515,7 @@ impl App {
         let token = pool.token0.address.clone();
         let held = self
             .eco
+            .feeds
             .portfolio
             .value()
             .and_then(|p| p.rows.iter().find(|r| matches!(&r.key, AssetKey::Token(a) if a.eq_ignore_ascii_case(&token))))
@@ -570,7 +570,7 @@ impl App {
         if let Some(native) = wallet_core::media::native_icon(contract) {
             return Some(native.to_string());
         }
-        let rows = self.eco.portfolio.value().map(|p| p.rows.as_slice()).unwrap_or_default();
+        let rows = self.eco.feeds.portfolio.value().map(|p| p.rows.as_slice()).unwrap_or_default();
         let from_rows = rows
             .iter()
             .find(|r| match &r.key {
@@ -580,9 +580,9 @@ impl App {
             })
             .and_then(|r| r.icon_url.clone());
         from_rows
-            .or_else(|| self.eco.markets.iter().find(|m| m.address.eq_ignore_ascii_case(contract)).and_then(|m| m.icon_url.clone()))
+            .or_else(|| self.eco.feeds.markets.iter().find(|m| m.address.eq_ignore_ascii_case(contract)).and_then(|m| m.icon_url.clone()))
             // Launch-zone tokens are too new for the explorer's icon set; Quainance has their logos.
-            .or_else(|| self.eco.launch_logos.get(&contract.to_lowercase()).cloned())
+            .or_else(|| self.eco.launch.logos.get(&contract.to_lowercase()).cloned())
     }
 
     /// Icon URL for a portfolio row (bundled logos for QUAI and Qi).
@@ -608,8 +608,8 @@ impl App {
         // first), which looked like no sort at all.
         // Only the pairs list owns `selected`; while the flow column has the cursor, moving it
         // here would drag that column's cursor to a row number that means nothing in it.
-        if self.screen == Screen::Markets && self.pane == 0 {
-            self.selected = 0;
+        if self.nav.screen == Screen::Markets && self.nav.pane == 0 {
+            self.nav.selected = 0;
         }
         self.eco.markets_view.pair_selected = 0;
         self.info(format!("pairs by {label}"));
@@ -621,11 +621,7 @@ impl App {
     /// reaches the network, so this paces the screen rather than the network.
     pub(crate) fn tick_markets(&mut self) {
         self.unstick_markets();
-        let mv = &self.eco.markets_view;
-        let stale_pools = mv.pools_at.is_none_or(|t| t.elapsed().as_secs() > wallet_core::markets::DIRECTORY_TTL);
-        if !mv.pools_loading && (mv.pools.is_none() || stale_pools) && mv.pools_attempted.is_none_or(|at| at.elapsed() >= MARKET_REFRESH) {
-            self.eco.markets_view.pools_loading = true;
-            self.eco.markets_view.pools_attempted = Some(Instant::now());
+        if self.eco.markets_view.pools.take_due(fresh::MARKET_DIRECTORY, &self.eco.clock) {
             self.send_data(DataCmd::MarketPools);
             return;
         }
@@ -662,24 +658,30 @@ impl App {
         let now = wallet_core::registry::now();
         let window = (bucket * (MARKET_CANDLES as u64 + 1)).max(25 * 3_600);
         let since = now.saturating_sub(window).max(now.saturating_sub(30 * 86_400));
+        let clock = self.eco.clock;
         let mv = &self.eco.markets_view;
-        let due = match mv.events_at.get(&pool.address) {
-            None => true,
-            Some((at, window)) => at.elapsed() > self.feed_pace() || *window > since,
-        };
+        // Due with the chain, or at once when the window on screen needs older trades.
+        let due =
+            mv.event_reads.get(&pool.address).is_none_or(|r| r.due(fresh::POOL_EVENTS, &clock) || r.value().is_some_and(|w| *w > since));
         // The indexer already has this timeframe bucketed, so ask for it alongside the logs: the
         // chart can draw from whichever lands first, and the logs are still needed for the tape.
         let want_candles = wallet_core::subgraph::interval_for(bucket).is_some()
-            && mv.candles_requested.get(&(pool.address.clone(), bucket)).is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
+            && mv.candle_reads.get(&(pool.address.clone(), bucket)).is_none_or(|r| r.due(fresh::CANDLES, &clock));
         let events_idle = mv.events_loading.is_none();
         if want_candles {
-            self.eco.markets_view.candles_requested.insert((pool.address.clone(), bucket), Instant::now());
+            self.eco.markets_view.candle_reads.entry((pool.address.clone(), bucket)).begin(&clock);
             self.send_data(DataCmd::PairCandles { pool: pool.address.clone(), bucket, count: MARKET_CANDLES });
         }
         if due && events_idle {
             self.eco.markets_view.events_loading = Some(pool.address.clone());
-            self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
-            self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.clock.head > 0).then_some(self.eco.clock.head) });
+            let read = self.eco.markets_view.event_reads.entry(pool.address.clone());
+            read.set(since);
+            read.begin(&clock);
+            self.send_data(DataCmd::PoolEvents {
+                pool: Box::new(pool),
+                since,
+                at: (self.eco.clock.head > 0).then_some(self.eco.clock.head),
+            });
             return None;
         }
         matches!(self.eco.markets_view.events.get(&pool.address), Some(Ok(_))).then_some(since)
@@ -692,19 +694,12 @@ impl App {
     /// (a settings change, a new monitoring node), and a source can hang. Without this, one lost
     /// answer froze that feed — prices, TVL, the tape or a chart — until the wallet restarted.
     pub(crate) fn unstick_markets(&mut self) {
+        let clock = self.eco.clock;
         let mv = &mut self.eco.markets_view;
-        let stuck = |at: Option<Instant>| at.is_some_and(|at| at.elapsed() > MARKET_STUCK);
-        if mv.pools_loading && stuck(mv.pools_attempted) {
-            mv.pools_loading = false;
-        }
-        if mv.reserves_loading && stuck(mv.reserves_attempted) {
-            mv.reserves_loading = false;
-        }
-        if mv.flow_loading && stuck(mv.flow_asked) {
-            mv.flow_loading = false;
-        }
         for slot in [&mut mv.events_loading, &mut mv.events_prefetching] {
-            if slot.as_ref().is_some_and(|pool| stuck(mv.events_at.get(pool).map(|(at, _)| *at))) {
+            // In flight, and due again all the same: lost.
+            if slot.as_ref().is_some_and(|pool| mv.event_reads.get(pool).is_some_and(|r| r.loading() && r.due(fresh::POOL_EVENTS, &clock)))
+            {
                 *slot = None;
             }
         }
@@ -725,18 +720,21 @@ impl App {
             .iter()
             .filter_map(|d| usize::try_from(at + d).ok())
             .filter_map(|i| rows.get(i))
-            .find(|p| !mv.events_at.contains_key(&p.address))
+            .find(|p| mv.event_reads.get(&p.address).is_none())
             .map(|p| (*p).clone());
         drop(rows);
         let Some(pool) = next else { return };
         let want_candles = wallet_core::subgraph::interval_for(bucket).is_some()
-            && !self.eco.markets_view.candles_requested.contains_key(&(pool.address.clone(), bucket));
+            && self.eco.markets_view.candle_reads.get(&(pool.address.clone(), bucket)).is_none();
+        let clock = self.eco.clock;
         if want_candles {
-            self.eco.markets_view.candles_requested.insert((pool.address.clone(), bucket), Instant::now());
+            self.eco.markets_view.candle_reads.entry((pool.address.clone(), bucket)).begin(&clock);
             self.send_data(DataCmd::PairCandles { pool: pool.address.clone(), bucket, count: MARKET_CANDLES });
         }
         self.eco.markets_view.events_prefetching = Some(pool.address.clone());
-        self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
+        let read = self.eco.markets_view.event_reads.entry(pool.address.clone());
+        read.set(since);
+        read.begin(&clock);
         self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.clock.head > 0).then_some(self.eco.clock.head) });
     }
 }

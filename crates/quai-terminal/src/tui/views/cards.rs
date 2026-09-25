@@ -34,7 +34,7 @@ impl<'a> Card<'a> {
 
     /// Register the clickable lines, drawn unwrapped from the top of `inner`.
     pub(crate) fn hits(&self, app: &App, inner: Rect) {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         for (line, target) in &self.targets {
             let y = inner.y + *line as u16;
             if y < inner.bottom() {
@@ -89,7 +89,7 @@ pub(crate) fn amount_span(t: &Theme, text: &str, focused: bool) -> Span<'static>
 }
 
 pub(crate) fn available(app: &App, asset: &SwapAsset) -> Option<String> {
-    let p = app.eco.portfolio.value()?;
+    let p = app.eco.feeds.portfolio.value()?;
     let id = match asset {
         SwapAsset::Quai => "quai".to_string(),
         SwapAsset::Token { address, .. } => address.clone(),
@@ -109,6 +109,7 @@ pub(crate) fn asset_chip(app: &App, t: &Theme, asset: Option<&SwapAsset>) -> Vec
                 SwapAsset::Quai => true,
                 SwapAsset::Token { address, .. } => {
                     app.eco
+                        .feeds
                         .portfolio
                         .value()
                         .and_then(|p| p.rows.iter().find(|r| r.key.id() == *address))
@@ -244,8 +245,8 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         (left, None)
     };
     // Beside Markets (the trader layout) the card is lit only while its screen has the keys.
-    let block = panel(t, "exchange · swap on Quainance", app.screen != Screen::Markets);
-    if app.screen == Screen::Swap {
+    let block = panel(t, "exchange · swap on Quainance", app.nav.screen != Screen::Markets);
+    if app.nav.screen == Screen::Swap {
         c.hits(app, block.inner(form));
     }
     f.render_widget(Paragraph::new(c.lines).block(block), form);
@@ -263,7 +264,7 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     if let Some(o) = offer
         && let Some(to) = &card.to
     {
-        let curve_pool = card.to.as_ref().and(app.eco.markets_view.pools.as_ref()).and_then(|r| r.as_ref().ok()).and_then(|(pools, _)| {
+        let curve_pool = card.to.as_ref().and(app.eco.markets_view.pools.value()).and_then(|(pools, _)| {
             pools.iter().find(|p| p.venue == wallet_core::markets::Venue::Curve && p.address.eq_ignore_ascii_case(&o.curve))
         });
         let depth = curve_pool
@@ -370,7 +371,7 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     Span::styled("not needed", t.dim_style())
                 },
             ));
-            let age = card.quoted_at.map(|a| a.elapsed().as_secs()).unwrap_or(0);
+            let age = card.quote_read.age().map_or(0, |a| a.as_secs());
             q_lines.push(kv(
                 t,
                 "quoted",
@@ -449,7 +450,7 @@ pub(crate) fn draw_swap_chart(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some((pool, pay0)) = pair else {
-        let loading = app.eco.markets_view.pools_loading || app.eco.markets_view.pools.is_none();
+        let loading = app.eco.markets_view.pools.loading() || app.eco.markets_view.pools.shown().is_none();
         if loading {
             empty_state(f, inner, t, spinner(), "Reading the market…", &[]);
         } else {
@@ -464,7 +465,7 @@ pub(crate) fn draw_swap_chart(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
     if cs.is_empty() {
         empty_state(f, inner, t, spinner(), "Reading the pair's history…", &[]);
     } else {
-        draw_candles(f, t, inner, &cs, step, super::super::eco::SWAP_CHART_BUCKET, app.pointer.at);
+        draw_candles(f, t, inner, &cs, step, super::super::eco::SWAP_CHART_BUCKET, app.input.pointer.at);
     }
 }
 
@@ -603,7 +604,7 @@ pub fn draw_convert_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         (Some(Ok(c)), _) => {
             // Big quotes when both fit; one line each otherwise. Built twice at most: the big
             // version is measured against the panel before it is kept.
-            let big = app.config.big_numbers && !app.plain;
+            let big = app.config.big_numbers && !app.term.plain;
             let mut lines = market_quotes(app, t, c, inner.width, big);
             if big && lines.len() as u16 > inner.height {
                 lines = market_quotes(app, t, c, inner.width, false);
@@ -764,7 +765,7 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, "trading PnL · in QUAI", true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let pnl = match app.eco.pnl.latest() {
+    let pnl = match app.eco.feeds.pnl.latest() {
         None => return empty_state(f, inner, t, spinner(), "Reading this wallet's trades…", &[]),
         Some(Err(e)) => return empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]),
         Some(Ok(p)) if p.fills.is_empty() => {
@@ -801,7 +802,7 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             Line::from(vec![
                 Span::styled("net ", t.dim_style()),
                 Span::styled(format!("{} QUAI", num::minus(signed_text(pnl.net))), tone(pnl.net).add_modifier(Modifier::BOLD)),
-                Span::styled(if app.eco.pnl.loading() { "  refreshing…" } else { "" }, t.dim_style()),
+                Span::styled(if app.eco.feeds.pnl.loading() { "  refreshing…" } else { "" }, t.dim_style()),
             ]),
             Line::from(vec![
                 Span::styled("realized ", t.dim_style()),
@@ -828,11 +829,17 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     );
     let mut lines = vec![Line::from(Span::styled(header, t.dim_style()))];
     let list = &pnl.positions;
-    let selected = app.selected.min(list.len().saturating_sub(1));
+    let selected = app.nav.selected.min(list.len().saturating_sub(1));
     // Room for the focused token's notes under the table.
     let room = (positions.height as usize).saturating_sub(3).max(1);
     let start = app.list_window(app.main_list(), selected, list.len(), room);
-    app.hits.borrow_mut().rows(app.main_list(), Rect { y: positions.y + 1, height: room as u16, ..positions }, start, list.len(), |_| None);
+    app.input.hits.borrow_mut().rows(
+        app.main_list(),
+        Rect { y: positions.y + 1, height: room as u16, ..positions },
+        start,
+        list.len(),
+        |_| None,
+    );
     for (i, p) in list.iter().enumerate().skip(start).take(room) {
         let focused = i == selected;
         let style = if focused { t.selected() } else { t.text_style() };
@@ -922,7 +929,7 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::launches::Phase;
     // The focused token's curve sits beside the list on wide screens, under it otherwise.
-    let focused_bonding = app.launch_rows().get(app.selected).is_some_and(|l| l.phase == Phase::Bonding);
+    let focused_bonding = app.launch_rows().get(app.nav.selected).is_some_and(|l| l.phase == Phase::Bonding);
     let area = if focused_bonding && area.height >= 16 {
         let [list, curve] = if area.width >= 140 {
             Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area)
@@ -935,14 +942,14 @@ pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         area
     };
     let rows = app.launch_rows();
-    let heading = match app.eco.launches.shown() {
+    let heading = match app.eco.launch.list.shown() {
         Some(Ok(list)) => format!("launch zone · {}", amount::count(list.len(), "token")),
         _ => "launch zone".into(),
     };
     let block = panel(t, &heading, true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    match app.eco.launches.shown() {
+    match app.eco.launch.list.shown() {
         None => return empty_state(f, inner, t, spinner(), "Reading Quainance's launch zone…", &[]),
         Some(Err(e)) if rows.is_empty() => {
             return empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]);
@@ -959,15 +966,15 @@ pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         }
         _ => {}
     }
-    let quai_usd = app.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+    let quai_usd = app.eco.feeds.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
     let now = wallet_core::registry::now();
     // The name column and the age earn their place from 86 columns: below that the symbol and
     // numbers are what fit.
     let wide = inner.width >= 86;
     let height = inner.height.saturating_sub(2) as usize;
-    let selected = app.selected.min(rows.len() - 1);
+    let selected = app.nav.selected.min(rows.len() - 1);
     let start = app.list_window(app.main_list(), selected, rows.len(), height);
-    app.hits.borrow_mut().rows(app.main_list(), Rect { y: inner.y + 1, height: height as u16, ..inner }, start, rows.len(), |_| None);
+    app.input.hits.borrow_mut().rows(app.main_list(), Rect { y: inner.y + 1, height: height as u16, ..inner }, start, rows.len(), |_| None);
     let mut lines = vec![Line::from(Span::styled(
         format!(
             "     {:<9} {}{:<17} {:>12} {:>13} {:>7}{}",
@@ -1038,7 +1045,7 @@ pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     if let Some(selected) = rows.get(selected) {
         lines.push(Line::from(Span::styled(format!("price basis: {} · {}", selected.price_basis.label(), selected.token), t.dim_style())));
     }
-    if let Some(Err(e)) = app.eco.launches.shown() {
+    if let Some(Err(e)) = app.eco.launch.list.shown() {
         lines.push(Line::from(Span::styled(
             format!("{} last refresh failed: {}", t.icon(Icon::Danger), truncate(&app::friendly_error(e), 60)),
             Style::default().fg(t.danger),
@@ -1053,19 +1060,19 @@ pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 /// this wallet holds and is owed.
 pub(crate) fn draw_curve(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let rows = app.launch_rows();
-    let Some(l) = rows.get(app.selected) else { return };
+    let Some(l) = rows.get(app.nav.selected) else { return };
     let block = panel(t, &format!("{} on its bonding curve", l.symbol), false);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(m) = app.focused_curve().filter(|m| m.token == l.token) else {
-        let text = match app.eco.curves.get(&l.token).and_then(|r| r.shown()) {
+        let text = match app.eco.launch.curves.get(&l.token).and_then(|r| r.shown()) {
             Some(Err(e)) => format!("{} {}", t.icon(Icon::Danger), truncate(&app::friendly_error(e), 70)),
             _ => format!("{} reading the curve…", spinner()),
         };
         f.render_widget(Paragraph::new(Span::styled(text, t.dim_style())), inner);
         return;
     };
-    let quai_usd = app.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+    let quai_usd = app.eco.feeds.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
     let usd = |q: f64| quai_usd.map(|u| format!(" · {}", amount::usd_price(q * u))).unwrap_or_default();
     let mut lines = vec![
         Line::from(vec![
@@ -1301,8 +1308,9 @@ pub fn draw_token_picker(f: &mut Frame, app: &App, t: &Theme, area: Rect, query:
         Line::from(""),
     ];
     let height = area.height.saturating_sub(3) as usize;
-    let start = app.lists.borrow_mut().entry(crate::tui::hit::ListId::TokenPicker).or_default().window(selected, entries.len(), height);
-    app.hits.borrow_mut().rows(
+    let start =
+        app.input.lists.borrow_mut().entry(crate::tui::hit::ListId::TokenPicker).or_default().window(selected, entries.len(), height);
+    app.input.hits.borrow_mut().rows(
         crate::tui::hit::ListId::TokenPicker,
         Rect { y: area.y + 2, height: height as u16, ..area },
         start,

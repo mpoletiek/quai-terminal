@@ -9,6 +9,7 @@ pub mod data;
 pub mod host;
 pub mod messaging;
 pub mod orders;
+pub mod plans;
 pub mod protocol;
 pub mod resource;
 pub mod server;

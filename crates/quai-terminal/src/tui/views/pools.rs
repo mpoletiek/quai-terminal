@@ -15,7 +15,7 @@ pub fn draw_pools(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         f.render_widget(block, area);
         return empty(f, inner, t, Icon::Pool, "No Quainance pools on this network (mainnet only).", &[("[", "swap")]);
     }
-    if let Some(Err(e)) = &app.eco.pools_view.positions {
+    if let Some(Err(e)) = app.eco.pools_view.positions.shown() {
         let block = panel(t, title, true);
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -195,7 +195,7 @@ pub(crate) fn draw_positions_pane(
     let block = panel(t, &heading, app.lit_pane() == Some(0));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if app.eco.pools_view.positions.is_none() {
+    if app.eco.pools_view.positions.shown().is_none() {
         return empty_state(f, inner, t, spinner(), "Reading your liquidity…", &[]);
     }
     if positions.is_empty() {
@@ -279,7 +279,7 @@ pub(crate) fn draw_positions_pane(
         }
     }
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         hits.add(area, crate::tui::hit::Target::Pane(0));
         let ends: Vec<usize> = spans.iter().skip(1).map(|(_, s)| *s).chain(std::iter::once(lines.len())).collect();
         for ((i, start), end) in spans.iter().zip(ends) {
@@ -393,7 +393,7 @@ pub(crate) fn draw_directory_pane(
     let list_id = crate::tui::hit::ListId::Screen(Screen::Pools, 1);
     let start = app.list_window(list_id, selected, pools.len(), height);
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         hits.add(area, crate::tui::hit::Target::Pane(1));
         hits.rows(list_id, Rect { y: inner.y + 1, height: height as u16, ..inner }, start, pools.len(), |_| None);
     }

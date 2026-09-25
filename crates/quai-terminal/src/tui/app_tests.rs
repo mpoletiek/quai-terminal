@@ -1,6 +1,6 @@
-use wallet_core::journal::OpKind;
-use super::*;
 use super::super::worker::Worker;
+use super::*;
+use wallet_core::journal::OpKind;
 use wallet_core::sdk::U256;
 
 #[test]
@@ -49,6 +49,9 @@ fn palette_reads_a_send_and_fills_the_form() {
     app.modal = Modal::None;
     app.palette_recent.clear();
     app.open_palette();
+    // Read off the UI thread: wait for the lane, then take its answer.
+    app.persist.flush();
+    app.poll_persist();
     assert_eq!(app.palette_recent.first().map(String::as_str), Some("do:Send 5 QUAI to Alice"));
 }
 
@@ -62,7 +65,7 @@ fn palette_reads_a_swap() {
     let first = app.palette_entries("swap 10 smol to quai").into_iter().next().unwrap();
     assert_eq!(first.label, "Swap 10 SMOL → QUAI");
     app.run_palette(first);
-    assert_eq!(app.screen, Screen::Swap);
+    assert_eq!(app.nav.screen, Screen::Swap);
     assert_eq!(app.eco.swap.amount, "10");
     assert_eq!(app.eco.swap.from.symbol(), "SMOL");
     assert_eq!(app.eco.swap.to, Some(SwapAsset::Quai));
@@ -221,7 +224,7 @@ fn test_app(kind: WalletKind) -> (tempfile::TempDir, App) {
     // Every feature on, so each test reaches the screen it is about; the switches have their own.
     let config = AppConfig { features: wallet_core::config::Features { messaging: true, trading: true, nfts: true }, ..Default::default() };
     let mut app = App::new(paths, "local".into(), config, Theme::terminal(false), caps, Some(meta));
-    app.locked = false;
+    app.lock.locked = false;
     app.onboarding = None;
     (dir, app)
 }
@@ -384,10 +387,11 @@ fn op(id: &str, kind: &str, status: wallet_core::appdb::OpStatus) -> wallet_core
 
 #[test]
 fn listing_runs_as_a_sequence_and_cancel_is_one_step() {
-    use super::super::eco::FlowKind;
+    use wallet_core::execution::TradingAction;
     use wallet_core::explorer::{NftItem, TokenKind};
     use wallet_core::market::OwnedNft;
     let (_dir, mut app) = test_app(WalletKind::Hd);
+    let script = PlanScript::attach(&mut app);
     let item = |id: &str, kind: TokenKind| OwnedNft {
         item: NftItem {
             contract: "0x0046e5085a830567f647fe52672926bedc8d5c55".into(),
@@ -400,7 +404,7 @@ fn listing_runs_as_a_sequence_and_cancel_is_one_step() {
         quantity: "1".into(),
         verified: true,
     };
-    app.eco.nfts.settle(Ok(vec![item("224", TokenKind::Erc721), item("5", TokenKind::Erc1155)]));
+    app.eco.nft.nfts.settle(Ok(vec![item("224", TokenKind::Erc721), item("5", TokenKind::Erc1155)]));
     app.open_nft_list("0x0046e5085a830567f647fe52672926bedc8d5c55", "5");
     assert!(matches!(app.modal, Modal::None), "ERC-1155 items are not listed on Zora asks");
     app.open_nft_list("0x0046e5085a830567f647fe52672926bedc8d5c55", "224");
@@ -409,16 +413,16 @@ fn listing_runs_as_a_sequence_and_cancel_is_one_step() {
     form.fields[0].value = "250".into();
     form.fields[1].value = "WQI".into();
     app.submit_form(&form);
-    match app.eco.flow.as_ref().map(|f| f.kind.clone()) {
-        Some(FlowKind::NftList { price, currency, account, .. }) => {
-            assert_eq!((price.as_deref(), currency.as_str()), (Some("250"), "WQI"));
-            assert_eq!(account.as_deref(), Some("0x004dd9afaa2768642b5cde15c24f37bf19d842e4"), "the holding account lists it");
-        }
-        other => panic!("listing flow: {other:?}"),
-    }
-    app.eco.flow = None;
+    let (_, intent) = script.started();
+    assert_eq!(intent.account, "0x004dd9afaa2768642b5cde15c24f37bf19d842e4", "the holding account lists it");
+    assert!(
+        matches!(&intent.action, TradingAction::NftList { price, currency, .. } if price.as_deref() == Some("250") && currency == "WQI"),
+        "{:?}",
+        intent.action
+    );
+    app.eco.plan = None;
     app.cancel_nft_listing("0x0046e5085a830567f647fe52672926bedc8d5c55", "224");
-    assert!(matches!(app.eco.flow.as_ref().map(|f| &f.kind), Some(FlowKind::NftList { price: None, .. })));
+    assert!(matches!(script.started().1.action, TradingAction::NftList { price: None, .. }), "cancelling is one plan without a price");
 }
 
 #[test]
@@ -464,10 +468,10 @@ fn confirmations_and_coins_light_once() {
     next.health = Some(health(104));
     next.qi = Some(QiSummary { balance: Default::default(), checkpoint_height: None, coins: vec![coin("a:0", 3), coin("b:1", 5)] });
     app.observe_changes(&next);
-    assert!(app.row_flash.contains_key("aa"), "row lit at the confirmation target");
-    assert_eq!(app.drawer_flash.keys().copied().collect::<Vec<_>>(), vec![5], "only the new coin's slot lights");
-    assert_eq!((app.beat_order, app.recent_hashes.len()), (0, 1), "prime block heartbeat and hash history");
-    assert!(app.beat.is_some());
+    assert!(app.fx.row_flash.contains_key("aa"), "row lit at the confirmation target");
+    assert_eq!(app.fx.drawer_flash.keys().copied().collect::<Vec<_>>(), vec![5], "only the new coin's slot lights");
+    assert_eq!((app.fx.beat_order, app.fx.recent_hashes.len()), (0, 1), "prime block heartbeat and hash history");
+    assert!(app.fx.beat.is_some());
 }
 
 fn review(id: &str, kind: &str) -> Ev {
@@ -533,7 +537,7 @@ fn a_review_hidden_by_a_too_small_window_does_not_sign() {
 fn a_form_that_finishes_here_closes_instead_of_waiting_for_a_review() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.load_wallets();
-    let wallet = app.wallets.first().cloned().expect("the test wallet");
+    let wallet = app.cockpit.list.first().cloned().expect("the test wallet");
     assert!(FormKind::RenameWallet(wallet.id.clone()).is_local(), "renaming never reaches the worker");
     app.open_form(FormKind::RenameWallet(wallet.id.clone()));
     // The field arrives holding the current name; add to it and submit.
@@ -541,7 +545,7 @@ fn a_form_that_finishes_here_closes_instead_of_waiting_for_a_review() {
     press(&mut app, KeyCode::Enter);
     assert!(matches!(app.modal, Modal::None), "the form closed");
     app.load_wallets();
-    let renamed = app.wallets.iter().find(|w| w.id == wallet.id).expect("still there");
+    let renamed = app.cockpit.list.iter().find(|w| w.id == wallet.id).expect("still there");
     assert_eq!(renamed.name, format!("{}2", wallet.name));
     // A form that does reach the worker is not treated as local.
     assert!(!FormKind::SendQuai.is_local());
@@ -550,62 +554,41 @@ fn a_form_that_finishes_here_closes_instead_of_waiting_for_a_review() {
 
 #[test]
 fn swap_sequence_waits_for_the_approval_then_opens_the_swap_on_any_screen() {
-    use super::super::eco::FlowKind;
-    use wallet_core::appdb::OpStatus;
+    use quai_engine::plans::Phase;
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.dash.unlocked = true;
-    let size = (100, 30);
-    app.start_flow(FlowKind::Swap {
-        account: None,
-        from: "0x002b".into(),
-        to: "0x0049".into(),
-        amount: "1".into(),
-        slippage: 50,
-        deadline: 10,
-        label: "swap 1 WQI → USDT".into(),
-        prewrap: None,
-        unwrap_after: false,
-        baseline: "0".into(),
-        then: None,
-    });
-    assert!(app.eco.flow.as_ref().unwrap().requested, "first review requested");
-    // Step 1: the approval review arrives, is approved and submitted.
-    app.on_event(review("a1", "approve"), size);
+    let script = review_probe_flow(&mut app);
+    assert!(app.eco.plan.as_ref().unwrap().requested, "the first review is on its way");
+    // Step 1: the approval review arrives, is approved and sent.
+    script.review(&mut app, "a1", "approve", &[]);
     assert!(matches!(app.modal, Modal::Review(_)));
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Approve);
-    app.on_event(submitted("a1"), size);
+    script.sent(&mut app, "a1", "approve", &["approve"], false);
     assert!(matches!(app.modal, Modal::None), "an intermediate step shows no result dialog");
-    assert_eq!(app.eco.flow.as_ref().unwrap().waiting.as_deref(), Some("a1"));
-    // The user wanders off; nothing is requested while the approval is unconfirmed.
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("continues when it confirms")), "{:?}", app.status.toasts);
+    // The user wanders off; nothing is asked while the engine waits on the approval.
     app.switch_section(Section::Nfts);
-    app.dash.ops = vec![op("a1", "approve", OpStatus::Submitted)];
     app.advance_flow();
-    assert!(!app.eco.flow.as_ref().unwrap().requested);
-    // Confirmation: the swap review is requested wherever the user is.
-    app.dash.ops = vec![op("a1", "approve", OpStatus::Confirmed)];
+    assert!(script.quiet(), "nothing is asked while the approval is unconfirmed");
+    // The approval confirmed: the next review is asked for wherever the user is.
+    script.say(&mut app, Phase::Ready, &["approve"], Some("approve"), false);
     app.advance_flow();
-    let flow = app.eco.flow.as_ref().unwrap();
-    assert!(flow.requested && flow.waiting.is_none());
-    app.on_event(review("s1", "swap"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
-    app.on_event(submitted("s1"), size);
-    assert!(app.eco.flow.is_none(), "the swap finishes the sequence");
+    assert!(script.asked_next());
+    app.advance_flow();
+    assert!(script.quiet(), "asked once, not every frame");
+    script.review(&mut app, "s1", "swap", &["approve"]);
+    script.sent(&mut app, "s1", "swap", &["approve", "swap"], true);
+    assert!(app.eco.plan.is_none(), "the swap finishes the sequence here; the engine records it complete on confirmation");
     assert!(matches!(app.modal, Modal::Result(_)), "the final step shows its result");
+    assert_eq!(app.eco.flow_summary.as_ref().map(|(_, done)| done.len()), Some(2), "and lists the whole sequence");
 }
 
-/// A deposit is three reviews — an exact approval per side, then the add — and each one has
-/// to be asked for again after the last confirms. Firing one review and stopping is how an
-/// approval goes through and nothing else ever appears.
 #[test]
 fn a_deposit_walks_both_approvals_and_then_deposits() {
-    use super::super::eco::FlowKind;
     use super::super::worker::Prepare;
-    use wallet_core::appdb::OpStatus;
+    use quai_engine::plans::Phase;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.dash.unlocked = true;
-    let size = (100, 30);
+    app.dash.accounts = vec![account("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a")];
+    let script = PlanScript::attach(&mut app);
     let prepare = Prepare::AddLiquidityNext {
         account: None,
         pair: "0x00pair".into(),
@@ -614,174 +597,97 @@ fn a_deposit_walks_both_approvals_and_then_deposits() {
         slippage: 50,
         deadline: 10,
     };
-    app.start_flow(FlowKind::Steps { prepare: Box::new(prepare.clone()), label: "add liquidity to SMOL/WQI".into() });
-    assert!(app.eco.flow.as_ref().unwrap().requested, "the first review is asked for");
-    // Each approval: reviewed, submitted, then waited on before the next is requested.
+    app.start_steps(prepare, "add liquidity to SMOL/WQI".into());
+    let (label, intent) = script.started();
+    assert_eq!(label, "add liquidity to SMOL/WQI");
+    assert!(
+        matches!(&intent.action, wallet_core::execution::TradingAction::AddLiquidity { pair, amount, side, slippage: 50, deadline: 10 }
+        if pair == "0x00pair" && amount == "3.5" && side.as_deref() == Some("WQI"))
+    );
+    // Each approval: reviewed, sent, waited on, then the next is asked for.
+    let mut done: Vec<&str> = Vec::new();
     for (i, id) in ["ap0", "ap1"].iter().enumerate() {
-        app.on_event(review(id, "approve"), size);
+        script.review(&mut app, id, "approve", &done);
         assert!(matches!(app.modal, Modal::Review(_)), "approval {i} opens a review");
-        app.modal = Modal::None;
-        app.committing_kind = Some(wallet_core::journal::OpKind::Approve);
-        app.on_event(submitted(id), size);
-        assert_eq!(app.eco.flow.as_ref().unwrap().waiting.as_deref(), Some(*id), "waits for approval {i}");
-        app.dash.ops = vec![op(id, "approve", OpStatus::Submitted)];
+        done.push("approve");
+        script.sent(&mut app, id, "approve", &done, false);
+        assert!(app.eco.plan.is_some(), "approval {i} does not end the deposit");
         app.advance_flow();
-        assert!(!app.eco.flow.as_ref().unwrap().requested, "nothing asked while approval {i} is unconfirmed");
-        app.dash.ops = vec![op(id, "approve", OpStatus::Confirmed)];
+        assert!(script.quiet(), "nothing asked while approval {i} is unconfirmed");
+        script.say(&mut app, Phase::Ready, &done, Some("approve"), false);
         app.advance_flow();
-        let flow = app.eco.flow.as_ref().expect("the sequence continues past the approval");
-        assert!(flow.requested && flow.waiting.is_none(), "the next step is asked for after approval {i}");
+        assert!(script.asked_next(), "the next step is asked for after approval {i}");
     }
     // The deposit itself ends the sequence and shows its result.
-    app.on_event(review("add1", "add_liquidity"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::AddLiquidity);
-    app.on_event(submitted("add1"), size);
-    assert!(app.eco.flow.is_none(), "the deposit finishes the sequence");
+    script.review(&mut app, "add1", "add_liquidity", &done);
+    done.push("add liquidity");
+    script.sent(&mut app, "add1", "add_liquidity", &done, true);
+    assert!(app.eco.plan.is_none(), "the deposit finishes the sequence");
     assert!(matches!(app.modal, Modal::Result(_)), "and shows its result");
 }
 
-/// A deposit short of WQUAI starts by wrapping the shortfall from QUAI. That wrap is a step like
-/// an approval — waited on, then the sequence asks again — never the end of the deposit.
 #[test]
 fn a_deposit_short_of_wquai_wraps_then_approves_then_deposits() {
-    use super::super::eco::FlowKind;
-    use super::super::worker::Prepare;
-    use wallet_core::appdb::OpStatus;
+    use quai_engine::plans::Phase;
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.dash.unlocked = true;
-    let size = (100, 30);
-    let prepare = Prepare::AddLiquidityNext {
-        account: None,
-        pair: "0x00pair".into(),
-        amount: "3.5".into(),
-        token: Some("WQUAI".into()),
-        slippage: 50,
-        deadline: 10,
-    };
-    app.start_flow(FlowKind::Steps { prepare: Box::new(prepare), label: "add liquidity to SMOL/WQUAI".into() });
-    for (id, kind) in [("wrap0", "wrap_quai"), ("ap0", "approve")] {
-        app.on_event(review(id, kind), size);
+    let script = review_probe_flow(&mut app);
+    let mut done: Vec<&str> = Vec::new();
+    for (id, kind, name) in [("wrap0", "wrap_quai", "wrap QUAI"), ("ap0", "approve", "approve")] {
+        script.review(&mut app, id, kind, &done);
         assert!(matches!(app.modal, Modal::Review(_)), "{kind} opens a review");
-        app.modal = Modal::None;
-        app.committing_kind = Some(wallet_core::journal::OpKind::parse(kind));
-        app.on_event(submitted(id), size);
-        let flow = app.eco.flow.as_ref().unwrap_or_else(|| panic!("the {kind} does not end the deposit"));
-        assert_eq!(flow.waiting.as_deref(), Some(id), "the sequence waits for the {kind}");
+        done.push(name);
+        script.sent(&mut app, id, kind, &done, false);
+        assert!(app.eco.plan.is_some(), "the {kind} does not end the deposit");
         assert!(!matches!(app.modal, Modal::Result(_)), "and shows no final result for it");
-        app.dash.ops = vec![op(id, kind, OpStatus::Submitted)];
+        script.say(&mut app, Phase::Ready, &done, Some(kind), false);
         app.advance_flow();
-        assert!(!app.eco.flow.as_ref().unwrap().requested, "nothing asked while the {kind} is unconfirmed");
-        app.dash.ops = vec![op(id, kind, OpStatus::Confirmed)];
-        app.advance_flow();
-        let flow = app.eco.flow.as_ref().expect("the sequence continues");
-        assert!(flow.requested && flow.waiting.is_none(), "the next step is asked for after the {kind}");
+        assert!(script.asked_next(), "the next step is asked for after the {kind}");
     }
-    app.on_event(review("add1", "add_liquidity"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::AddLiquidity);
-    app.on_event(submitted("add1"), size);
-    assert!(app.eco.flow.is_none(), "the deposit finishes the sequence");
+    script.review(&mut app, "add1", "add_liquidity", &done);
+    script.sent(&mut app, "add1", "add_liquidity", &["wrap QUAI", "approve", "add liquidity"], true);
+    assert!(app.eco.plan.is_none(), "the deposit finishes the sequence");
     assert!(matches!(app.modal, Modal::Result(_)), "and shows its result");
 }
 
-/// The market route is a sequence of reviewed steps: wrap, swap, then redeem exactly what
-/// the swap produced.
 #[test]
 fn qi_market_route_runs_wrap_swap_unwrap() {
-    use super::super::eco::FlowKind;
-    use wallet_core::appdb::OpStatus;
     use wallet_core::qi_market::Direction;
-    use wallet_core::sdk::U256;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.network_id = "mainnet".into();
     app.dash.unlocked = true;
-    app.dash.accounts = vec![wallet_core::session::AccountBalance {
-        address: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(),
-        label: "Main".into(),
-        hd_index: Some(0),
-        balance: U256::from(100u64) * U256::from(10u64).pow(U256::from(18)),
-        locked: U256::ZERO,
-        nonce: 0,
-    }];
-    let wrap = |wqi: &str, wquai: &str| {
-        Some(wallet_core::ops::WrapStatus {
-            account: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(),
-            wqi_atoms: Some(wqi.into()),
-            wqi_qi: None,
-            unclaimed_qits: None,
-            wquai_atoms: Some(wquai.into()),
-        })
-    };
-    app.dash.wrap = wrap("0", "0");
-    let size = (100, 30);
+    app.dash.accounts = vec![account("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a")];
+    let script = PlanScript::attach(&mut app);
     app.start_qi_route(Direction::QuaiToQi, "10".into(), 50);
-    // The route is one durable core intent, not a TUI-held stage machine: QUAI buys WQI on the
-    // market, and the redemption that follows is sized from that swap's own receipt.
-    let wqi = app.config.network("mainnet").unwrap().wqi.unwrap();
-    match &app.eco.flow.as_ref().expect("the route started").kind {
-        FlowKind::Steps { prepare, .. } => {
-            let Prepare::Trading { intent } = prepare.as_ref() else { panic!("{prepare:?}") };
-            assert!(
-                matches!(
-                    &intent.action,
-                    wallet_core::execution::TradingAction::MarketConversion { direction: Direction::QuaiToQi, amount, stage: 0, .. }
-                        if amount == "10"
-                ),
-                "{:?}",
-                intent.action
-            );
-        }
-        other => panic!("{other:?}"),
-    }
-    // The market swap is signed: the route waits for it rather than announcing a result.
-    app.on_event(review("s1", "swap"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
-    app.on_event(submitted("s1"), size);
+    // The route is one durable core intent, not a screen-held stage machine: QUAI buys WQI on
+    // the market, and the redemption that follows is sized from that swap's own receipt
+    // (`TradingIntent::advance_allocation`, tested in wallet-core).
+    let (label, intent) = script.started();
+    assert!(label.contains("through the market"), "{label}");
+    assert_eq!(intent.account, "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a");
+    assert!(
+        matches!(&intent.action, wallet_core::execution::TradingAction::MarketConversion { direction: Direction::QuaiToQi, amount, stage: 0, slippage: 50, .. } if amount == "10"),
+        "{:?}",
+        intent.action
+    );
+    // The market swap is sent: the route waits for it rather than announcing a result.
+    script.review(&mut app, "s1", "swap", &[]);
+    script.sent(&mut app, "s1", "swap", &["swap"], false);
     assert!(matches!(app.modal, Modal::None), "an intermediate step shows no result dialog");
-    assert_eq!(app.eco.flow.as_ref().unwrap().waiting.as_deref(), Some("s1"));
-    // 8.285 WQI arrives: whole Qi are redeemed and the remainder is recorded, not silently kept.
-    let mut paid = op("s1", "swap", OpStatus::Confirmed);
-    paid.account = "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into();
-    paid.detail = serde_json::json!({"to_token": wqi, "actual_out": "8285000000000000000"}).into();
-    app.dash.ops = vec![paid];
-    app.dash.wrap = wrap("8285000000000000000", "0");
-    app.advance_flow();
-    match &app.eco.flow.as_ref().expect("the redemption is next").kind {
-        FlowKind::Steps { prepare, .. } => {
-            let Prepare::Trading { intent } = prepare.as_ref() else { panic!("{prepare:?}") };
-            assert!(
-                matches!(
-                    &intent.action,
-                    wallet_core::execution::TradingAction::MarketConversion { stage: 1, amount, residual_atoms, .. }
-                        if amount == "8" && residual_atoms == "285000000000000000"
-                ),
-                "{:?}",
-                intent.action
-            );
-        }
-        other => panic!("{other:?}"),
-    }
-    // The redemption is the last allocation, so it ends the route and shows its result.
-    app.on_event(review("u1", "unwrap_wqi"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::UnwrapWqi);
-    app.on_event(submitted("u1"), size);
-    assert!(app.eco.flow.is_none(), "the redemption ends the route");
+    // The redemption is the last step, so it ends the route and shows its result.
+    script.review(&mut app, "u1", "unwrap_wqi", &["swap"]);
+    script.sent(&mut app, "u1", "unwrap_wqi", &["swap", "redeem WQI"], true);
+    assert!(app.eco.plan.is_none(), "the redemption ends the route");
     assert!(matches!(app.modal, Modal::Result(_)), "the final step shows its result");
 }
 
-/// A WQUAI pool can be paid from QUAI: the sequence wraps what is missing first, and offers
-/// to redeem WQUAI it pays out.
 #[test]
 fn swapping_a_wquai_pool_wraps_in_and_redeems_out() {
-    use super::super::eco::FlowKind;
-    use wallet_core::sdk::U256;
+    use wallet_core::execution::TradingAction;
     use wallet_core::swap::SwapAsset;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.network_id = "mainnet".into();
     app.dash.unlocked = true;
+    let script = PlanScript::attach(&mut app);
     let wquai = app.config.network("mainnet").unwrap().wquai.unwrap().to_lowercase();
     let usdt = "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5".to_string();
     app.dash.accounts = vec![wallet_core::session::AccountBalance {
@@ -816,7 +722,7 @@ fn swapping_a_wquai_pool_wraps_in_and_redeems_out() {
         legs: vec![],
     };
     let wquai_asset = SwapAsset::Token { address: wquai.clone(), symbol: "WQUAI".into(), decimals: 18 };
-    let usdt_asset = SwapAsset::Token { address: usdt, symbol: "USDT".into(), decimals: 6 };
+    let usdt_asset = SwapAsset::Token { address: usdt.clone(), symbol: "USDT".into(), decimals: 6 };
     app.eco.swap.from = wquai_asset.clone();
     app.eco.swap.to = Some(usdt_asset.clone());
     app.eco.swap.amount = "10".into();
@@ -824,17 +730,19 @@ fn swapping_a_wquai_pool_wraps_in_and_redeems_out() {
     app.eco.swap.quote_key = 1;
     app.eco.swap.requested_key = 1;
     app.eco.swap.requested_input = app.swap_input_key();
-    app.eco.swap.quoted_at = Some(Instant::now());
+    app.eco.swap.quote_read.confirm();
     app.swap_submit();
-    match &app.eco.flow.as_ref().expect("sequence started").kind {
-        FlowKind::Swap { prewrap, unwrap_after, .. } => {
-            assert_eq!(prewrap.as_deref(), Some("10"), "wraps the missing WQUAI first");
-            assert!(!unwrap_after, "the output is USDT");
-        }
-        other => panic!("{other:?}"),
-    }
-    // Paying with USDT for WQUAI: nothing to wrap, but the output can be redeemed.
-    app.eco.flow = None;
+    // Paying WQUAI the account lacks: the plan is a plain swap, and its first step wraps the
+    // shortfall from QUAI (`TradingIntent::next_review`); the screen says so.
+    let (_, intent) = script.started();
+    assert!(
+        matches!(&intent.action, TradingAction::Swap { from, to, amount, .. } if *from == wquai && *to == usdt && amount == "10"),
+        "{:?}",
+        intent.action
+    );
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("wrapping 10 QUAI first")), "{:?}", app.status.toasts);
+    // Paying with USDT for WQUAI: nothing to wrap, and the WQUAI paid out is redeemed.
+    app.eco.plan = None;
     app.eco.swap.from = usdt_asset.clone();
     app.eco.swap.to = Some(wquai_asset.clone());
     let mut q = quote(&usdt_asset, &wquai_asset);
@@ -842,66 +750,77 @@ fn swapping_a_wquai_pool_wraps_in_and_redeems_out() {
     app.eco.swap.quote = Some(Ok(q));
     app.eco.swap.requested_input = app.swap_input_key();
     app.swap_submit();
-    match &app.eco.flow.as_ref().expect("sequence started").kind {
-        FlowKind::Swap { prewrap, unwrap_after, .. } => {
-            assert!(prewrap.is_none() && *unwrap_after, "redeems the WQUAI it pays out");
-        }
-        other => panic!("{other:?}"),
-    }
+    let (_, intent) = script.started();
+    assert!(
+        matches!(&intent.action, TradingAction::SwapThenUnwrap { from, wquai: w, stage: 0, .. } if *from == usdt && *w == wquai),
+        "{:?}",
+        intent.action
+    );
 }
 
 #[test]
 fn sequences_stop_on_reject_failure_and_errors() {
-    use super::super::eco::FlowKind;
-    use wallet_core::appdb::OpStatus;
+    use quai_engine::plans::Phase;
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.dash.unlocked = true;
     let size = (100, 30);
-    let swap = || FlowKind::Swap {
-        account: None,
-        from: "0x002b".into(),
-        to: "0x0049".into(),
-        amount: "1".into(),
-        slippage: 50,
-        deadline: 10,
-        label: "swap".into(),
-        prewrap: None,
-        unwrap_after: false,
-        baseline: "0".into(),
-        then: None,
-    };
-    // Rejecting a step's review ends the sequence.
-    app.start_flow(swap());
-    app.on_event(review("a1", "approve"), size);
+    // Rejecting a step's review: the engine hears it, and its stop ends the sequence here.
+    let script = review_probe_flow(&mut app);
+    script.review(&mut app, "a1", "approve", &[]);
     press(&mut app, KeyCode::Esc);
-    assert!(app.eco.flow.is_none());
-    // A failed approval ends it.
-    app.start_flow(swap());
-    app.on_event(review("a2", "approve"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Approve);
-    app.on_event(submitted("a2"), size);
-    app.dash.ops = vec![op("a2", "approve", OpStatus::Failed)];
-    app.advance_flow();
-    assert!(app.eco.flow.is_none());
-    // A preparation error (e.g. not enough balance) ends it.
-    app.start_flow(swap());
+    script.say(&mut app, Phase::Stopped("review probe cancelled; nothing further will be signed".into()), &[], None, false);
+    assert!(app.eco.plan.is_none());
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("nothing further will be signed")));
+    // A failed approval: the engine stops the plan and says what went through.
+    app.start_plan("review probe".into(), probe_intent(), None);
+    script.started();
+    script.review(&mut app, "a2", "approve", &[]);
+    script.sent(&mut app, "a2", "approve", &["approve"], false);
+    script.say(
+        &mut app,
+        Phase::Stopped("review probe stopped after 1 step: approve went through; nothing after it was sent.".into()),
+        &["approve"],
+        Some("approve"),
+        false,
+    );
+    assert!(app.eco.plan.is_none());
+    // An error answering the start (the engine never took the plan): nothing was sent.
+    app.start_plan("review probe".into(), probe_intent(), None);
+    script.started();
     app.on_event(Ev::Error("WQI balance is 0".into()), size);
-    assert!(app.eco.flow.is_none());
-    // Locking drops the open review; the step is requested again after unlocking.
-    app.start_flow(swap());
-    app.on_event(review("a3", "approve"), size);
+    assert!(app.eco.plan.is_none());
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("stopped before anything was sent")));
+    // Locking drops the open review; the step is asked for again once the engine is ready.
+    app.start_plan("review probe".into(), probe_intent(), None);
+    script.started();
+    script.review(&mut app, "a3", "approve", &[]);
     app.modal = Modal::None;
     app.flow_on_lock();
+    script.say(&mut app, Phase::Ready, &[], None, false);
     app.advance_flow();
-    assert!(app.eco.flow.as_ref().unwrap().requested);
+    assert!(script.asked_next());
+}
+
+fn probe_intent() -> wallet_core::execution::TradingIntent {
+    wallet_core::execution::TradingIntent {
+        account: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(),
+        max_fee: None,
+        action: wallet_core::execution::TradingAction::Swap {
+            from: "token-in".into(),
+            to: "token-out".into(),
+            amount: "1".into(),
+            slippage: 50,
+            deadline: 10,
+        },
+    }
 }
 
 #[test]
 fn settled_wrapped_qi_prompts_one_claim_review_until_rejected() {
+    use quai_engine::plans::Phase;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.dash.unlocked = true;
-    let size = (100, 30);
+    app.dash.accounts = vec![account("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a")];
+    let script = PlanScript::attach(&mut app);
     app.dash.wrap = Some(wallet_core::ops::WrapStatus {
         account: "0x00".into(),
         wqi_atoms: Some("0".into()),
@@ -910,22 +829,25 @@ fn settled_wrapped_qi_prompts_one_claim_review_until_rejected() {
         wquai_atoms: None,
     });
     app.tick_eco();
-    assert!(matches!(app.eco.flow.as_ref().map(|f| &f.kind), Some(super::super::eco::FlowKind::Claim { .. })));
-    app.on_event(review("c1", "claim_wqi"), size);
+    let (_, intent) = script.started();
+    assert!(matches!(intent.action, wallet_core::execution::TradingAction::ClaimWqi));
+    assert_eq!(intent.account, "0x00", "the claim is for the wrap's account");
+    script.review(&mut app, "c1", "claim_wqi", &[]);
     press(&mut app, KeyCode::Esc);
-    assert!(app.eco.flow.is_none());
+    script.say(&mut app, Phase::Stopped("claim cancelled; nothing further will be signed".into()), &[], None, false);
+    assert!(app.eco.plan.is_none());
     app.tick_eco();
-    assert!(app.eco.flow.is_none(), "a rejected claim is not prompted again for the same amount");
+    assert!(app.eco.plan.is_none() && script.quiet(), "a rejected claim is not prompted again for the same amount");
     // More backing arrives: prompt again.
     app.dash.wrap.as_mut().unwrap().unclaimed_qits = Some("2500".into());
     app.tick_eco();
-    assert!(app.eco.flow.is_some());
+    assert!(app.eco.plan.is_some());
     // Watch-only and locked wallets are never prompted.
     let (_d2, mut watch) = test_app(WalletKind::Watch);
     watch.dash.wrap = app.dash.wrap.clone();
     watch.dash.unlocked = true;
     watch.tick_eco();
-    assert!(watch.eco.flow.is_none());
+    assert!(watch.eco.plan.is_none());
 }
 
 #[test]
@@ -933,19 +855,19 @@ fn lock_key_locks_immediately_and_worker_confirmation_is_idempotent() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.dash.unlocked = true;
     press(&mut app, KeyCode::Char('l'));
-    assert!(!app.locked, "l moves right; it no longer locks");
+    assert!(!app.lock.locked, "l moves right; it no longer locks");
     ctrl(&mut app, 'l');
-    assert!(app.locked, "one press locks without waiting for the worker");
+    assert!(app.lock.locked, "one press locks without waiting for the worker");
     assert!(!app.dash.unlocked);
     // A refresh that was in flight must not reveal unlocked data again.
     app.on_event(Ev::Dashboard(Box::new(Dashboard { unlocked: true, ..Dashboard::default() })), (100, 30));
     assert!(!app.dash.unlocked);
     app.on_event(Ev::Locked, (100, 30));
-    assert!(app.locked);
+    assert!(app.lock.locked);
     // Watch-only wallets have nothing to lock.
     let (_dir, mut watch) = test_app(WalletKind::Watch);
     press(&mut watch, KeyCode::Char('l'));
-    assert!(!watch.locked);
+    assert!(!watch.lock.locked);
 }
 
 #[test]
@@ -956,7 +878,7 @@ fn channels_tab_saves_a_channel_as_contact() {
     app.dash.peers = vec![wallet_core::ops::PeerView { code: "PM8Tpeer".into(), contact: None, receive_addresses: 1, send_addresses: 0 }];
     // `]` moves from Contacts to Channels within People.
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.screen, Screen::Channels);
+    assert_eq!(app.nav.screen, Screen::Channels);
     press(&mut app, KeyCode::Char('a'));
     match &app.modal {
         Modal::Form(f) => {
@@ -996,7 +918,7 @@ fn pool_shape() -> Vec<wallet_core::markets::Pool> {
 
 fn with_pools(app: &mut App) {
     app.network_id = "mainnet".into();
-    app.eco.markets_view.pools = Some(Ok((pool_shape(), wallet_core::markets::DexOverview::default())));
+    app.eco.markets_view.pools.settle(Ok((pool_shape(), wallet_core::markets::DexOverview::default())));
 }
 
 /// What was typed decides the order before route quality does: `qi` puts Qi first, not WQI above
@@ -1044,8 +966,8 @@ fn the_token_picker_only_offers_pairs_that_have_a_route() {
         other => panic!("LAPTOP should be reachable in three hops, got {other:?}"),
     }
     // A token with no pool anywhere cannot be chosen.
-    app.eco.markets = vec![];
-    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
+    app.eco.feeds.markets = vec![];
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00dead".into()), "GHOST", "0", true)],
         ..Default::default()
     });
@@ -1077,7 +999,7 @@ fn max_reserves_gas_for_quai_and_not_for_tokens() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     let quai = U256::from(100u64) * U256::from(10u128.pow(18));
-    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![
             asset_row(wallet_core::portfolio::AssetKey::Quai, "QUAI", &quai.to_string(), true),
             asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", "12345", true),
@@ -1089,13 +1011,13 @@ fn max_reserves_gas_for_quai_and_not_for_tokens() {
     app.eco.swap.from = SwapAsset::Quai;
     sheet(&mut app, 'm');
     assert!(app.eco.swap.amount.is_empty());
-    assert!(app.toasts.iter().any(|t| t.text.contains("gas price")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("gas price")), "{:?}", app.status.toasts);
     // With one, MAX fills the balance less the worst-case fee.
-    app.eco.gas_price = Some(U256::from(23_800_691_942_794u64));
+    app.eco.feeds.gas_price = Some(U256::from(23_800_691_942_794u64));
     sheet(&mut app, 'm');
     let filled: f64 = app.eco.swap.amount.parse().unwrap();
     assert!(filled > 78.0 && filled < 80.0, "MAX filled {filled} QUAI of 100");
-    assert!(app.toasts.iter().any(|t| t.text.starts_with("MAX leaves")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.starts_with("MAX leaves")), "{:?}", app.status.toasts);
     // A token has no fee to hold back.
     app.eco.swap.from = SwapAsset::Token { address: "0x00a1".into(), symbol: "SMOL".into(), decimals: 18 };
     sheet(&mut app, 'm');
@@ -1109,7 +1031,7 @@ fn percent_steps_through_shares_of_max() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     let whole = (400u128 * 10u128.pow(18)).to_string();
-    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", &whole, true)],
         ..Default::default()
     });
@@ -1130,7 +1052,7 @@ fn max_refuses_an_inexact_balance() {
     use wallet_core::swap::SwapAsset;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
-    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", "999", false)],
         ..Default::default()
     });
@@ -1138,7 +1060,7 @@ fn max_refuses_an_inexact_balance() {
     app.eco.swap.from = SwapAsset::Token { address: "0x00a1".into(), symbol: "SMOL".into(), decimals: 18 };
     sheet(&mut app, 'm');
     assert!(app.eco.swap.amount.is_empty(), "nothing is filled from a rounded balance");
-    assert!(app.toasts.iter().any(|t| t.text.contains("loading")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("loading")), "{:?}", app.status.toasts);
 }
 
 /// MAX waits for the actual fee quote and rejects replies after an amount, direction or network edit.
@@ -1160,18 +1082,18 @@ fn qi_max_uses_a_correlated_fee_quote_and_preserves_edits() {
     };
     sheet(&mut app, 'm');
     assert!(app.eco.convert.amount.is_empty(), "a balance heuristic must not populate MAX");
-    let first = app.eco.max_request.unwrap().0;
+    let first = app.eco.requests.max.unwrap().0;
     app.eco.convert.amount = "4".into();
     app.on_event(Ev::QiMax { key: first, result: Ok(result()) }, (100, 30));
     assert_eq!(app.eco.convert.amount, "4");
     sheet(&mut app, 'm');
-    let second = app.eco.max_request.unwrap().0;
+    let second = app.eco.requests.max.unwrap().0;
     app.on_event(Ev::QiMax { key: first, result: Ok(result()) }, (100, 30));
     assert_eq!(app.eco.convert.amount, "4", "a superseded identical quote cannot fill the field");
     app.on_event(Ev::QiMax { key: second, result: Ok(result()) }, (100, 30));
     assert_eq!(app.eco.convert.amount, "8");
     assert!(app.eco.convert.quote.is_none());
-    assert!(app.toasts.iter().any(|t| t.text.contains("27 qits")));
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("27 qits")));
 }
 
 /// The indexer prices token1 per token0. When the wallet shows the pair the other way round
@@ -1333,16 +1255,15 @@ fn scrolling_markets_only_fetches_the_row_the_cursor_settles_on() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     // A directory that was just loaded, so the tick goes on to the selected pool.
-    app.eco.markets_view.pools_at = Some(Instant::now());
     app.switch(Screen::Markets);
     let asked = |app: &App| -> Vec<String> {
-        let mut rows: Vec<String> = app.eco.markets_view.events_at.keys().cloned().collect();
+        let mut rows: Vec<String> = app.eco.markets_view.event_reads.iter().map(|(k, _)| k.clone()).collect();
         rows.sort();
         rows
     };
     // Scroll through every row faster than the cursor can settle on any of them.
-    for row in 0..app.eco.markets_view.pools.as_ref().unwrap().as_ref().unwrap().0.len() {
-        app.selected = row;
+    for row in 0..app.eco.markets_view.pools.value().unwrap().0.len() {
+        app.nav.selected = row;
         app.tick_markets();
     }
     assert!(asked(&app).is_empty(), "a row scrolled past is not a row asked about: {:?}", asked(&app));
@@ -1362,9 +1283,8 @@ fn scrolling_markets_only_fetches_the_row_the_cursor_settles_on() {
 fn neighbouring_charts_load_before_the_cursor_reaches_them() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
-    app.eco.markets_view.pools_at = Some(Instant::now());
     app.switch(Screen::Markets);
-    app.selected = 1;
+    app.nav.selected = 1;
     let rows: Vec<String> = app.market_rows().iter().map(|p| p.address.clone()).collect();
     assert!(rows.len() >= 3, "the fixture lists enough pairs to have neighbours");
     app.tick_markets();
@@ -1379,13 +1299,13 @@ fn neighbouring_charts_load_before_the_cursor_reaches_them() {
     app.tick_markets();
     assert_eq!(app.eco.markets_view.events_prefetching.as_deref(), Some(rows[2].as_str()), "the row below comes first");
     app.tick_markets();
-    assert!(!app.eco.markets_view.events_at.contains_key(&rows[0]), "one at a time");
+    assert!(app.eco.markets_view.event_reads.get(&rows[0]).is_none(), "one at a time");
     // It lands, and the row above follows.
     app.on_data_event(super::super::data::DataEv::PoolEvents { pool: rows[2].clone(), coverage: None, result: Ok(vec![]) });
     app.tick_markets();
     assert_eq!(app.eco.markets_view.events_prefetching.as_deref(), Some(rows[0].as_str()), "then the row above");
     // Moving onto a pair still prefetching does not fetch it twice.
-    app.selected = 0;
+    app.nav.selected = 0;
     std::thread::sleep(crate::tui::eco::SELECTION_SETTLES + std::time::Duration::from_millis(50));
     app.tick_markets();
     app.tick_markets();
@@ -1398,14 +1318,14 @@ fn pools_tab_navigates_and_guards_its_actions() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.switch(Screen::Markets);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.screen, Screen::Launches);
+    assert_eq!(app.nav.screen, Screen::Launches);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.screen, Screen::Pools, "Pools sits beside Launches in Markets");
+    assert_eq!(app.nav.screen, Screen::Pools, "Pools sits beside Launches in Markets");
     assert_eq!(app.breadcrumb(), vec!["Markets".to_string(), "Pools".to_string()]);
     // With no positions, acting on the (empty) positions pane says so rather than doing nothing.
-    app.eco.pools_view.positions = Some(Ok(vec![]));
+    app.eco.pools_view.positions.settle(Ok(vec![]));
     sheet(&mut app, 's');
-    assert!(app.toasts.iter().any(|t| t.text.contains("no pool selected")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("no pool selected")), "{:?}", app.status.toasts);
 }
 
 /// A new position starts from the pool directory, not from something already held — holding
@@ -1416,10 +1336,10 @@ fn liquidity_can_be_added_to_a_pool_with_no_position() {
     with_pools(&mut app);
     app.switch(Screen::Pools);
     app.dash.unlocked = true;
-    app.eco.pools_view.positions = Some(Ok(vec![]));
+    app.eco.pools_view.positions.settle(Ok(vec![]));
     // Tab moves to the directory, which lists every pool whether or not we are in it.
     press(&mut app, KeyCode::Tab);
-    assert_eq!(app.pane, 1);
+    assert_eq!(app.nav.pane, 1);
     assert!(!app.directory_rows().is_empty(), "the directory is the pool list");
     // Pick the SMOL pool and add liquidity to it.
     let smol = app.directory_rows().iter().position(|p| p.token0.symbol == "SMOL" || p.token1.symbol == "SMOL").unwrap();
@@ -1438,7 +1358,7 @@ fn liquidity_can_be_added_to_a_pool_with_no_position() {
     assert!(app.eco.pools_view.add.is_none(), "esc abandons the deposit");
     // Actions that need a position still refuse, and name the pool so the message is useful.
     press(&mut app, KeyCode::Char('x'));
-    assert!(app.toasts.iter().any(|t| t.text.contains("no liquidity in") && t.text.contains("press a")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("no liquidity in") && t.text.contains("press a")), "{:?}", app.status.toasts);
 }
 
 /// Staking is offered only where a gauge exists and there is unstaked LP to stake.
@@ -1455,29 +1375,29 @@ fn pool_actions_follow_the_position() {
     let base =
         LpPosition { pair: "0x00pair".into(), token0: tok("WQI"), token1: tok("WQUAI"), lp_total: e18(1_000), ..LpPosition::default() };
     // No gauge on this pair: staking is refused with the reason.
-    app.eco.pools_view.positions = Some(Ok(vec![LpPosition { lp_wallet: e18(10), pid: None, ..base.clone() }]));
+    app.eco.pools_view.positions.settle(Ok(vec![LpPosition { lp_wallet: e18(10), pid: None, ..base.clone() }]));
     sheet(&mut app, 's');
-    assert!(app.toasts.iter().any(|t| t.text.contains("in no gauge")), "{:?}", app.toasts);
-    app.toasts.clear();
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("in no gauge")), "{:?}", app.status.toasts);
+    app.status.toasts.clear();
     // A launch-zone gauge: staking starts the approve-then-stake walk instead of refusing, and
     // funding is refused because those campaigns are funded at launch.
     let zone = LpPosition { lp_wallet: e18(10), pid: Some(0), gauge: Some(wallet_core::gauge::GaugeKind::Zone), ..base.clone() };
-    app.eco.pools_view.positions = Some(Ok(vec![zone]));
+    app.eco.pools_view.positions.settle(Ok(vec![zone]));
     sheet(&mut app, 'i');
-    assert!(app.toasts.iter().any(|t| t.text.contains("funded when a token launches")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("funded when a token launches")), "{:?}", app.status.toasts);
     sheet(&mut app, 's');
-    assert!(app.toasts.iter().all(|t| !t.text.contains("gauge —")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().all(|t| !t.text.contains("gauge —")), "{:?}", app.status.toasts);
     // Staking opens its form first, so the gauge and the amount are chosen before anything is
     // prepared; the walk itself starts when that form is submitted.
     assert!(matches!(&app.modal, Modal::Form(f) if matches!(f.kind, FormKind::StakePosition { stake: true, .. })), "the stake form opened");
     app.modal = Modal::None;
-    app.eco.flow = None;
-    app.toasts.clear();
+    app.eco.plan = None;
+    app.status.toasts.clear();
     // A gauge but nothing staked: unstaking is refused.
-    app.eco.pools_view.positions = Some(Ok(vec![LpPosition { lp_wallet: e18(10), pid: Some(0), ..base.clone() }]));
+    app.eco.pools_view.positions.settle(Ok(vec![LpPosition { lp_wallet: e18(10), pid: Some(0), ..base.clone() }]));
     sheet(&mut app, 'u');
-    assert!(app.toasts.iter().any(|t| t.text.contains("nothing staked")), "{:?}", app.toasts);
-    app.toasts.clear();
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("nothing staked")), "{:?}", app.status.toasts);
+    app.status.toasts.clear();
     // Adding opens a card carrying the pair, so the review cannot target the wrong pool.
     press(&mut app, KeyCode::Char('a'));
     let card = app.eco.pools_view.add.as_ref().expect("the deposit card");
@@ -1515,13 +1435,22 @@ fn the_account_that_acts_is_chosen_with_at_and_followed_everywhere() {
     // The next transaction comes from it.
     app.switch(Screen::Pools);
     let tok = |s: &str| PoolToken { address: format!("0x00{s}"), symbol: s.into(), decimals: 18 };
-    app.eco.pools_view.positions =
-        Some(Ok(vec![LpPosition { pair: "0x00pair".into(), token0: tok("A"), token1: tok("B"), lp_staked: U256::from(5u64), pid: Some(0), ..LpPosition::default() }]));
+    app.eco.pools_view.positions.settle(Ok(vec![LpPosition {
+        pair: "0x00pair".into(),
+        token0: tok("A"),
+        token1: tok("B"),
+        lp_staked: U256::from(5u64),
+        pid: Some(0),
+        ..LpPosition::default()
+    }]));
     press(&mut app, KeyCode::Char('h'));
     let got = prepared.recv_timeout(std::time::Duration::from_secs(5)).expect("a harvest");
     assert!(matches!(&got, Prepare::Harvest { account: Some(a), .. } if a == two), "prepared from account 2: {got:?}");
     // Activity narrows to it, and back.
-    app.dash.ops = vec![op("a1", "send_quai", wallet_core::appdb::OpStatus::Confirmed), op("a2", "send_quai", wallet_core::appdb::OpStatus::Confirmed)];
+    app.dash.ops = vec![
+        op("a1", "send_quai", wallet_core::appdb::OpStatus::Confirmed),
+        op("a2", "send_quai", wallet_core::appdb::OpStatus::Confirmed),
+    ];
     app.dash.ops[0].account = one.into();
     app.dash.ops[1].account = two.into();
     app.switch(Screen::Activity);
@@ -1547,7 +1476,7 @@ fn pool_keys_beat_the_app_verbs_they_share() {
     app.dash.unlocked = true;
     let tok = |s: &str| PoolToken { address: format!("0x00{s}"), symbol: s.into(), decimals: 18 };
     let e18 = |n: u128| U256::from(n) * U256::from(10u128.pow(18));
-    app.eco.pools_view.positions = Some(Ok(vec![LpPosition {
+    app.eco.pools_view.positions.settle(Ok(vec![LpPosition {
         pair: "0x00pair".into(),
         token0: tok("WQI"),
         token1: tok("WQUAI"),
@@ -1585,15 +1514,15 @@ fn pool_keys_beat_the_app_verbs_they_share() {
 fn movement_letters_can_be_turned_off() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.switch(Screen::Settings);
-    app.selected = 0;
+    app.nav.selected = 0;
     app.config.vim_keys = false;
     press(&mut app, KeyCode::Char('j'));
-    assert_eq!(app.selected, 0, "j is not down");
+    assert_eq!(app.nav.selected, 0, "j is not down");
     press(&mut app, KeyCode::Down);
-    assert_eq!(app.selected, 1, "the arrow is");
+    assert_eq!(app.nav.selected, 1, "the arrow is");
     app.config.vim_keys = true;
     press(&mut app, KeyCode::Char('j'));
-    assert_eq!(app.selected, 2, "on again, j is down");
+    assert_eq!(app.nav.selected, 2, "on again, j is down");
 }
 
 /// The token you have least of is what limits a deposit, so the form lets either side be the
@@ -1608,7 +1537,7 @@ fn a_deposit_can_be_typed_in_either_side_of_the_pool() {
     app.dash.unlocked = true;
     let tok = |s: &str| PoolToken { address: format!("0x00{s}"), symbol: s.into(), decimals: 18 };
     let e18 = |n: u128| U256::from(n) * U256::from(10u128.pow(18));
-    app.eco.pools_view.positions = Some(Ok(vec![LpPosition {
+    app.eco.pools_view.positions.settle(Ok(vec![LpPosition {
         pair: "0x00pair".into(),
         token0: tok("SMOL"),
         token1: tok("WQI"),
@@ -1644,7 +1573,7 @@ fn locked_hd_app() -> (tempfile::TempDir, App) {
     let caps = super::super::terminal::detect(wallet_core::config::GraphicsMode::Cells);
     let mut app = App::new(paths, "local".into(), AppConfig::default(), Theme::terminal(false), caps, Some(meta));
     app.onboarding = None;
-    app.locked = true;
+    app.lock.locked = true;
     app.modal = Modal::None;
     // A standalone engine whose worker runs nothing: the password is checked by the host alone.
     let (worker, _) = Worker::capture();
@@ -1661,7 +1590,7 @@ fn type_text(app: &mut App, text: &str) {
 /// Wait for the engine's answer to the password.
 fn await_unlock(app: &mut App) {
     let started = Instant::now();
-    while app.unlocking {
+    while app.lock.unlocking {
         assert!(started.elapsed() < std::time::Duration::from_secs(20), "the password check never answered");
         std::thread::sleep(std::time::Duration::from_millis(10));
         while let Some(ev) = app.worker.as_ref().and_then(|w| w.try_recv()) {
@@ -1679,28 +1608,28 @@ fn the_lock_screen_unlocks_without_the_worker() {
     type_text(&mut app, "wrongpassword");
     press(&mut app, KeyCode::Enter);
     // Submitted: said immediately, and the password is gone from the screen's own copy.
-    assert!(app.unlocking, "the screen says it is unlocking");
-    assert!(app.lock_error.is_none() && app.locked, "checked off the render thread, not answered yet");
-    assert!(app.lock_input.is_empty());
+    assert!(app.lock.unlocking, "the screen says it is unlocking");
+    assert!(app.lock.error.is_none() && app.lock.locked, "checked off the render thread, not answered yet");
+    assert!(app.lock.input.is_empty());
     // Keys are ignored until it answers, so they cannot land in the next attempt.
     press(&mut app, KeyCode::Char('x'));
-    assert!(app.lock_input.is_empty(), "typing during an unlock is not collected");
+    assert!(app.lock.input.is_empty(), "typing during an unlock is not collected");
     // Background work failing meanwhile is not the answer, and does not end the attempt.
     app.on_event(Ev::Error("node did not answer within 12s".into()), size);
-    assert!(app.unlocking && app.lock_error.is_none());
+    assert!(app.lock.unlocking && app.lock.error.is_none());
     await_unlock(&mut app);
     // Refused, and said plainly: the vault's own wording leads with the damaged-file case.
-    assert!(!app.unlocking && app.locked);
-    assert_eq!(app.lock_error.as_deref(), Some("That password didn't open this wallet. Caps Lock? (A damaged vault file looks the same.)"));
+    assert!(!app.lock.unlocking && app.lock.locked);
+    assert_eq!(app.lock.error.as_deref(), Some("That password didn't open this wallet. Caps Lock? (A damaged vault file looks the same.)"));
     // Background work reports busy, which must not take the error's place.
     app.on_event(Ev::Busy(Some("syncing…".into())), size);
-    assert_eq!(app.lock_error.as_deref(), Some("That password didn't open this wallet. Caps Lock? (A damaged vault file looks the same.)"));
+    assert_eq!(app.lock.error.as_deref(), Some("That password didn't open this wallet. Caps Lock? (A damaged vault file looks the same.)"));
     // Typing again clears it; the right password opens the wallet while the worker runs nothing.
     type_text(&mut app, "password123");
-    assert!(app.lock_error.is_none());
+    assert!(app.lock.error.is_none());
     press(&mut app, KeyCode::Enter);
     await_unlock(&mut app);
-    assert!(!app.locked && !app.unlocking && app.lock_error.is_none());
+    assert!(!app.lock.locked && !app.lock.unlocking && app.lock.error.is_none());
 }
 
 /// The engine (in the daemon) went away with the keys: the screen locks at once, even mid-unlock,
@@ -1712,14 +1641,14 @@ fn a_lost_engine_locks_the_screen_and_says_why() {
     type_text(&mut app, "password123");
     press(&mut app, KeyCode::Enter);
     await_unlock(&mut app);
-    assert!(!app.locked);
+    assert!(!app.lock.locked);
     app.on_event(Ev::EngineLost("the other end closed the connection".into()), size);
-    assert!(app.locked && !app.unlocking);
-    assert_eq!(app.lock_error.as_deref(), Some("The engine stopped; the keys went with it."));
-    assert!(app.log.iter().any(|t| t.text.contains("closed the connection")), "the reason is in the log");
+    assert!(app.lock.locked && !app.lock.unlocking);
+    assert_eq!(app.lock.error.as_deref(), Some("The engine stopped; the keys went with it."));
+    assert!(app.status.log.iter().any(|t| t.text.contains("closed the connection")), "the reason is in the log");
     app.on_event(Ev::EngineBack, size);
-    assert!(app.locked, "back, but still locked: the new engine holds no keys");
-    assert_eq!(app.lock_error.as_deref(), Some("Reconnected. Unlock to sign again."));
+    assert!(app.lock.locked, "back, but still locked: the new engine holds no keys");
+    assert_eq!(app.lock.error.as_deref(), Some("Reconnected. Unlock to sign again."));
 }
 
 /// A switch locks the screen at once. The worker confirms it later, possibly after the new wallet
@@ -1729,7 +1658,7 @@ fn a_lost_engine_locks_the_screen_and_says_why() {
 fn a_switch_locks_at_once_and_its_late_confirmation_does_not_relock() {
     let (_dir, mut app) = locked_hd_app();
     let size = (100, 30);
-    app.locked = false;
+    app.lock.locked = false;
     let other = app
         .registry
         .create_hd(
@@ -1742,64 +1671,64 @@ fn a_switch_locks_at_once_and_its_late_confirmation_does_not_relock() {
         )
         .unwrap();
     app.switch_wallet(&other.id);
-    assert!(app.locked, "the new wallet's lock screen shows before the worker gets there");
+    assert!(app.lock.locked, "the new wallet's lock screen shows before the worker gets there");
     type_text(&mut app, "password123");
     press(&mut app, KeyCode::Enter);
     await_unlock(&mut app);
-    assert!(!app.locked);
+    assert!(!app.lock.locked);
     app.on_event(Ev::Locked, size);
-    assert!(!app.locked, "the switch's own confirmation is stale by now");
+    assert!(!app.lock.locked, "the switch's own confirmation is stale by now");
     // A lock after that is a real one.
     app.on_event(Ev::Locked, size);
-    assert!(app.locked);
+    assert!(app.lock.locked);
     // The keys reached a worker whose switch failed: lock again and say so.
-    app.locked = false;
+    app.lock.locked = false;
     app.on_event(Ev::KeysRefused, size);
-    assert!(app.locked && app.lock_error.is_some());
+    assert!(app.lock.locked && app.lock.error.is_some());
 }
 
 #[test]
 fn sections_tabs_and_detail_stack() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    assert_eq!(app.screen, Screen::Home);
+    assert_eq!(app.nav.screen, Screen::Home);
     // Qi coins and accounts (with the time locks under them) are Home's sub-tabs.
     assert_eq!(app.breadcrumb(), vec!["Home".to_string(), "Portfolio".to_string()]);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.screen, Screen::Qi);
+    assert_eq!(app.nav.screen, Screen::Qi);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.screen, Screen::Accounts);
+    assert_eq!(app.nav.screen, Screen::Accounts);
     assert_eq!(app.breadcrumb(), vec!["Home".to_string(), "Accounts".to_string()]);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.screen, Screen::Home);
+    assert_eq!(app.nav.screen, Screen::Home);
     press(&mut app, KeyCode::Char('['));
-    assert_eq!(app.screen, Screen::Accounts);
+    assert_eq!(app.nav.screen, Screen::Accounts);
     // The section remembers its tab.
     press(&mut app, KeyCode::Char('6'));
-    assert_eq!(app.screen, Screen::Activity);
+    assert_eq!(app.nav.screen, Screen::Activity);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.activity_filter, ActivityFilter::Sends);
+    assert_eq!(app.nav.activity_filter, ActivityFilter::Sends);
     press(&mut app, KeyCode::Char('1'));
-    assert_eq!(app.screen, Screen::Accounts);
+    assert_eq!(app.nav.screen, Screen::Accounts);
     press(&mut app, KeyCode::Char('2'));
-    assert_eq!(app.screen.section(), Section::Markets);
+    assert_eq!(app.nav.screen.section(), Section::Markets);
     press(&mut app, KeyCode::Char('3'));
-    assert_eq!(app.screen.section(), Section::Trade);
+    assert_eq!(app.nav.screen.section(), Section::Trade);
     // Exchange, Orders and PnL: Swap, Convert and Wrap share the Exchange tab, which returns to
     // whichever of them was last open.
-    assert_eq!(app.screen, Screen::Swap);
+    assert_eq!(app.nav.screen, Screen::Swap);
     assert_eq!(Section::Trade.tab_labels(&app.config.features), vec!["Exchange", "Orders", "PnL"]);
     app.switch(Screen::Wrap);
     assert_eq!(app.breadcrumb(), vec!["Trade".to_string(), "Exchange".to_string()]);
     press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.screen, Screen::Orders);
+    assert_eq!(app.nav.screen, Screen::Orders);
     press(&mut app, KeyCode::Char('['));
-    assert_eq!(app.screen, Screen::Wrap, "the Exchange tab returns to the view last open");
+    assert_eq!(app.nav.screen, Screen::Wrap, "the Exchange tab returns to the view last open");
     // Tab moves pane focus, it no longer switches screens.
     app.switch(Screen::Home);
     press(&mut app, KeyCode::Tab);
-    assert_eq!((app.screen, app.pane), (Screen::Home, 1));
+    assert_eq!((app.nav.screen, app.nav.pane), (Screen::Home, 1));
     // Detail stack: Enter pushes, Esc pops.
-    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![wallet_core::portfolio::AssetRow {
             key: wallet_core::portfolio::AssetKey::Quai,
             symbol: "QUAI".into(),
@@ -1821,30 +1750,30 @@ fn sections_tabs_and_detail_stack() {
         ..Default::default()
     });
     app.switch(Screen::Home);
-    app.pane = 0;
+    app.nav.pane = 0;
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.detail, vec![Detail::Asset("quai".into())]);
+    assert_eq!(app.nav.detail, vec![Detail::Asset("quai".into())]);
     assert_eq!(app.breadcrumb().last().map(String::as_str), Some("QUAI"));
     press(&mut app, KeyCode::Esc);
-    assert!(app.detail.is_empty());
+    assert!(app.nav.detail.is_empty());
     // `t` opens Swap with the focused token as the pay side and the amount focused.
     press(&mut app, KeyCode::Char('t'));
-    assert_eq!(app.screen, Screen::Swap);
+    assert_eq!(app.nav.screen, Screen::Swap);
     assert_eq!(app.eco.swap.from, wallet_core::swap::SwapAsset::Quai);
     press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Char('.'));
     press(&mut app, KeyCode::Char('5'));
     assert_eq!(app.eco.swap.amount, "1.5");
-    assert_eq!(app.screen, Screen::Swap);
+    assert_eq!(app.nav.screen, Screen::Swap);
     // Esc unfocuses the input; number keys navigate again.
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Char('6'));
-    assert_eq!(app.screen, Screen::Activity);
+    assert_eq!(app.nav.screen, Screen::Activity);
     // Arriving by section key leaves the card unfocused.
     press(&mut app, KeyCode::Char('3'));
-    assert_eq!(app.screen, Screen::Swap);
+    assert_eq!(app.nav.screen, Screen::Swap);
     press(&mut app, KeyCode::Char('1'));
-    assert_eq!(app.screen, Screen::Home);
+    assert_eq!(app.nav.screen, Screen::Home);
 }
 
 /// On Launches, a token on its curve is bought and sold from the curve: `b` and `t` open the buy
@@ -1863,14 +1792,14 @@ fn launches_trade_on_the_curve_while_a_token_is_bonding() {
         curve: Some("0x004ce1cbb33cad511b79d52c6e1118ce4eb60db3".into()),
         ..Default::default()
     };
-    app.eco.launches.set(vec![launch("CHEEZ", Phase::Bonding), launch("QOGE", Phase::Graduated)]);
+    app.eco.launch.list.set(vec![launch("CHEEZ", Phase::Bonding), launch("QOGE", Phase::Graduated)]);
     let e18 = |n: u128| wallet_core::sdk::U256::from(n) * wallet_core::sdk::U256::from(10u128.pow(18));
     let token = app.launch_rows()[0].token.clone();
-    app.eco.curves.settle(
+    app.eco.launch.curves.settle(
         token.clone(),
         Ok(wallet_core::curve::CurveMarket { token_decimals: 18, token: token.clone(), held: e18(1_250), ..Default::default() }),
     );
-    app.selected = 0;
+    app.nav.selected = 0;
     press(&mut app, KeyCode::Char('b'));
     assert!(matches!(&app.modal, Modal::Form(f) if matches!(&f.kind, FormKind::CurveBuy { symbol, .. } if symbol == "CHEEZ")));
     app.modal = Modal::None;
@@ -1886,10 +1815,10 @@ fn launches_trade_on_the_curve_while_a_token_is_bonding() {
     press(&mut app, KeyCode::Char('t'));
     assert!(matches!(&app.modal, Modal::Form(f) if matches!(f.kind, FormKind::CurveBuy { .. })), "t buys on the curve too");
     app.modal = Modal::None;
-    app.selected = 1;
+    app.nav.selected = 1;
     press(&mut app, KeyCode::Char('b'));
     assert!(matches!(app.modal, Modal::None), "no form for a graduated token");
-    assert!(app.toasts.iter().any(|t| t.text.contains("left its curve")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("left its curve")), "{:?}", app.status.toasts);
 }
 
 /// A route across both exchanges runs as two swaps: the first ends on the hub, and only once it
@@ -1897,14 +1826,12 @@ fn launches_trade_on_the_curve_while_a_token_is_bonding() {
 /// that amount and on to where the route ends.
 #[test]
 fn a_two_exchange_route_swaps_to_the_hub_then_sizes_the_second_swap_from_the_first() {
-    use super::super::eco::FlowKind;
-    use wallet_core::appdb::OpStatus;
     use wallet_core::markets::Venue;
     use wallet_core::swap::{SwapAsset, SwapLeg, SwapQuote};
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.network_id = "mainnet".into();
     app.dash.unlocked = true;
-    let size = (100, 30);
+    let script = PlanScript::attach(&mut app);
     let wquai = app.config.network("mainnet").unwrap().wquai.unwrap().to_lowercase();
     let usdt = "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5".to_string();
     let qoge = SwapAsset::Token { address: "0x0048848ca70ea1560577b4725a84b23b6bc589e2".into(), symbol: "QOGE".into(), decimals: 18 };
@@ -1964,68 +1891,35 @@ fn a_two_exchange_route_swaps_to_the_hub_then_sizes_the_second_swap_from_the_fir
     app.eco.swap.quote_key = 1;
     app.eco.swap.requested_key = 1;
     app.eco.swap.requested_input = app.swap_input_key();
-    app.eco.swap.quoted_at = Some(Instant::now());
+    app.eco.swap.quote_read.confirm();
     app.swap_submit();
     // The route is one durable core intent: the first swap ends on the hub, and the second is
-    // sized from that swap's own receipt rather than from the quote.
-    match &app.eco.flow.as_ref().expect("sequence started").kind {
-        FlowKind::Steps { prepare, .. } => {
-            let Prepare::Trading { intent } = prepare.as_ref() else { panic!("{prepare:?}") };
-            assert_eq!(intent.account, owner);
-            assert!(
-                matches!(
-                    &intent.action,
-                    wallet_core::execution::TradingAction::CrossVenue { from, to, hub, stage: 0, .. }
-                        if from == &qoge_address && to == &usdt && hub == &wquai
-                ),
-                "{:?}",
-                intent.action
-            );
-        }
-        other => panic!("{other:?}"),
-    }
-    // The first swap is signed: the sequence waits for it rather than finishing.
-    app.on_event(review("s1", "swap"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
-    app.on_event(submitted("s1"), size);
+    // sized from that swap's own receipt, not from the quote (`advance_allocation`, tested in
+    // wallet-core).
+    let (label, intent) = script.started();
+    assert!(label.ends_with("(two swaps)"), "{label}");
+    assert_eq!(intent.account, owner);
+    assert!(
+        matches!(
+            &intent.action,
+            wallet_core::execution::TradingAction::CrossVenue { from, to, hub, stage: 0, redeem: false, .. }
+                if from == &qoge_address && to == &usdt && hub == &wquai
+        ),
+        "{:?}",
+        intent.action
+    );
+    // The first swap is sent: no result dialog between the two swaps.
+    script.review(&mut app, "s1", "swap", &[]);
+    script.sent(&mut app, "s1", "swap", &["swap"], false);
     assert!(matches!(app.modal, Modal::None), "no result dialog between the two swaps");
-    let flow = app.eco.flow.as_ref().expect("still running");
-    assert_eq!(flow.waiting.as_deref(), Some("s1"));
-    // Confirmed, but its output not recorded yet: nothing is asked for.
-    app.dash.ops = vec![op("s1", "swap", OpStatus::Confirmed)];
-    app.advance_flow();
-    assert!(!app.eco.flow.as_ref().unwrap().requested, "no second review before the first's output is known");
-    // The receipt says it paid 61.25 WQUAI, in units it names and to the token the route saved:
-    // that is the second swap, on to USDT, sized from the receipt rather than from the quote.
-    let mut paid = op("s1", "swap", OpStatus::Confirmed);
-    paid.account = owner.clone();
-    paid.detail = serde_json::json!({"actual_out": "61250000000000000000", "to_decimals": 18, "to_token": wquai}).into();
-    app.dash.ops = vec![paid];
-    app.advance_flow();
-    let flow = app.eco.flow.as_ref().unwrap();
-    assert!(flow.requested, "the second review is asked for");
-    match &flow.kind {
-        FlowKind::Steps { prepare, .. } => {
-            let Prepare::Trading { intent } = prepare.as_ref() else { panic!("{prepare:?}") };
-            assert!(
-                matches!(
-                    &intent.action,
-                    wallet_core::execution::TradingAction::CrossVenue { from, to, amount, stage: 1, .. }
-                        if from == &wquai && to == &usdt && amount == "61.25"
-                ),
-                "{:?}",
-                intent.action
-            );
-        }
-        other => panic!("{other:?}"),
-    }
+    assert!(app.eco.plan.is_some(), "still running");
     // The second swap finishes the route.
-    app.on_event(review("s2", "swap"), size);
-    app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
-    app.on_event(submitted("s2"), size);
-    assert!(app.eco.flow.is_none());
+    script.say(&mut app, quai_engine::plans::Phase::Ready, &["swap"], Some("swap"), false);
+    app.advance_flow();
+    assert!(script.asked_next(), "the second review is asked for once the engine has sized it");
+    script.review(&mut app, "s2", "swap", &["swap"]);
+    script.sent(&mut app, "s2", "swap", &["swap", "swap"], true);
+    assert!(app.eco.plan.is_none());
     assert!(matches!(app.modal, Modal::Result(_)));
 }
 
@@ -2064,7 +1958,7 @@ fn markets_hold_every_venue_and_pools_hold_the_two_that_mint_lp() {
         }),
         ..Default::default()
     });
-    app.eco.markets_view.pools = Some(Ok((pools, wallet_core::markets::DexOverview::default())));
+    app.eco.markets_view.pools.settle(Ok((pools, wallet_core::markets::DexOverview::default())));
     assert_eq!(app.directory_rows().len(), 5, "every pool that has an LP token: main and launch AMM");
     // Both exchanges that hold LP; only the curves are excluded, having no LP token to stake.
     assert!(app.directory_rows().iter().all(|p| matches!(p.venue, Venue::Main | Venue::LaunchAmm)));
@@ -2075,7 +1969,7 @@ fn markets_hold_every_venue_and_pools_hold_the_two_that_mint_lp() {
     assert!(!graph.has_pool("0x00c"));
     // `t` on the curve row opens its buy form.
     app.switch(Screen::Markets);
-    app.selected = 5;
+    app.nav.selected = 5;
     press(&mut app, KeyCode::Char('t'));
     match &app.modal {
         Modal::Form(form) => {
@@ -2105,7 +1999,7 @@ fn the_ipfs_gateway_is_tested_before_it_is_saved() {
     });
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.switch(Screen::Settings);
-    app.selected = SETTINGS.iter().position(|s| s.0 == "ipfs").expect("a settings row");
+    app.nav.selected = SETTINGS.iter().position(|s| s.0 == "ipfs").expect("a settings row");
     let submit = |app: &mut App, url: &str| {
         press(app, KeyCode::Enter);
         let Modal::Form(mut form) = std::mem::replace(&mut app.modal, Modal::None) else { panic!("gateway form") };
@@ -2113,11 +2007,11 @@ fn the_ipfs_gateway_is_tested_before_it_is_saved() {
         form.fields[0].value = url.into();
         app.submit_form(&form);
         let started = std::time::Instant::now();
-        while app.ipfs_check.is_some() && started.elapsed() < std::time::Duration::from_secs(15) {
+        while app.tasks.ipfs_check.is_some() && started.elapsed() < std::time::Duration::from_secs(15) {
             app.poll_ipfs_check();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        app.toasts.last().map(|t| t.text.clone()).unwrap_or_default()
+        app.status.toasts.last().map(|t| t.text.clone()).unwrap_or_default()
     };
     // Nothing listening: refused, and nothing changes.
     let toast = submit(&mut app, "http://127.0.0.1:1");
@@ -2172,11 +2066,13 @@ fn the_wallet_cockpit_adds_up_every_wallet() {
     wallet_core::cockpit::save_summary(&app.paths, &other.id, &priced(vec![quai.clone()]));
     let mine = app.meta.as_ref().unwrap().id.clone();
     wallet_core::cockpit::save_summary(&app.paths, &mine, &priced(vec![quai.clone()]));
-    app.eco.portfolio.set(priced(vec![quai]));
+    app.eco.feeds.portfolio.set(priced(vec![quai]));
     app.switch(Screen::Wallets);
     app.load_wallets();
+    app.persist.flush();
+    app.poll_persist();
     // The savings wallet has since received 20 QUAI: at $0.50 that is $10 more.
-    app.wallet_quai.insert(other.id.clone(), wallet_core::sdk::U256::from(120u128 * 10u128.pow(18)));
+    app.cockpit.quai.insert(other.id.clone(), wallet_core::sdk::U256::from(120u128 * 10u128.pow(18)));
     let mut term = Terminal::new(TestBackend::new(160, 20)).unwrap();
     term.draw(|f| super::super::ui::draw(f, &mut app)).unwrap();
     let text: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
@@ -2191,8 +2087,8 @@ fn markets_alerts_and_watching() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Markets);
-    app.pane = 0;
-    app.selected = 1;
+    app.nav.pane = 0;
+    app.nav.selected = 1;
     let second = app.selected_pool().unwrap();
     sheet(&mut app, 'a');
     let Modal::Form(f) = &app.modal else { panic!("an alert form") };
@@ -2202,10 +2098,10 @@ fn markets_alerts_and_watching() {
     assert!(f.fields[1].value.parse::<f64>().is_ok_and(|v| v > 0.0), "starts at the price now: {:?}", f.fields[1].value);
     app.modal = Modal::None;
     // Watching the second pair lifts it to the top, and the cursor goes with it.
-    app.eco.watchlist = vec![second.address.clone()];
+    app.eco.alerts.watchlist = vec![second.address.clone()];
     app.keep_cursor_on(Some(second.address.clone()));
     assert_eq!(app.selected_pool().map(|p| p.address), Some(second.address.clone()));
-    assert_eq!(app.selected, 0);
+    assert_eq!(app.nav.selected, 0);
 }
 
 /// A send review turns into the command that prepares the same send.
@@ -2260,7 +2156,7 @@ fn a_pinned_chat_docks_beside_every_screen() {
     };
     app.eco.board.pin = Some("#trading".into());
     app.eco.board.subs = vec!["#trading".into()];
-    app.eco.board.posts.insert("trading".into(), Ok(vec![post(20, "wqi pumping"), post(10, "gm")]));
+    app.eco.board.posts.settle("trading".into(), Ok(vec![post(20, "wqi pumping"), post(10, "gm")]));
     let screen = |app: &mut App, w: u16, h: u16| {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| super::super::ui::draw(f, app)).unwrap();
@@ -2274,7 +2170,7 @@ fn a_pinned_chat_docks_beside_every_screen() {
     // A long message wraps under its sender instead of being cut, in either dock shape.
     let long =
         "the WQI pool on Quainance just took a very large buy and the gauge rewards doubled overnight, worth a look before it settles";
-    app.eco.board.posts.insert("trading".into(), Ok(vec![post(30, long), post(20, "wqi pumping"), post(10, "gm")]));
+    app.eco.board.posts.settle("trading".into(), Ok(vec![post(30, long), post(20, "wqi pumping"), post(10, "gm")]));
     for (w, h) in [(180, 40), (120, 40)] {
         let text = screen(&mut app, w, h);
         let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2311,7 +2207,7 @@ fn tab_into_the_pinned_chat_and_post() {
     use ratatui::{Terminal, backend::TestBackend};
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.eco.board.pin = Some("#trading".into());
-    app.eco.board.posts.insert("trading".into(), Ok(vec![]));
+    app.eco.board.posts.settle("trading".into(), Ok(vec![]));
     app.switch(Screen::Home);
     let draw = |app: &mut App| {
         let mut term = Terminal::new(TestBackend::new(180, 40)).unwrap();
@@ -2321,50 +2217,50 @@ fn tab_into_the_pinned_chat_and_post() {
     assert!(draw(&mut app).contains("tab or ` to write"));
     // Home has two panes: the first Tab moves between them, the next reaches the chat.
     press(&mut app, KeyCode::Tab);
-    assert!(!app.dock_focus && app.pane == 1);
+    assert!(!app.dock.focus && app.nav.pane == 1);
     press(&mut app, KeyCode::Tab);
-    assert!(app.dock_focus, "Tab from the last pane goes to the chat");
+    assert!(app.dock.focus, "Tab from the last pane goes to the chat");
     for c in "gm 2 all".chars() {
         press(&mut app, KeyCode::Char(c));
     }
-    assert_eq!(app.dock_draft, "gm 2 all");
-    assert_eq!(app.screen, Screen::Home, "2 was typed, not a switch to Trade");
+    assert_eq!(app.dock.draft, "gm 2 all");
+    assert_eq!(app.nav.screen, Screen::Home, "2 was typed, not a switch to Trade");
     let focused = draw(&mut app);
     assert!(focused.contains("› gm 2 all▏"));
     assert!(focused.contains("▸ #trading") && !focused.contains("▸ recent activity"), "one lit panel: the chat");
-    assert_eq!(app.pane, 1, "the screen keeps its pane underneath");
+    assert_eq!(app.nav.pane, 1, "the screen keeps its pane underneath");
     // Esc leaves with the draft kept; ` comes straight back.
     press(&mut app, KeyCode::Esc);
-    assert!(!app.dock_focus && app.dock_draft == "gm 2 all");
+    assert!(!app.dock.focus && app.dock.draft == "gm 2 all");
     press(&mut app, KeyCode::Char('`'));
-    assert!(app.dock_focus);
+    assert!(app.dock.focus);
     press(&mut app, KeyCode::Enter);
     let Modal::Form(f) = &app.modal else { panic!("the post goes to its form and review") };
     assert_eq!(f.kind, FormKind::BoardPost { channel: "trading".into() });
     assert!(f.fields.iter().any(|fl| fl.value == "gm 2 all"));
     assert!(f.pending, "submitted for review");
-    assert!(app.dock_draft.is_empty(), "the box empties once it is sent for review");
+    assert!(app.dock.draft.is_empty(), "the box empties once it is sent for review");
     // Tab from the chat goes round to the screen's first pane.
     app.modal = Modal::None;
     press(&mut app, KeyCode::Tab);
-    assert!(!app.dock_focus && app.pane == 0);
+    assert!(!app.dock.focus && app.nav.pane == 0);
     // Markets routes Tab itself (pairs, then flow): the chat comes after the flow.
     app.switch(Screen::Markets);
     draw(&mut app);
     press(&mut app, KeyCode::Tab);
-    assert!(!app.dock_focus && app.pane == 1);
+    assert!(!app.dock.focus && app.nav.pane == 1);
     press(&mut app, KeyCode::Tab);
-    assert!(app.dock_focus, "after Markets' flow pane");
+    assert!(app.dock.focus, "after Markets' flow pane");
     press(&mut app, KeyCode::Tab);
-    assert!(!app.dock_focus && app.pane == 0, "and back to the pairs");
+    assert!(!app.dock.focus && app.nav.pane == 0, "and back to the pairs");
     // The swap card: from its last field, not while it is being entered.
     app.switch(Screen::Swap);
     draw(&mut app);
     press(&mut app, KeyCode::Tab);
-    assert!(!app.dock_focus && app.eco.swap.field == 1, "Tab first enters the card");
+    assert!(!app.dock.focus && app.eco.swap.field == 1, "Tab first enters the card");
     app.eco.swap.field = 4;
     press(&mut app, KeyCode::Tab);
-    assert!(app.dock_focus, "from the card's last field");
+    assert!(app.dock.focus, "from the card's last field");
 }
 
 /// Announced senders are offers above the registered channels: enter asks before registering
@@ -2387,7 +2283,7 @@ fn channel_offers_are_accepted_only_after_asking() {
     app.dash.peers = vec![wallet_core::ops::PeerView { code: "PM8Tpeer".into(), contact: None, receive_addresses: 1, send_addresses: 0 }];
     app.switch(Screen::Channels);
     while sent.try_recv().is_ok() {}
-    app.selected = 0;
+    app.nav.selected = 0;
     assert_eq!(app.channel_offer().map(|o| o.code.as_str()), Some("PM8Toffered"));
     assert!(app.channel_peer().is_none(), "an offer is not a channel");
     press(&mut app, KeyCode::Char('s'));
@@ -2395,13 +2291,13 @@ fn channel_offers_are_accepted_only_after_asking() {
     assert!(sent.try_recv().is_err(), "nothing registered yet");
     press(&mut app, KeyCode::Char('y'));
     assert!(matches!(sent.try_recv(), Ok(Cmd::AcceptOffer(c)) if c == "PM8Toffered"));
-    app.selected = 1;
+    app.nav.selected = 1;
     press(&mut app, KeyCode::Char('x'));
     assert!(sent.try_recv().is_err(), "declining is for good, so it asks first");
     press(&mut app, KeyCode::Char('y'));
     assert!(matches!(sent.try_recv(), Ok(Cmd::DeclineOffer(c)) if c == "PM8Tdust"));
     // Below the offers, the registered channel: s pays it, R rescans it, x leaves it alone.
-    app.selected = 2;
+    app.nav.selected = 2;
     assert_eq!(app.channel_peer().map(|p| p.code.as_str()), Some("PM8Tpeer"));
     press(&mut app, KeyCode::Char('R'));
     assert!(matches!(sent.try_recv(), Ok(Cmd::ScanPeer(c)) if c == "PM8Tpeer"));
@@ -2427,7 +2323,7 @@ fn the_channels_cursor_follows_the_sender_across_a_refresh() {
     app.dash.offers = vec![offer("PM8Talice", 1), offer("PM8Tspam", 2)];
     app.switch(Screen::Channels);
     while sent.try_recv().is_ok() {}
-    app.selected = 0;
+    app.nav.selected = 0;
     // A new offer arrives ahead of the one under the cursor.
     let mut d = app.dash.clone();
     d.offers = vec![offer("PM8Tnew", 0), offer("PM8Talice", 1), offer("PM8Tspam", 2)];
@@ -2457,19 +2353,19 @@ fn a_feature_turned_off_is_hidden_everywhere_and_settings_brings_it_back() {
     assert_eq!(Section::People.screens(&app.config.features), vec![Screen::Contacts, Screen::Channels]);
     for shut in [Screen::Board, Screen::Swap, Screen::Markets, Screen::Launches, Screen::Collected, Screen::Listings] {
         app.switch(shut);
-        assert_eq!(app.screen, Screen::Home, "{shut:?} stays shut");
+        assert_eq!(app.nav.screen, Screen::Home, "{shut:?} stays shut");
     }
     press(&mut app, KeyCode::Char('4'));
-    assert_eq!(app.screen, Screen::Home, "4 (NFTs) has nothing to open");
+    assert_eq!(app.nav.screen, Screen::Home, "4 (NFTs) has nothing to open");
     press(&mut app, KeyCode::Char('2'));
-    assert_eq!(app.screen, Screen::Home, "2 (Markets) has nothing to open");
+    assert_eq!(app.nav.screen, Screen::Home, "2 (Markets) has nothing to open");
     press(&mut app, KeyCode::Char('t'));
-    assert_eq!(app.screen, Screen::Home, "t does not open the swap card");
+    assert_eq!(app.nav.screen, Screen::Home, "t does not open the swap card");
     assert!(!context_hints(&app).iter().any(|(_, what)| what == "swap" || what == "trade"), "and is not offered");
     press(&mut app, KeyCode::Char('3'));
-    assert_eq!(app.screen, Screen::Convert, "Trade opens on what is left");
+    assert_eq!(app.nav.screen, Screen::Convert, "Trade opens on what is left");
     app.switch(Screen::Wrap);
-    assert_eq!(app.screen, Screen::Wrap, "wrapping stays too, behind the same tab");
+    assert_eq!(app.nav.screen, Screen::Wrap, "wrapping stays too, behind the same tab");
     for query in ["swap", "board", "nft", "listings", "markets"] {
         let offered: Vec<String> = app
             .palette_entries(query)
@@ -2488,14 +2384,14 @@ fn a_feature_turned_off_is_hidden_everywhere_and_settings_brings_it_back() {
     assert!(!app.eco.board.chat_loaded, "no chat is read");
     // Settings turns NFTs back on, saves it, and the section returns.
     app.switch(Screen::Settings);
-    app.selected = SETTINGS.iter().position(|(id, _)| *id == "feature:nfts").unwrap();
+    app.nav.selected = SETTINGS.iter().position(|(id, _)| *id == "feature:nfts").unwrap();
     press(&mut app, KeyCode::Enter);
     assert!(app.config.features.nfts);
     app.flush_config();
     assert!(AppConfig::load(&app.paths).unwrap().features.nfts, "written to config.toml, where the daemon reads it");
     assert!(app.sections().contains(&Section::Nfts));
     app.switch(Screen::Collected);
-    assert_eq!(app.screen, Screen::Collected);
+    assert_eq!(app.nav.screen, Screen::Collected);
 }
 
 /// Settings is longer than a small terminal: the list follows the cursor to the last row.
@@ -2504,7 +2400,7 @@ fn every_setting_can_be_reached_on_a_small_terminal() {
     use ratatui::{Terminal, backend::TestBackend};
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.switch(Screen::Settings);
-    app.selected = SETTINGS.len() - 1;
+    app.nav.selected = SETTINGS.len() - 1;
     let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
     term.draw(|f| super::super::ui::draw(f, &mut app)).unwrap();
     let text: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
@@ -2518,12 +2414,12 @@ fn markets_sort_by_tvl_and_movement_with_watched_pinned() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     // A day-ago price on two pairs: one up, one down.
-    if let Some(Ok((pools, _))) = &mut app.eco.markets_view.pools {
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
         pools[1].spot_24h_ago = Some(0.5); // SMOL/WQI: up
         pools[2].spot_24h_ago = Some(2.0); // LAPTOP/WQUAI: down
     }
     app.switch(Screen::Markets);
-    app.pane = 0;
+    app.nav.pane = 0;
     let names = |app: &App| app.market_rows().iter().map(|p| p.address.clone()).collect::<Vec<_>>();
     let unsorted = names(&app);
     sheet(&mut app, 'l');
@@ -2539,13 +2435,13 @@ fn markets_sort_by_tvl_and_movement_with_watched_pinned() {
     sheet(&mut app, 'c');
     assert_eq!(names(&app).first(), Some(&"0x00pairLAPTOPWQUAI".to_string()), "pressed again: biggest loser first");
     // Watching the shallowest pair pins it above everything, whatever the order.
-    app.eco.watchlist = vec!["0x00pairNVNTWQUAI".into()];
+    app.eco.alerts.watchlist = vec!["0x00pairNVNTWQUAI".into()];
     assert_eq!(names(&app).first(), Some(&"0x00pairNVNTWQUAI".to_string()), "watched stays on top");
     sheet(&mut app, 'l');
     assert_eq!(names(&app).first(), Some(&"0x00pairNVNTWQUAI".to_string()), "still on top under another order");
     assert_eq!(names(&app)[1], "0x00pairWQIWQUAI", "the rest follow the order that was asked for");
     // The cursor follows the pair it was on.
-    app.selected = 2;
+    app.nav.selected = 2;
     let holding = app.selected_pool().unwrap().address;
     app.keep_cursor_on(Some(holding.clone()));
     assert_eq!(app.selected_pool().map(|p| p.address), Some(holding));
@@ -2558,13 +2454,13 @@ fn markets_sort_by_tvl_and_movement_with_watched_pinned() {
 fn pairs_sort_by_the_figures_their_rows_show() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
-    if let Some(Ok((pools, _))) = &mut app.eco.markets_view.pools {
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
         pools[1].spot_24h_ago = Some(0.5); // SMOL/WQI: up 100% as token1 per token0
         pools[2].spot_24h_ago = Some(1.25); // LAPTOP/WQUAI: down 20%
     }
     let smol = "0x00pairSMOLWQI".to_string();
     app.switch(Screen::Markets);
-    app.pane = 0;
+    app.nav.pane = 0;
     let before = app.pool_base0(app.market_rows().iter().find(|p| p.address == smol).unwrap());
     app.eco.markets_view.flipped.insert(smol.clone());
     let now = wallet_core::registry::now();
@@ -2590,7 +2486,7 @@ fn a_directory_reload_keeps_the_pools_cursor_on_its_pool() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Pools);
-    app.pane = 1;
+    app.nav.pane = 1;
     app.eco.pools_view.pool_selected = 1;
     let held = app.focused_pool().expect("a focused pool").pair;
     // The same pools, read again, ranked the other way round.
@@ -2610,9 +2506,9 @@ fn opening_the_page_you_are_on_does_not_stack_it() {
     for _ in 0..4 {
         app.enter_eco();
     }
-    assert_eq!(app.detail.len(), 1, "one page, however many times enter is pressed");
+    assert_eq!(app.nav.detail.len(), 1, "one page, however many times enter is pressed");
     app.push_detail(Detail::Asset("qi".into()));
-    assert_eq!(app.detail.len(), 2, "a different page still opens");
+    assert_eq!(app.nav.detail.len(), 2, "a different page still opens");
 }
 
 /// On an asset's page, `b` and `S` open the swap card already pointing the right way: buying pays
@@ -2626,10 +2522,10 @@ fn an_asset_page_can_buy_and_sell_it() {
     app.switch(Screen::Home);
     app.push_detail(Detail::Asset(smol.into()));
     press(&mut app, KeyCode::Char('b'));
-    assert_eq!(app.screen, Screen::Swap);
+    assert_eq!(app.nav.screen, Screen::Swap);
     assert!(matches!(app.eco.swap.from, SwapAsset::Quai), "buying pays QUAI");
     assert!(matches!(&app.eco.swap.to, Some(SwapAsset::Token { address, .. }) if address == smol));
-    assert!(app.detail.is_empty(), "the card is the screen now, not a page over it");
+    assert!(app.nav.detail.is_empty(), "the card is the screen now, not a page over it");
     app.push_detail(Detail::Asset(smol.into()));
     press(&mut app, KeyCode::Char('S'));
     assert!(matches!(&app.eco.swap.from, SwapAsset::Token { address, .. } if address == smol), "selling pays the asset");
@@ -2644,7 +2540,7 @@ fn an_asset_page_can_buy_and_sell_it() {
     app.switch(Screen::Home);
     app.push_detail(Detail::Asset(smol.into()));
     press(&mut app, KeyCode::Char('b'));
-    assert_eq!(app.screen, Screen::Home, "no swap card");
+    assert_eq!(app.nav.screen, Screen::Home, "no swap card");
 }
 
 /// A new order is read from its top: sorting puts the cursor, and so the chart, on the first row.
@@ -2656,32 +2552,32 @@ fn sorting_starts_the_list_and_the_chart_at_the_top() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Markets);
-    app.pane = 0;
+    app.nav.pane = 0;
     // The row the list highlights, exactly as the view computes it.
     let highlighted = |app: &App| {
         let rows = app.market_rows();
         rows.get(app.markets_pair().min(rows.len().saturating_sub(1))).map(|p| p.address.clone())
     };
     for key in ['L', 'L', 'M', 'M', 'L'] {
-        app.selected = 2;
+        app.nav.selected = 2;
         press(&mut app, KeyCode::Char(key));
         assert_eq!(highlighted(&app), Some(app.market_rows()[0].address.clone()), "after {key}: the cursor is on the first row");
         assert_eq!(app.selected_pool().map(|p| p.address), highlighted(&app), "after {key}: the chart and the cursor disagree");
     }
     // Watching re-orders the list; the cursor still holds its pair.
-    app.selected = 2;
+    app.nav.selected = 2;
     let held = highlighted(&app).unwrap();
-    app.eco.watchlist = vec![app.market_rows()[0].address.clone()];
+    app.eco.alerts.watchlist = vec![app.market_rows()[0].address.clone()];
     app.keep_cursor_on(Some(held.clone()));
     assert_eq!(app.selected_pool().map(|p| p.address), Some(held));
 
     // With the cursor in the flow column, sorting the pairs must not touch it; the chart still
     // moves to the new first pair.
-    app.pane = 1;
-    app.selected = 0;
+    app.nav.pane = 1;
+    app.nav.selected = 0;
     app.eco.markets_view.flow_selected = 0;
     sheet(&mut app, 'l');
-    assert_eq!(app.selected, 0, "sorting the pairs moved the flow column's cursor");
+    assert_eq!(app.nav.selected, 0, "sorting the pairs moved the flow column's cursor");
     assert_eq!(app.selected_pool().map(|p| p.address), Some(app.market_rows()[0].address.clone()));
 }
 
@@ -2694,7 +2590,7 @@ fn the_chart_draws_the_pair_the_cursor_is_on_in_every_order() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Markets);
-    app.pane = 0;
+    app.nav.pane = 0;
     let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
     let drawn = |app: &mut App, term: &mut Terminal<TestBackend>| -> String {
         term.draw(|f| super::super::ui::draw(f, app)).unwrap();
@@ -2704,12 +2600,12 @@ fn the_chart_draws_the_pair_the_cursor_is_on_in_every_order() {
     // In every order, and with a pair watched, the chart names the pair under the cursor.
     for (key, watch) in [(None, false), (Some('l'), false), (Some('c'), false), (Some('l'), true)] {
         if watch {
-            app.eco.watchlist = vec![app.market_rows().last().unwrap().address.clone()];
+            app.eco.alerts.watchlist = vec![app.market_rows().last().unwrap().address.clone()];
         }
         if let Some(k) = key {
             sheet(&mut app, k);
         }
-        app.selected = 2;
+        app.nav.selected = 2;
         app.eco.markets_view.pair_selected = 2;
         let pool = app.selected_pool().unwrap();
         let base0 = app.pool_base0(&pool);
@@ -2732,7 +2628,7 @@ fn the_chart_draws_the_pair_the_cursor_is_on_in_every_order() {
 fn an_assets_page_names_the_trade_key_beside_buy_and_sell() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     for id in ["quai", "0x00token"] {
-        app.detail = vec![Detail::Asset(id.into())];
+        app.nav.detail = vec![Detail::Asset(id.into())];
         let hints = context_hints(&app);
         assert_eq!(hints.iter().find(|(k, _)| k == "t").map(|(_, w)| w.as_str()), Some("trade"), "{id}: {hints:?}");
         app.open_sheet();
@@ -2743,7 +2639,7 @@ fn an_assets_page_names_the_trade_key_beside_buy_and_sell() {
     }
     // Turning trading off takes all three away rather than leaving a key that does nothing.
     app.config.features.trading = false;
-    app.detail = vec![Detail::Asset("quai".into())];
+    app.nav.detail = vec![Detail::Asset("quai".into())];
     assert!(!context_hints(&app).iter().any(|(k, _)| k == "t"));
     app.open_sheet();
     let Modal::Sheet { items, .. } = &app.modal else { panic!("a sheet") };
@@ -2837,7 +2733,7 @@ fn the_send_form_says_when_the_destination_is_a_contract() {
     let address = "0x0077ad436f63f35d0ded89055402659750a28d0a";
     // The worker answers with what it found; the form picks it up for the address it asked about.
     let size = (120u16, 40u16);
-    app.contract_probe = Some(address.into());
+    app.tasks.contract_probe = Some(address.into());
     app.on_event(
         super::super::worker::Ev::Contract {
             address: address.into(),
@@ -2872,13 +2768,13 @@ fn the_send_form_says_when_the_destination_is_a_contract() {
     let note = note.expect("the form says what the destination is");
     assert!(note.contains("Messages") && note.contains("contract") && note.contains("^F"), "{note}");
     // An answer for a different address is ignored rather than shown against this one.
-    app.contract_probe = Some("0x00other".into());
+    app.tasks.contract_probe = Some("0x00other".into());
     app.on_event(super::super::worker::Ev::Contract { address: address.into(), found: Box::new(None) }, size);
-    assert_eq!(app.contract_probe.as_deref(), Some("0x00other"), "a stale answer was taken for the live one");
+    assert_eq!(app.tasks.contract_probe.as_deref(), Some("0x00other"), "a stale answer was taken for the live one");
 
     // Editing the address back to something incomplete takes the note away with it. Leaving it
     // up would advertise a ^F that no longer has a contract to open.
-    app.contract_probe = None;
+    app.tasks.contract_probe = None;
     if let Modal::Form(f) = &mut app.modal {
         f.fields.iter_mut().find(|x| x.label == "To").unwrap().value = address.into();
         f.focus = f.fields.iter().position(|x| x.label == "To").unwrap();
@@ -3073,14 +2969,14 @@ fn switching_wallets_reloads_the_screen_you_are_on() {
     // On Collected, with NFTs already loaded for this wallet.
     app.dash.accounts = vec![account("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a")];
     app.switch(Screen::Collected);
-    app.eco.nfts.settle(Ok(Vec::new()));
+    app.eco.nft.nfts.settle(Ok(Vec::new()));
 
     // A switch to another wallet: the cached view goes, and so do the accounts until the new
     // wallet's dashboard lands.
     app.eco = super::super::eco::Eco::default();
     app.dash.accounts.clear();
     app.reload_view_on_accounts = true;
-    assert!(app.eco.nfts.latest().is_none());
+    assert!(app.eco.nft.nfts.latest().is_none());
 
     // The dashboard for the new wallet arrives with its accounts.
     let mut dash = app.dash.clone();
@@ -3088,14 +2984,14 @@ fn switching_wallets_reloads_the_screen_you_are_on() {
     app.on_event(super::super::worker::Ev::Dashboard(Box::new(dash)), (120, 40));
 
     assert!(!app.reload_view_on_accounts, "the flag was not consumed");
-    assert!(app.eco.nfts.loading(), "the open screen never asked for the new wallet's NFTs");
+    assert!(app.eco.nft.nfts.loading(), "the open screen never asked for the new wallet's NFTs");
 
     // And it does not fire again on every later dashboard.
-    app.eco.nfts.settle(Ok(Vec::new()));
+    app.eco.nft.nfts.settle(Ok(Vec::new()));
     let mut again = app.dash.clone();
     again.accounts = vec![account("0x0011223344556677889900112233445566778899")];
     app.on_event(super::super::worker::Ev::Dashboard(Box::new(again)), (120, 40));
-    assert!(!app.eco.nfts.loading(), "a later refresh re-requested a view that was already loaded");
+    assert!(!app.eco.nft.nfts.loading(), "a later refresh re-requested a view that was already loaded");
 }
 
 /// A quote fills in the tolerance the card cannot guess. It starts at zero — which
@@ -3104,7 +3000,7 @@ fn switching_wallets_reloads_the_screen_you_are_on() {
 #[test]
 fn a_conversion_quote_sets_the_slippage_the_card_could_not_guess() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.screen = Screen::Convert;
+    app.nav.screen = Screen::Convert;
     app.eco.convert.amount = "250".into();
     assert_eq!(app.eco.convert.slippage_bps, 0, "nothing chosen and nothing quoted yet");
     let quote = |bps: u16| {
@@ -3227,15 +3123,15 @@ fn the_trade_window_widens_until_it_holds_a_sale() {
     // Nothing at all: the longest window, so the label never claims a week it cannot back.
     assert_eq!(app.eco.trade_window_days(), 365, "no sales falls back to the longest");
     // A sale inside the week keeps the week.
-    app.eco.nft_trades.set(vec![sale(3, 50.0)]);
+    app.eco.nft.trades.set(vec![sale(3, 50.0)]);
     assert_eq!(app.eco.trade_window_days(), 7);
     // The real shape on 2026-09-21: nothing in seven days, three in thirty.
-    app.eco.nft_trades.set(vec![sale(10, 50.0), sale(12, 350.0), sale(29, 50.0)]);
+    app.eco.nft.trades.set(vec![sale(10, 50.0), sale(12, 350.0), sale(29, 50.0)]);
     assert_eq!(app.eco.trade_window_days(), 30, "widened past the empty week");
     let (volume, sales) = app.eco.nft_window("0x00aa", app.eco.trade_window_days());
     assert_eq!((volume, sales), (450.0, 3), "and the widened window is the one the rows count in");
     // Older still: 90 days.
-    app.eco.nft_trades.set(vec![sale(60, 5.0)]);
+    app.eco.nft.trades.set(vec![sale(60, 5.0)]);
     assert_eq!(app.eco.trade_window_days(), 90);
 }
 
@@ -3268,7 +3164,7 @@ fn explore_shows_recent_buys_beside_the_directory() {
     app.switch(Screen::Explore);
     // Nothing traded: no tape, and the directory keeps the whole width.
     assert!(!draw(&mut app, 160).contains("recent buys"), "an empty tape is not worth the columns");
-    app.eco.nft_trades.set(vec![sale("ELEPHANT", 50.0, "0x00cc", 4), sale("SQUID", 350.0, "0x00dd", 9)]);
+    app.eco.nft.trades.set(vec![sale("ELEPHANT", 50.0, "0x00cc", 4), sale("SQUID", 350.0, "0x00dd", 9)]);
     let wide = draw(&mut app, 160);
     assert!(wide.contains("recent buys · 2"), "the tape is there with its count");
     assert!(wide.contains("ELEPHANT") && wide.contains("350 QUAI"), "newest first, with prices: {wide:.0}");
@@ -3285,7 +3181,7 @@ fn explore_shows_recent_buys_beside_the_directory() {
 /// should fail the build rather than wait for anyone to run the tests.
 #[test]
 fn the_fast_market_reads_do_not_sit_behind_a_slow_cache() {
-    use crate::tui::eco::MARKET_REFRESH;
+    use quai_engine::resource::BLOCK_POLL as MARKET_REFRESH;
     use wallet_core::launches::{LAUNCH_TTL, TRADES_TTL};
     use wallet_core::markets::{DIRECTORY_TTL, FACTORY_TTL};
 
@@ -3328,7 +3224,7 @@ fn launches_lead_with_the_curve_nearest_graduation_and_drop_what_markets_already
         progress_bps: bps,
         ..Default::default()
     };
-    app.eco.launches.set(vec![
+    app.eco.launch.list.set(vec![
         // Past its curve, and `with_pools` lists a SMOL pair: Markets has it, so it goes.
         launch("0x00a1", "SMOL", Phase::Pooled, Some(10_000)),
         launch("0x00c1", "EARLY", Phase::Bonding, Some(1_200)),
@@ -3346,7 +3242,7 @@ fn launches_lead_with_the_curve_nearest_graduation_and_drop_what_markets_already
 
     // Nothing is hidden on the strength of a directory that has not loaded: without it, the rows
     // Markets would have claimed are still listed rather than silently dropped.
-    app.eco.markets_view.pools = None;
+    app.eco.markets_view.pools.clear();
     let unloaded: Vec<String> = app.launch_rows().iter().map(|l| l.symbol.clone()).collect();
     assert!(unloaded.contains(&"SMOL".to_string()), "no directory, no filtering: {unloaded:?}");
 }
@@ -3365,14 +3261,14 @@ fn launches_keep_the_cursor_on_its_token_when_the_list_reorders() {
         progress_bps: Some(bps),
         ..Default::default()
     };
-    app.eco.launches.set(vec![
+    app.eco.launch.list.set(vec![
         launch("0x00a1", "SMOL", Phase::Pooled, 10_000),
         launch("0x00c1", "EARLY", Phase::Bonding, 1_200),
         launch("0x00c3", "NEARLY", Phase::Bonding, 9_400),
     ]);
     app.switch(Screen::Launches);
-    app.selected = 1;
-    let on = |app: &App| app.launch_rows().get(app.selected).map(|l| l.symbol.clone());
+    app.nav.selected = 1;
+    let on = |app: &App| app.launch_rows().get(app.nav.selected).map(|l| l.symbol.clone());
     assert_eq!(on(&app).as_deref(), Some("EARLY"));
     // A buy on EARLY takes it past NEARLY: the next read ranks it first.
     app.on_data_event(super::super::data::DataEv::Launches(Ok(vec![
@@ -3382,7 +3278,7 @@ fn launches_keep_the_cursor_on_its_token_when_the_list_reorders() {
     ])));
     assert_eq!(on(&app).as_deref(), Some("EARLY"), "the cursor followed its token up the list");
     // The directory lands and carries SMOL's pool: SMOL leaves Launches, and every row below moves.
-    app.selected = app.launch_rows().iter().position(|l| l.symbol == "NEARLY").unwrap();
+    app.nav.selected = app.launch_rows().iter().position(|l| l.symbol == "NEARLY").unwrap();
     app.on_data_event(super::super::data::DataEv::MarketPools(Ok((pool_shape(), wallet_core::markets::DexOverview::default()))));
     assert_eq!(on(&app).as_deref(), Some("NEARLY"), "and stays put when a row above it leaves");
 }
@@ -3409,18 +3305,18 @@ fn the_flow_cursor_stays_on_its_trade_as_new_trades_arrive() {
         amount_out: 1.0,
         trader: "0x0051".into(),
     };
-    app.eco.markets_view.flow = vec![trade(3, "0xc"), trade(2, "0xb"), trade(1, "0xa")];
+    app.eco.markets_view.flow.set(vec![trade(3, "0xc"), trade(2, "0xb"), trade(1, "0xa")]);
     app.eco.markets_view.flow_min_usd = 0.0;
     app.switch(Screen::Markets);
-    app.pane = 1;
-    app.selected = 1;
-    assert_eq!(app.flow_rows()[app.selected].tx, "0xb");
+    app.nav.pane = 1;
+    app.nav.selected = 1;
+    assert_eq!(app.flow_rows()[app.nav.selected].tx, "0xb");
     // Two new blocks land at the top of the tape.
     let tape = vec![trade(5, "0xe"), trade(4, "0xd"), trade(3, "0xc"), trade(2, "0xb"), trade(1, "0xa")];
     app.on_data_event(super::super::data::DataEv::DexFlow(Ok(tape.clone())));
-    assert_eq!(app.flow_rows()[app.selected].tx, "0xb", "the highlight stayed on its trade");
+    assert_eq!(app.flow_rows()[app.nav.selected].tx, "0xb", "the highlight stayed on its trade");
     // The same with the cursor parked while the pairs list has it.
-    app.pane = 0;
+    app.nav.pane = 0;
     app.eco.markets_view.flow_selected = 0;
     app.on_data_event(super::super::data::DataEv::DexFlow(Ok([vec![trade(6, "0xf")], tape].concat())));
     assert_eq!(app.flow_rows()[app.eco.markets_view.flow_selected].tx, "0xe", "a parked cursor follows its trade too");
@@ -3435,10 +3331,10 @@ fn every_timeframe_reads_at_least_a_day_of_a_pairs_trades() {
     let pool = app.market_rows()[0].clone();
     let now = wallet_core::registry::now();
     for (_, bucket) in wallet_core::markets::TIMEFRAMES {
-        app.eco.markets_view.events_at.clear();
+        app.eco.markets_view.event_reads.clear();
         app.eco.markets_view.events_loading = None;
         app.tick_pair(pool.clone(), *bucket);
-        let (_, since) = app.eco.markets_view.events_at.get(&pool.address).expect("the pair's logs were asked for");
+        let since = app.eco.markets_view.event_reads.value(&pool.address).expect("the pair's logs were asked for");
         assert!(*since <= now.saturating_sub(86_400), "a {bucket}s chart asked for logs from {} s ago", now - since);
     }
 }
@@ -3506,7 +3402,7 @@ fn the_swap_card_trades_on_the_curve_when_it_pays_more() {
     app.eco.swap.quote_key = 7;
     app.eco.swap.requested_key = 7;
     app.eco.swap.requested_input = app.swap_input_key();
-    app.eco.swap.quoted_at = Some(std::time::Instant::now());
+    app.eco.swap.quote_read.confirm();
     let (worker, prepared) = Worker::capture_prepares();
     app.use_worker(worker);
     app.dash.unlocked = true;
@@ -3516,7 +3412,7 @@ fn the_swap_card_trades_on_the_curve_when_it_pays_more() {
         matches!(&got, Ok(super::super::worker::Prepare::CurveBuy { curve, amount, .. })
             if curve == "0x004bc407903a51506bcf0b1ab423958c5991c237" && amount == "100"),
         "a curve buy of 100 QUAI was prepared: {:?}",
-        app.toasts
+        app.status.toasts
     );
 }
 
@@ -3564,7 +3460,7 @@ fn a_curve_trade_knows_which_side_it_is_about_without_a_pool() {
     assert!(app.flow_base(&both, None).is_none(), "QUAI for USDT has no launch side");
 
     // A pair the directory does carry still decides it the way the pairs list does.
-    let pools = app.eco.markets_view.pools.clone().unwrap().unwrap().0;
+    let pools = app.eco.markets_view.pools.value().cloned().unwrap().0;
     let pair = pools.iter().find(|p| p.token0.symbol == "SMOL").expect("a SMOL pair");
     assert!(app.flow_base(&buy, Some(pair)).is_some(), "a known pool is unaffected by the fallback");
 }
@@ -3573,64 +3469,45 @@ fn a_curve_trade_knows_which_side_it_is_about_without_a_pool() {
 // These assert desired behavior through the same event paths as the application.
 // No keys, RPC calls, or transactions are involved.
 
-fn review_probe_flow(app: &mut App) {
-    use super::super::eco::FlowKind;
-    app.dash.unlocked = true;
-    app.start_flow(FlowKind::Swap {
-        account: None,
-        from: "token-in".into(),
-        to: "token-out".into(),
-        amount: "1".into(),
-        slippage: 50,
-        deadline: 10,
-        label: "review probe".into(),
-        prewrap: None,
-        unwrap_after: false,
-        baseline: "0".into(),
-        then: None,
-    });
-}
-
 #[test]
 fn review_probe_commit_failure_must_release_or_recover_flow() {
+    use quai_engine::plans::Phase;
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    review_probe_flow(&mut app);
-    app.on_event(review("probe", "swap"), (100, 30));
-    // Approve has closed the modal; commit now fails (e.g. its snapshot expired).
+    let script = review_probe_flow(&mut app);
+    script.review(&mut app, "probe", "swap", &[]);
+    // Approve has closed the modal; commit now fails (e.g. its snapshot expired). The engine
+    // stops the plan (`Runner::failed`) and says so; nothing is left waiting on the review.
     app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
+    app.status.committing_kind = Some(wallet_core::journal::OpKind::Swap);
     app.on_event(
         Ev::CommitError { op_id: "probe".into(), message: "snapshot expired while committing".into(), ambiguous: false },
         (100, 30),
     );
-    app.advance_flow();
-    assert!(
-        app.eco.flow.as_ref().is_none_or(|f| f.review_op.is_none()),
-        "flow still waits for a review that is no longer open; all new flows are blocked"
-    );
+    script.say(&mut app, Phase::Stopped("review probe stopped before anything was sent.".into()), &[], None, false);
+    assert!(app.eco.plan.is_none(), "a stopped plan blocks nothing");
+    app.start_plan("next".into(), probe_intent(), None);
+    assert!(matches!(script.cmd(), Some(quai_engine::plans::PlanCmd::Start { .. })), "a new trade can start");
 }
 
 #[test]
 fn review_probe_lock_during_commit_must_keep_submission() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    review_probe_flow(&mut app);
-    app.on_event(review("probe", "swap"), (100, 30));
+    let script = review_probe_flow(&mut app);
+    script.review(&mut app, "probe", "swap", &[]);
     app.modal = Modal::None;
-    app.committing_kind = Some(wallet_core::journal::OpKind::Swap);
-    // Lock occurs while an already-approved commit is finishing.
+    app.status.committing_kind = Some(wallet_core::journal::OpKind::Swap);
+    // Lock occurs while an already-approved commit is finishing: the submission still counts.
     app.enter_lock(None);
+    script.say(&mut app, quai_engine::plans::Phase::Waiting("probe".into()), &["swap"], Some("swap"), true);
     app.on_event(submitted("probe"), (100, 30));
-    app.dash.ops = vec![op("probe", "swap", wallet_core::appdb::OpStatus::Confirmed)];
-    app.locked = false;
-    app.dash.unlocked = true;
-    app.advance_flow();
-    assert!(app.eco.flow.is_none(), "the completed swap is requested again after unlocking");
+    assert!(app.eco.plan.is_none(), "the sent swap ended the sequence; it is not asked for again after unlocking");
+    assert_eq!(app.eco.flow_summary.as_ref().map(|(label, _)| label.as_str()), Some("review probe"));
 }
 
 #[test]
 fn review_probe_typing_conversion_must_not_choose_slippage() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.screen = Screen::Convert;
+    app.nav.screen = Screen::Convert;
     app.eco.convert.field = 1;
     assert_eq!(app.eco.convert.slippage_bps, 0);
     press(&mut app, KeyCode::Char('2'));
@@ -3641,14 +3518,14 @@ fn review_probe_typing_conversion_must_not_choose_slippage() {
 #[test]
 fn review_probe_amount_edit_must_invalidate_swap_quote_immediately() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.screen = Screen::Swap;
+    app.nav.screen = Screen::Swap;
     app.eco.swap.field = 1;
     app.eco.swap.amount = "1".into();
     app.eco.swap.quote_key = 42;
     app.eco.swap.requested_key = 42;
     app.eco.swap.to = Some(wallet_core::swap::SwapAsset::Quai);
     app.eco.swap.requested_input = app.swap_input_key();
-    app.eco.swap.quoted_at = Some(Instant::now());
+    app.eco.swap.quote_read.confirm();
     assert!(app.swap_quote_current());
     press(&mut app, KeyCode::Char('0'));
     assert_eq!(app.eco.swap.amount, "10");
@@ -3657,25 +3534,29 @@ fn review_probe_amount_edit_must_invalidate_swap_quote_immediately() {
 
 #[test]
 fn a_trade_checkpoint_survives_restart_and_requires_explicit_resume() {
-    let (_dir, mut app) = test_app(WalletKind::Hd);
-    review_probe_flow(&mut app);
-    let plan = app.eco.flow.as_ref().unwrap().checkpoint.as_ref().unwrap().clone();
-    assert_eq!(plan.revision, 2);
-    assert!(
-        wallet_core::plans::claim(&app.paths.wallet_dir(&plan.owner).join("plan-locks"), &plan.id).is_err(),
-        "a second client cannot own the plan"
-    );
-    let (paths, config, theme, caps, meta) = (app.paths.clone(), app.config.clone(), app.theme.clone(), app.caps.clone(), app.meta.clone());
+    use quai_engine::plans::{Phase, PlanCmd};
+    let (_dir, app) = test_app(WalletKind::Hd);
+    let (paths, config, theme, caps, meta) =
+        (app.paths.clone(), app.config.clone(), app.theme.clone(), app.term.caps.clone(), app.meta.clone());
     drop(app);
+    // The plan lives in the engine's journal (`Runner::resume`, tested there); a new screen does
+    // not pick it up on its own.
     let mut restored = App::new(paths, "local".into(), config, theme, caps, meta);
-    assert!(restored.eco.flow.is_none(), "opening does not authorize resumption");
-    restored.locked = false;
+    assert!(restored.eco.plan.is_none(), "opening does not authorize resumption");
+    restored.lock.locked = false;
     restored.dash.unlocked = true;
+    let script = PlanScript::attach(&mut restored);
     restored.resume_trade_plan();
-    let flow = restored.eco.flow.as_ref().expect("explicit resume restores intent");
-    assert_eq!(flow.checkpoint.as_ref().unwrap().id, plan.id);
-    assert!(flow.requested, "remaining action still needs a fresh review");
-    assert!(flow.review_op.is_none());
+    assert!(matches!(script.cmd(), Some(PlanCmd::Resume { id: None })), "explicit resume asks the engine");
+    // The engine restored it and is ready for its next step: the screen follows it, and the
+    // remaining action still needs a fresh review.
+    script.say(&mut restored, Phase::Ready, &["approve"], Some("approve"), false);
+    assert_eq!(restored.eco.plan.as_ref().map(|p| p.view.id.as_str()), Some("plan-1"));
+    restored.advance_flow();
+    assert!(script.asked_next());
+    // Another resume while it runs is refused here.
+    restored.resume_trade_plan();
+    assert!(script.quiet());
 }
 
 #[test]
@@ -3686,7 +3567,7 @@ fn swap_identity_includes_deadline_owner_network_and_age() {
     app.eco.swap.requested_key = 9;
     app.eco.swap.quote_key = 9;
     app.eco.swap.requested_input = app.swap_input_key();
-    app.eco.swap.quoted_at = Some(Instant::now());
+    app.eco.swap.quote_read.confirm();
     assert!(app.swap_quote_current());
     app.eco.swap.amount = "1.0".into();
     assert!(app.swap_quote_current(), "normalization preserves equivalent inputs");
@@ -3696,7 +3577,8 @@ fn swap_identity_includes_deadline_owner_network_and_age() {
     app.network_id = "other".into();
     assert!(!app.swap_quote_current());
     app.eco.swap.requested_input = app.swap_input_key();
-    app.eco.swap.quoted_at = Some(Instant::now() - std::time::Duration::from_secs(21));
+    app.eco.swap.quote_read.confirm();
+    app.eco.swap.quote_read.age_by(std::time::Duration::from_secs(21));
     assert!(!app.swap_quote_current());
 }
 
@@ -3711,10 +3593,10 @@ fn order_review_stays_separate_from_unrelated_flows_and_late_observations() {
     app.on_event(Ev::Orders { wallet, network, rows: vec![], announced: vec![] }, (100, 30));
     assert!(matches!(&app.modal,Modal::Review(state) if state.review.op_id=="order-op"), "late observation must not hide approval");
     app.modal = Modal::None;
-    review_probe_flow(&mut app);
+    let _script = review_probe_flow(&mut app);
     app.on_event(Ev::OrderReview(r), (100, 30));
     assert!(!matches!(app.modal, Modal::Review(_)), "order cannot attach to unrelated flow");
-    assert!(app.eco.flow.as_ref().unwrap().review_op.is_none());
+    assert!(app.eco.plan.as_ref().is_some_and(|p| p.view.phase == quai_engine::plans::Phase::Preparing));
 }
 
 #[test]
@@ -3741,10 +3623,11 @@ fn trading_modal_defaults_honor_configuration_and_conversion_remains_automatic()
 
 #[test]
 fn partial_stake_form_preserves_selected_owner_gauge_and_amount() {
-    use super::super::eco::FlowKind;
+    use wallet_core::execution::TradingAction;
     for stake in [true, false] {
         let (_dir, mut app) = test_app(WalletKind::Hd);
         app.dash.unlocked = true;
+        let script = PlanScript::attach(&mut app);
         app.open_form(FormKind::StakePosition {
             pair: "pair".into(),
             gauge: Some("gauge".into()),
@@ -3756,30 +3639,25 @@ fn partial_stake_form_preserves_selected_owner_gauge_and_amount() {
         form.fields[0].value = "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into();
         form.fields[1].value = "12.5".into();
         app.submit_form(&form);
-        let FlowKind::Steps { prepare, .. } = &app.eco.flow.as_ref().unwrap().kind else { panic!("steps") };
-        match prepare.as_ref() {
-            Prepare::StakeNext { account, pair, gauge, amount } if stake => {
-                assert_eq!(account.as_deref(), Some(form.fields[0].value.as_str()));
-                assert_eq!(pair, "pair");
-                assert_eq!(gauge.as_deref(), Some("gauge"));
-                assert_eq!(amount, "12.5");
+        let (_, intent) = script.started();
+        assert_eq!(intent.account, form.fields[0].value);
+        match &intent.action {
+            TradingAction::Stake { pair, gauge, amount } if stake => {
+                assert_eq!((pair.as_str(), gauge.as_deref(), amount.as_str()), ("pair", Some("gauge"), "12.5"));
             }
-            Prepare::Unstake { account, pair, gauge, amount } if !stake => {
-                assert_eq!(account.as_deref(), Some(form.fields[0].value.as_str()));
-                assert_eq!(pair, "pair");
-                assert_eq!(gauge.as_deref(), Some("gauge"));
-                assert_eq!(amount, "12.5");
+            TradingAction::Unstake { pair, gauge, amount } if !stake => {
+                assert_eq!((pair.as_str(), gauge.as_deref(), amount.as_str()), ("pair", Some("gauge"), "12.5"));
             }
-            _ => panic!("wrong operation"),
+            other => panic!("wrong operation: {other:?}"),
         }
     }
 }
 
 #[test]
 fn bounded_swap_form_does_not_drop_or_default_explicit_limits() {
-    use super::super::eco::FlowKind;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.dash.unlocked = true;
+    let script = PlanScript::attach(&mut app);
     app.open_form(FormKind::BoundedSwap { from: "quai".into(), to: "token".into(), input: "1".into() });
     let Modal::Form(mut form) = std::mem::replace(&mut app.modal, Modal::None) else { panic!("form") };
     form.fields[0].value = "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into();
@@ -3790,93 +3668,30 @@ fn bounded_swap_form_does_not_drop_or_default_explicit_limits() {
     form.fields[3].value = "99".into();
     assert!(validate(&form).is_ok());
     app.submit_form(&form);
-    let FlowKind::Steps { prepare, .. } = &app.eco.flow.as_ref().unwrap().kind else { panic!("steps") };
-    let Prepare::Trading { intent } = prepare.as_ref() else { panic!("intent") };
+    let (_, intent) = script.started();
     let wallet_core::execution::TradingAction::BoundedSwap { bounds, .. } = &intent.action else { panic!("bound action") };
     assert_eq!(bounds.minimum_output.as_deref(), Some("25.5"));
     assert_eq!(bounds.maximum_impact_bps, Some(99));
 }
 
-fn market_conversion_app(direction: wallet_core::qi_market::Direction) -> (tempfile::TempDir, App, String, String) {
-    let (dir, mut app) = test_app(WalletKind::Hd);
-    let network = wallet_core::network::NetworkProfile::builtins().remove(0);
-    app.network_id = network.id.clone();
-    app.dash.network_id = network.id;
-    // `test_app` builds its fixture with `create_watch`, which fills `watch` and leaves
-    // `quai_accounts` empty, so the signing account comes from the same constant the rest of
-    // these tests use rather than from metadata.
-    let owner = "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".to_string();
-    app.dash.accounts = vec![wallet_core::session::AccountBalance {
-        address: owner.clone(),
-        label: "Main".into(),
-        hd_index: Some(0),
-        balance: U256::from(100000000000000000000u128),
-        locked: U256::ZERO,
-        nonce: 0,
-    }];
-    app.dash.unlocked = true;
-    let wqi = network.wqi.unwrap();
-    app.start_qi_route(direction, "2".into(), 50);
-    (dir, app, owner, wqi)
-}
-
+/// A plan ready for its next step while the wallet is locked waits: no review is asked for and
+/// nothing about the trade is said on the lock screen. Unlocked, the step is asked for.
 #[test]
-fn market_conversion_checkpoints_receipt_and_residual_while_locked_without_preparing() {
-    use super::super::eco::FlowKind;
-    use wallet_core::qi_market::Direction;
-    for paid in ["500000000000000000", "2500000000000000000"] {
-        let (_dir, mut app, owner, wqi) = market_conversion_app(Direction::QuaiToQi);
-        let mut operation = op("market-swap", "swap", wallet_core::appdb::OpStatus::Confirmed);
-        operation.account = owner;
-        operation.detail = serde_json::json!({"to_token":wqi,"actual_out":paid}).into();
-        app.dash.ops = vec![operation];
-        let flow = app.eco.flow.as_mut().unwrap();
-        flow.requested = false;
-        flow.waiting = Some("market-swap".into());
-        flow.last_operation = Some("market-swap".into());
-        let plan_id = flow.checkpoint.as_ref().unwrap().id.clone();
-        app.locked = true;
-        app.toasts.clear();
-        app.advance_flow();
-        assert!(app.toasts.is_empty(), "locked checkpoint processing must not expose trade amounts");
-        if paid.starts_with('5') {
-            assert!(app.eco.flow.is_none(), "sub-one-Qi residual completes rather than waiting forever");
-        } else {
-            let flow = app.eco.flow.as_ref().unwrap();
-            assert!(!flow.requested && flow.waiting.is_none());
-            let FlowKind::Steps { prepare, .. } = &flow.kind else { panic!("core steps") };
-            let Prepare::Trading { intent } = prepare.as_ref() else { panic!("intent") };
-            assert!(
-                matches!(&intent.action,wallet_core::execution::TradingAction::MarketConversion {stage:1,amount,residual_atoms,..} if amount=="2" && residual_atoms=="500000000000000000")
-            );
-            assert_eq!(flow.checkpoint.as_ref().unwrap().id, plan_id);
-            assert!(flow.checkpoint.as_ref().unwrap().revision > 1, "advanced intent was saved before any next review");
-        }
-    }
-}
-
-#[test]
-fn market_conversion_requires_wrap_settlement_before_claim_review() {
-    use super::super::eco::FlowKind;
-    use wallet_core::qi_market::Direction;
-    let (_dir, mut app, owner, _) = market_conversion_app(Direction::QiToQuai);
-    let mut operation = op("deposit", "wrap_qi", wallet_core::appdb::OpStatus::Confirmed);
-    operation.amount = wallet_core::amount::parse_qi("2").unwrap().to_string();
-    operation.detail = serde_json::json!({"beneficiary":owner}).into();
-    app.dash.ops = vec![operation];
-    let flow = app.eco.flow.as_mut().unwrap();
-    flow.requested = false;
-    flow.waiting = Some("deposit".into());
-    flow.last_operation = Some("deposit".into());
+fn a_ready_plan_waits_while_locked_and_says_nothing() {
+    use quai_engine::plans::Phase;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let script = review_probe_flow(&mut app);
+    script.review(&mut app, "s1", "swap", &[]);
+    script.sent(&mut app, "s1", "swap", &["swap"], false);
+    app.lock.locked = true;
+    app.status.toasts.clear();
+    script.say(&mut app, Phase::Ready, &["swap"], Some("swap"), false);
     app.advance_flow();
-    assert!(!app.eco.flow.as_ref().unwrap().requested, "inclusion alone cannot claim a locked deposit");
-    app.dash.ops[0].status = wallet_core::appdb::OpStatus::Settled;
+    assert!(script.quiet(), "nothing is prepared while locked");
+    assert!(app.status.toasts.is_empty(), "and nothing about the trade is said");
+    app.lock.locked = false;
     app.advance_flow();
-    let flow = app.eco.flow.as_ref().unwrap();
-    assert!(flow.requested);
-    let FlowKind::Steps { prepare, .. } = &flow.kind else { panic!("steps") };
-    let Prepare::Trading { intent } = prepare.as_ref() else { panic!("intent") };
-    assert!(matches!(intent.action, wallet_core::execution::TradingAction::MarketConversion { stage: 1, .. }));
+    assert!(script.asked_next());
 }
 
 /// `g` then a letter goes straight to a screen; `g g` is the first row; the sheet runs an
@@ -3887,14 +3702,14 @@ fn go_to_chords_and_the_action_sheet() {
     press(&mut app, KeyCode::Char('g'));
     assert!(matches!(app.modal, Modal::GoTo));
     press(&mut app, KeyCode::Char('m'));
-    assert_eq!(app.screen, Screen::Markets, "g m: markets");
+    assert_eq!(app.nav.screen, Screen::Markets, "g m: markets");
     press(&mut app, KeyCode::Char('g'));
     press(&mut app, KeyCode::Char('a'));
-    assert_eq!(app.screen, Screen::Activity, "g a: activity");
-    app.selected = 3;
+    assert_eq!(app.nav.screen, Screen::Activity, "g a: activity");
+    app.nav.selected = 3;
     press(&mut app, KeyCode::Char('g'));
     press(&mut app, KeyCode::Char('g'));
-    assert_eq!(app.selected, 0, "g g: the first row");
+    assert_eq!(app.nav.selected, 0, "g g: the first row");
     // A screen with a sheet: the letter runs the item.
     app.switch(Screen::Qi);
     press(&mut app, KeyCode::Char(' '));
@@ -3915,18 +3730,18 @@ fn go_to_chords_and_the_action_sheet() {
 fn the_autolock_warning_counts_down_and_goes_on_a_key() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.config.auto_lock_minutes = 2;
-    app.last_input = Instant::now() - std::time::Duration::from_secs(90);
+    app.input.last_input = Instant::now() - std::time::Duration::from_secs(90);
     app.tick((100, 30));
-    let warning = app.toasts.iter().find(|t| t.id == Some("autolock")).expect("warned");
+    let warning = app.status.toasts.iter().find(|t| t.id == Some("autolock")).expect("warned");
     assert_eq!(warning.level, super::Severity::Attention);
     assert!(warning.text.starts_with("locking in 30s") || warning.text.starts_with("locking in 29s"), "{}", warning.text);
-    app.last_input = Instant::now() - std::time::Duration::from_secs(100);
+    app.input.last_input = Instant::now() - std::time::Duration::from_secs(100);
     app.tick((100, 30));
-    let text = &app.toasts.iter().find(|t| t.id == Some("autolock")).expect("still warning").text;
+    let text = &app.status.toasts.iter().find(|t| t.id == Some("autolock")).expect("still warning").text;
     assert!(text.starts_with("locking in 20s") || text.starts_with("locking in 19s"), "the countdown counts: {text}");
     app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), (100, 30));
     app.tick((100, 30));
-    assert!(app.toasts.iter().all(|t| t.id != Some("autolock")), "a key keeps it open and the warning goes");
+    assert!(app.status.toasts.iter().all(|t| t.id != Some("autolock")), "a key keeps it open and the warning goes");
 }
 
 /// Choosing Qi on the swap card turns it into a conversion; Esc is the way back to the market
@@ -3947,14 +3762,14 @@ fn esc_leaves_a_conversion_for_the_swap_it_came_from() {
     app.switch(Screen::Swap);
     app.pick_exchange(false, usdt.clone());
     app.pick_exchange(false, ExAsset::Qi);
-    assert_eq!(app.screen, Screen::Convert);
+    assert_eq!(app.nav.screen, Screen::Convert);
     assert!(app.input_focused(), "the conversion opens on its amount");
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.screen, Screen::Convert, "the first Esc leaves the field");
+    assert_eq!(app.nav.screen, Screen::Convert, "the first Esc leaves the field");
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.screen, Screen::Swap, "the second goes back to the swap");
+    assert_eq!(app.nav.screen, Screen::Swap, "the second goes back to the swap");
     assert_eq!(app.exchange_pair(), (ExAsset::Swap(SwapAsset::Quai), Some(usdt)), "on the pair it had");
-    assert_eq!(app.last_exchange, Screen::Swap, "and the Exchange tab opens on it from now on");
+    assert_eq!(app.nav.last_exchange, Screen::Swap, "and the Exchange tab opens on it from now on");
 }
 
 /// One exchange: whatever pair is chosen, the view that can carry it takes over. QUAI and Qi
@@ -3978,44 +3793,44 @@ fn the_exchange_routes_every_pair_to_the_view_that_carries_it() {
     assert_eq!(app.exchange_pair(), (ExAsset::Swap(SwapAsset::Quai), Some(usdt.clone())));
     // QUAI → Qi: a conversion, the 5 QUAI typed carried over.
     app.pick_exchange(false, ExAsset::Qi);
-    assert_eq!(app.screen, Screen::Convert);
+    assert_eq!(app.nav.screen, Screen::Convert);
     assert!(!app.eco.convert.qi_to_quai);
     assert_eq!(app.eco.convert.amount, "5", "the amount follows while QUAI is still paid");
     // Paying Qi instead turns the pair around.
     app.pick_exchange(true, ExAsset::Qi);
-    assert_eq!(app.screen, Screen::Convert);
+    assert_eq!(app.nav.screen, Screen::Convert);
     assert!(app.eco.convert.qi_to_quai, "Qi → QUAI");
     assert!(app.eco.convert.amount.is_empty(), "an amount typed in QUAI is not an amount of Qi");
     // Qi → WQI wraps; WQI → Qi redeems.
     app.pick_exchange(false, wqi.clone());
-    assert_eq!((app.screen, app.eco.wrap.mode), (Screen::Wrap, 0));
+    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 0));
     app.pick_exchange(true, wqi.clone());
-    assert_eq!((app.screen, app.eco.wrap.mode), (Screen::Wrap, 2), "choosing the other side's asset turns the pair around");
+    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 2), "choosing the other side's asset turns the pair around");
     // QUAI ↔ WQUAI.
     app.pick_exchange(true, ExAsset::Swap(SwapAsset::Quai));
     app.pick_exchange(false, wquai.clone());
-    assert_eq!((app.screen, app.eco.wrap.mode), (Screen::Wrap, 3));
+    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 3));
     app.pick_exchange(true, wquai.clone());
-    assert_eq!((app.screen, app.eco.wrap.mode), (Screen::Wrap, 4));
+    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 4));
     // Qi with a token it has no route to: refused, and the pair stays as it was.
     app.pick_exchange(true, ExAsset::Qi);
-    app.toasts.clear();
+    app.status.toasts.clear();
     app.pick_exchange(false, usdt.clone());
-    assert!(app.toasts.iter().any(|t| t.text.contains("Qi trades with QUAI")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("Qi trades with QUAI")), "{:?}", app.status.toasts);
     // Anything else swaps.
     app.pick_exchange(true, wquai.clone());
     app.pick_exchange(false, usdt.clone());
-    assert_eq!(app.screen, Screen::Swap);
+    assert_eq!(app.nav.screen, Screen::Swap);
     assert_eq!(app.exchange_pair(), (wquai, Some(usdt)));
     // Choosing Qi always works: opposite a token it cannot pair with, the other side becomes
     // QUAI, and the app says so.
-    app.toasts.clear();
+    app.status.toasts.clear();
     app.pick_exchange(true, ExAsset::Qi);
-    assert_eq!(app.screen, Screen::Convert);
+    assert_eq!(app.nav.screen, Screen::Convert);
     assert!(app.eco.convert.qi_to_quai);
-    assert!(app.toasts.iter().any(|t| t.text.contains("USDT became QUAI")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("USDT became QUAI")), "{:?}", app.status.toasts);
     // The Exchange tab keeps whichever of them was last open.
-    assert_eq!(app.last_exchange, Screen::Convert);
+    assert_eq!(app.nav.last_exchange, Screen::Convert);
 }
 
 /// Settings step both ways with ← and →, and a watch-only wallet is not offered what it has no
@@ -4024,7 +3839,7 @@ fn the_exchange_routes_every_pair_to_the_view_that_carries_it() {
 fn settings_step_both_ways_and_fit_the_wallet() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.switch(Screen::Settings);
-    app.selected = app.settings_rows().iter().position(|(id, _)| *id == "motion").unwrap();
+    app.nav.selected = app.settings_rows().iter().position(|(id, _)| *id == "motion").unwrap();
     let start = app.config.motion;
     press(&mut app, KeyCode::Right);
     assert_ne!(app.config.motion, start);
@@ -4049,17 +3864,17 @@ fn the_wallet_switcher_opens_everywhere_and_switches() {
     app.switch(Screen::Markets);
     press(&mut app, KeyCode::Char('W'));
     let Modal::Wallets { selected } = app.modal else { panic!("W opens the switcher") };
-    assert_eq!(app.wallets[selected].id, app.meta.as_ref().unwrap().id, "on the open wallet");
+    assert_eq!(app.cockpit.list[selected].id, app.meta.as_ref().unwrap().id, "on the open wallet");
     press(&mut app, KeyCode::Enter);
     assert!(matches!(app.modal, Modal::None) && app.meta.as_ref().unwrap().id != other.id, "enter on the open one only closes");
     press(&mut app, KeyCode::Char('W'));
-    let target = app.wallets.iter().position(|w| w.id == other.id).unwrap();
+    let target = app.cockpit.list.iter().position(|w| w.id == other.id).unwrap();
     app.modal = Modal::Wallets { selected: target };
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.meta.as_ref().unwrap().id, other.id, "enter on another switches to it");
     press(&mut app, KeyCode::Char('W'));
     press(&mut app, KeyCode::Char('m'));
-    assert_eq!(app.screen, Screen::Wallets, "m manages");
+    assert_eq!(app.nav.screen, Screen::Wallets, "m manages");
 }
 
 /// A screen is left where it was: coming back finds the cursor on the same row, even when the
@@ -4069,62 +3884,19 @@ fn screens_remember_where_they_were_left_and_backspace_returns() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Markets);
-    app.selected = 2;
+    app.nav.selected = 2;
     let pair = app.market_rows()[2].address.clone();
     app.switch(Screen::Activity);
     app.switch(Screen::Settings);
     // The pairs reorder while away: watching the pair moves it to the top.
-    app.eco.watchlist = vec![pair.clone()];
+    app.eco.alerts.watchlist = vec![pair.clone()];
     press(&mut app, KeyCode::Backspace);
-    assert_eq!(app.screen, Screen::Activity, "backspace: the screen before");
+    assert_eq!(app.nav.screen, Screen::Activity, "backspace: the screen before");
     app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL), (100, 30));
-    assert_eq!(app.screen, Screen::Markets, "ctrl-o too");
-    assert_eq!(app.market_rows()[app.selected].address, pair, "the same pair under the cursor, wherever it moved");
+    assert_eq!(app.nav.screen, Screen::Markets, "ctrl-o too");
+    assert_eq!(app.market_rows()[app.nav.selected].address, pair, "the same pair under the cursor, wherever it moved");
     press(&mut app, KeyCode::Backspace);
-    assert_eq!(app.screen, Screen::Home, "and on back to where it started");
-}
-
-/// A sequence says where it stands: what was sent, what is under way, and what is known to
-/// follow — an approval the worker asked for appears as the step under review, never guessed.
-#[test]
-fn a_flow_steps_through_what_it_has_sent_and_what_follows() {
-    use super::super::eco::{Flow, FlowKind, NextSwap, StepState::*};
-    let flow = |done: &[&str], swapped: bool| Flow {
-        checkpoint: None,
-        lease: None,
-        kind: FlowKind::Swap {
-            account: None,
-            from: "quai".into(),
-            to: "0x00aa".into(),
-            amount: "1".into(),
-            slippage: 50,
-            deadline: 10,
-            label: "swap".into(),
-            prewrap: None,
-            unwrap_after: true,
-            baseline: "0".into(),
-            then: Some(NextSwap { to: "quai".into(), unwrap_after: true, hub_decimals: 18, first: None, polls: 0 }),
-        },
-        swapped,
-        requested: false,
-        review_op: None,
-        waiting: None,
-        last_operation: None,
-        steps: 0,
-        done: done.iter().map(|s| s.to_string()).collect(),
-        last_poll: Instant::now(),
-    };
-    let names = |v: Vec<(String, super::super::eco::StepState)>| v;
-    assert_eq!(names(flow(&[], false).stepper(None)), vec![("swap".into(), Now), ("swap on".into(), Next), ("unwrap WQUAI".into(), Next)],);
-    // An approval under review sits before the swap it unlocks.
-    assert_eq!(
-        names(flow(&[], false).stepper(Some("approve"))),
-        vec![("approve".into(), Now), ("swap".into(), Next), ("swap on".into(), Next), ("unwrap WQUAI".into(), Next)],
-    );
-    assert_eq!(
-        names(flow(&["approve", "swap"], true).stepper(None)),
-        vec![("approve".into(), Done), ("swap".into(), Done), ("swap on".into(), Now), ("unwrap WQUAI".into(), Next)],
-    );
+    assert_eq!(app.nav.screen, Screen::Home, "and on back to where it started");
 }
 
 /// The window title says what the wallet is doing and never what it holds or what it is called:
@@ -4134,10 +3906,10 @@ fn the_window_title_says_what_is_happening_and_nothing_it_holds() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.dash.notifications.clear();
     assert_eq!(app.window_title(), "Quai Terminal");
-    app.locked = true;
+    app.lock.locked = true;
     assert!(app.window_title().ends_with("locked"), "{}", app.window_title());
     assert_eq!(app.taskbar_state(), 0, "nothing shown busy while locked");
-    app.locked = false;
+    app.lock.locked = false;
     let mut op = op("o1", "send", wallet_core::appdb::OpStatus::Submitted);
     op.amount = "123456".into();
     app.dash.ops.push(op);
@@ -4174,17 +3946,17 @@ fn an_arrival_names_its_sender_and_marks_activity_until_seen() {
         observed: wallet_core::registry::now(),
     });
     app.observe_changes(&next);
-    let said = app.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
+    let said = app.status.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
     assert!(said.starts_with("Received 12.5 QUAI") && said.contains("0x00F4"), "{said}");
-    assert!(app.arrivals_unseen, "the rail marks Activity");
-    assert!(matches!(app.hairline, Some((Signal::Arrival, _))), "runs in along the header");
-    assert!(app.gutter_flash.is_some() && app.row_flash.contains_key("native:0xabc:in"));
-    assert!(app.first_payment.is_some(), "the first payment this wallet ever received");
-    let before = app.toasts.len();
+    assert!(app.news.arrivals_unseen, "the rail marks Activity");
+    assert!(matches!(app.fx.hairline, Some((Signal::Arrival, _))), "runs in along the header");
+    assert!(app.fx.gutter_flash.is_some() && app.fx.row_flash.contains_key("native:0xabc:in"));
+    assert!(app.news.first_payment.is_some(), "the first payment this wallet ever received");
+    let before = app.status.toasts.len();
     app.on_event(Ev::Notify { title: "Incoming payment".into(), body: "QUAI received".into(), listed: true }, (120, 40));
-    assert_eq!(app.toasts.len(), before, "said once");
+    assert_eq!(app.status.toasts.len(), before, "said once");
     app.switch(Screen::Activity);
-    assert!(!app.arrivals_unseen && app.first_payment.is_none(), "seen");
+    assert!(!app.news.arrivals_unseen && app.news.first_payment.is_none(), "seen");
     // Dust from a stranger is never an arrival.
     app.dash = next.clone();
     let mut dust = next.clone();
@@ -4195,7 +3967,7 @@ fn an_arrival_names_its_sender_and_marks_activity_until_seen() {
         ..next.activity[0].clone()
     });
     app.observe_changes(&dust);
-    assert!(!app.arrivals_unseen);
+    assert!(!app.news.arrivals_unseen);
 }
 
 /// The bell rings for news from outside only when nobody is watching, and not twice in ten
@@ -4204,15 +3976,15 @@ fn an_arrival_names_its_sender_and_marks_activity_until_seen() {
 fn the_bell_waits_for_an_empty_room() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.config.sound = true;
-    app.focused = true;
-    app.last_input = std::time::Instant::now();
+    app.term.focused = true;
+    app.input.last_input = std::time::Instant::now();
     app.ring();
-    assert!(!app.bell, "someone is looking");
-    app.focused = false;
+    assert!(!app.fx.bell, "someone is looking");
+    app.term.focused = false;
     app.ring();
-    assert!(std::mem::take(&mut app.bell), "the window is in the background");
+    assert!(std::mem::take(&mut app.fx.bell), "the window is in the background");
     app.ring();
-    assert!(!app.bell, "not twice in ten seconds");
+    assert!(!app.fx.bell, "not twice in ten seconds");
 }
 
 /// Screens changing fast skip the border draw-in; one on its own plays it.
@@ -4220,11 +3992,11 @@ fn the_bell_waits_for_an_empty_room() {
 fn fast_hands_skip_the_draw_in() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.config.motion = wallet_core::config::Motion::Full;
-    app.last_switch = None;
+    app.nav.last_switch = None;
     app.start_transition();
-    assert!(app.edge_intro.is_some(), "a switch on its own draws in");
+    assert!(app.fx.edge_intro.is_some(), "a switch on its own draws in");
     app.start_transition();
-    assert!(app.edge_intro.is_none(), "a second one straight after just shows the screen");
+    assert!(app.fx.edge_intro.is_none(), "a second one straight after just shows the screen");
 }
 
 /// Quitting leaves one plain line in the shell: the wallet's state, never a balance.
@@ -4262,9 +4034,9 @@ fn a_lock_opening_is_said_until_seen() {
     let mut next = dash.clone();
     next.locks = vec![lock(true)];
     app.observe_changes(&next);
-    assert_eq!(app.unlocked_news, vec!["2.4 Qi unlocked · spendable now".to_string()]);
+    assert_eq!(app.news.unlocked_news, vec!["2.4 Qi unlocked · spendable now".to_string()]);
     app.switch(Screen::Qi);
-    assert!(app.unlocked_news.is_empty(), "seen");
+    assert!(app.news.unlocked_news.is_empty(), "seen");
 }
 
 /// Hold to sign (opt-in): one press on an armed, read review only starts the bar; Enter held
@@ -4276,10 +4048,10 @@ fn hold_to_sign_needs_enter_held() {
     let op = "op-1";
     assert!(!app.held_to_sign(op), "the first press starts the bar");
     // Repeats inside the gap keep it; it signs once a second has passed.
-    app.hold = Some((op.into(), std::time::Instant::now() - std::time::Duration::from_millis(1100), std::time::Instant::now()));
+    app.input.hold = Some((op.into(), std::time::Instant::now() - std::time::Duration::from_millis(1100), std::time::Instant::now()));
     assert!(app.held_to_sign(op), "held long enough");
     // A pause longer than a repeat starts it over.
-    app.hold = Some((
+    app.input.hold = Some((
         op.into(),
         std::time::Instant::now() - std::time::Duration::from_secs(3),
         std::time::Instant::now() - std::time::Duration::from_secs(1),
@@ -4343,7 +4115,7 @@ fn milestones_and_the_entropy_minimum() {
         app.observe_changes(&next);
         app.dash = next;
     }
-    assert_eq!(app.lowest_hash, Some(("0x000a".into(), 11)));
+    assert_eq!(app.fx.lowest_hash, Some(("0x000a".into(), 11)));
 }
 
 /// A transaction that could not be prepared says where the money is: nothing was sent.
@@ -4351,7 +4123,7 @@ fn milestones_and_the_entropy_minimum() {
 fn a_failed_prepare_says_nothing_was_sent() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.on_event(Ev::PrepareError("insufficient funds for gas".into()), (120, 40));
-    let said = app.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
+    let said = app.status.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
     assert!(said.starts_with("insufficient balance for this amount plus the fee") && said.ends_with("nothing was sent"), "{said}");
 }
 
@@ -4363,7 +4135,8 @@ fn a_landed_swap_reads_like_a_fill_ticket() {
     s.amount = "120000000000000000000".into();
     let e18 = |whole: u64, _tenths: u64| format!("{whole}000000000000000000");
     s.detail = serde_json::json!({"decimals": 18, "to_decimals": 18, "to_symbol": "WQI",
-        "expected_out": e18(4200, 0), "minimum_out": e18(4179, 0), "actual_out": e18(4205, 0)}).into();
+        "expected_out": e18(4200, 0), "minimum_out": e18(4179, 0), "actual_out": e18(4205, 0)})
+    .into();
     let said = super::events::swap_receipt(&s);
     assert!(said.starts_with("Swap landed · 120 QUAI → 4,205 WQI") && said.ends_with("0.12% better than quoted"), "{said}");
     s.detail.set_actual_out(serde_json::json!(e18(4195, 0)));
@@ -4388,7 +4161,7 @@ fn the_phrase_closes_on_purpose_and_a_locked_away_review_is_said() {
     assert!(matches!(app.modal, Modal::Review(_)));
     app.enter_lock(None);
     app.show_unlocked();
-    let said = app.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
+    let said = app.status.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
     assert!(said.contains("discarded") && said.contains("nothing was signed"), "{said}");
 }
 
@@ -4420,13 +4193,13 @@ fn a_collection_loads_its_next_page_as_the_selection_nears_the_end() {
         }
         offsets
     };
-    let loaded = |app: &App| app.eco.collection_items.get(&c).and_then(|r| r.as_ref().ok()).map_or(0, Vec::len);
+    let loaded = |app: &App| app.eco.nft.items.get(&c).and_then(|r| r.as_ref().ok()).map_or(0, Vec::len);
     app.push_detail(Detail::Collection(c.clone()));
     assert_eq!(asked(), vec![0], "opening asks for the first page");
     app.collection_page(c.clone(), 0, Ok(page(0)));
     app.tick_eco();
     assert!(asked().is_empty(), "nothing more while the selection is at the top");
-    app.detail_selected = 30;
+    app.nav.detail_selected = 30;
     app.tick_eco();
     app.tick_eco();
     assert_eq!(asked(), vec![48], "within half a page of the end: the next page, once");
@@ -4438,13 +4211,13 @@ fn a_collection_loads_its_next_page_as_the_selection_nears_the_end() {
     assert_eq!(loaded(&app), 96, "a fresh first page keeps the pages behind it");
     // To the end: 237 in all, and nothing is asked past it.
     for from in [96, 144, 192] {
-        app.detail_selected = loaded(&app) - 1;
+        app.nav.detail_selected = loaded(&app) - 1;
         app.tick_eco();
         assert_eq!(asked(), vec![from]);
         app.collection_page(c.clone(), from, Ok(page(from)));
     }
     assert_eq!(loaded(&app), 237);
-    app.detail_selected = 236;
+    app.nav.detail_selected = 236;
     app.tick_eco();
     assert!(asked().is_empty(), "the whole collection is loaded");
 }
@@ -4463,14 +4236,14 @@ fn a_limit_order_opens_from_the_quoted_swap_and_explains_itself() {
     app.eco.swap.from = SwapAsset::Quai;
     app.eco.swap.to = None;
     sheet(&mut app, 'o');
-    assert!(app.toasts.iter().any(|t| t.text.contains("choose what to receive")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("choose what to receive")), "{:?}", app.status.toasts);
     app.eco.swap.to = Some(usdt.clone());
     app.eco.swap.amount.clear();
     sheet(&mut app, 'o');
-    assert!(app.toasts.iter().any(|t| t.text.contains("type an amount")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("type an amount")), "{:?}", app.status.toasts);
     app.eco.swap.amount = "10".into();
     sheet(&mut app, 'o');
-    assert!(app.toasts.iter().any(|t| t.text.contains("wait for the quote")), "{:?}", app.toasts);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("wait for the quote")), "{:?}", app.status.toasts);
     app.eco.swap.quote = Some(Ok(SwapQuote {
         from: SwapAsset::Quai,
         to: usdt.clone(),
@@ -4495,7 +4268,7 @@ fn a_limit_order_opens_from_the_quoted_swap_and_explains_itself() {
     }));
     app.eco.swap.slippage_bps = 50;
     sheet(&mut app, 'o');
-    let Modal::Form(form) = &app.modal else { panic!("the order form opened: {:?}", app.toasts) };
+    let Modal::Form(form) = &app.modal else { panic!("the order form opened: {:?}", app.status.toasts) };
     assert_eq!(form.title, "Limit order · QUAI → USDT");
     assert_eq!(form.fields[1].value, "+5%");
     // Drawn, the note explains the order and what +5% means for this swap.
@@ -4546,13 +4319,13 @@ fn active_orders_are_rechecked_every_thirty_seconds() {
     app.tick_orders();
     assert_eq!(watches(), 0, "not again within 30 s");
     // No orders at all: nothing to watch.
-    app.eco.orders = Some(vec![]);
-    app.eco.orders_watched_at = Some(std::time::Instant::now() - WATCH_EVERY);
+    app.eco.feeds.orders.settle(Ok(vec![]));
+    app.eco.feeds.orders.age_by(WATCH_EVERY);
     app.tick_orders();
     assert_eq!(watches(), 0, "nothing active, nothing asked");
     // Trading off: never.
     app.config.features.trading = false;
-    app.eco.orders_watched_at = None;
+    app.eco.feeds.orders.clear();
     app.tick_orders();
     assert_eq!(watches(), 0);
 }
@@ -4614,7 +4387,7 @@ fn a_reachable_order_reaches_the_desktop_once() {
     let network = app.dash.network_id.clone();
     let armed = order_plan(&app, State::Armed, None);
     app.on_event(Ev::Orders { wallet: wallet.clone(), network: network.clone(), rows: vec![armed.clone()], announced: vec![] }, (100, 30));
-    assert!(app.notices_out.is_empty() && app.toasts.iter().all(|t| !t.text.contains("reachable")));
+    assert!(app.status.notices_out.is_empty() && app.status.toasts.iter().all(|t| !t.text.contains("reachable")));
     // This terminal's check found it (no daemon in the test's data directory): toast and desktop.
     let mut reachable = order_plan(&app, State::Triggered, Some(1));
     reachable.id = armed.id.clone();
@@ -4622,17 +4395,17 @@ fn a_reachable_order_reaches_the_desktop_once() {
         Ev::Orders { wallet: wallet.clone(), network: network.clone(), rows: vec![reachable.clone()], announced: vec![armed.id.clone()] },
         (100, 30),
     );
-    assert!(app.toasts.iter().any(|t| t.text.contains("your limit on USDT is reachable")), "{:?}", app.toasts);
-    assert_eq!(app.notices_out.len(), 1);
-    assert_eq!(app.notices_out[0].0, "Limit order reachable");
-    assert!(app.notices_out[0].1.contains("QUAI → USDT"), "{:?}", app.notices_out);
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("your limit on USDT is reachable")), "{:?}", app.status.toasts);
+    assert_eq!(app.status.notices_out.len(), 1);
+    assert_eq!(app.status.notices_out[0].0, "Limit order reachable");
+    assert!(app.status.notices_out[0].1.contains("QUAI → USDT"), "{:?}", app.status.notices_out);
     // The daemon found another one between checks: on screen only; it did the desktop itself.
-    app.notices_out.clear();
-    app.toasts.clear();
+    app.status.notices_out.clear();
+    app.status.toasts.clear();
     let other = order_plan(&app, State::Triggered, Some(2));
     app.on_event(Ev::Orders { wallet, network, rows: vec![reachable, other], announced: vec![] }, (100, 30));
-    assert!(app.toasts.iter().any(|t| t.text.contains("reachable")), "{:?}", app.toasts);
-    assert!(app.notices_out.is_empty(), "not on the desktop twice");
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("reachable")), "{:?}", app.status.toasts);
+    assert!(app.status.notices_out.is_empty(), "not on the desktop twice");
 }
 
 /// Accounts can take a private key into a wallet with keys, and an address into a watch-only
@@ -4687,41 +4460,16 @@ fn accounts_import_a_key_or_watch_an_address() {
     );
 }
 
-/// A trade that fails before its first review has nothing to resume, so its checkpoint ends
-/// cancelled. Left paused, it became the newest unfinished trade, which `p` resumes, over a real
-/// one stopped halfway. A trade that got a step through still pauses.
+/// The engine's own stop says what went through; the screen shows it and lets the next trade
+/// start (the cancelled-versus-paused rule is the engine's: `Runner::failed`).
 #[test]
-fn a_trade_that_never_started_is_not_left_to_resume() {
-    use super::super::eco::FlowKind;
-    use wallet_core::plans::PlanState;
-    let swap = || FlowKind::Swap {
-        account: None,
-        from: "0x002b".into(),
-        to: "0x0049".into(),
-        amount: "1".into(),
-        slippage: 50,
-        deadline: 10,
-        label: "swap 1 WQI → USDT".into(),
-        prewrap: None,
-        unwrap_after: false,
-        baseline: "0".into(),
-        then: None,
-    };
+fn a_stopped_trade_says_what_went_through() {
+    use quai_engine::plans::Phase;
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.dash.unlocked = true;
-    app.start_flow(swap());
-    assert!(app.eco.flow.as_ref().unwrap().requested, "the first review was asked for");
-    app.flow_on_error();
-    let state = |app: &App| app.flow_db().unwrap().trade_plans(&app.network_id).unwrap().first().map(|p| (p.state, p.reason.clone()));
-    let (s, reason) = state(&app).expect("a checkpoint was written");
-    assert_eq!(s, PlanState::Cancelled, "{reason}");
-    // One step through, then a failure: that is a trade to come back to.
-    let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.dash.unlocked = true;
-    app.start_flow(swap());
-    app.eco.flow.as_mut().unwrap().done.push("approve WQI".into());
-    app.flow_on_error();
-    assert_eq!(state(&app).unwrap().0, PlanState::Paused);
+    let script = review_probe_flow(&mut app);
+    script.say(&mut app, Phase::Stopped("review probe stopped before anything was sent.".into()), &[], None, false);
+    assert!(app.eco.plan.is_none());
+    assert!(app.status.toasts.iter().any(|t| t.text == "review probe stopped before anything was sent."));
 }
 
 fn onboarding_screen(app: &mut App, w: u16, h: u16) -> String {
@@ -4847,7 +4595,7 @@ fn a_shallow_copy_of_a_market_leaves_the_pairs_list_and_a_curve_sells_from_marke
     };
     let mut pools = pool_shape();
     pools.extend([curve.clone(), copy.clone()]);
-    app.eco.markets_view.pools = Some(Ok((pools, DexOverview::default())));
+    app.eco.markets_view.pools.settle(Ok((pools, DexOverview::default())));
     let listed: Vec<String> = app.market_rows().iter().map(|p| p.address.clone()).collect();
     assert!(listed.contains(&curve.address), "the curve is the market");
     assert!(!listed.contains(&copy.address), "its shallow copy is not a second pair: {listed:?}");
@@ -4855,13 +4603,13 @@ fn a_shallow_copy_of_a_market_leaves_the_pairs_list_and_a_curve_sells_from_marke
     // NVNT's pool is just as small, but it is the only market NVNT has: it stays.
     assert!(listed.iter().any(|a| a.contains("NVNT")), "a small pool that is a token's only market stays");
     // Watching the copy is asking to see it.
-    app.eco.watchlist.push(copy.address.clone());
+    app.eco.alerts.watchlist.push(copy.address.clone());
     assert!(app.market_rows().iter().any(|p| p.address == copy.address), "a watched pair is always listed");
-    app.eco.watchlist.clear();
+    app.eco.alerts.watchlist.clear();
 
     app.switch(Screen::Markets);
-    app.pane = 0;
-    app.selected = app.market_rows().iter().position(|p| p.address == curve.address).expect("curve row");
+    app.nav.pane = 0;
+    app.nav.selected = app.market_rows().iter().position(|p| p.address == curve.address).expect("curve row");
     press(&mut app, KeyCode::Char('S'));
     assert!(
         matches!(&app.modal, Modal::Form(f) if matches!(&f.kind, FormKind::CurveSell { symbol, curve: c, .. } if symbol == "QAXE" && *c == curve.address)),
@@ -4877,29 +4625,32 @@ fn a_shallow_copy_of_a_market_leaves_the_pairs_list_and_a_curve_sells_from_marke
 /// used to freeze that feed (prices, TVL, tape or chart) until the wallet restarted.
 #[test]
 fn a_market_read_that_never_answers_is_asked_again() {
-    use crate::tui::eco::MARKET_STUCK;
+    use quai_engine::resource::STUCK as MARKET_STUCK;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
-    let long_ago = std::time::Instant::now().checked_sub(MARKET_STUCK + std::time::Duration::from_secs(1)).expect("clock");
+    use crate::tui::eco::fresh;
+    let lost = MARKET_STUCK + std::time::Duration::from_secs(1);
     let pool = app.market_rows()[0].address.clone();
+    let clock = app.eco.clock;
     let mv = &mut app.eco.markets_view;
-    mv.reserves_loading = true;
-    mv.reserves_attempted = Some(long_ago);
-    mv.flow_loading = true;
-    mv.flow_asked = Some(long_ago);
+    for (r, class) in
+        [(&mut mv.pools as &mut dyn Lost, fresh::MARKET_DIRECTORY), (&mut mv.reserves, fresh::RESERVES), (&mut mv.flow, fresh::DEX_FLOW)]
+    {
+        r.ask(&clock);
+        r.age(lost);
+        assert!(r.is_due(class, &clock), "a lost read is asked again");
+    }
     mv.events_loading = Some(pool.clone());
-    mv.events_at.insert(pool.clone(), (long_ago, 0));
-    mv.pools_loading = true;
-    mv.pools_attempted = Some(long_ago);
+    let read = mv.event_reads.entry(pool.clone());
+    read.set(0);
+    read.begin(&clock);
+    read.age_by(lost);
     app.unstick_markets();
-    let mv = &app.eco.markets_view;
-    assert!(!mv.reserves_loading && !mv.flow_loading && !mv.pools_loading && mv.events_loading.is_none(), "every lost read is let go");
+    assert!(app.eco.markets_view.events_loading.is_none(), "a lost chart read is let go");
 
     // One still within its time is left alone: two requests for the same thing would race.
-    app.eco.markets_view.reserves_loading = true;
-    app.eco.markets_view.reserves_attempted = Some(std::time::Instant::now());
-    app.unstick_markets();
-    assert!(app.eco.markets_view.reserves_loading, "a read in flight is not abandoned early");
+    app.eco.markets_view.reserves.begin(&clock);
+    assert!(!app.eco.markets_view.reserves.due(fresh::RESERVES, &clock), "a read in flight is not abandoned early");
 }
 
 /// The Exchange card's chart follows the pool as Markets does: its own trades and live reserves,
@@ -4909,13 +4660,12 @@ fn the_exchange_chart_reads_the_pool_s_trades_and_reserves() {
     use wallet_core::swap::SwapAsset;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
-    app.eco.markets_view.pools_at = Some(std::time::Instant::now());
     app.eco.swap.from = SwapAsset::Quai;
     app.eco.swap.to = Some(SwapAsset::Token { address: "0x00b1".into(), symbol: "LAPTOP".into(), decimals: 18 });
     let (pool, _) = app.swap_pool().expect("LAPTOP trades against WQUAI");
     app.tick_swap();
     assert_eq!(app.eco.markets_view.events_loading.as_deref(), Some(pool.address.as_str()), "the pool's trades are read");
-    assert!(app.eco.markets_view.reserves_loading, "and its reserves");
+    assert!(app.eco.markets_view.reserves.loading(), "and its reserves");
 }
 
 /// A new block makes every chain-backed feed on screen due at once, however recently it was
@@ -4926,22 +4676,22 @@ fn a_new_block_refreshes_what_is_on_screen_at_once() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     app.switch(Screen::Markets);
-    let now = std::time::Instant::now();
+    let clock = app.eco.clock;
     let mv = &mut app.eco.markets_view;
-    mv.pools_at = Some(now);
-    mv.reserves_attempted = Some(now);
-    mv.reserves_at = Some(now);
-    mv.flow_at = Some(now);
+    for r in [&mut mv.reserves as &mut dyn Lost, &mut mv.flow] {
+        r.ask(&clock);
+        r.done();
+    }
     app.tick_eco();
-    assert!(!app.eco.markets_view.reserves_loading, "within its pace, nothing is asked between blocks");
+    assert!(!app.eco.markets_view.reserves.loading(), "within its pace, nothing is asked between blocks");
     app.on_event(Ev::Head(10_300_000), (160, 48));
     assert_eq!(app.eco.clock.head, 10_300_000);
-    assert!(app.eco.markets_view.reserves_loading, "the block asked for reserves at once");
-    assert!(app.eco.markets_view.flow_loading, "and for the tape");
+    assert!(app.eco.markets_view.reserves.loading(), "the block asked for reserves at once");
+    assert!(app.eco.markets_view.flow.loading(), "and for the tape");
     // The same height again is not a new block.
-    app.eco.markets_view.reserves_loading = false;
+    app.eco.markets_view.reserves.confirm();
     app.on_event(Ev::Head(10_300_000), (160, 48));
-    assert!(!app.eco.markets_view.reserves_loading);
+    assert!(!app.eco.markets_view.reserves.loading());
     // Nothing a block-triggered ask reads is cached for as long as a block.
     const { assert!(wallet_core::launches::TRADES_TTL < 5 && wallet_core::markets::HISTORY_SHARE_SECS < 5) };
 }
@@ -4956,14 +4706,14 @@ fn locking_forgets_private_messages_and_drops_reads_still_in_flight() {
     let line = |text: &str| SealedLine { at: 1, from: "0xabc".into(), mine: false, text: Some(text.into()), new_address: false };
     let asked = app.private_epoch;
     app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
-    assert!(app.eco.board.dms.contains_key("PM8code"), "a read in the current generation is shown");
+    assert!(app.eco.board.dms.get("PM8code").is_some(), "a read in the current generation is shown");
     app.eco.board.pin = Some("dm:PM8code".into());
-    app.dock_draft = "half a secret".into();
+    app.dock.draft = "half a secret".into();
     app.open_form(FormKind::Message { peer: "0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".into(), name: None });
     assert!(matches!(app.modal, Modal::Form(_)), "the message form is open when the lock comes");
     app.enter_lock(None);
     assert!(app.eco.board.dms.is_empty(), "decrypted conversations are gone");
-    assert!(app.dock_draft.is_empty(), "the private draft is gone");
+    assert!(app.dock.draft.is_empty(), "the private draft is gone");
     assert!(app.parked.is_none(), "a private message form is not kept for after the unlock");
     // The worker answers a read asked before the lock: it must not bring the text back.
     app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
@@ -4999,9 +4749,9 @@ fn locking_forgets_private_messages_v3_and_drops_answers_asked_before() {
     };
     let asked = app.private_epoch;
     app.on_event(Ev::Messaging { epoch: asked, view: Ok(view()), open: lines(), note: None }, size);
-    assert!(app.eco.board.msg_lines.contains_key("0xb0b") && app.eco.board.msg.is_some());
+    assert!(app.eco.board.msg_lines.contains_key("0xb0b") && app.eco.board.msg.latest().is_some());
     app.enter_lock(None);
-    assert!(app.eco.board.msg.is_none() && app.eco.board.msg_lines.is_empty(), "gone at lock");
+    assert!(app.eco.board.msg.latest().is_none() && app.eco.board.msg_lines.is_empty(), "gone at lock");
     app.on_event(Ev::Messaging { epoch: asked, view: Ok(view()), open: lines(), note: None }, size);
     assert!(app.eco.board.msg_lines.is_empty(), "an answer landing while locked is dropped");
     app.show_unlocked();
@@ -5035,12 +4785,132 @@ fn writing_privately_publishes_the_week_s_key_first_when_it_is_due() {
         conversations: vec![convo.clone()],
         requests: vec![],
     };
-    app.eco.board.msg = Some(Ok(view(KeyNeed::Publish)));
+    app.eco.board.msg.settle(Ok(view(KeyNeed::Publish)));
     app.write_private(bob.clone(), Some("bob".into()));
     assert!(!matches!(app.modal, Modal::Form(_)), "no form while the key is due");
-    assert!(app.toasts.last().is_some_and(|t| t.text.contains("goes first")), "the key is said to go first");
-    app.eco.board.msg = Some(Ok(view(KeyNeed::Publishing)));
+    assert!(app.status.toasts.last().is_some_and(|t| t.text.contains("goes first")), "the key is said to go first");
+    app.eco.board.msg.settle(Ok(view(KeyNeed::Publishing)));
     app.write_private(bob.clone(), Some("bob".into()));
     assert!(matches!(&app.modal, Modal::Form(f) if f.kind == FormKind::Message { peer: bob.clone(), name: Some("bob".into()) }));
     assert!(matches!(&app.modal, Modal::Form(f) if f.kind.is_private()), "a private form, dropped at lock");
+}
+
+/// A resource of any type, for tests that walk several of them.
+trait Lost {
+    fn ask(&mut self, clock: &quai_engine::resource::Clock);
+    fn done(&mut self);
+    fn age(&mut self, by: std::time::Duration);
+    fn is_due(&self, class: quai_engine::resource::Freshness, clock: &quai_engine::resource::Clock) -> bool;
+}
+
+impl<T> Lost for quai_engine::resource::Resource<T> {
+    fn ask(&mut self, clock: &quai_engine::resource::Clock) {
+        self.begin(clock);
+    }
+    fn done(&mut self) {
+        self.confirm();
+    }
+    fn age(&mut self, by: std::time::Duration) {
+        self.age_by(by);
+    }
+    fn is_due(&self, class: quai_engine::resource::Freshness, clock: &quai_engine::resource::Clock) -> bool {
+        self.due(class, clock)
+    }
+}
+
+/// The engine's side of a trade plan, played by a test: the plan commands the screen sends, and
+/// the plan views the engine sends back (`quai_engine::plans`).
+struct PlanScript {
+    rx: std::sync::mpsc::Receiver<quai_engine::plans::PlanCmd>,
+    id: String,
+}
+
+impl PlanScript {
+    fn attach(app: &mut App) -> PlanScript {
+        let (worker, rx) = Worker::capture_plans();
+        app.use_worker(worker);
+        PlanScript { rx, id: "plan-1".into() }
+    }
+
+    fn cmd(&self) -> Option<quai_engine::plans::PlanCmd> {
+        self.rx.recv_timeout(std::time::Duration::from_millis(500)).ok()
+    }
+
+    /// Nothing was asked of the engine.
+    fn quiet(&self) -> bool {
+        self.rx.recv_timeout(std::time::Duration::from_millis(100)).is_err()
+    }
+
+    /// The plan the screen started: its label and intent.
+    fn started(&self) -> (String, wallet_core::execution::TradingIntent) {
+        match self.cmd() {
+            Some(quai_engine::plans::PlanCmd::Start { label, intent }) => (label, intent),
+            other => panic!("expected a plan start, got {other:?}"),
+        }
+    }
+
+    /// The screen asked for the plan's next review.
+    fn asked_next(&self) -> bool {
+        matches!(self.cmd(), Some(quai_engine::plans::PlanCmd::Next { .. }))
+    }
+
+    /// Where the plan stands, as the engine says it.
+    fn say(&self, app: &mut App, phase: quai_engine::plans::Phase, done: &[&str], last: Option<&str>, last_step: bool) {
+        let label = app.eco.plan.as_ref().map(|p| p.view.label.clone()).unwrap_or_else(|| "trade".into());
+        let view = quai_engine::plans::PlanView {
+            id: self.id.clone(),
+            label,
+            phase,
+            done: done.iter().map(|s| s.to_string()).collect(),
+            ahead: Vec::new(),
+            last: last.map(wallet_core::journal::OpKind::parse),
+            last_step,
+        };
+        app.on_event(Ev::Plan(Box::new(view)), (100, 30));
+    }
+
+    /// The engine prepared a step: the plan is under review, and the review arrives.
+    fn review(&self, app: &mut App, id: &str, kind: &str, done: &[&str]) {
+        self.say(app, quai_engine::plans::Phase::Reviewing(id.into()), done, None, false);
+        app.on_event(review(id, kind), (100, 30));
+    }
+
+    /// The review was approved and the step sent: the plan waits on it (`done` includes it).
+    fn sent(&self, app: &mut App, id: &str, kind: &str, done: &[&str], last_step: bool) {
+        app.modal = Modal::None;
+        app.status.committing_kind = Some(wallet_core::journal::OpKind::parse(kind));
+        self.say(app, quai_engine::plans::Phase::Waiting(id.into()), done, Some(kind), last_step);
+        app.on_event(submitted(id), (100, 30));
+    }
+}
+
+fn review_probe_flow(app: &mut App) -> PlanScript {
+    app.dash.unlocked = true;
+    let script = PlanScript::attach(app);
+    let intent = wallet_core::execution::TradingIntent {
+        account: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(),
+        max_fee: None,
+        action: wallet_core::execution::TradingAction::Swap {
+            from: "token-in".into(),
+            to: "token-out".into(),
+            amount: "1".into(),
+            slippage: 50,
+            deadline: 10,
+        },
+    };
+    app.start_plan("review probe".into(), intent, None);
+    script.started();
+    script
+}
+
+/// A signing account with 100 QUAI.
+fn account(address: &str) -> wallet_core::session::AccountBalance {
+    wallet_core::session::AccountBalance {
+        address: address.into(),
+        label: "Main".into(),
+        hd_index: Some(0),
+        balance: U256::from(100u64) * U256::from(10u64).pow(U256::from(18)),
+        locked: U256::ZERO,
+        nonce: 0,
+    }
 }

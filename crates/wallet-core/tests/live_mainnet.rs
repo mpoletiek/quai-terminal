@@ -164,14 +164,10 @@ async fn a_route_s_output_is_proven_from_its_pools() {
     let ctx = mainnet();
     let wquai = ctx.network.wquai.clone().unwrap().to_lowercase();
     let mut all = wallet_core::markets::pools(&ctx).await.unwrap().0;
-    for directory in [
-        wallet_core::markets::launch_amm_pools(&ctx).await,
-        wallet_core::markets::legacy_pools(&ctx).await,
-        wallet_core::markets::hartii_amm_pools(&ctx).await,
-    ] {
-        all.extend(directory.unwrap().pools);
+    for amm in wallet_core::venues::AMMS.iter().filter(|a| a.venue != Venue::Main) {
+        all.extend(wallet_core::markets::amm_pools(&ctx, amm).await.unwrap().pools);
     }
-    for venue in [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm] {
+    for venue in wallet_core::venues::routable() {
         let pool = all
             .iter()
             .filter(|p| p.venue == venue && (p.token0.address == wquai || p.token1.address == wquai))
@@ -703,12 +699,16 @@ async fn swap_output_decodes_real_receipts() {
     // swapExactTokensForETH by 0x004a1e… (USDT → QUAI), 2026-09-15.
     let hash = "0x00550009b278724f0d95fd7c137b4a21391970692ac88659111b6e9619b13605".parse().unwrap();
     let receipt = ctx.node.provider.receipt(wallet_core::network::ZONE, hash).await.unwrap().unwrap();
-    let detail = wallet_core::journal::Detail::from(serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "quai"}));
+    let detail = wallet_core::journal::Detail::from(
+        serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "quai"}),
+    );
     let out = wallet_core::track::swap_output(&receipt, &detail, ctx.network.wquai.as_deref()).expect("withdrawal found");
     eprintln!("native out: {} QUAI", wallet_core::amount::quai(out));
     assert!(!out.is_zero());
     // Asking for a token the swap did not pay out finds nothing.
-    let wrong = wallet_core::journal::Detail::from(serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "0x002b2596ecf05c93a31ff916e8b456df6c77c750"}));
+    let wrong = wallet_core::journal::Detail::from(
+        serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "0x002b2596ecf05c93a31ff916e8b456df6c77c750"}),
+    );
     assert!(wallet_core::track::swap_output(&receipt, &wrong, ctx.network.wquai.as_deref()).is_none());
 }
 
@@ -1178,9 +1178,9 @@ async fn chain_pools_batched_matches_unbatched() {
 #[tokio::test]
 #[ignore = "network"]
 async fn the_launch_amm_directory_is_whole_and_newest_first() {
-    use wallet_core::markets::{MAX_FACTORY_PAIRS, launch_amm_pools};
+    use wallet_core::markets::{MAX_FACTORY_PAIRS, Venue, amm_pools};
     let ctx = mainnet();
-    let directory = launch_amm_pools(&ctx).await.unwrap();
+    let directory = amm_pools(&ctx, wallet_core::venues::amm(Venue::LaunchAmm).unwrap()).await.unwrap();
     println!("launch AMM: {} of {} pairs read", directory.read, directory.total);
     assert!(directory.total >= 2, "the launch AMM has pairs: {}", directory.total);
     assert_eq!(directory.read, directory.total.min(MAX_FACTORY_PAIRS as usize));

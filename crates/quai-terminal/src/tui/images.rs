@@ -49,7 +49,7 @@ pub fn ansi256(r: u8, g: u8, b: u8) -> u8 {
 }
 
 fn color(app: &App, (r, g, b): (u8, u8, u8)) -> Color {
-    if app.caps.truecolor { Color::Rgb(r, g, b) } else { Color::Indexed(ansi256(r, g, b)) }
+    if app.term.caps.truecolor { Color::Rgb(r, g, b) } else { Color::Indexed(ansi256(r, g, b)) }
 }
 
 fn blend(fg: [u8; 4], bg: (u8, u8, u8), fade: f32) -> (u8, u8, u8) {
@@ -142,7 +142,7 @@ pub fn half_block(app: &App, buf: &mut Buffer, area: Rect, r: &Rendition, t: &Th
 /// monogram color, lightened or darkened until it reaches 3:1 contrast against the surface.
 /// QUAI and Qi keep their theme colors. Plain and no-color modes use the text color.
 pub fn token_tint(app: &App, t: &Theme, icon_url: Option<&str>, symbol: &str, contract: &str) -> Color {
-    if app.plain || app.no_color {
+    if app.term.plain || app.term.no_color {
         return t.text;
     }
     match contract {
@@ -182,15 +182,15 @@ pub fn readable(base: (u8, u8, u8), t: &Theme) -> (u8, u8, u8) {
 pub fn badge_span(app: &App, t: &Theme, icon_url: Option<&str>, symbol: &str, contract: &str) -> ratatui::text::Span<'static> {
     let (letters, _) = monogram(symbol, contract);
     let letters: String = format!("{letters:<2}").chars().take(2).collect();
-    if app.plain || app.no_color {
+    if app.term.plain || app.term.no_color {
         return ratatui::text::Span::styled(format!("[{letters}]"), t.dim_style());
     }
     let bg = token_tint(app, t, icon_url, symbol, contract);
-    if let Some(url) = icon_url.filter(|u| app.caps.tier != Tier::Text && icons_allowed(app, u))
+    if let Some(url) = icon_url.filter(|u| app.term.caps.tier != Tier::Text && icons_allowed(app, u))
         && let Some((r, _)) = app.eco.image(url, ICON)
         && bitmaps(app)
     {
-        app.eco.inline_icons.borrow_mut().push((letters.clone(), bg, r));
+        app.eco.media.inline_icons.borrow_mut().push((letters.clone(), bg, r));
     }
     let lum = match bg {
         Color::Rgb(r, g, b) => u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114,
@@ -214,10 +214,10 @@ pub fn native_span(app: &App, t: &Theme, asset: &str) -> ratatui::text::Span<'st
     let (symbol, contract, glyph, color) =
         if asset.eq_ignore_ascii_case("qi") { ("Qi", "qi", "◉ ", t.qi) } else { ("QUAI", "quai", "◆ ", t.quai) };
     let url = native_icon(contract);
-    if app.plain || app.no_color || (bitmaps(app) && url.is_some_and(|u| app.eco.cached_image(u, ICON).is_some())) {
+    if app.term.plain || app.term.no_color || (bitmaps(app) && url.is_some_and(|u| app.eco.cached_image(u, ICON).is_some())) {
         return badge_span(app, t, url, symbol, contract);
     }
-    if let Some(u) = url.filter(|_| app.caps.tier == Tier::Pixels) {
+    if let Some(u) = url.filter(|_| app.term.caps.tier == Tier::Pixels) {
         // Load the logo so it can replace the glyph once bitmaps are allowed.
         let _ = app.eco.image(u, ICON);
     }
@@ -227,16 +227,16 @@ pub fn native_span(app: &App, t: &Theme, asset: &str) -> ratatui::text::Span<'st
 /// Whether kitty bitmaps are placed for the current frame: the pixels tier, and no modal that
 /// would sit under them (reviews, receive and the token picker place their own).
 pub fn bitmaps(app: &App) -> bool {
-    app.caps.tier == Tier::Pixels && !app.plain
+    app.term.caps.tier == Tier::Pixels && !app.term.plain
 }
 
 /// Place icon bitmaps over the inline badges that survived into the finished frame (pixels
 /// tier). Each badge cell pair is blanked to the background beside it, so the icon sits on the
 /// row's own color (selection, raised panel, surface).
 pub fn place_inline_icons(app: &App, buf: &mut Buffer, t: &Theme) {
-    let icons: Vec<(String, Color, Arc<Rendition>)> = app.eco.inline_icons.borrow_mut().drain(..).collect();
+    let icons: Vec<(String, Color, Arc<Rendition>)> = app.eco.media.inline_icons.borrow_mut().drain(..).collect();
     if !bitmaps(app) {
-        app.eco.kitty.borrow_mut().clear();
+        app.eco.media.kitty.borrow_mut().clear();
         return;
     }
     // Picture placements whose reserved cells were drawn over (a modal, a popup) are dropped,
@@ -244,7 +244,7 @@ pub fn place_inline_icons(app: &App, buf: &mut Buffer, t: &Theme) {
     // with the page, and a bright one over a dimmed page looks like it floats above the modal.
     // The header's stay (the header is not dimmed), and so do those inside the modal itself.
     let modal = !matches!(app.modal, super::app::Modal::None);
-    app.eco.kitty.borrow_mut().retain(|(rect, _, z)| {
+    app.eco.media.kitty.borrow_mut().retain(|(rect, _, z)| {
         if modal && rect.y > buf.area.y && !super::ui::inside_a_frame(*rect) {
             return false;
         }
@@ -332,7 +332,7 @@ pub fn place_inline_icons(app: &App, buf: &mut Buffer, t: &Theme) {
 /// the loop when it is ready.
 fn push_kitty(app: &App, area: Rect, r: &Arc<Rendition>, art: bool) {
     let Some(png) = fitted_png(app, r, area.width, area.height, art) else { return };
-    let mut kitty = app.eco.kitty.borrow_mut();
+    let mut kitty = app.eco.media.kitty.borrow_mut();
     if kitty.len() < MAX_PLACEMENTS {
         kitty.push((area, png, 0));
     }
@@ -355,7 +355,7 @@ pub fn poll_fitted(app: &App) -> bool {
     if done.is_empty() {
         return false;
     }
-    let mut cache = app.eco.fitted.borrow_mut();
+    let mut cache = app.eco.media.fitted.borrow_mut();
     if cache.len() > 512 {
         cache.clear();
     }
@@ -389,7 +389,7 @@ pub fn png_key(bytes: &[u8]) -> u64 {
 /// `art`: an NFT picture, which may get a light card (see [`matte`]); token icons never do.
 /// Encoded once per rendition, canvas and theme; later frames reuse it.
 fn fitted_png(app: &App, r: &Arc<Rendition>, cols: u16, rows: u16, art: bool) -> Option<KittyPng> {
-    let (cw, ch) = (f64::from(app.caps.cell_px.0.max(1)), f64::from(app.caps.cell_px.1.max(1)));
+    let (cw, ch) = (f64::from(app.term.caps.cell_px.0.max(1)), f64::from(app.term.caps.cell_px.1.max(1)));
     let aspect = (f64::from(cols.max(1)) * cw) / (f64::from(rows.max(1)) * ch);
     let (w, h) = (r.width.max(1), r.height.max(1));
     let (canvas_w, canvas_h) = if f64::from(w) / f64::from(h) > aspect {
@@ -401,14 +401,14 @@ fn fitted_png(app: &App, r: &Arc<Rendition>, cols: u16, rows: u16, art: bool) ->
     let theme = if art { png_key(format!("{:?}{:?}{}", t.surface, t.strong, t.light).as_bytes()) } else { 0 };
     let content = r.hash.get(..16).and_then(|h| u64::from_str_radix(h, 16).ok()).unwrap_or_else(|| png_key(r.hash.as_bytes()));
     let key = (content, art, canvas_w, canvas_h, theme);
-    if let Some(png) = app.eco.fitted.borrow().get(&key) {
+    if let Some(png) = app.eco.media.fitted.borrow().get(&key) {
         return Some(png.clone());
     }
     let card = if art { matte(r, t) } else { None };
     // Nothing to fit: the rendition's own PNG, at once.
     if r.rgba.len() != (w * h * 4) as usize || ((canvas_w, canvas_h) == (w, h) && card.is_none()) {
         let entry = (Arc::new(r.png.clone()), png_key(&r.png));
-        app.eco.fitted.borrow_mut().insert(key, entry.clone());
+        app.eco.media.fitted.borrow_mut().insert(key, entry.clone());
         return Some(entry);
     }
     // A canvas and an encode: tens of milliseconds for a large picture, so not on this thread.
@@ -461,7 +461,7 @@ fn fit_and_encode(r: &Rendition, canvas_w: u32, canvas_h: u32, card: Option<(u8,
 /// Monogram badge filling `area` (letters centered on a stable color).
 pub fn badge(app: &App, buf: &mut Buffer, area: Rect, symbol: &str, contract: &str, t: &Theme) {
     let (letters, rgb) = monogram(symbol, contract);
-    let bg = if app.plain || app.no_color { None } else { Some(color(app, rgb)) };
+    let bg = if app.term.plain || app.term.no_color { None } else { Some(color(app, rgb)) };
     let lum = u32::from(rgb.0) * 299 + u32::from(rgb.1) * 587 + u32::from(rgb.2) * 114;
     let fg = if lum > 150_000 { Color::Black } else { Color::White };
     let style = match bg {
@@ -494,7 +494,7 @@ pub fn picture(app: &App, buf: &mut Buffer, area: Rect, t: &Theme, url: Option<&
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let edge = match (nft, app.caps.tier) {
+    let edge = match (nft, app.term.caps.tier) {
         (true, _) => THUMB,
         // Bitmaps and multi-row half blocks look soft from the 32 px icon.
         (false, Tier::Pixels) if area.width > 2 => ICON_LARGE,
@@ -502,12 +502,12 @@ pub fn picture(app: &App, buf: &mut Buffer, area: Rect, t: &Theme, url: Option<&
         _ => ICON,
     };
     let allowed = if nft { app.config.images } else { url.is_some_and(|u| icons_allowed(app, u)) };
-    let ready = match (url, allowed, app.caps.tier) {
-        (Some(u), true, Tier::Pixels | Tier::Cells) if !app.plain => app.eco.image(u, edge),
+    let ready = match (url, allowed, app.term.caps.tier) {
+        (Some(u), true, Tier::Pixels | Tier::Cells) if !app.term.plain => app.eco.image(u, edge),
         _ => None,
     };
     match ready {
-        Some((r, _)) if app.caps.tier == Tier::Pixels => {
+        Some((r, _)) if app.term.caps.tier == Tier::Pixels => {
             // Reserve the cells; the bitmap is placed after the frame is flushed.
             for y in area.top()..area.bottom() {
                 for x in area.left()..area.right() {
@@ -526,6 +526,7 @@ pub fn picture(app: &App, buf: &mut Buffer, area: Rect, t: &Theme, url: Option<&
 /// This frame's kitty placements.
 pub fn kitty_items(app: &App) -> Vec<super::terminal::Placement> {
     app.eco
+        .media
         .kitty
         .borrow_mut()
         .drain(..)

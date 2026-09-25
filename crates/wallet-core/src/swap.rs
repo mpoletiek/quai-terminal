@@ -8,12 +8,12 @@
 //! minimum output from the user's slippage and a deadline, and are simulated by the SDK before
 //! signing.
 
-use crate::journal::OpKind;
 use crate::amount::{self, QUAI_DECIMALS};
 use crate::appdb::AppDb;
 use crate::chain::{addr, interface};
 use crate::data::{DataCtx, READ_CALLER, Trust, verify_pinned_all, with_access_list};
 use crate::error::{CoreError, Result};
+use crate::journal::OpKind;
 use crate::markets::Venue;
 use crate::network::{NetworkProfile, Node, PinnedContract};
 use crate::registry::now;
@@ -517,25 +517,12 @@ struct VenueRouter {
 
 /// The pins of an exchange's router and factory on a network.
 pub fn venue_pins(network: &NetworkProfile, venue: Venue) -> Option<(&PinnedContract, &PinnedContract)> {
-    let eco = &network.ecosystem;
-    match venue {
-        Venue::Main => Some((eco.quainance_router.as_ref()?, eco.quainance_factory.as_ref()?)),
-        Venue::LaunchAmm => Some((eco.launch_amm_router.as_ref()?, eco.launch_amm_factory.as_ref()?)),
-        Venue::Legacy => Some((eco.legacy_router.as_ref()?, eco.legacy_factory.as_ref()?)),
-        Venue::HartiiAmm => Some((eco.hartii_amm_router.as_ref()?, eco.hartii_amm_factory.as_ref()?)),
-        Venue::Curve => None,
-    }
+    crate::venues::kind(venue).pins(network)
 }
 
-/// Where a UniswapV2 factory keeps `getPair[a][b]`: slot 2 on Quainance and the legacy exchange,
-/// slot 4 on the launch AMM and Hartii's. Read against `getPair` at the same block on mainnet
-/// (2026-09-23); the live test `a_route_s_output_is_proven_from_its_pools` reads it again.
+/// Where a UniswapV2 factory keeps `getPair[a][b]` (`venues::Amm::get_pair_slot`).
 pub fn get_pair_slot(venue: Venue) -> Option<u64> {
-    match venue {
-        Venue::Main | Venue::Legacy => Some(2),
-        Venue::LaunchAmm | Venue::HartiiAmm => Some(4),
-        Venue::Curve => None,
-    }
+    crate::venues::amm(venue).map(|a| a.get_pair_slot)
 }
 /// A UniswapV2 pair's `token0`, `token1`, and `reserve0 | reserve1 | blockTimestampLast` packed
 /// 112/112/32; the same on every venue here.
@@ -731,16 +718,14 @@ impl<'a> Router<'a> {
                 verify_venue(app, node, network, venue, router, factory, wquai, trust).await.map(Some)
             }
         };
-        let (main, launch, legacy, hartii, multicall) = futures::join!(
-            verify(Venue::Main),
-            verify(Venue::LaunchAmm),
-            verify(Venue::Legacy),
-            verify(Venue::HartiiAmm),
+        let every: Vec<Venue> = crate::venues::routable().collect();
+        let (verified, multicall) = futures::join!(
+            futures::future::join_all(every.iter().map(|v| verify(*v))),
             crate::multicall::Multicall::on(app, node, network, trust),
         );
         let mut venues = Vec::new();
         let mut verification_warnings = Vec::new();
-        for (venue, result) in [(Venue::Main, main), (Venue::LaunchAmm, launch), (Venue::Legacy, legacy), (Venue::HartiiAmm, hartii)] {
+        for (venue, result) in every.into_iter().zip(verified) {
             match result {
                 Ok(Some(router)) => venues.push(router),
                 Ok(None) => {}
@@ -1908,16 +1893,38 @@ impl Session {
             let approved = if reset { U256::ZERO } else { input };
             let call = Erc20::new(addr(address)?, &self.node.provider)?.approve(addr(&quote.router)?, approved)?;
             let call = with_access_list(&self.node.provider, addr(&owner.address)?, call).await?;
-            return self.prepare_account(AccountRequest {
-                from: owner, intent: call.into_account_intent(), kind: OpKind::Approve,
-                title: format!("{} {} for split allocation {} of {}", if reset { "Clear allowance for" } else { "Approve" }, symbol, index + 1, plan.allocations.len()),
-                asset: symbol.clone(), amount: approved, decimals: *decimals, counterparty: quote.router.clone(),
-                fields: vec![field("Token contract", address.clone()), field("Spender", quote.router.clone()),
-                    field("Exact allowance", amount::format_amount(approved, *decimals)), field("Split allocation", format!("{} of {}", index + 1, plan.allocations.len()))],
-                warnings: vec!["This is a separately reviewed sequential allocation; earlier confirmed fills cannot be rolled back.".into()],
-                detail: json!({"token": address, "decimals": decimals, "spender": quote.router, "purpose": "split_swap", "split": context}).into(),
-                max_gas: 120_000, max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
-            }).await;
+            return self
+                .prepare_account(AccountRequest {
+                    from: owner,
+                    intent: call.into_account_intent(),
+                    kind: OpKind::Approve,
+                    title: format!(
+                        "{} {} for split allocation {} of {}",
+                        if reset { "Clear allowance for" } else { "Approve" },
+                        symbol,
+                        index + 1,
+                        plan.allocations.len()
+                    ),
+                    asset: symbol.clone(),
+                    amount: approved,
+                    decimals: *decimals,
+                    counterparty: quote.router.clone(),
+                    fields: vec![
+                        field("Token contract", address.clone()),
+                        field("Spender", quote.router.clone()),
+                        field("Exact allowance", amount::format_amount(approved, *decimals)),
+                        field("Split allocation", format!("{} of {}", index + 1, plan.allocations.len())),
+                    ],
+                    warnings: vec![
+                        "This is a separately reviewed sequential allocation; earlier confirmed fills cannot be rolled back.".into(),
+                    ],
+                    detail:
+                        json!({"token": address, "decimals": decimals, "spender": quote.router, "purpose": "split_swap", "split": context})
+                            .into(),
+                    max_gas: 120_000,
+                    max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
+                })
+                .await;
         }
         quote.warnings.push(format!(
             "Split allocation {} of {}: independently confirmed; no atomic combined-output guarantee. Preserve earlier fills on failure.",

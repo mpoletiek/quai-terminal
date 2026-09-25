@@ -6,12 +6,10 @@ impl App {
     /// Load LP positions when Pools opens, and refresh them slowly afterwards. A position only
     /// moves when the user acts or the pool's reserves shift, so this is not a hot poll.
     pub(crate) fn tick_pools(&mut self) {
-        let pv = &self.eco.pools_view;
-        let stale = pv.loaded_at.is_none_or(|t| t.elapsed() > self.feed_pace());
-        if pv.loading || !stale {
+        if !self.eco.pools_view.positions.due(fresh::LP_POSITIONS, &self.eco.clock) {
             return;
         }
-        let Some(Ok((pools, _))) = self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) else {
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else {
             // Pools drive position discovery; `preload` has already asked for them.
             return;
         };
@@ -19,24 +17,12 @@ impl App {
         // from position discovery, so a graduated token's LP could be neither seen nor staked even
         // when a launch-zone gauge was paying rewards on it — CHEEZ/QUAI being the case that found
         // this. A curve holds no LP at all, so it stays out.
-        let pools: Vec<_> = pools
-            .iter()
-            .filter(|p| {
-                matches!(
-                    p.venue,
-                    wallet_core::markets::Venue::Main
-                        | wallet_core::markets::Venue::LaunchAmm
-                        | wallet_core::markets::Venue::Legacy
-                        | wallet_core::markets::Venue::HartiiAmm
-                )
-            })
-            .cloned()
-            .collect();
+        let pools: Vec<_> = pools.iter().filter(|p| p.venue.routable()).cloned().collect();
         let owners = self.owner_addresses();
         if owners.is_empty() {
             return;
         }
-        self.eco.pools_view.loading = true;
+        self.eco.pools_view.positions.begin(&self.eco.clock);
         self.send_data(DataCmd::LpPositions { owners, pools });
     }
 
@@ -192,19 +178,17 @@ impl App {
         }
         // Three reviews in a row — one exact approval per side, then the deposit — so it goes
         // through the sequence driver: each step is asked for again once the last one confirms.
-        let flow = FlowKind::Steps {
-            prepare: Box::new(Prepare::AddLiquidityNext {
-                account: card.account.clone(),
-                pair: card.pair.clone(),
-                amount: card.amount.clone(),
-                token: Some(card.typed().symbol.clone()),
-                slippage: card.slippage_bps,
-                deadline: self.config.swap_deadline_minutes,
-            }),
-            label: format!("add liquidity to {}", card.name),
+        let prepare = Prepare::AddLiquidityNext {
+            account: card.account.clone(),
+            pair: card.pair.clone(),
+            amount: card.amount.clone(),
+            token: Some(card.typed().symbol.clone()),
+            slippage: card.slippage_bps,
+            deadline: self.config.swap_deadline_minutes,
         };
+        let label = format!("add liquidity to {}", card.name);
         self.eco.pools_view.add = None;
-        self.start_flow(flow);
+        self.start_steps(prepare, label);
     }
 
     /// Trade › Pools keys: move between positions, then act on the focused one.
@@ -214,13 +198,13 @@ impl App {
             return self.add_card_key(key);
         }
         // Pane 0 is what you hold; pane 1 is every pool, which is where a new position starts.
-        let len = if self.pane == 0 { self.position_rows().len() } else { self.directory_rows().len() };
-        let cursor = if self.pane == 0 { &mut self.eco.pools_view.selected } else { &mut self.eco.pools_view.pool_selected };
+        let len = if self.nav.pane == 0 { self.position_rows().len() } else { self.directory_rows().len() };
+        let cursor = if self.nav.pane == 0 { &mut self.eco.pools_view.selected } else { &mut self.eco.pools_view.pool_selected };
         match key.code {
             KeyCode::Char('j') | KeyCode::Down if len > 0 => *cursor = (*cursor + 1).min(len - 1),
             KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
             KeyCode::Char('R') => {
-                self.eco.pools_view.loaded_at = None;
+                self.eco.pools_view.positions.invalidate();
                 self.tick_pools();
             }
             KeyCode::Char('a') => self.pool_action('a'),
@@ -298,40 +282,25 @@ impl App {
     }
 
     pub fn position_rows(&self) -> &[wallet_core::liquidity::LpPosition] {
-        match self.eco.pools_view.positions.as_ref() {
-            Some(Ok(list)) => list,
-            _ => &[],
-        }
+        self.eco.pools_view.positions.value().map_or(&[], Vec::as_slice)
     }
 
     /// Every main-exchange pool, deepest first — the directory a new position is opened from.
     /// Liquidity is added through the main router, so the launch AMM's pairs and the curves the
     /// Markets view also lists are not offered here.
     pub fn directory_rows(&self) -> Vec<wallet_core::markets::Pool> {
-        match self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) {
+        match self.eco.markets_view.pools.shown() {
             // Both exchanges that hold LP. A launch-AMM pair is a real pool with real reserves and,
             // often, a launch-zone gauge paying rewards on it; leaving it out of the directory is
             // what made CHEEZ/QUAI impossible to stake from this screen. A curve has no LP token.
-            Some(Ok((pools, _))) => pools
-                .iter()
-                .filter(|p| {
-                    matches!(
-                        p.venue,
-                        wallet_core::markets::Venue::Main
-                            | wallet_core::markets::Venue::LaunchAmm
-                            | wallet_core::markets::Venue::Legacy
-                            | wallet_core::markets::Venue::HartiiAmm
-                    )
-                })
-                .cloned()
-                .collect(),
+            Some(Ok((pools, _))) => pools.iter().filter(|p| p.venue.routable()).cloned().collect(),
             _ => Vec::new(),
         }
     }
 
     /// What the Pools screen is acting on: a pair, and the position in it when there is one.
     pub fn focused_pool(&self) -> Option<PoolFocus> {
-        if self.pane == 0 {
+        if self.nav.pane == 0 {
             let p = self.position_rows().get(self.eco.pools_view.selected)?;
             return Some(PoolFocus {
                 pair: p.pair.clone(),
@@ -378,7 +347,7 @@ impl App {
 
     /// A pool's TVL from the markets list.
     pub fn pool_tvl(&self, pair: &str) -> Option<f64> {
-        let Some(Ok((pools, _))) = self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) else { return None };
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return None };
         pools.iter().find(|p| p.address.eq_ignore_ascii_case(pair)).and_then(|p| p.tvl_usd)
     }
 

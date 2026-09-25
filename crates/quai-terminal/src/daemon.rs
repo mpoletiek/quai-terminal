@@ -575,6 +575,9 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
     // Polling is background work: it keeps headroom in shared API limits for interactive use.
     wallet_core::http::set_background_process(true);
     let _lock = LockFile::acquire(ctx.paths.daemon_lock())?;
+    // A configuration read, nothing on the network: a daemon that cannot run is refused before it
+    // binds a socket terminals would find and get nothing from.
+    let network = ctx.network()?;
     let build = build_id();
     let since = wallet_core::registry::now();
     // Terminals attach before anything slow happens here (a node check can take seconds): the
@@ -583,7 +586,6 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
     let _ = wallet_vault::write_private_atomic(&ctx.paths.daemon_state(), serde_json::to_string(&early).unwrap_or_default().as_bytes());
     let _engines = quai_engine::server::serve(bind_private(&ctx.paths.engine_socket())?, ctx.registry.clone(), build.clone())
         .map_err(|e| CoreError::Storage(format!("engine server: {e}")))?;
-    let network = ctx.network()?;
     let mut watched: Vec<Watched> = Vec::new();
     for meta in ctx.registry.list()? {
         match Watched::open(ctx, meta, &network) {

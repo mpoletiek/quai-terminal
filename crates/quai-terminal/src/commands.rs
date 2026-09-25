@@ -688,7 +688,12 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
         AccountCmd::Use { account } => {
             let mut s = ctx.session().await?;
             let chosen = s.set_active_account(&account)?;
-            done(ctx, "account use", json!({"active": chosen.address, "label": chosen.label}), &format!("{} acts from now on", chosen.label))
+            done(
+                ctx,
+                "account use",
+                json!({"active": chosen.address, "label": chosen.label}),
+                &format!("{} acts from now on", chosen.label),
+            )
         }
         AccountCmd::Rename { account, label } => {
             let mut s = ctx.session().await?;

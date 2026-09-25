@@ -28,7 +28,7 @@ pub fn draw_data_sources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 "images" => on_off(c.images),
                 "token_icons" => on_off(c.token_icons),
                 _ => {
-                    if app.eco.testing {
+                    if app.eco.test.running {
                         format!("{} testing…", spinner())
                     } else {
                         t.icon(Icon::Disclosure).into()
@@ -36,13 +36,13 @@ pub fn draw_data_sources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 }
             };
             let row = Row::new(vec![Cell::from(*label), Cell::from(value_line(t, value))]);
-            if i == app.selected { row.style(t.selected()) } else { row }
+            if i == app.nav.selected { row.style(t.selected()) } else { row }
         })
         .collect();
     let block = panel(t, "data sources", true);
     let inner = block.inner(list);
     f.render_widget(block, list);
-    app.hits.borrow_mut().rows(app.main_list(), inner, 0, rows.len(), |i| app::DATA_SOURCES.get(i).map(|s| s.0.to_string()));
+    app.input.hits.borrow_mut().rows(app.main_list(), inner, 0, rows.len(), |i| app::DATA_SOURCES.get(i).map(|s| s.0.to_string()));
     f.render_widget(Table::new(rows, [Constraint::Length(46), Constraint::Min(16)]), inner);
     let network = app.net();
     let mut lines = Vec::new();
@@ -157,7 +157,7 @@ pub fn draw_data_sources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             ),
         ]));
     }
-    if let Some(results) = &app.eco.test {
+    if let Some(results) = &app.eco.test.results {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("connection test", t.strong_style())));
         for (name, r, ms) in results {

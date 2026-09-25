@@ -396,7 +396,8 @@ mod sandbox {
         ];
         let rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = allowed.iter().map(|s| (*s, Vec::new())).collect();
         let arch = TargetArch::try_from(std::env::consts::ARCH).map_err(|e| format!("seccomp arch: {e}"))?;
-        let filter = SeccompFilter::new(rules, SeccompAction::KillProcess, SeccompAction::Allow, arch).map_err(|e| format!("seccomp: {e}"))?;
+        let filter =
+            SeccompFilter::new(rules, SeccompAction::KillProcess, SeccompAction::Allow, arch).map_err(|e| format!("seccomp: {e}"))?;
         let program: BpfProgram = filter.try_into().map_err(|e: seccompiler::BackendError| format!("seccomp: {e}"))?;
         seccompiler::apply_filter(&program).map_err(|e| format!("seccomp: {e}"))
     }
@@ -502,7 +503,8 @@ mod tests {
         let mut gif = Vec::new();
         let mut jpeg = Vec::new();
         let mut webp = Vec::new();
-        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(20, 12, |x, y| image::Rgba([x as u8 * 9, y as u8 * 17, 80, 255])));
+        let img =
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(20, 12, |x, y| image::Rgba([x as u8 * 9, y as u8 * 17, 80, 255])));
         img.write_to(&mut std::io::Cursor::new(&mut gif), image::ImageFormat::Gif).unwrap();
         image::DynamicImage::ImageRgb8(img.to_rgb8()).write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg).unwrap();
         img.write_to(&mut std::io::Cursor::new(&mut webp), image::ImageFormat::WebP).unwrap();

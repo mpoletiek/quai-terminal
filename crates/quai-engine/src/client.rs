@@ -232,9 +232,7 @@ fn refuse(cmd: Cmd, say: &impl Fn(Ev)) {
     const WHY: &str = "not sent: the engine is reconnecting";
     match cmd {
         Cmd::Prepare(_) => say(Ev::PrepareError(WHY.into())),
-        Cmd::Commit(op_id) | Cmd::CommitConfirmed { op_id, .. } => {
-            say(Ev::CommitError { op_id, message: WHY.into(), ambiguous: false })
-        }
+        Cmd::Commit(op_id) | Cmd::CommitConfirmed { op_id, .. } => say(Ev::CommitError { op_id, message: WHY.into(), ambiguous: false }),
         Cmd::Refresh { .. } | Cmd::MarkRead | Cmd::ChatNews { .. } => {}
         _ => say(Ev::Error(WHY.into())),
     }

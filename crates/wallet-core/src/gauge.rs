@@ -12,8 +12,8 @@
 //! Staking, unstaking and claiming also serve the launch-zone gauges (`zone.rs`), which share
 //! those four signatures: `Session::stake_target` decides which gauge a pair belongs to.
 
-use crate::journal::OpKind;
 use crate::amount;
+use crate::journal::OpKind;
 use crate::markets::PoolToken;
 use quai_sdk::U256;
 use serde::{Deserialize, Serialize};

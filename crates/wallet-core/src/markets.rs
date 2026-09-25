@@ -59,29 +59,22 @@ pub enum Venue {
 impl Venue {
     /// How lists name it.
     pub fn label(self) -> &'static str {
-        match self {
-            Venue::Main => "Quainance",
-            Venue::LaunchAmm => "launch AMM",
-            Venue::Curve => "bonding curve",
-            Venue::Legacy => "QuaiSwap",
-            Venue::HartiiAmm => "revenue AMM",
-        }
+        crate::venues::kind(self).label()
     }
 
     /// `on Quainance`, `on the launch AMM`: where a swap happens, in a sentence.
     pub fn on(self) -> &'static str {
-        match self {
-            Venue::Main => "on Quainance",
-            Venue::LaunchAmm => "on the launch AMM",
-            Venue::Curve => "on its bonding curve",
-            Venue::Legacy => "on QuaiSwap",
-            Venue::HartiiAmm => "on Quainance's revenue AMM",
-        }
+        crate::venues::kind(self).on()
     }
 
     /// Whether a swap router trades here.
     pub fn routable(self) -> bool {
-        self != Venue::Curve
+        crate::venues::kind(self).routable()
+    }
+
+    /// How lists mark it beside a pair.
+    pub fn badge(self) -> crate::venues::Badge {
+        crate::venues::kind(self).badge()
     }
 }
 
@@ -826,7 +819,7 @@ pub async fn pools(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
                 // at $0.35, and two other small pairs were missing (25 of the factory's 28). The
                 // pinned factory's own list adds whatever it left out, so a new Quainance pair is
                 // on screen at the next directory read however small it starts.
-                if let Ok(factory) = main_factory_pools(ctx).await {
+                if let Ok(factory) = amm_pools(ctx, &crate::venues::AMMS[0]).await {
                     let listed: std::collections::HashSet<String> = pools.iter().map(|p| p.address.to_lowercase()).collect();
                     pools.extend(factory.pools.into_iter().filter(|p| !listed.contains(&p.address.to_lowercase())));
                 }
@@ -909,12 +902,13 @@ async fn chain_pools(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
 /// still on their bonding curves. Independent sources have bounded deadlines; one unavailable
 /// venue cannot discard the directories that answered.
 pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
-    let (main, launch, legacy, hartii, hartii_amm, hartii_changes) = futures::join!(
+    // The main exchange comes through the explorer (with its own factory filling the gaps);
+    // every other exchange straight from its factory.
+    let others: Vec<&'static crate::venues::Amm> = crate::venues::AMMS.iter().filter(|a| a.venue != Venue::Main).collect();
+    let (main, directories, hartii, hartii_changes) = futures::join!(
         venue_deadline(pools(ctx)),
-        venue_deadline(launch_amm_pools(ctx)),
-        venue_deadline(legacy_pools(ctx)),
+        futures::future::join_all(others.iter().map(|amm| venue_deadline(amm_pools(ctx, amm)))),
         venue_deadline(crate::hartii::launches_observed(ctx)),
-        venue_deadline(hartii_amm_pools(ctx)),
         venue_deadline(crate::hartii::changes_24h(ctx)),
     );
     let mut healthy = main.is_ok();
@@ -940,14 +934,11 @@ pub async fn all_markets(ctx: &DataCtx) -> Result<(Vec<Pool>, DexOverview)> {
     for p in markets.iter_mut().filter(|p| p.tvl_usd.is_none()) {
         p.tvl_usd = amm_tvl(p, ctx.network.wquai.as_deref(), usd);
     }
-    for (venue, name, configured, result) in [
-        (Venue::LaunchAmm, "launch AMM factory", ctx.network.ecosystem.launch_amm_factory.is_some(), launch),
-        (Venue::Legacy, "QuaiSwap factory", ctx.network.ecosystem.legacy_factory.is_some(), legacy),
-        (Venue::HartiiAmm, "revenue AMM factory", ctx.network.ecosystem.hartii_amm_factory.is_some(), hartii_amm),
-    ] {
-        if !configured {
+    for (amm, result) in others.into_iter().zip(directories) {
+        if amm.factory(&ctx.network).is_none() {
             continue;
         }
+        let (venue, name) = (amm.venue, amm.factory_name);
         match result {
             Ok(mut directory) => {
                 healthy = true;
@@ -1099,60 +1090,24 @@ fn directory_key(prefix: &str, factory: &crate::network::PinnedContract, pairs: 
     format!("{prefix}:{}", hex::encode(Sha256::digest(identity.as_bytes())))
 }
 
-pub async fn legacy_pools(ctx: &DataCtx) -> Result<Directory> {
-    let factory = ctx
-        .network
-        .ecosystem
-        .legacy_factory
-        .clone()
-        .ok_or_else(|| CoreError::NotFound(format!("no legacy exchange on {}", ctx.network.name)))?;
-    let pairs = ctx.network.ecosystem.legacy_pairs.clone();
-    let key = directory_key("legacy_pools", &factory, &pairs);
+/// An exchange's directory (`venues::AMMS`): every pair its authenticated factory lists, or the
+/// ones the network names for an exchange read from a shortlist. Cached per factory.
+pub async fn amm_pools(ctx: &DataCtx, amm: &'static crate::venues::Amm) -> Result<Directory> {
+    use crate::venues::Discovery;
+    let factory = amm.factory(&ctx.network).cloned().ok_or_else(|| CoreError::NotFound(format!("{} {}", amm.missing, ctx.network.name)))?;
+    let pairs = match amm.discovery {
+        Discovery::Allowlist => ctx.network.ecosystem.legacy_pairs.clone(),
+        Discovery::Factory => Vec::new(),
+    };
+    let key = directory_key(amm.cache_key, &factory, &pairs);
     let cached = ctx
-        .cached(&key, FACTORY_TTL, || async move { allowlisted_pools(ctx, &factory, "QuaiSwap factory", Venue::Legacy, &pairs).await })
+        .cached(&key, FACTORY_TTL, || async move {
+            match amm.discovery {
+                Discovery::Factory => factory_pools(ctx, &factory, amm.factory_name, amm.venue).await,
+                Discovery::Allowlist => allowlisted_pools(ctx, &factory, amm.factory_name, amm.venue, &pairs).await,
+            }
+        })
         .await?;
-    Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
-}
-
-/// The revenue AMM's directory comes only from its authenticated factory, independent of launch labels.
-pub async fn hartii_amm_pools(ctx: &DataCtx) -> Result<Directory> {
-    let factory = ctx
-        .network
-        .ecosystem
-        .hartii_amm_factory
-        .clone()
-        .ok_or_else(|| CoreError::NotFound("Quainance's revenue AMM is not configured".into()))?;
-    let key = directory_key("hartii_amm_pools", &factory, &[]);
-    let cached = ctx
-        .cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "revenue AMM factory", Venue::HartiiAmm).await })
-        .await?;
-    Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
-}
-
-/// The main Quainance factory's own pair list, cached as the other factories' are.
-async fn main_factory_pools(ctx: &DataCtx) -> Result<Directory> {
-    let factory = ctx
-        .network
-        .ecosystem
-        .quainance_factory
-        .clone()
-        .ok_or_else(|| CoreError::NotFound(format!("no DEX factory configured on {}", ctx.network.name)))?;
-    let key = directory_key("main_factory_pools", &factory, &[]);
-    let cached =
-        ctx.cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "Quainance factory", Venue::Main).await }).await?;
-    Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
-}
-
-pub async fn launch_amm_pools(ctx: &DataCtx) -> Result<Directory> {
-    let factory = ctx
-        .network
-        .ecosystem
-        .launch_amm_factory
-        .clone()
-        .ok_or_else(|| CoreError::NotFound(format!("no launch AMM on {}", ctx.network.name)))?;
-    let key = directory_key("launch_amm_pools_v2", &factory, &[]);
-    let cached =
-        ctx.cached(&key, FACTORY_TTL, || async move { factory_pools(ctx, &factory, "launch AMM factory", Venue::LaunchAmm).await }).await?;
     Ok(Directory { fetched_at: cached.fetched_at, stale: cached.stale, ..cached.value })
 }
 
@@ -3123,7 +3078,7 @@ mod tests {
     /// Routing reaches every venue that has a router, and only those.
     #[test]
     fn routing_covers_the_three_routable_venues() {
-        assert_eq!(crate::routes::VENUES, [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm]);
+        assert_eq!(*crate::routes::VENUES, [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm]);
         assert!(crate::routes::VENUES.iter().all(|v| v.routable()));
     }
 }

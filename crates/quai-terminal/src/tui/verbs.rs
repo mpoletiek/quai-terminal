@@ -495,7 +495,7 @@ fn key(code: KeyCode) -> KeyEvent {
 impl App {
     /// The keys of what is on screen now.
     pub(crate) fn keys_here(&self) -> &'static ViewKeys {
-        view_keys(self.screen, self.detail.last())
+        view_keys(self.nav.screen, self.nav.detail.last())
     }
 
     /// Carry out one table entry.
@@ -522,8 +522,8 @@ impl App {
     pub(crate) fn verb(&mut self, verb: Verb, size: (u16, u16)) {
         // Tab reaches the pinned chat after the screen's last pane, whichever screen it is: this
         // comes before a screen's own Tab, or Markets and Pools would keep it to themselves.
-        if verb == PaneNext && self.dock_shown && self.tab_reaches_dock() {
-            self.dock_focus = true;
+        if verb == PaneNext && self.dock.shown && self.tab_reaches_dock() {
+            self.dock.focus = true;
             return;
         }
         if let Some(o) = self.keys_here().overrides.iter().find(|o| o.verb == verb)
@@ -568,35 +568,35 @@ impl App {
             TabNext => self.change_tab(1),
             PaneNext | PanePrev => {
                 // Tab reaches the pinned chat after the screen's last pane.
-                if verb == PaneNext && self.dock_shown && self.tab_reaches_dock() {
-                    self.dock_focus = true;
+                if verb == PaneNext && self.dock.shown && self.tab_reaches_dock() {
+                    self.dock.focus = true;
                     return;
                 }
-                let n = self.screen.panes().max(1);
-                self.pane = if verb == PaneNext { (self.pane + 1) % n } else { (self.pane + n - 1) % n };
+                let n = self.nav.screen.panes().max(1);
+                self.nav.pane = if verb == PaneNext { (self.nav.pane + 1) % n } else { (self.nav.pane + n - 1) % n };
             }
             Down => self.move_selection(1),
             Up => self.move_selection(-1),
             Left | Right => {}
-            Top => self.selected = 0,
-            Bottom => self.selected = self.list_len().saturating_sub(1),
+            Top => self.nav.selected = 0,
+            Bottom => self.nav.selected = self.list_len().saturating_sub(1),
             PageDown => self.move_selection(10),
             PageUp => self.move_selection(-10),
-            Jump => self.jump_pending = Some('\''),
+            Jump => self.nav.jump_pending = Some('\''),
             Filter => self.info("nothing to search here"),
             Open => self.screen_enter(),
             Previous => self.go_back(),
             Back => {
-                if !self.detail.is_empty() {
-                    self.detail.pop();
-                    self.detail_selected = 0;
-                    self.kitty.clear(self.caps.tmux);
+                if !self.nav.detail.is_empty() {
+                    self.nav.detail.pop();
+                    self.nav.detail_selected = 0;
+                    self.term.kitty.clear(self.term.caps.tmux);
                 }
             }
             GoTo => self.modal = Modal::GoTo,
             Palette => self.open_palette(),
             Help => {
-                self.help_scroll = 0;
+                self.nav.help_scroll = 0;
                 self.modal = Modal::Help;
             }
             Notifications => {
@@ -620,15 +620,15 @@ impl App {
                 }
             }
             Sheet => self.open_sheet(),
-            Dock if self.dock_shown => self.dock_focus = true,
+            Dock if self.dock.shown => self.dock.focus = true,
             Dock => self.write_pinned(),
-            Send => self.run_action(if matches!(self.screen, Screen::Qi | Screen::Contacts | Screen::Channels) {
+            Send => self.run_action(if matches!(self.nav.screen, Screen::Qi | Screen::Contacts | Screen::Channels) {
                 "send_qi"
             } else {
                 "send_quai"
             }),
             Receive => {
-                let qi = matches!(self.screen, Screen::Qi | Screen::Contacts | Screen::Channels);
+                let qi = matches!(self.nav.screen, Screen::Qi | Screen::Contacts | Screen::Channels);
                 self.modal = Modal::Receive { asset_qi: qi, account: 0 };
             }
             Trade => self.run_action("trade"),
@@ -658,12 +658,12 @@ impl App {
     }
 
     fn receive_on_account(&mut self) {
-        let account = self.selected.min(self.dash.accounts.len().saturating_sub(1));
+        let account = self.nav.selected.min(self.dash.accounts.len().saturating_sub(1));
         self.modal = Modal::Receive { asset_qi: false, account };
     }
 
     fn rename_account(&mut self) {
-        if let Some(a) = self.dash.accounts.get(self.selected) {
+        if let Some(a) = self.dash.accounts.get(self.nav.selected) {
             let (addr, label) = (a.address.clone(), a.label.clone());
             self.open_form(FormKind::RenameAccount(addr));
             if let Modal::Form(f) = &mut self.modal {
@@ -688,7 +688,7 @@ impl App {
     /// Markets Enter: on the flow, the chart goes to that swap's pair; on the pairs, the pair's
     /// actions. Enter never opens a money form, and a pair on its curve would have opened a buy.
     fn markets_open(&mut self) {
-        if self.pane == 1 {
+        if self.nav.pane == 1 {
             self.view_key(key(KeyCode::Enter));
         } else {
             self.open_sheet();
@@ -697,18 +697,18 @@ impl App {
 
     /// Markets `.`: the chart's timeframe on the pair list, the dust floor on the flow.
     fn markets_view_mode(&mut self) {
-        self.view_key(key(ch(if self.pane == 1 { 'm' } else { 'T' })));
+        self.view_key(key(ch(if self.nav.pane == 1 { 'm' } else { 'T' })));
     }
 
     fn edit_contact(&mut self) {
-        if let Some(c) = self.dash.contacts.get(self.selected) {
+        if let Some(c) = self.dash.contacts.get(self.nav.selected) {
             let name = c.name.clone();
             self.open_form(FormKind::Contact(Some(name)));
         }
     }
 
     fn remove_contact(&mut self) {
-        if let Some(c) = self.dash.contacts.get(self.selected) {
+        if let Some(c) = self.dash.contacts.get(self.nav.selected) {
             self.modal = Modal::Confirm {
                 title: "Remove contact".into(),
                 body: format!("Remove `{}` from your address book? Payment-channel history is kept.", c.name),
@@ -718,7 +718,7 @@ impl App {
     }
 
     fn send_quai_to_contact(&mut self) {
-        match self.dash.contacts.get(self.selected).and_then(|c| c.address.clone()) {
+        match self.dash.contacts.get(self.nav.selected).and_then(|c| c.address.clone()) {
             Some(address)
                 if wallet_core::registry::parse_any_address(&address).is_ok_and(|a| a.ledger() == wallet_core::sdk::Ledger::Quai) =>
             {
@@ -733,8 +733,8 @@ impl App {
     }
 
     fn notify_peer(&mut self) {
-        let code = if self.screen == Screen::Contacts {
-            self.dash.contacts.get(self.selected).and_then(|c| c.payment_code.clone())
+        let code = if self.nav.screen == Screen::Contacts {
+            self.dash.contacts.get(self.nav.selected).and_then(|c| c.payment_code.clone())
         } else {
             self.channel_peer().map(|p| p.code.clone())
         };
@@ -790,7 +790,7 @@ impl App {
     }
 
     fn rename_wallet(&mut self) {
-        if let Some(w) = self.wallets.get(self.selected).cloned() {
+        if let Some(w) = self.cockpit.list.get(self.nav.selected).cloned() {
             self.open_form(FormKind::RenameWallet(w.id));
         }
     }

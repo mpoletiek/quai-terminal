@@ -21,8 +21,22 @@ pub enum Freshness {
     Block,
     /// A feed with its own window: after this long.
     Ttl(Duration),
+    /// A feed with its own window, asked again sooner while its last read failed: `(window,
+    /// retry)`.
+    TtlRetry(Duration, Duration),
     /// Only when asked ([`Resource::invalidate`], or a first read).
     Manual,
+}
+
+impl Freshness {
+    /// How long a read stays fresh by the clock alone, when the class has a window.
+    pub fn window(self) -> Option<Duration> {
+        match self {
+            Freshness::Ttl(ttl) | Freshness::TtlRetry(ttl, _) => Some(ttl),
+            Freshness::Block => Some(BLOCK_NET),
+            Freshness::Manual => None,
+        }
+    }
 }
 
 /// Blocks count as arriving while the last one is younger than this.
@@ -62,7 +76,12 @@ pub mod fresh {
     pub const LAUNCHES: Freshness = secs(wallet_core::launches::LAUNCH_TTL);
     pub const CURVE: Freshness = Block;
     /// Markets: the pool directory every 30 s; reserves, the tape and LP positions with the chain.
-    pub const MARKET_DIRECTORY: Freshness = secs(wallet_core::markets::DIRECTORY_TTL);
+    pub const MARKET_DIRECTORY: Freshness =
+        Freshness::TtlRetry(Duration::from_secs(wallet_core::markets::DIRECTORY_TTL), super::BLOCK_POLL);
+    /// A pair's ready-made candles from the indexer, while its chart is on screen.
+    pub const CANDLES: Freshness = secs(5);
+    /// A pair's own trades (its chart and tape).
+    pub const POOL_EVENTS: Freshness = Block;
     pub const RESERVES: Freshness = Block;
     pub const DEX_FLOW: Freshness = Block;
     pub const LP_POSITIONS: Freshness = Block;
@@ -70,6 +89,55 @@ pub mod fresh {
     pub const ALERTS: Freshness = secs(60);
     /// A transaction's cost, once per transaction.
     pub const TX_COST: Freshness = Manual;
+    /// The board: channels and sealed conversations move with the chain.
+    pub const BOARD: Freshness = Block;
+    /// Which channels are on the board: every 5 s while the Board is open, else every 45 s.
+    pub const BOARD_SCAN_OPEN: Freshness = secs(5);
+    pub const BOARD_SCAN: Freshness = secs(45);
+    /// Private messages: an open conversation every 10 s, a pinned one every 15 s, the list
+    /// every 30 s.
+    pub const MESSAGES_OPEN: Freshness = secs(10);
+    pub const MESSAGES_PINNED: Freshness = secs(15);
+    pub const MESSAGES: Freshness = secs(30);
+    /// Subscribed chats' news, while no daemon reads them.
+    pub const CHAT_NEWS: Freshness = secs(30);
+    /// A swap quote: 20 s, and 6 s while an approval is being mined (the quote says when it is
+    /// no longer needed). A review is only built from a quote inside its window.
+    pub const QUOTE: Freshness = secs(20);
+    pub const QUOTE_APPROVING: Freshness = secs(6);
+    /// Both QUAI ⇄ Qi markets for the convert card.
+    pub const QI_ROUTES: Freshness = secs(20);
+    /// A picture that failed to load is asked again after this; after a passing failure (a busy
+    /// request budget, a rate limit, a timeout), sooner.
+    pub const IMAGE_RETRY: Duration = Duration::from_secs(30);
+    pub const IMAGE_RETRY_SOON: Duration = Duration::from_secs(4);
+    /// The wallet worker's refresh stages. The node's height and QUAI balances run at every
+    /// block; the rest move at the speed they can change at. A refresh the user asked for, and
+    /// the one after a commit, ignore these.
+    pub mod stage {
+        use std::time::Duration;
+
+        /// Token and wrapped balances: one multicall, so every block, like QUAI.
+        pub const TOKENS_EVERY: Duration = Duration::from_secs(5);
+        pub const QI_EVERY: Duration = Duration::from_secs(15);
+        /// The price feed's own cache holds a minute; asking more often only reads the same answer.
+        pub const PRICE_EVERY: Duration = Duration::from_secs(60);
+        /// Locked conversion balances: three calls each, and they only move when a conversion settles.
+        pub const LOCKED_EVERY: Duration = Duration::from_secs(60);
+        /// The node's gas price, client version and block order: System-screen detail, not per-block news.
+        pub const NODE_DETAIL_EVERY: Duration = Duration::from_secs(60);
+        /// How long the wallet waits before refreshing on its own when no block has arrived.
+        pub const IDLE_REFRESH: Duration = Duration::from_secs(15);
+        /// Reconciling open operations and observing incoming activity.
+        pub const TRACK_EVERY: Duration = Duration::from_secs(5);
+        /// Scanning payment channels for senders never seen before.
+        pub const PAYMENT_SYNC_EVERY: Duration = Duration::from_secs(90);
+    }
+
+    /// Limit orders: re-checked against fresh quotes at the daemon's pace.
+    pub const ORDERS: Freshness = Ttl(crate::orders::WATCH_EVERY);
+    /// The alert list itself: read once, then kept by what the user changes.
+    pub const ALERT_LIST: Freshness = Manual;
 }
 
 /// The chain's clock, as the screens know it: the newest block and when it arrived.
@@ -177,9 +245,8 @@ impl<T> Resource<T> {
         match class {
             Freshness::Manual => false,
             Freshness::Ttl(ttl) => age >= ttl,
-            Freshness::Block => {
-                clock.head > self.asked_head || age >= if clock.blocks_arriving() { BLOCK_NET } else { BLOCK_POLL }
-            }
+            Freshness::TtlRetry(ttl, retry) => age >= if self.error.is_some() { retry } else { ttl },
+            Freshness::Block => clock.head > self.asked_head || age >= if clock.blocks_arriving() { BLOCK_NET } else { BLOCK_POLL },
         }
     }
 
@@ -212,6 +279,27 @@ impl<T> Resource<T> {
         }
     }
 
+    /// Nothing needed reading this time (a watch with nothing to watch): wait a full window
+    /// before asking again, as if a read had just settled.
+    pub fn rest(&mut self) {
+        let now = Instant::now();
+        self.asked_at = Some(now);
+        self.settled_at = Some(now);
+        self.loading = false;
+    }
+
+    /// A read that found nothing new: settled now, without error, the value unchanged.
+    pub fn confirm(&mut self) {
+        self.loading = false;
+        self.settled_at = Some(Instant::now());
+        self.error = None;
+    }
+
+    /// The block the last read was asked at.
+    pub fn asked_head(&self) -> u64 {
+        self.asked_head
+    }
+
     /// A value that did not come from a read of this resource (a cache, a write the user made).
     pub fn set(&mut self, value: T) {
         self.value = Some(value);
@@ -228,6 +316,13 @@ impl<T> Resource<T> {
     /// Forget it entirely (a wallet or network switch).
     pub fn clear(&mut self) {
         *self = Resource::default();
+    }
+
+    /// Make the last read look older, for hosts' tests of what becomes due.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn age_by(&mut self, by: Duration) {
+        self.settled_at = self.settled_at.and_then(|at| at.checked_sub(by));
+        self.asked_at = self.asked_at.and_then(|at| at.checked_sub(by));
     }
 
     /// Take the value out, leaving nothing.
@@ -249,12 +344,18 @@ impl<K, T> Default for Keyed<K, T> {
 }
 
 impl<K: std::hash::Hash + Eq + Clone, T> Keyed<K, T> {
-    pub fn get(&self, key: &K) -> Option<&Resource<T>> {
+    pub fn get<Q: std::hash::Hash + Eq + ?Sized>(&self, key: &Q) -> Option<&Resource<T>>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
         self.map.get(key)
     }
 
     /// The value at `key`, if one was read.
-    pub fn value(&self, key: &K) -> Option<&T> {
+    pub fn value<Q: std::hash::Hash + Eq + ?Sized>(&self, key: &Q) -> Option<&T>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
         self.map.get(key).and_then(Resource::value)
     }
 
@@ -274,6 +375,11 @@ impl<K: std::hash::Hash + Eq + Clone, T> Keyed<K, T> {
 
     pub fn clear(&mut self) {
         self.map.clear();
+    }
+
+    /// Read every one again at the next chance, keeping what is shown.
+    pub fn invalidate_all(&mut self) {
+        self.map.values_mut().for_each(Resource::invalidate);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&K, &Resource<T>)> {

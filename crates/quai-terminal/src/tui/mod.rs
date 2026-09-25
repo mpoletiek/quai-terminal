@@ -60,13 +60,13 @@ fn next_wait(app: &App, animating: bool, last_tick: Instant, resized_at: Option<
     if ui::spinning(app) {
         wait = wait.min(ui::until_next_spinner_step());
     }
-    if let Some(beat) = app.beat
+    if let Some(beat) = app.fx.beat
         && beat.elapsed() < ui::BEAT_PULSE
     {
         wait = wait.min(ui::BEAT_PULSE - beat.elapsed());
     }
-    if let Some(step) = app.eco.anim_step.get().filter(|_| app.focused) {
-        wait = wait.min(Duration::from_millis(step - app.eco.anim_ms % step).max(Duration::from_millis(15)));
+    if let Some(step) = app.eco.anim.step.get().filter(|_| app.term.focused) {
+        wait = wait.min(Duration::from_millis(step - app.eco.anim.ms % step).max(Duration::from_millis(15)));
     }
     if let Some(at) = resized_at {
         wait = wait.min(RESEND_AFTER_RESIZE.saturating_sub(at.elapsed()).max(Duration::from_millis(1)));
@@ -154,14 +154,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     theme.fit_to_terminal(term.answers.background, caps.ansi8, caps.truecolor);
     let mut app = App::new(ctx.paths.clone(), network_id.clone(), config, theme, caps, meta);
     // Large pictures go to the terminal as files it reads and deletes, when it is on this machine.
-    app.kitty.file_dir = terminal::picture_dir(app.caps.ssh);
+    app.term.kitty.file_dir = terminal::picture_dir(app.term.caps.ssh);
     wallet_core::diag::timing("startup.app_new", startup);
-    app.light_hint = light.unwrap_or(false);
-    app.no_color = no_color;
-    app.theme_override = theme_override;
+    app.term.light_hint = light.unwrap_or(false);
+    app.term.no_color = no_color;
+    app.term.theme_override = theme_override;
     // Block digits are glyph noise for screen readers and the Linux console. This is a
     // session fallback only: it must never be written back into the saved preferences.
-    app.plain = ctx.global.plain || no_color || std::env::var("TERM").is_ok_and(|t| t == "linux");
+    app.term.plain = ctx.global.plain || no_color || std::env::var("TERM").is_ok_and(|t| t == "linux");
     fx::probe_fonts();
     icons::probe();
     app.start_onboarding();
@@ -191,7 +191,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                 Ok(w) => {
                     app.worker = Some(w);
                     app.start_data_worker();
-                    if let Some(p) = app.pending_unlock.take() {
+                    if let Some(p) = app.lock.pending.take() {
                         // A wallet just created unlocks itself: the screen says so meanwhile.
                         app.begin_unlock(p);
                     }
@@ -218,7 +218,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         // Continued after an outside stop: the screen may be anything now.
         if term::signals::take_continued() {
             let _ = term.repaint();
-            app.kitty.forget_images(app.caps.tmux);
+            app.term.kitty.forget_images(app.term.caps.tmux);
             app.dirty = true;
         }
 
@@ -231,8 +231,8 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             }
         }
         // Notices the UI raised itself go the same way as the worker's.
-        for (title, body) in std::mem::take(&mut app.notices_out) {
-            if app.config.notifications && !app.focused {
+        for (title, body) in std::mem::take(&mut app.status.notices_out) {
+            if app.config.notifications && !app.term.focused {
                 match crate::notify::detect_terminal() {
                     Some(backend) => term.queue(crate::notify::sequence(backend, &title, &body).as_bytes()),
                     None => crate::notify::desktop(&title, &body),
@@ -246,7 +246,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             // A notice for the desktop only while the window is in the background: in front, the
             // toast on screen says it, and a second copy in the corner of the desktop is noise.
             if let Ev::Notify { title, body, listed } = &ev
-                && desktop_notice(app.config.notifications, app.focused, *listed, daemon)
+                && desktop_notice(app.config.notifications, app.term.focused, *listed, daemon)
             {
                 match crate::notify::detect_terminal() {
                     Some(backend) => term.queue(crate::notify::sequence(backend, title, body).as_bytes()),
@@ -266,7 +266,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             app.on_data_event(ev);
         }
         app.tick_eco();
-        if !app.locked
+        if !app.lock.locked
             && app.onboarding.is_none()
             && app.config.layout_seen < wallet_core::config::LAYOUT_VERSION
             && app.meta.is_some()
@@ -276,14 +276,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             // Explain the new layout once after upgrading.
             if app.config.onboarded || app.config.layout_seen > 0 || !app.dash.ops.is_empty() || !app.dash.activity.is_empty() {
                 app.modal = app::Modal::Help;
-                app.help_moved = true;
+                app.nav.help_moved = true;
             }
             app.config.layout_seen = wallet_core::config::LAYOUT_VERSION;
             app.save_config();
         }
 
         // Live theme reload (Omarchy theme switch or settings change).
-        if app.pending_theme_reload || last_theme_check.elapsed() >= Duration::from_secs(2) {
+        if app.term.pending_theme_reload || last_theme_check.elapsed() >= Duration::from_secs(2) {
             last_theme_check = Instant::now();
             let sig = theme_signature(&theme_file);
             // The system theme is watched even when the wallet uses a built-in palette: the
@@ -291,18 +291,18 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             let system = theme_signature(&theme::omarchy_colors());
             let system_changed = system != omarchy_sig;
             omarchy_sig = system;
-            if app.pending_theme_reload || sig != theme_sig || system_changed {
-                let setting = app.theme_override.clone().unwrap_or_else(|| app.config.theme.clone());
+            if app.term.pending_theme_reload || sig != theme_sig || system_changed {
+                let setting = app.term.theme_override.clone().unwrap_or_else(|| app.config.theme.clone());
                 let (mut t, file) = theme::resolve(app.paths.root(), &setting, light.unwrap_or(false), no_color);
-                t.fit_to_terminal(term.answers.background, app.caps.ansi8, app.caps.truecolor);
+                t.fit_to_terminal(term.answers.background, app.term.caps.ansi8, app.term.caps.truecolor);
                 app.theme = t;
                 theme_file = file;
                 theme_sig = theme_signature(&theme_file);
-                app.pending_theme_reload = false;
+                app.term.pending_theme_reload = false;
                 app.dirty = true;
                 // Clearing the screen deletes kitty image placements, and a terminal that
                 // re-themed with the system has dropped the image data as well: send both again.
-                app.kitty.forget_images(app.caps.tmux);
+                app.term.kitty.forget_images(app.term.caps.tmux);
                 term.ui.clear().ok();
             }
         }
@@ -310,37 +310,37 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         if last_tick.elapsed() >= Duration::from_millis(500) {
             last_tick = Instant::now();
             app.tick(size);
-            if app.unlocking {
+            if app.lock.unlocking {
                 app.dirty = true;
             }
             // Ages on screen redraw when they can have changed: Home's are in minutes, a quote's
             // freshness on Swap in seconds.
             let minute = wallet_core::registry::now() / 60;
-            let ages_moved = match app.screen {
+            let ages_moved = match app.nav.screen {
                 app::Screen::Home => std::mem::replace(&mut ages_minute, minute) != minute,
-                app::Screen::Swap => app.eco.swap.quoted_at.is_some(),
+                app::Screen::Swap => app.eco.swap.quote_read.settled(),
                 _ => false,
             };
-            if app.focused && ages_moved || app.eco.testing {
+            if app.term.focused && ages_moved || app.eco.test.running {
                 app.dirty = true;
             }
         }
 
         // Ambient clock: advances while focused and something animates; a new step is a redraw.
         let now = Instant::now();
-        let step = app.eco.anim_step.get().filter(|_| app.focused);
-        if let (Some(last), Some(_)) = (app.eco.anim_last, step) {
-            app.eco.anim_ms += now.saturating_duration_since(last).as_millis() as u64;
+        let step = app.eco.anim.step.get().filter(|_| app.term.focused);
+        if let (Some(last), Some(_)) = (app.eco.anim.last, step) {
+            app.eco.anim.ms += now.saturating_duration_since(last).as_millis() as u64;
         }
-        app.eco.anim_last = Some(now);
+        app.eco.anim.last = Some(now);
         // A new step of the edge light alone is a decoration frame, not a redraw.
-        let edge_due = step.is_some_and(|step| app.eco.anim_ms / step != app.eco.anim_drawn.get());
+        let edge_due = step.is_some_and(|step| app.eco.anim.ms / step != app.eco.anim.drawn.get());
         // A spinner is content, redrawn when its glyph changes (every 80 ms), not at the frame
         // rate; the block heartbeat's pulse is two frames, on and off.
         if ui::spinning(&app) && ui::spinner_step() != spinner_drawn {
             app.dirty = true;
         }
-        if let Some(beat) = app.beat
+        if let Some(beat) = app.fx.beat
             && beat.elapsed() >= ui::BEAT_PULSE
             && app.last_frame < beat + ui::BEAT_PULSE
         {
@@ -350,7 +350,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             && at.elapsed() >= RESEND_AFTER_RESIZE
         {
             resized_at = None;
-            app.kitty.forget_images(app.caps.tmux);
+            app.term.kitty.forget_images(app.term.caps.tmux);
             app.dirty = true;
         }
         let animating = ui::wants_animation(&app);
@@ -360,18 +360,18 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             let now_size = (now_size.width, now_size.height);
             if now_size != last_size {
                 last_size = now_size;
-                app.kitty.clear(app.caps.tmux);
+                app.term.kitty.clear(app.term.caps.tmux);
                 resized_at = Some(Instant::now());
                 app.dirty = true;
             }
         }
         // Whether the terminal's own background shows through the page: a change repaints
         // everything, since cells already sent carry the old background.
-        app.terminal_background = term.answers.background;
+        app.term.background = term.answers.background;
         let see_through = app.see_through();
         if term.ui.backend().see_through != see_through {
             term.ui.backend_mut().see_through = see_through;
-            app.kitty.forget_images(app.caps.tmux);
+            app.term.kitty.forget_images(app.term.caps.tmux);
             term.ui.clear().ok();
             app.dirty = true;
         }
@@ -399,23 +399,23 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             }
             // Headline text drawn larger than a cell goes over the cells that hold its place. A
             // decoration frame keeps the last full frame's.
-            term.ui.backend_mut().big_text(&app.big_text.borrow());
+            term.ui.backend_mut().big_text(&app.term.big_text.borrow());
             // The hidden cursor waits at the focus, for magnifiers and screen readers.
-            if let Some((x, y)) = app.focus_at {
+            if let Some((x, y)) = app.input.focus_at {
                 term.queue(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
             }
             if wallet_core::diag::enabled() {
                 // Render (our drawing) and the frame through ratatui's diff, in microseconds, per
                 // screen: the budget is render ≤ 2 ms and frame ≤ 4 ms at p99.
-                let place = match (app.locked, edges_only) {
+                let place = match (app.lock.locked, edges_only) {
                     (true, _) => "Lock".to_string(),
                     (false, true) => "Edges".to_string(),
-                    (false, false) => format!("{:?}", app.screen),
+                    (false, false) => format!("{:?}", app.nav.screen),
                 };
                 wallet_core::diag::count(&format!("perf.render_us.{place}"), render_us);
                 wallet_core::diag::count(&format!("perf.frame_us.{place}"), frame_started.elapsed().as_micros() as u64);
-                wallet_core::diag::count(&format!("frame.screen.{:?}", app.screen), app.selected as u64);
-                if app.screen == app::Screen::Markets
+                wallet_core::diag::count(&format!("frame.screen.{:?}", app.nav.screen), app.nav.selected as u64);
+                if app.nav.screen == app::Screen::Markets
                     && let Some(pool) = app.selected_pool()
                 {
                     wallet_core::diag::count(&format!("frame.pair.{}", pool.address.to_ascii_lowercase()), 1);
@@ -430,37 +430,37 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             // before this frame's pictures are placed.
             if drawn != last_size {
                 last_size = drawn;
-                app.kitty.clear(app.caps.tmux);
+                app.term.kitty.clear(app.term.caps.tmux);
                 resized_at = Some(Instant::now());
             }
             app.last_frame = Instant::now();
             spinner_drawn = ui::spinner_step();
             app.dirty = false;
-            if let Some(req) = app.clipboard.take() {
+            if let Some(req) = app.tasks.clipboard.take() {
                 // The desktop's own tool here, read back; OSC 52 over SSH (see `clipboard`).
-                let (seq, rx) = clipboard::start(req, app.caps.tmux);
+                let (seq, rx) = clipboard::start(req, app.term.caps.tmux);
                 if let Some(seq) = seq {
                     term.queue(seq.as_bytes());
                 }
-                app.copying = Some(rx);
+                app.tasks.copying = Some(rx);
             }
-            if std::mem::take(&mut app.bell) {
-                term.queue(if app.caps.tmux { b"\x1bPtmux;\x07\x1b\\" } else { b"\x07" });
+            if std::mem::take(&mut app.fx.bell) {
+                term.queue(if app.term.caps.tmux { b"\x1bPtmux;\x07\x1b\\" } else { b"\x07" });
             }
             // Kitty bitmap placement after the cell frame is flushed. A decoration frame moved no
             // content, so the pictures placed last frame stay exactly where they are.
             if !edges_only {
                 let mut placements = images::kitty_items(&app);
                 // The QR bitmap is encoded once per address, not every frame.
-                if let Some((_, data)) = &app.qr_rect
-                    && app.caps.tier == terminal::Tier::Pixels
+                if let Some((_, data)) = &app.term.qr_rect
+                    && app.term.caps.tier == terminal::Tier::Pixels
                     && qr_cache.as_ref().is_none_or(|(d, _, _)| d != data)
                     && let Some(png) = terminal::qr_png(data, 8)
                 {
                     qr_cache = Some((data.clone(), images::png_key(&png), std::sync::Arc::new(png)));
                 }
-                if let (Some((rect, data)), Some((cached, key, png))) = (app.qr_rect.clone(), qr_cache.as_ref())
-                    && app.caps.tier == terminal::Tier::Pixels
+                if let (Some((rect, data)), Some((cached, key, png))) = (app.term.qr_rect.clone(), qr_cache.as_ref())
+                    && app.term.caps.tier == terminal::Tier::Pixels
                     && *cached == data
                 {
                     placements.push(terminal::Placement {
@@ -474,14 +474,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                     });
                 }
                 if images::bitmaps(&app) && !placements.is_empty() {
-                    app.kitty.place_all(&placements, app.caps.tmux);
+                    app.term.kitty.place_all(&placements, app.term.caps.tmux);
                 } else {
-                    app.kitty.clear(app.caps.tmux);
+                    app.term.kitty.clear(app.term.caps.tmux);
                 }
                 app.flush_image_wants();
                 // Pictures go out with the cells they sit among, in the same synchronized frame.
             }
-            let images = app.kitty.take_output();
+            let images = app.term.kitty.take_output();
             term.queue(&images);
             if let Err(e) = term.ui.backend_mut().end() {
                 break Err(CoreError::Invalid(format!("draw: {e}")));
@@ -493,7 +493,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             );
         } else {
             // Placements cleared between frames (a detail closed, a screen left) still go out.
-            let images = app.kitty.take_output();
+            let images = app.term.kitty.take_output();
             if !images.is_empty() {
                 term.queue(&images);
             }
@@ -512,7 +512,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             term.queue(format!("\x1b]2;{title}\x1b\\").as_bytes());
             shown_title = title;
         }
-        let progress = if app.caps.taskbar_progress { app.taskbar_state() } else { 0 };
+        let progress = if app.term.caps.taskbar_progress { app.taskbar_state() } else { 0 };
         if progress != shown_progress {
             term.queue(format!("\x1b]9;4;{progress};0\x1b\\").as_bytes());
             shown_progress = progress;
@@ -534,11 +534,11 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                     // wallet is out of sight, not out of reach), then gives the terminal back.
                     if ctrl && key.code == crossterm::event::KeyCode::Char('z') && key.kind == crossterm::event::KeyEventKind::Press {
                         app.suspend_lock();
-                        app.kitty.clear(app.caps.tmux);
-                        let images = app.kitty.take_output();
+                        app.term.kitty.clear(app.term.caps.tmux);
+                        let images = app.term.kitty.take_output();
                         term.queue(&images);
                         if term.suspend().is_ok() {
-                            app.kitty.forget_images(app.caps.tmux);
+                            app.term.kitty.forget_images(app.term.caps.tmux);
                         }
                         app.dirty = true;
                         continue;
@@ -555,14 +555,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                 }
                 Event::Mouse(m) => app.on_mouse(m, size),
                 Event::Resize(..) => {
-                    app.kitty.clear(app.caps.tmux);
+                    app.term.kitty.clear(app.term.caps.tmux);
                     resized_at = Some(Instant::now());
                     app.dirty = true;
                     // The effect was built for the old canvas; the lock screen rests rather than
                     // replaying it every time a tiling window manager moves the window.
-                    if app.locked && app.motion().effects() {
-                        app.ambient = None;
-                        app.lock_rested = true;
+                    if app.lock.locked && app.motion().effects() {
+                        app.fx.ambient = None;
+                        app.lock.rested = true;
                     }
                 }
                 Event::Paste(text) => app.on_paste(&text),
@@ -571,17 +571,17 @@ pub async fn run(ctx: Ctx) -> Result<()> {
                 // has its own path above), so they are left alone: clearing them here made every
                 // icon blink on each alt-tab.
                 Event::FocusGained => {
-                    app.focused = true;
-                    app.focus_gained_at = Some(Instant::now());
+                    app.term.focused = true;
+                    app.term.focus_gained_at = Some(Instant::now());
                     app.dirty = true;
                 }
-                Event::FocusLost => app.focused = false,
+                Event::FocusLost => app.term.focused = false,
             }
         }
     };
 
-    app.kitty.free_all(app.caps.tmux);
-    let images = app.kitty.take_output();
+    app.term.kitty.free_all(app.term.caps.tmux);
+    let images = app.term.kitty.take_output();
     term.queue(&images);
     if shown_progress != 0 {
         term.queue(b"\x1b]9;4;0;0\x1b\\");
@@ -592,7 +592,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     app.send_data(data::DataCmd::Shutdown);
     // Preferences saved in the last moments reach the disk before the process ends.
     app.flush_config();
-    if let Some(dir) = &app.kitty.file_dir {
+    if let Some(dir) = &app.term.kitty.file_dir {
         terminal::clean_picture_files(dir);
     }
     drop(term);

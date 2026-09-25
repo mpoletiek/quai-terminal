@@ -1,11 +1,11 @@
 //! High-level wallet operations shared by the CLI and TUI. Every value-moving
 //! operation returns a [`Review`]; callers then `commit` or `discard` it.
 
-use crate::journal::OpKind;
 use crate::amount::{self, QI_DECIMALS, QUAI_DECIMALS};
 use crate::appdb::Token;
 use crate::data::Trust;
 use crate::error::{CoreError, Result};
+use crate::journal::OpKind;
 use crate::network::ZONE;
 use crate::registry::{QuaiAccount, parse_any_address};
 use crate::session::{Session, new_operation_id, qi_stale, stale_pause};
@@ -730,7 +730,11 @@ impl Session {
             warnings.push(format!("UNLIMITED approval: {spender} will be able to move all of your {} at any time", token.symbol));
             (OpKind::Approve, format!("Approve {} (unlimited)", token.symbol), "unlimited".to_string())
         } else {
-            (OpKind::Approve, format!("Approve {}", token.symbol), format!("{} {}", amount::format_amount(atoms, token.decimals), token.symbol))
+            (
+                OpKind::Approve,
+                format!("Approve {}", token.symbol),
+                format!("{} {}", amount::format_amount(atoms, token.decimals), token.symbol),
+            )
         };
         self.prepare_account(AccountRequest {
             from,
@@ -953,7 +957,8 @@ impl Session {
 
     fn ensure_channel(&mut self, peer: &PaymentCode) -> Result<()> {
         let held = self.held();
-        let payment = held.as_deref()
+        let payment = held
+            .as_deref()
             .ok_or_else(|| CoreError::Locked("unlock the wallet to use payment codes".into()))?
             .payment
             .as_ref()
@@ -1087,9 +1092,8 @@ impl Session {
             self.refresh_qi_for_spend().await?;
             trace("send_qi: building keyring");
             let held = self.held();
-            let keys = held.as_deref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             trace("send_qi: preparing");
             let policy = QiPolicy::new(max_fee, 64, 256, 10).with_max_fee_rounds(12);
             let result = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store)
@@ -1218,9 +1222,8 @@ impl Session {
         let prepared = loop {
             self.refresh_qi_for_spend().await?;
             let held = self.held();
-            let keys = held.as_deref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let policy = self.qi_policy(max_fee, 128);
             let prepared = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store)
                 .prepare_sweep(id, mode, policy, pool.as_mut().ok_or_else(|| CoreError::Storage("no change pool".into()))?)
@@ -1808,7 +1811,8 @@ impl Session {
                 "slippage_bps": slippage_bps,
                 "quoted_qits": quote.as_ref().and_then(|q| q.quoted.clone()),
                 "expected_qits": quote.as_ref().and_then(|q| q.expected.clone()),
-            }).into(),
+            })
+            .into(),
             max_gas: 1_000_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         };
@@ -1886,9 +1890,8 @@ impl Session {
         let prepared = loop {
             self.refresh_qi_for_spend().await?;
             let held = self.held();
-            let keys = held.as_deref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let policy = QiPolicy::new(cap.unwrap_or(U256::from(500u64)), 64, 256, 10).with_max_fee_rounds(12);
             let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
             let change = pool.as_mut().ok_or_else(|| CoreError::Storage("no change pool".into()))?;
@@ -2025,7 +2028,8 @@ impl Session {
             detail: serde_json::json!({"contract": contract.to_string(), "recipient": owner.to_string(), "to_token": contract.to_string(),
                 "financial_effects": [{"direction": "in", "asset": "WQI", "token": contract.to_string(), "decimals": 18,
                 "amount": quai_sdk::wrappers::qits_to_wqi_atoms(unclaimed)?.to_string(), "estimated": true,
-                "note": "claimable backing observed before preparation; actual receipt determines continuation"}]}).into(),
+                "note": "claimable backing observed before preparation; actual receipt determines continuation"}]})
+            .into(),
             max_gas: 300_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -2136,7 +2140,8 @@ impl Session {
             detail: serde_json::json!({"contract": contract.to_string(), "financial_effects": [
                 {"direction":"out","asset":"WQUAI","token":contract.to_string(),"decimals":18,"amount":atoms.to_string()},
                 {"direction":"in","asset":"QUAI","token":"quai","decimals":18,"amount":atoms.to_string(),"note":"1:1 native redemption"}
-            ]}).into(),
+            ]})
+            .into(),
             max_gas: 200_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -2853,7 +2858,8 @@ impl Session {
                 "abi_source": found.metadata.as_ref().map(|m| m.cid.clone()),
                 "verified": found.verified,
                 "undeclared": found.undeclared,
-            }).into(),
+            })
+            .into(),
             max_gas: 1_000_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })

@@ -13,7 +13,7 @@ impl App {
 
     /// This wallet's listing of an item, when the indexer has it.
     pub fn my_listing(&self, contract: &str, token_id: &str) -> Option<Listing> {
-        match self.eco.my_listings.latest() {
+        match self.eco.nft.mine.latest() {
             Some(Ok(v)) => v.iter().find(|l| l.contract.eq_ignore_ascii_case(contract) && l.token_id == token_id).cloned(),
             _ => None,
         }
@@ -29,13 +29,13 @@ impl App {
     pub fn load_nft_market(&mut self, force: bool) {
         let clock = self.eco.clock;
         if force {
-            self.eco.nft_stats.begin(&clock);
-            self.eco.nft_trades.begin(&clock);
+            self.eco.nft.stats.begin(&clock);
+            self.eco.nft.trades.begin(&clock);
         }
-        if force || self.eco.nft_stats.take_due(fresh::NFT_STATS, &clock) {
+        if force || self.eco.nft.stats.take_due(fresh::NFT_STATS, &clock) {
             self.send_data(DataCmd::CollectionStats);
         }
-        if force || self.eco.nft_trades.take_due(fresh::NFT_TRADES, &clock) {
+        if force || self.eco.nft.trades.take_due(fresh::NFT_TRADES, &clock) {
             self.send_data(DataCmd::NftTrades);
         }
     }
@@ -45,27 +45,27 @@ impl App {
         if owners.is_empty() || !self.config.features.nfts {
             return;
         }
-        self.eco.nfts.begin(&self.eco.clock);
+        self.eco.nft.nfts.begin(&self.eco.clock);
         self.send_data(DataCmd::Nfts { owners, refresh });
     }
 
     pub(crate) fn explore_key(&mut self, key: KeyEvent) -> bool {
-        if let Some(text) = &mut self.eco.search {
+        if let Some(text) = &mut self.eco.nft.search {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
-                    self.eco.search_text = text.clone();
-                    self.eco.search = None;
-                    self.selected = 0;
+                    self.eco.nft.search_text = text.clone();
+                    self.eco.nft.search = None;
+                    self.nav.selected = 0;
                 }
                 KeyCode::Backspace => {
                     text.pop();
-                    self.eco.search_text = text.clone();
-                    self.selected = 0;
+                    self.eco.nft.search_text = text.clone();
+                    self.nav.selected = 0;
                 }
                 KeyCode::Char(c) if text.len() < 40 => {
                     text.push(c);
-                    self.eco.search_text = text.clone();
-                    self.selected = 0;
+                    self.eco.nft.search_text = text.clone();
+                    self.nav.selected = 0;
                 }
                 _ => {}
             }
@@ -73,19 +73,19 @@ impl App {
         }
         match key.code {
             KeyCode::Char('/') => {
-                self.eco.search = Some(self.eco.search_text.clone());
+                self.eco.nft.search = Some(self.eco.nft.search_text.clone());
                 true
             }
             KeyCode::Char('R') => {
-                self.eco.collections.begin(&self.eco.clock);
+                self.eco.nft.collections.begin(&self.eco.clock);
                 self.send_data(DataCmd::Collections { query: None });
                 self.load_nft_market(true);
                 true
             }
             KeyCode::Char('S') => {
-                self.eco.collection_sort = self.eco.collection_sort.next();
-                self.selected = 0;
-                let by = self.eco.collection_sort.label();
+                self.eco.nft.sort = self.eco.nft.sort.next();
+                self.nav.selected = 0;
+                let by = self.eco.nft.sort.label();
                 self.info(format!("collections by {by}"));
                 true
             }
@@ -94,8 +94,8 @@ impl App {
     }
 
     pub(crate) fn transfer_selected_nft(&mut self) {
-        if let Some(Ok(items)) = self.eco.nfts.latest()
-            && let Some(n) = items.get(self.selected)
+        if let Some(Ok(items)) = self.eco.nft.nfts.latest()
+            && let Some(n) = items.get(self.nav.selected)
         {
             let (c, id) = (n.item.contract.clone(), n.item.token_id.clone());
             self.open_nft_transfer(&c, &id);
@@ -107,18 +107,18 @@ impl App {
             self.toast("this wallet is watch-only", true);
             return;
         }
-        let held = matches!(self.eco.nfts.latest(), Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id));
+        let held = matches!(self.eco.nft.nfts.latest(), Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id));
         if !held {
             self.toast("this wallet does not hold that NFT", true);
             return;
         }
-        let multi = matches!(self.eco.nfts.latest(), Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id && n.kind == wallet_core::explorer::TokenKind::Erc1155));
+        let multi = matches!(self.eco.nft.nfts.latest(), Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id && n.kind == wallet_core::explorer::TokenKind::Erc1155));
         self.open_form(FormKind::NftTransfer { contract: contract.to_string(), token_id: token_id.to_string(), multi });
     }
 
     /// Next step of buying the NFT in the top detail view (each step is its own review).
     pub fn buy_step(&mut self) {
-        let Some(Detail::Nft(c, id)) = self.detail.last().cloned() else { return };
+        let Some(Detail::Nft(c, id)) = self.nav.detail.last().cloned() else { return };
         if !self.can_sign() {
             self.toast("this wallet is watch-only", true);
             return;
@@ -139,7 +139,7 @@ impl App {
             _ => {}
         }
         let account = self.dash.active_account().map(|a| a.address.clone());
-        match self.eco.asks.get(&(c.clone(), id.clone())) {
+        match self.eco.nft.asks.get(&(c.clone(), id.clone())) {
             None => self.info("checking the listing on-chain…"),
             Some(Err(e)) => {
                 let e = e.clone();
@@ -152,7 +152,7 @@ impl App {
             Some(Ok(check)) => {
                 let price = check.ask.as_ref().map(|a| a.price.clone());
                 let name = self.listing_for(&c, &id).and_then(|l| l.name).unwrap_or_else(|| format!("#{id}"));
-                self.start_flow(FlowKind::NftBuy { account, contract: c, token_id: id, price, label: format!("buy {name}") });
+                self.start_steps(Prepare::NftBuyNext { account, contract: c, token_id: id, price }, format!("buy {name}"));
             }
         }
     }
@@ -173,24 +173,21 @@ impl App {
         }
         let account = self.dash.active_account().map(|a| a.address.clone());
         let name = l.name.clone().unwrap_or_else(|| format!("#{}", l.token_id));
-        self.start_flow(FlowKind::NftBuy {
-            account,
-            contract: l.contract.clone(),
-            token_id: l.token_id.clone(),
-            price: Some(l.price.clone()),
-            label: format!("buy {name}"),
-        });
+        self.start_steps(
+            Prepare::NftBuyNext { account, contract: l.contract.clone(), token_id: l.token_id.clone(), price: Some(l.price.clone()) },
+            format!("buy {name}"),
+        );
     }
 
     /// Image URL for an NFT, from loaded metadata, holdings or listings.
     pub fn nft_image_url(&self, contract: &str, token_id: &str) -> Option<String> {
         let key = (contract.to_lowercase(), token_id.to_string());
-        if let Some(Ok(item)) = self.eco.nft_meta.get(&key)
+        if let Some(Ok(item)) = self.eco.nft.meta.get(&key)
             && item.image.is_some()
         {
             return item.image.clone();
         }
-        if let Some(Ok(v)) = self.eco.nfts.latest()
+        if let Some(Ok(v)) = self.eco.nft.nfts.latest()
             && let Some(n) = v.iter().find(|n| n.item.contract.eq_ignore_ascii_case(contract) && n.item.token_id == token_id)
             && n.item.image.is_some()
         {
@@ -209,9 +206,10 @@ impl App {
 
     pub fn listing_for(&self, contract: &str, token_id: &str) -> Option<Listing> {
         self.eco
+            .nft
             .listings
-            .values()
-            .filter_map(|r| r.as_ref().ok())
+            .iter()
+            .filter_map(|(_, r)| r.latest().and_then(|r| r.ok()))
             .flat_map(|v| v.iter())
             .find(|l| l.contract == contract && l.token_id == token_id)
             .cloned()
@@ -224,7 +222,7 @@ impl App {
             self.toast("this wallet is watch-only", true);
             return;
         }
-        let held = match self.eco.nfts.latest() {
+        let held = match self.eco.nft.nfts.latest() {
             Some(Ok(v)) => v.iter().find(|n| n.item.contract == contract && n.item.token_id == token_id).cloned(),
             _ => None,
         };
@@ -257,7 +255,7 @@ impl App {
             self.toast("this wallet is watch-only", true);
             return;
         }
-        let held = match self.eco.nfts.latest() {
+        let held = match self.eco.nft.nfts.latest() {
             Some(Ok(v)) => v.iter().find(|n| n.item.contract == contract && n.item.token_id == token_id).cloned(),
             _ => None,
         };
@@ -265,19 +263,21 @@ impl App {
             self.toast("this wallet does not hold that NFT", true);
             return;
         };
-        self.start_flow(FlowKind::NftList {
-            account: Some(held.owner.clone()),
-            contract: contract.to_string(),
-            token_id: token_id.to_string(),
-            price: None,
-            currency: "QUAI".into(),
-            label: format!("cancel the listing of {}", held.item.name),
-        });
+        self.start_steps(
+            Prepare::NftListNext {
+                account: Some(held.owner.clone()),
+                contract: contract.to_string(),
+                token_id: token_id.to_string(),
+                price: None,
+                currency: "QUAI".into(),
+            },
+            format!("cancel the listing of {}", held.item.name),
+        );
     }
 
     pub(crate) fn selected_nft(&self) -> Option<(String, String)> {
-        match self.eco.nfts.latest() {
-            Some(Ok(items)) => items.get(self.selected).map(|n| (n.item.contract.clone(), n.item.token_id.clone())),
+        match self.eco.nft.nfts.latest() {
+            Some(Ok(items)) => items.get(self.nav.selected).map(|n| (n.item.contract.clone(), n.item.token_id.clone())),
             _ => None,
         }
     }

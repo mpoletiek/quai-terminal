@@ -235,7 +235,12 @@ impl Registry {
             && ["QUAI_TERMINAL_INSECURE_FAST_KDF", "QUAI_WALLET_INSECURE_FAST_KDF"]
                 .iter()
                 .any(|name| std::env::var(name).is_ok_and(|v| v == "1"));
-        Self { paths, kdf: if fast { KdfParams::INSECURE_TEST } else { KdfParams::DEFAULT }, allow_weak_kdf: fast, custody_scope: "".into() }
+        Self {
+            paths,
+            kdf: if fast { KdfParams::INSECURE_TEST } else { KdfParams::DEFAULT },
+            allow_weak_kdf: fast,
+            custody_scope: "".into(),
+        }
     }
 
     /// Registry with cheap KDF parameters, for tests elsewhere in the crate.

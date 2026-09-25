@@ -15,7 +15,14 @@ fn every_session_of_a_wallet_shares_one_set_of_keys_and_one_lock() {
     let registry = wallet_core::registry::Registry::new(paths);
     let meta = registry.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
     let other = registry
-        .create_hd("other", "legal winner thank year wave sausage worth useful legal winner thank yellow", "english", "", "password123", true)
+        .create_hd(
+            "other",
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            "english",
+            "",
+            "password123",
+            true,
+        )
         .unwrap();
     let networks = wallet_core::network::NetworkProfile::builtins();
     let config = wallet_core::config::AppConfig::default();

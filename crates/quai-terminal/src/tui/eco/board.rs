@@ -14,7 +14,7 @@ impl App {
         let mut rows: Vec<BoardRow> = followed.iter().cloned().map(BoardRow::Channel).collect();
         // Private messages: the messaging account first, then conversations newest first, then
         // who is waiting.
-        if let Some(Ok(view)) = &self.eco.board.msg {
+        if let Some(Ok(view)) = self.eco.board.msg.shown() {
             use wallet_core::messaging::service::KeyNeed;
             if self.can_sign() {
                 rows.push(BoardRow::Messaging);
@@ -40,7 +40,7 @@ impl App {
         rows.extend(
             self.eco
                 .board
-                .known
+                .channels()
                 .iter()
                 .filter(|c| !followed.iter().any(|f| f == &c.name))
                 .map(|c| BoardRow::Unfollowed(c.name.clone(), c.messages)),
@@ -112,7 +112,7 @@ impl App {
     /// Post what is in the pinned chat's box: the same form and review as `p` on the Board, with
     /// the text already in it.
     pub(crate) fn post_dock_draft(&mut self) {
-        let text = self.dock_draft.trim().to_string();
+        let text = self.dock.draft.trim().to_string();
         if text.is_empty() {
             return;
         }
@@ -125,7 +125,7 @@ impl App {
         self.modal = self.form_key(form, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         // Sent for review: the box empties, and focus stays in the chat for the next line.
         if matches!(&self.modal, super::super::app::Modal::Form(f) if f.pending) || matches!(self.modal, super::super::app::Modal::None) {
-            self.dock_draft.clear();
+            self.dock.draft.clear();
         }
     }
 
@@ -150,7 +150,7 @@ impl App {
     /// The row under the cursor.
     pub fn board_row(&self) -> Option<BoardRow> {
         let rows = self.board_rows();
-        let i = if self.pane == 1 { self.eco.board_channel_selected } else { self.selected };
+        let i = if self.nav.pane == 1 { self.eco.board.channel_selected } else { self.nav.selected };
         rows.get(i.min(rows.len().saturating_sub(1))).cloned()
     }
 
@@ -165,7 +165,7 @@ impl App {
     /// Messages in the open channel, oldest first — a conversation reads downwards.
     pub fn board_posts(&self) -> Vec<&wallet_core::messages::Post> {
         let Some(channel) = self.board_channel() else { return Vec::new() };
-        match self.eco.board.posts.get(&channel) {
+        match self.eco.board.posts.get(&channel).and_then(|r| r.shown()) {
             Some(Ok(posts)) => posts.iter().rev().collect(),
             _ => Vec::new(),
         }
@@ -174,7 +174,7 @@ impl App {
     /// The open conversation's messages, oldest first.
     pub fn board_dm_lines(&self) -> Vec<&wallet_core::ops::SealedLine> {
         let Some(BoardRow::Peer(code, _)) = self.board_row() else { return Vec::new() };
-        match self.eco.board.dms.get(&code) {
+        match self.eco.board.dms.get(&code).and_then(|r| r.shown()) {
             Some(Ok(lines)) => lines.iter().collect(),
             _ => Vec::new(),
         }
@@ -182,14 +182,14 @@ impl App {
 
     /// The address that wrote the selected message, when the messages pane has the cursor.
     pub fn board_sender(&self) -> Option<String> {
-        if self.pane != 1 {
+        if self.nav.pane != 1 {
             return None;
         }
         match self.board_row() {
-            Some(BoardRow::Peer(..)) => self.board_dm_lines().get(self.selected).map(|l| l.from.clone()),
+            Some(BoardRow::Peer(..)) => self.board_dm_lines().get(self.nav.selected).map(|l| l.from.clone()),
             Some(BoardRow::Chat(address, _) | BoardRow::Request(address)) => Some(address),
             Some(BoardRow::Messaging) => None,
-            _ => self.board_posts().get(self.selected).map(|p| p.from.clone()),
+            _ => self.board_posts().get(self.nav.selected).map(|p| p.from.clone()),
         }
     }
 
@@ -204,10 +204,7 @@ impl App {
 
     /// Where private messages stand, when the wallet worker has said.
     pub fn messaging(&self) -> Option<&super::MessagingView> {
-        match &self.eco.board.msg {
-            Some(Ok(v)) => Some(v),
-            _ => None,
-        }
+        self.eco.board.msg.value()
     }
 
     /// One conversation or request, by address.
@@ -219,20 +216,19 @@ impl App {
     /// Ask the wallet worker for where private messages stand, reading the chain first when
     /// `sync`, and for `open`'s messages.
     pub(crate) fn refresh_messaging(&mut self, open: Option<String>, sync: bool) {
-        if self.locked || self.eco.board.msg_loading {
+        if self.lock.locked || self.eco.board.msg.loading() {
             return;
         }
-        self.eco.board.msg_loading = true;
-        self.eco.board.msg_at = Some(Instant::now());
+        self.eco.board.msg.begin(&self.eco.clock);
         self.send(Cmd::Messaging { op: super::super::worker::MsgOp::Refresh { open, sync }, epoch: self.private_epoch });
     }
 
     /// A change to private messages, then the view again.
     pub(crate) fn messaging_op(&mut self, op: super::super::worker::MsgOp) {
-        if self.locked {
+        if self.lock.locked {
             return;
         }
-        self.eco.board.msg_loading = true;
+        self.eco.board.msg.begin(&self.eco.clock);
         self.send(Cmd::Messaging { op, epoch: self.private_epoch });
     }
 
@@ -277,8 +273,8 @@ impl App {
         let Some(i) = self.board_rows().iter().position(|r| *r == BoardRow::Messaging) else {
             return self.toast("unlock to set up private messages", true);
         };
-        self.pane = 0;
-        self.selected = i;
+        self.nav.pane = 0;
+        self.nav.selected = i;
         self.toast("choose the account messages go from: enter, then pick one", false);
     }
 
@@ -331,38 +327,34 @@ impl App {
         let blocks = wallet_core::messages::BOARD_BLOCKS;
         match self.board_row() {
             Some(BoardRow::Channel(channel)) | Some(BoardRow::Unfollowed(channel, _)) => {
-                let board = &self.eco.board;
-                let fresh = board.at.get(&channel).is_some_and(|t| t.elapsed() < Duration::from_secs(5));
-                if board.loading.is_some() || fresh {
+                let clock = self.eco.clock;
+                let board = &mut self.eco.board;
+                if board.reading_channel() || !board.posts.take_due(channel.clone(), fresh::BOARD, &clock) {
                     return;
                 }
-                self.eco.board.loading = Some(channel.clone());
                 self.send_data(DataCmd::Board { channel, blocks });
             }
             Some(BoardRow::Peer(code, _)) => {
-                if self.locked {
+                if self.lock.locked {
                     return;
                 }
-                let board = &self.eco.board;
-                let fresh = board.dm_at.get(&code).is_some_and(|t| t.elapsed() < Duration::from_secs(5));
-                if board.dm_loading.is_some() || fresh {
+                let clock = self.eco.clock;
+                let board = &mut self.eco.board;
+                if board.reading_dm() || !board.dms.take_due(code.clone(), fresh::BOARD, &clock) {
                     return;
                 }
-                self.eco.board.dm_loading = Some(code.clone());
                 self.send(Cmd::ReadConversation { peer: code, blocks, epoch: self.private_epoch });
             }
             // Private messages: every 10 s while one is open, reading the chain each time.
             Some(BoardRow::Chat(address, _) | BoardRow::Request(address)) => {
-                if self.eco.board.msg_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(10))
-                    || !self.eco.board.msg_lines.contains_key(&address)
-                {
+                if self.eco.board.msg.due(fresh::MESSAGES_OPEN, &self.eco.clock) || !self.eco.board.msg_lines.contains_key(&address) {
                     self.refresh_messaging(Some(address), true);
                 }
             }
             Some(BoardRow::Messaging) | None => {}
         }
         // The list itself: once on opening, then every half minute.
-        if !self.locked && self.eco.board.msg_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
+        if !self.lock.locked && self.eco.board.msg.due(fresh::MESSAGES, &self.eco.clock) {
             self.refresh_messaging(None, true);
         }
     }
@@ -371,20 +363,16 @@ impl App {
     /// covers every channel at once, so following a channel means something on any screen: often
     /// while the board is open, rarely otherwise.
     pub(crate) fn tick_board_watch(&mut self) {
-        if self.locked || !self.config.features.messaging || self.config.board_channels.is_empty() {
+        if self.lock.locked || !self.config.features.messaging || self.config.board_channels.is_empty() {
             return;
         }
         if self.net().is_some_and(|n| n.ecosystem.messages.is_none()) {
             return;
         }
-        let looking = self.screen == Screen::Board;
-        let every = Duration::from_secs(if looking { 5 } else { 45 });
-        let board = &self.eco.board;
-        if board.known_loading || board.known_at.is_some_and(|t| t.elapsed() < every) {
+        let class = if self.nav.screen == Screen::Board { fresh::BOARD_SCAN_OPEN } else { fresh::BOARD_SCAN };
+        if !self.eco.board.known.take_due(class, &self.eco.clock) {
             return;
         }
-        self.eco.board.known_loading = true;
-        self.eco.board.known_at = Some(Instant::now());
         self.send_data(DataCmd::BoardChannels { blocks: wallet_core::messages::BOARD_BLOCKS });
     }
 
@@ -399,7 +387,7 @@ impl App {
             return;
         }
         // The channel on screen is being read, so it is caught up rather than announced.
-        let open = (self.screen == Screen::Board).then(|| self.board_channel()).flatten();
+        let open = (self.nav.screen == Screen::Board).then(|| self.board_channel()).flatten();
         let mut arrived: Vec<(String, u32)> = Vec::new();
         for channel in followed {
             if open.as_deref() == Some(channel.as_str()) {
@@ -427,13 +415,18 @@ impl App {
     /// Messages in a followed channel newer than the one last looked at.
     pub fn board_unread(&self, channel: &str) -> u32 {
         let Some(seen) = self.eco.board.seen.get(channel) else { return 0 };
-        self.eco.board.known.iter().find(|c| c.name == channel).map_or(0, |c| c.recent_blocks.iter().filter(|b| *b > seen).count() as u32)
+        self.eco
+            .board
+            .channels()
+            .iter()
+            .find(|c| c.name == channel)
+            .map_or(0, |c| c.recent_blocks.iter().filter(|b| *b > seen).count() as u32)
     }
 
     /// Everything on the board right now counts as looked at: what arrives afterwards is news,
     /// what was already there is not.
     pub(crate) fn mark_board_seen(&mut self, channel: &str) {
-        let newest = self.eco.board.known.iter().find(|c| c.name == channel).map_or(0, |c| c.last_block);
+        let newest = self.eco.board.channels().iter().find(|c| c.name == channel).map_or(0, |c| c.last_block);
         if newest > 0 {
             self.eco.board.seen.insert(channel.to_string(), newest);
         }
@@ -461,18 +454,18 @@ impl App {
             match key.code {
                 KeyCode::Esc => {
                     self.eco.board.filter = None;
-                    self.selected = 0;
+                    self.nav.selected = 0;
                     return true;
                 }
                 KeyCode::Enter | KeyCode::Down | KeyCode::Up | KeyCode::Tab | KeyCode::BackTab => {}
                 KeyCode::Backspace => {
                     filter.pop();
-                    self.selected = 0;
+                    self.nav.selected = 0;
                     return true;
                 }
                 KeyCode::Char(c) => {
                     filter.push(c);
-                    self.selected = 0;
+                    self.nav.selected = 0;
                     return true;
                 }
                 _ => return false,
@@ -481,28 +474,28 @@ impl App {
         match key.code {
             // The cursor belongs to one pane at a time, as on the markets screen.
             KeyCode::Tab | KeyCode::BackTab => {
-                if self.pane == 0 {
-                    self.eco.board_channel_selected = self.selected;
+                if self.nav.pane == 0 {
+                    self.eco.board.channel_selected = self.nav.selected;
                 } else {
-                    self.eco.board_post_selected = self.selected;
+                    self.eco.board.post_selected = self.nav.selected;
                 }
-                self.pane = 1 - self.pane;
-                self.selected = if self.pane == 0 {
-                    self.eco.board_channel_selected
+                self.nav.pane = 1 - self.nav.pane;
+                self.nav.selected = if self.nav.pane == 0 {
+                    self.eco.board.channel_selected
                 } else {
-                    self.eco.board_post_selected.min(self.board_message_count().saturating_sub(1))
+                    self.eco.board.post_selected.min(self.board_message_count().saturating_sub(1))
                 };
                 true
             }
             KeyCode::Char('p') => {
                 match self.board_row() {
-                    Some(BoardRow::Messaging) if self.pane == 1 => self.choose_messaging_account(self.selected),
+                    Some(BoardRow::Messaging) if self.nav.pane == 1 => self.choose_messaging_account(self.nav.selected),
                     // The choice is the pane beside: go there, onto the account in use.
                     Some(BoardRow::Messaging) => {
-                        self.eco.board_channel_selected = self.selected;
-                        self.pane = 1;
+                        self.eco.board.channel_selected = self.nav.selected;
+                        self.nav.pane = 1;
                         let current = self.messaging().and_then(|v| v.status.account.clone());
-                        self.selected = self
+                        self.nav.selected = self
                             .messaging_choices()
                             .iter()
                             .position(|(a, _)| a.as_deref().is_some_and(|a| current.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(a))))
@@ -533,13 +526,13 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.eco.board.filter = Some(String::new());
-                self.selected = 0;
+                self.nav.selected = 0;
                 true
             }
             // Unfollowing asks first, like every other removal; a person is here because they are a
             // payment peer, and only a channel is followed.
             KeyCode::Char('x') => {
-                let i = if self.pane == 1 { self.eco.board_channel_selected } else { self.selected };
+                let i = if self.nav.pane == 1 { self.eco.board.channel_selected } else { self.nav.selected };
                 if let Some(name) = self.config.board_channels.get(i).cloned() {
                     self.modal = super::super::app::Modal::Confirm {
                         title: "Unfollow channel".into(),
@@ -571,10 +564,11 @@ impl App {
                 true
             }
             KeyCode::Char('R') => {
-                self.eco.board.at.clear();
-                self.eco.board.dm_at.clear();
-                self.eco.board.known_at = None;
-                self.eco.board.msg_at = None;
+                let board = &mut self.eco.board;
+                board.posts.invalidate_all();
+                board.dms.invalidate_all();
+                board.known.invalidate();
+                board.msg.invalidate();
                 self.tick_board();
                 true
             }
@@ -641,7 +635,7 @@ impl App {
             // Whoever wrote the selected message, into the address book. In a sealed
             // conversation the payment code is known too — that is the identity, and the
             // address is merely the account this message came from.
-            KeyCode::Char('c') if self.pane == 1 => {
+            KeyCode::Char('c') if self.nav.pane == 1 => {
                 let sender = self.board_sender();
                 match (self.board_row(), sender) {
                     (Some(BoardRow::Peer(code, _)), address) => {
@@ -667,7 +661,7 @@ impl App {
     /// Keep the pinned chat current wherever the user is, and check subscriptions every half
     /// minute while no daemon does (two checkers would each notify).
     pub(crate) fn tick_chat(&mut self) {
-        if self.locked || self.meta.is_none() || !self.config.features.messaging {
+        if self.lock.locked || self.meta.is_none() || !self.config.features.messaging {
             return;
         }
         if !self.eco.board.chat_loaded {
@@ -677,35 +671,35 @@ impl App {
         }
         // Where private messages stand, once after each unlock: it decides whether this week's
         // key is offered and whether private conversations notify.
-        if self.eco.board.msg.is_none()
-            && self.eco.board.msg_at.is_none()
+        if !self.eco.board.msg.settled()
+            && !self.eco.board.msg.loading()
             && self.can_sign()
             && self.net().is_some_and(|n| n.ecosystem.messages.is_some())
         {
             self.refresh_messaging(None, false);
         }
         if let Some(pin) = self.eco.board.pin.clone()
-            && self.screen != Screen::Board
+            && self.nav.screen != Screen::Board
         {
             let blocks = wallet_core::messages::BOARD_BLOCKS;
             match (pin.strip_prefix("msg:"), pin.strip_prefix("dm:")) {
                 (Some(address), _) => {
-                    if self.eco.board.msg_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(15)) {
+                    if self.eco.board.msg.due(fresh::MESSAGES_PINNED, &self.eco.clock) {
                         self.refresh_messaging(Some(address.to_string()), true);
                     }
                 }
                 (None, Some(code)) => {
-                    let b = &self.eco.board;
-                    if b.dm_loading.is_none() && b.dm_at.get(code).is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
-                        self.eco.board.dm_loading = Some(code.to_string());
+                    let clock = self.eco.clock;
+                    let b = &mut self.eco.board;
+                    if !b.reading_dm() && b.dms.take_due(code.to_string(), fresh::BOARD, &clock) {
                         self.send(Cmd::ReadConversation { peer: code.to_string(), blocks, epoch: self.private_epoch });
                     }
                 }
                 (None, None) => {
                     let channel = pin.trim_start_matches('#').to_string();
-                    let b = &self.eco.board;
-                    if b.loading.is_none() && b.at.get(&channel).is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
-                        self.eco.board.loading = Some(channel.clone());
+                    let clock = self.eco.clock;
+                    let b = &mut self.eco.board;
+                    if !b.reading_channel() && b.posts.take_due(channel.clone(), fresh::BOARD, &clock) {
                         self.send_data(DataCmd::Board { channel, blocks });
                     }
                 }
@@ -715,17 +709,21 @@ impl App {
         let private = self.messaging().is_some_and(|v| {
             !matches!(v.status.need, wallet_core::messaging::service::KeyNeed::NotSetUp | wallet_core::messaging::service::KeyNeed::NoKeys)
         });
-        if (!self.eco.board.subs.is_empty() || private)
-            && self.eco.board.news_checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
-        {
-            self.eco.board.news_checked = Some(Instant::now());
+        if (!self.eco.board.subs.is_empty() || private) && self.eco.board.news.due(fresh::CHAT_NEWS, &self.eco.clock) {
             // A daemon reads the channels; it reads this wallet's sealed chats too only if it
             // holds the wallet unlocked. Whatever it cannot read, this window does.
             let id = self.meta.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+            let clock = self.eco.clock;
             match crate::daemon::state(&self.paths) {
-                None => self.send(Cmd::ChatNews { dms_only: false, epoch: self.private_epoch }),
-                Some(d) if !d.unlocked(&id) => self.send(Cmd::ChatNews { dms_only: true, epoch: self.private_epoch }),
-                Some(_) => {}
+                None => {
+                    self.eco.board.news.begin(&clock);
+                    self.send(Cmd::ChatNews { dms_only: false, epoch: self.private_epoch });
+                }
+                Some(d) if !d.unlocked(&id) => {
+                    self.eco.board.news.begin(&clock);
+                    self.send(Cmd::ChatNews { dms_only: true, epoch: self.private_epoch });
+                }
+                Some(_) => self.eco.board.news.rest(),
             }
         }
     }
@@ -733,10 +731,10 @@ impl App {
     /// Whether Tab, pressed now, would wrap back to the start of this screen: the pinned chat
     /// is the next stop instead.
     pub(crate) fn tab_reaches_dock(&self) -> bool {
-        if let Some(d) = self.detail.last() {
+        if let Some(d) = self.nav.detail.last() {
             return !matches!(d, super::super::app::Detail::Collection(_));
         }
-        match self.screen {
+        match self.nav.screen {
             // Exchange cards: from their last field (an unfocused card takes Tab to enter).
             Screen::Swap => self.eco.swap.field == 4,
             Screen::Convert => self.eco.convert.field == 3,
@@ -744,7 +742,7 @@ impl App {
             Screen::Pools if self.eco.pools_view.add.is_some() => self.eco.pools_view.add.as_ref().is_some_and(|a| a.field == 3),
             // A typed filter keeps its Tab.
             Screen::Board if self.eco.board.filter.is_some() => false,
-            s => self.pane + 1 >= s.panes().max(1),
+            s => self.nav.pane + 1 >= s.panes().max(1),
         }
     }
 
@@ -752,22 +750,22 @@ impl App {
     /// decides), Tab or Esc to go back to the screen with the draft kept.
     pub(crate) fn dock_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::BackTab => self.dock_focus = false,
+            KeyCode::Esc | KeyCode::BackTab => self.dock.focus = false,
             KeyCode::Tab => {
-                self.dock_focus = false;
+                self.dock.focus = false;
                 // On round to the screen's first stop, as its own Tab would.
                 if !self.view_key(key) {
-                    self.pane = 0;
+                    self.nav.pane = 0;
                 }
             }
             KeyCode::Enter => self.post_dock_draft(),
             KeyCode::Backspace => {
-                self.dock_draft.pop();
+                self.dock.draft.pop();
             }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => self.dock_draft.clear(),
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => self.dock.draft.clear(),
             // The chain takes 1024 bytes; the box stops where the post would be refused.
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) && self.dock_draft.len() + c.len_utf8() <= 1024 => {
-                self.dock_draft.push(c);
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) && self.dock.draft.len() + c.len_utf8() <= 1024 => {
+                self.dock.draft.push(c);
             }
             _ => {}
         }

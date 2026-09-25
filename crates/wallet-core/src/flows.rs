@@ -2,8 +2,8 @@
 //! sign — the approval while one is missing, then the action — so the CLI and the TUI walk the
 //! same steps: sign what comes back, wait for it to confirm, and ask again.
 
-use crate::journal::OpKind;
 use crate::error::{CoreError, Result};
+use crate::journal::OpKind;
 use crate::session::Session;
 use crate::tx::Review;
 

@@ -1,6 +1,6 @@
 //! Stable adapter families and actions. This table selects a workflow; execution must still
 //! authenticate the selected deployment and token/pair relationships first-hand.
-use crate::markets::{Pool, Venue};
+use crate::markets::Pool;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,12 +43,9 @@ pub struct Support {
 
 impl Family {
     pub fn for_pool(pool: &Pool) -> Option<Self> {
-        match pool.venue {
-            Venue::Main => Some(Self::MainAmm),
-            Venue::LaunchAmm => Some(Self::LaunchAmm),
-            Venue::Legacy => Some(Self::LegacyAmm),
-            Venue::HartiiAmm => Some(Self::HartiiAmm),
-            Venue::Curve => pool.curve.as_ref()?.venue_kind,
+        match crate::venues::kind(pool.venue).family() {
+            Some(family) => Some(family),
+            None => pool.curve.as_ref()?.venue_kind,
         }
     }
 
@@ -88,6 +85,7 @@ impl Family {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::markets::Venue;
     #[test]
     fn hartii_amm_pins_match_reproducible_execution_evidence() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/hartii_amm_runtime_evidence.json")).unwrap();

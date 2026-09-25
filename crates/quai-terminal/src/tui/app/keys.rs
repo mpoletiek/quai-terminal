@@ -15,7 +15,7 @@ impl App {
                 }
             }
             Modal::Palette { query, .. } => query.push_str(&clean),
-            Modal::None if self.locked => self.lock_input.push_str(&clean),
+            Modal::None if self.lock.locked => self.lock.input.push_str(&clean),
             _ => {}
         }
         if let Some(Onboarding::Details { fields, focus, .. }) = &mut self.onboarding
@@ -33,47 +33,47 @@ impl App {
             self.dirty = true;
             return;
         }
-        if !self.detail.is_empty() {
+        if !self.nav.detail.is_empty() {
             let len = self.detail_len();
             if len > 0 {
-                self.detail_selected = (self.detail_selected as i64 + delta).rem_euclid(len as i64) as usize;
+                self.nav.detail_selected = (self.nav.detail_selected as i64 + delta).rem_euclid(len as i64) as usize;
             }
             self.dirty = true;
             return;
         }
         let len = self.list_len();
         if len == 0 {
-            self.selected = 0;
+            self.nav.selected = 0;
             return;
         }
-        self.selected = (self.selected as i64 + delta).rem_euclid(len as i64) as usize;
+        self.nav.selected = (self.nav.selected as i64 + delta).rem_euclid(len as i64) as usize;
         self.dirty = true;
     }
 
     /// Rows in the current screen's primary list.
     pub fn list_len(&self) -> usize {
-        match self.screen {
-            Screen::Home if self.pane == 1 => self.activity_rows().len().min(12),
-            Screen::Home => self.eco.portfolio.value().map_or(0, |p| p.rows.len()) + self.home_positions().len(),
-            Screen::Pools => self.eco.pools_view.positions.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, Vec::len),
+        match self.nav.screen {
+            Screen::Home if self.nav.pane == 1 => self.activity_rows().len().min(12),
+            Screen::Home => self.eco.feeds.portfolio.value().map_or(0, |p| p.rows.len()) + self.home_positions().len(),
+            Screen::Pools => self.eco.pools_view.positions.value().map_or(0, Vec::len),
             Screen::Accounts => self.dash.accounts.len(),
             Screen::Activity => self.activity_rows().len(),
             Screen::Qi => self.dash.qi.as_ref().map_or(0, |q| q.coins.len()),
-            Screen::Board if self.pane == 1 => self.board_message_count(),
+            Screen::Board if self.nav.pane == 1 => self.board_message_count(),
             Screen::Board => self.board_rows().len(),
-            Screen::Wallets => self.wallets.len(),
+            Screen::Wallets => self.cockpit.list.len(),
             Screen::Channels => self.dash.offers.len() + self.dash.peers.len(),
             Screen::Contacts => self.dash.contacts.len(),
             Screen::Launches => self.launch_rows().len(),
             Screen::Pnl => self.pnl_positions().len(),
-            Screen::Orders => self.eco.orders.as_ref().map_or(0, Vec::len),
+            Screen::Orders => self.eco.feeds.orders.value().map_or(0, Vec::len),
             Screen::Network => self.dash.networks.len(),
             Screen::Settings => self.settings_rows().len(),
             Screen::DataSources => DATA_SOURCES.len(),
             Screen::Collected => self.eco.nft_len(),
             Screen::Explore => self.eco.collections_filtered().len(),
             Screen::Listings => self.eco.listings_len(),
-            Screen::Markets if self.pane == 1 => self.flow_rows().len(),
+            Screen::Markets if self.nav.pane == 1 => self.flow_rows().len(),
             Screen::Markets => self.market_rows().len(),
             Screen::Swap | Screen::Convert | Screen::Wrap => 0,
         }
@@ -98,7 +98,7 @@ impl App {
             return;
         }
         // A key in the last minute keeps the wallet open: the drained hairline fills again.
-        if std::mem::take(&mut self.lock_warned) {
+        if std::mem::take(&mut self.lock.warned) {
             self.signal(super::super::edge::Signal::Refill);
         }
         self.unpin_lists();
@@ -109,37 +109,37 @@ impl App {
             return;
         }
         // A key skips a decorative effect (never while typing into a modal; celebrations just fade).
-        if !self.locked && matches!(self.modal, Modal::None) && self.ambient.is_some() {
-            self.ambient = None;
+        if !self.lock.locked && matches!(self.modal, Modal::None) && self.fx.ambient.is_some() {
+            self.fx.ambient = None;
             return;
         }
         if self.onboarding.is_some() {
             return; // handled in the onboarding module
         }
-        if self.locked && matches!(self.modal, Modal::None) {
+        if self.lock.locked && matches!(self.modal, Modal::None) {
             match key.code {
                 // Typing during an unlock would land in the next attempt's password, so the
                 // keyboard is ignored until this one answers.
-                _ if self.unlocking => {}
-                KeyCode::Enter if !self.lock_input.is_empty() => {
-                    let password = Zeroizing::new(std::mem::take(&mut self.lock_input));
+                _ if self.lock.unlocking => {}
+                KeyCode::Enter if !self.lock.input.is_empty() => {
+                    let password = Zeroizing::new(std::mem::take(&mut self.lock.input));
                     self.begin_unlock(password);
                 }
                 KeyCode::Backspace => {
-                    self.lock_input.pop();
+                    self.lock.input.pop();
                 }
-                KeyCode::Esc => self.lock_input.zeroize(),
+                KeyCode::Esc => self.lock.input.zeroize(),
                 // Another wallet on this computer, without unlocking this one first.
                 KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.lock_input.zeroize();
-                    self.lock_error = None;
+                    self.lock.input.zeroize();
+                    self.lock.error = None;
                     if let Some(next) = self.next_wallet_id() {
                         self.switch_wallet(&next);
                     }
                 }
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.lock_input.push(c);
-                    self.lock_error = None;
+                    self.lock.input.push(c);
+                    self.lock.error = None;
                 }
                 _ => {}
             }
@@ -147,7 +147,7 @@ impl App {
         }
         // Any other key lets go of a hold to sign.
         if key.code != KeyCode::Enter {
-            self.hold = None;
+            self.input.hold = None;
         }
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         self.modal = match modal {
@@ -178,7 +178,6 @@ impl App {
                 }
                 KeyCode::Esc => {
                     self.send(Cmd::Discard(r.review.op_id.clone()));
-                    self.flow_on_rejected(&r.review.op_id);
                     Modal::None
                 }
                 KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
@@ -210,8 +209,8 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if r.approve_focused && r.can_approve() {
-                        self.hold = None;
-                        self.committing_kind = Some(r.review.kind.clone());
+                        self.input.hold = None;
+                        self.status.committing_kind = Some(r.review.kind.clone());
                         match &r.review.confirm {
                             Some(_) => self.send(Cmd::CommitConfirmed { op_id: r.review.op_id.clone(), words: r.typed.trim().to_string() }),
                             None => self.send(Cmd::Commit(r.review.op_id.clone())),
@@ -226,7 +225,6 @@ impl App {
                         Modal::Review(r)
                     } else {
                         self.send(Cmd::Discard(r.review.op_id.clone()));
-                        self.flow_on_rejected(&r.review.op_id);
                         Modal::None
                     }
                 }
@@ -272,7 +270,7 @@ impl App {
                 }
             }
             Modal::Receive { asset_qi, account } => {
-                self.kitty.clear(self.caps.tmux);
+                self.term.kitty.clear(self.term.caps.tmux);
                 match key.code {
                     KeyCode::Tab | KeyCode::Left | KeyCode::Right => Modal::Receive { asset_qi: !asset_qi, account },
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -337,7 +335,7 @@ impl App {
                         ConfirmAction::Unfollow(name) => {
                             self.config.board_channels.retain(|c| *c != name);
                             self.save_config();
-                            self.selected = self.selected.min(self.list_len().saturating_sub(1));
+                            self.nav.selected = self.nav.selected.min(self.list_len().saturating_sub(1));
                             self.toast(format!("unfollowed #{name}"), false);
                         }
                     }
@@ -356,10 +354,10 @@ impl App {
                 PickerOutcome::Applied => {
                     if let Some(e) = picker.current() {
                         self.config.theme = e.id.clone();
-                        self.theme_override = None;
+                        self.term.theme_override = None;
                         let name = e.name.clone();
                         self.save_config();
-                        self.pending_theme_reload = true;
+                        self.term.pending_theme_reload = true;
                         self.toast(format!("theme · {name}"), false);
                     }
                     Modal::None
@@ -417,7 +415,7 @@ impl App {
             }
             // `g` then a letter: straight to a screen; `g g` is the top of the list.
             Modal::Wallets { mut selected } => {
-                let n = self.wallets.len();
+                let n = self.cockpit.list.len();
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down if n > 0 => selected = (selected + 1) % n,
                     KeyCode::Char('k') | KeyCode::Up if n > 0 => selected = (selected + n - 1) % n,
@@ -427,7 +425,7 @@ impl App {
                     }
                     KeyCode::Enter => {
                         let here = self.meta.as_ref().map(|m| m.id.clone());
-                        if let Some(w) = self.wallets.get(selected).cloned()
+                        if let Some(w) = self.cockpit.list.get(selected).cloned()
                             && Some(&w.id) != here.as_ref()
                         {
                             // Switching locks this wallet and opens the other at its lock screen.
@@ -467,7 +465,7 @@ impl App {
             Modal::GoTo => {
                 self.modal = Modal::None;
                 match key.code {
-                    KeyCode::Char('g') => self.selected = 0,
+                    KeyCode::Char('g') => self.nav.selected = 0,
                     KeyCode::Char(c) => match super::super::keymap::route(c) {
                         Some(screen) => self.switch(screen),
                         None => self.info(format!("g {c} goes nowhere · g then ? lists where it goes")),
@@ -478,7 +476,7 @@ impl App {
             }
             // From the key overlay, g opens the glossary; anything else closes it.
             Modal::Help if key.code == KeyCode::Char('g') => {
-                self.help_moved = false;
+                self.nav.help_moved = false;
                 Modal::Glossary { selected: 0 }
             }
             // Keys that carry on the Konami code keep Help open.
@@ -503,12 +501,12 @@ impl App {
                     KeyCode::PageUp => -10,
                     _ => 10,
                 };
-                self.help_scroll = (i64::from(self.help_scroll) + step).max(0) as u16;
+                self.nav.help_scroll = (i64::from(self.nav.help_scroll) + step).max(0) as u16;
                 Modal::Help
             }
             Modal::Help | Modal::Notifications => {
-                self.help_moved = false;
-                self.help_scroll = 0;
+                self.nav.help_moved = false;
+                self.nav.help_scroll = 0;
                 Modal::None
             }
             Modal::Glossary { selected } => {
@@ -543,7 +541,7 @@ impl App {
         // has come back a callable contract. Anywhere else — including inside the call form it
         // opens, where it would throw away typed arguments — it is left alone.
         if ctrl && key.code == KeyCode::Char('f') && Self::destination_field(&form.kind).is_some() {
-            if let Some(found) = self.contract_found.clone().filter(|f| f.metadata.is_some())
+            if let Some(found) = self.tasks.contract_found.clone().filter(|f| f.metadata.is_some())
                 && self.open_contract_call(found)
             {
                 return std::mem::replace(&mut self.modal, Modal::None);
@@ -637,41 +635,41 @@ impl App {
             self.rebuild_contract_fields(&mut form);
         }
         self.probe_destination(&form);
-        form.contract_note = Self::contract_note(&form.kind, self.contract_found.as_ref());
+        form.contract_note = Self::contract_note(&form.kind, self.tasks.contract_found.as_ref());
         Modal::Form(form)
     }
 
     pub(crate) fn on_screen_key(&mut self, key: KeyEvent, size: (u16, u16)) {
-        if self.jump_pending.take().is_some() {
+        if self.nav.jump_pending.take().is_some() {
             if let KeyCode::Char(c) = key.code
                 && let Some(idx) = label_index(c)
             {
                 let target = self.view_offset() + idx;
                 if target < self.list_len() {
-                    self.selected = target;
+                    self.nav.selected = target;
                 }
             }
             return;
         }
         // The pinned chat, when it has the keyboard, takes every key; Tab reaches it after the
         // screen's last pane or card field.
-        if self.dock_focus && !self.dock_shown {
-            self.dock_focus = false;
+        if self.dock.focus && !self.dock.shown {
+            self.dock.focus = false;
         }
-        if self.dock_focus {
+        if self.dock.focus {
             self.dock_key(key);
             return;
         }
         // Tab past the last pane or card field goes into the chat, whatever has the keyboard.
-        if key.code == KeyCode::Tab && self.dock_shown && self.tab_reaches_dock() {
-            self.dock_focus = true;
+        if key.code == KeyCode::Tab && self.dock.shown && self.tab_reaches_dock() {
+            self.dock.focus = true;
             return;
         }
         // Input layer: a focused field (a card's amount, a search, a filter) owns its keys, and a
         // printable key it has no use for is swallowed rather than read as a command. Space opens
         // the action sheet from a card, since no field here takes it.
-        if self.detail.is_empty() && self.input_focused() {
-            if key.code == KeyCode::Char(' ') && matches!(self.screen, Screen::Swap | Screen::Convert | Screen::Wrap) {
+        if self.nav.detail.is_empty() && self.input_focused() {
+            if key.code == KeyCode::Char(' ') && matches!(self.nav.screen, Screen::Swap | Screen::Convert | Screen::Wrap) {
                 self.open_sheet();
                 return;
             }
@@ -683,7 +681,7 @@ impl App {
             }
         }
         // The collection detail's listings pane takes its own keys while it has the focus.
-        if matches!(self.detail.last(), Some(Detail::Collection(_))) && self.eco.collection_listings_focused && self.detail_key(key) {
+        if matches!(self.nav.detail.last(), Some(Detail::Collection(_))) && self.eco.nft.listings_focused && self.detail_key(key) {
             return;
         }
         // A view's own letter — a sheet action under the very key its handler answers, like
@@ -725,11 +723,11 @@ impl App {
 
     /// Whether an inline field on the screen has the keyboard.
     pub(crate) fn input_focused(&self) -> bool {
-        match self.screen {
+        match self.nav.screen {
             Screen::Swap => self.eco.swap.field != 5,
             Screen::Convert => self.eco.convert.field < 4,
             Screen::Wrap => self.eco.wrap.field < 2,
-            Screen::Explore => self.eco.search.is_some(),
+            Screen::Explore => self.eco.nft.search.is_some(),
             Screen::Board => self.eco.board.filter.is_some(),
             Screen::Pools => self.eco.pools_view.add.is_some(),
             _ => false,
@@ -743,18 +741,18 @@ impl App {
 
     /// `[` / `]`: previous or next sub-tab (Activity: filter).
     pub fn change_tab(&mut self, delta: i32) {
-        let section = self.screen.section();
+        let section = self.nav.screen.section();
         if section == Section::Activity {
-            let i = ActivityFilter::ALL.iter().position(|f| *f == self.activity_filter).unwrap_or(0) as i32;
-            self.activity_filter = ActivityFilter::ALL[(i + delta).rem_euclid(ActivityFilter::ALL.len() as i32) as usize];
-            self.selected = 0;
+            let i = ActivityFilter::ALL.iter().position(|f| *f == self.nav.activity_filter).unwrap_or(0) as i32;
+            self.nav.activity_filter = ActivityFilter::ALL[(i + delta).rem_euclid(ActivityFilter::ALL.len() as i32) as usize];
+            self.nav.selected = 0;
             return;
         }
         let screens = section.screens(&self.config.features);
         if screens.len() < 2 {
             return;
         }
-        let here = self.screen.tab_of(&self.config.features);
+        let here = self.nav.screen.tab_of(&self.config.features);
         let i = screens.iter().position(|s| *s == here).unwrap_or(0) as i32;
         self.open_tab(screens[(i + delta).rem_euclid(screens.len() as i32) as usize]);
     }
@@ -768,14 +766,14 @@ impl App {
     }
 
     pub(crate) fn screen_enter(&mut self) {
-        match self.screen {
+        match self.nav.screen {
             Screen::Wallets => {
-                if let Some(w) = self.wallets.get(self.selected).cloned() {
+                if let Some(w) = self.cockpit.list.get(self.nav.selected).cloned() {
                     self.switch_wallet(&w.id);
                 }
             }
             Screen::Network => {
-                if let Some((id, name)) = self.dash.networks.get(self.selected).cloned() {
+                if let Some((id, name)) = self.dash.networks.get(self.nav.selected).cloned() {
                     if id == self.dash.network_id {
                         self.info(format!("already on {name}"));
                     } else {
@@ -809,7 +807,7 @@ impl App {
                 }
             }
             Screen::Contacts => {
-                if let Some(c) = self.dash.contacts.get(self.selected) {
+                if let Some(c) = self.dash.contacts.get(self.nav.selected) {
                     let qi_address = c
                         .address
                         .as_deref()
@@ -827,7 +825,7 @@ impl App {
                 }
             }
             Screen::Activity => {
-                if let Some(key) = self.activity_key(self.selected) {
+                if let Some(key) = self.activity_key(self.nav.selected) {
                     self.push_detail(Detail::Activity(key));
                 }
             }
@@ -837,7 +835,7 @@ impl App {
 
     /// First visible row of the focused list (jump labels count from it).
     pub fn view_offset(&self) -> usize {
-        self.lists.borrow().get(&self.main_list()).map_or(0, |s| s.offset)
+        self.input.lists.borrow().get(&self.main_list()).map_or(0, |s| s.offset)
     }
 
     pub(crate) fn receive_value(&self, asset_qi: bool, account: usize) -> Option<String> {
@@ -853,16 +851,16 @@ impl App {
         if let Some(v) = self.eco_selected_value() {
             return Some(v);
         }
-        match self.screen {
-            Screen::Accounts => self.dash.accounts.get(self.selected).map(|a| a.address.clone()),
-            Screen::Activity => match self.activity_rows().get(self.selected) {
+        match self.nav.screen {
+            Screen::Accounts => self.dash.accounts.get(self.nav.selected).map(|a| a.address.clone()),
+            Screen::Activity => match self.activity_rows().get(self.nav.selected) {
                 Some((_, true, i)) => self.dash.ops[*i].tx_hash.clone(),
                 Some((_, false, i)) => self.dash.activity[*i].tx_hash.clone(),
                 None => None,
             },
-            Screen::Qi => self.dash.qi.as_ref().and_then(|q| q.coins.get(self.selected)).map(|c| c.address.clone()),
+            Screen::Qi => self.dash.qi.as_ref().and_then(|q| q.coins.get(self.nav.selected)).map(|c| c.address.clone()),
             Screen::Channels => self.channel_offer().map(|o| o.code.clone()).or_else(|| self.channel_peer().map(|p| p.code.clone())),
-            Screen::Contacts => match self.dash.contacts.get(self.selected) {
+            Screen::Contacts => match self.dash.contacts.get(self.nav.selected) {
                 Some(c) => c.payment_code.clone().or_else(|| c.address.clone()),
                 None => self.meta.as_ref().and_then(|m| m.payment_code.clone()),
             },
@@ -872,24 +870,24 @@ impl App {
 
     /// Copy public text after the next frame; the toast comes when it is known how it went.
     pub(crate) fn copy(&mut self, text: super::super::clipboard::PublicText, what: &'static str) {
-        self.clipboard = Some(super::super::clipboard::CopyRequest { text, what });
+        self.tasks.clipboard = Some(super::super::clipboard::CopyRequest { text, what });
     }
 
     /// Report a finished copy.
     pub(crate) fn poll_copy(&mut self) {
-        let Some(rx) = &self.copying else { return };
+        let Some(rx) = &self.tasks.copying else { return };
         match rx.try_recv() {
             Ok((req, outcome)) => {
-                self.copying = None;
+                self.tasks.copying = None;
                 let (mut text, error) = super::super::clipboard::describe(&req, &outcome);
                 // Once a session, where it matters most: an address about to be pasted.
-                if !error && req.what == "address" && !std::mem::replace(&mut self.paste_hint_shown, true) {
+                if !error && req.what == "address" && !std::mem::replace(&mut self.input.paste_hint_shown, true) {
                     text.push_str(" · check its first and last characters where you paste");
                 }
                 self.toast(text, error);
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.copying = None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.tasks.copying = None,
         }
     }
 }

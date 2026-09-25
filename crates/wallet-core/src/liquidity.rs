@@ -6,8 +6,8 @@
 //! from reserves rather than typed, minimums come from the user's slippage, and the first deposit
 //! into an empty pool is refused rather than silently letting the depositor set the price.
 
-use crate::journal::OpKind;
 use crate::amount;
+use crate::journal::OpKind;
 use crate::markets::{Pool, PoolToken};
 use quai_sdk::U256;
 use serde::{Deserialize, Serialize};
@@ -642,11 +642,9 @@ async fn pool_by_address_at(ctx: &DataCtx, pair: &str, block: BlockTag) -> Resul
     if a == b || crate::chain::is_zero_address(&token0) || crate::chain::is_zero_address(&token1) {
         return Err(CoreError::Rejected("the pair returned invalid token identities".into()));
     }
-    let venue =
-        [crate::markets::Venue::Main, crate::markets::Venue::LaunchAmm, crate::markets::Venue::Legacy, crate::markets::Venue::HartiiAmm]
-            .into_iter()
-            .find(|v| crate::swap::venue_pins(&ctx.network, *v).is_some_and(|(_, pin)| pin.address.eq_ignore_ascii_case(&factory)))
-            .ok_or_else(|| CoreError::Rejected("the pair does not belong to a configured factory".into()))?;
+    let venue = crate::venues::routable()
+        .find(|v| crate::swap::venue_pins(&ctx.network, *v).is_some_and(|(_, pin)| pin.address.eq_ignore_ascii_case(&factory)))
+        .ok_or_else(|| CoreError::Rejected("the pair does not belong to a configured factory".into()))?;
     crate::swap::verified_pool_router(ctx, venue).await?;
     let factory_contract = Contract::new(
         addr(&factory)?,

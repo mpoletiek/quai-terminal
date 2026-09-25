@@ -257,7 +257,7 @@ fn motion_step(app: &App) -> Onboarding {
 }
 
 pub fn on_key(app: &mut App, key: KeyEvent) {
-    if app.creating.is_some() {
+    if app.tasks.creating.is_some() {
         return;
     }
     let Some(state) = app.onboarding.take() else { return };
@@ -273,7 +273,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
             PickerOutcome::Applied => {
                 if let Some(e) = picker.current() {
                     app.config.theme = e.id.clone();
-                    app.pending_theme_reload = true;
+                    app.term.pending_theme_reload = true;
                     app.save_config();
                 }
                 Some(motion_step(app))
@@ -291,7 +291,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
                     // A preview only, written on enter: the frame draws itself in again, as a
                     // screen does, for the choices that animate, and Vivid turns its light.
                     app.config.motion = MOTIONS[selected].0;
-                    app.edge_intro = Some(std::time::Instant::now());
+                    app.fx.edge_intro = Some(std::time::Instant::now());
                     Some(Onboarding::Motion { selected, from })
                 }
                 (None, KeyCode::Enter) => {
@@ -531,8 +531,8 @@ fn start_create(
             (meta, unlock)
         }));
     });
-    app.creating = Some(rx);
+    app.tasks.creating = Some(rx);
     let sealing = fields.iter().any(|f| f.label == "Password");
-    app.busy = Some(if sealing { "deriving keys and encrypting your vault…".into() } else { "saving…".into() });
+    app.status.busy = Some(if sealing { "deriving keys and encrypting your vault…".into() } else { "saving…".into() });
     Ok(())
 }

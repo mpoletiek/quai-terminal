@@ -1,9 +1,9 @@
 //! Authenticated Hartii curve adapter. Its quote methods exclude the fee; buy takes native
 //! QUAI and sell pays native QUAI directly to the signer. Neither method takes a deadline.
-use crate::journal::OpKind;
 use crate::chain::{addr, address_at, interface, uint};
 use crate::data::{DataCtx, READ_CALLER, Trust};
 use crate::error::{CoreError, Result, approval_needed};
+use crate::journal::OpKind;
 use crate::markets::PoolToken;
 use crate::session::Session;
 use crate::tx::{AccountRequest, Review, field};

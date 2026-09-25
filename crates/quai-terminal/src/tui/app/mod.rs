@@ -320,7 +320,7 @@ pub fn context_hints(app: &App) -> Vec<(String, String)> {
         Modal::Help => return vec![pair("j/k", "scroll"), pair("g", "glossary"), pair("esc", "close")],
         _ => return vec![pair("esc", "close")],
     }
-    if app.dock_focus {
+    if app.dock.focus {
         return vec![
             pair("enter", "post · review"),
             pair("tab", "back to the screen"),
@@ -328,8 +328,8 @@ pub fn context_hints(app: &App) -> Vec<(String, String)> {
             pair("ctrl-u", "clear"),
         ];
     }
-    if app.detail.is_empty() && app.input_focused() {
-        return match app.screen {
+    if app.nav.detail.is_empty() && app.input_focused() {
+        return match app.nav.screen {
             Screen::Swap => match app.eco.swap.field {
                 1 if app.swap_quote_current() && app.eco.swap.quote.as_ref().is_some_and(|q| q.is_ok()) => {
                     vec![pair("enter", "review"), pair("m", "max"), pair("%", "share"), pair("esc", "done")]
@@ -357,7 +357,7 @@ pub fn context_hints(app: &App) -> Vec<(String, String)> {
         .map(|v| (super::keymap::key_of(*v), app.verb_label(*v).to_string()))
         .collect();
     out.truncate(FOOTER_HINTS);
-    if !app.detail.is_empty() {
+    if !app.nav.detail.is_empty() {
         out.truncate(FOOTER_HINTS - 1);
         out.push(pair("esc", "back"));
     }
@@ -712,8 +712,8 @@ impl Picker {
     pub fn new(app: &App) -> Picker {
         let mut entries = Vec::new();
         let resolve = |id: &str| {
-            let mut t = super::theme::resolve(app.paths.root(), id, app.light_hint, app.no_color).0;
-            t.fit_to_terminal(app.terminal_background, app.caps.ansi8, app.caps.truecolor);
+            let mut t = super::theme::resolve(app.paths.root(), id, app.term.light_hint, app.term.no_color).0;
+            t.fit_to_terminal(app.term.background, app.term.caps.ansi8, app.term.caps.truecolor);
             t
         };
         entries.push(PickerEntry {
@@ -1079,36 +1079,45 @@ pub const ACTIONS: &[Action] = &[
     action!("Quit", "", "quit"),
 ];
 
-pub struct App {
-    pub paths: wallet_core::paths::Paths,
-    pub registry: wallet_core::registry::Registry,
-    pub network_id: String,
-    pub qr_rect: Option<(ratatui::layout::Rect, String)>,
-    /// Text drawn larger than a cell this frame (OSC 66), placed after the cells by the loop.
-    pub big_text: std::cell::RefCell<Vec<super::term::backend::BigText>>,
-    /// The wallet's own hashes and addresses, for hyperlinks (`links`).
-    pub links_known: std::cell::RefCell<super::links::Known>,
-    /// The links the last frame showed (for tooltips and the pointer).
-    pub links_shown: std::cell::RefCell<Vec<super::links::Link>>,
-    pub pending_unlock: Option<Zeroizing<String>>,
-    pub config: AppConfig,
-    pub theme: Theme,
-    pub light_hint: bool,
-    pub no_color: bool,
-    pub caps: Caps,
-    pub meta: Option<WalletMeta>,
+/// The chat docked beside every screen: shown, focused, and the draft.
+pub struct Dock {
+    /// The pinned chat was drawn this frame, so Tab can reach it.
+    pub shown: bool,
+    /// The pinned chat has the keyboard: typing goes into its message box.
+    pub focus: bool,
+    /// What is being written in the pinned chat, kept while focus is elsewhere.
+    pub draft: String,
+}
+
+/// Every wallet on this computer: the list, each one's last summary and its live QUAI.
+pub struct Cockpit {
     /// Wallets on this computer, for the Wallets screen (re-read when it opens).
-    pub wallets: Vec<WalletMeta>,
+    pub list: Vec<WalletMeta>,
     /// Each wallet's last priced summary on this network (System › Wallets).
-    pub wallet_summaries: HashMap<String, wallet_core::cockpit::WalletSummary>,
+    pub summaries: HashMap<String, wallet_core::cockpit::WalletSummary>,
     /// Each wallet's QUAI read live from its public addresses.
-    pub wallet_quai: HashMap<String, wallet_core::sdk::U256>,
-    /// The engine: in the daemon, or here when standalone ([`quai_engine::client::Engine`]).
-    pub worker: Option<quai_engine::client::Engine>,
-    pub dash: Dashboard,
-    pub screen: Screen,
-    pub modal: Modal,
-    pub onboarding: Option<Onboarding>,
+    pub quai: HashMap<String, wallet_core::sdk::U256>,
+}
+
+/// What arrived and how it was said: unseen arrivals, the first payment, the bell.
+pub struct News {
+    /// Money arrived since Activity was last opened: the rail marks Activity until it is. The
+    /// static half of the arrival, kept at every motion level.
+    pub arrivals_unseen: bool,
+    /// When an arrival was last said in a toast (the worker's own notice is not repeated then).
+    pub arrival_said: Option<Instant>,
+    /// The first payment this wallet ever received, until Activity is opened: Home's recent
+    /// activity says so in its title.
+    pub first_payment: Option<String>,
+    /// Time locks that opened since Accounts or Qi was last looked at, said in Home's attention
+    /// panel until they are ("2.4 Qi unlocked · spendable now").
+    pub unlocked_news: Vec<String>,
+    /// When the bell last rang (it rings at most once in ten seconds).
+    pub last_bell: Option<Instant>,
+}
+
+/// Work running off the UI thread: wallet creation, endpoint checks, contract lookups, the clipboard.
+pub struct Tasks {
     pub creating: Option<Creation>,
     /// A monitoring endpoint being verified (network id, endpoint, outcome).
     pub monitor_check: Option<std::sync::mpsc::Receiver<MonitorCheck>>,
@@ -1118,31 +1127,69 @@ pub struct App {
     pub contract_probe: Option<String>,
     /// What the last answered probe found, kept while the form that asked is open.
     pub contract_found: Option<wallet_core::contracts::Discovered>,
-    /// A wallet switch is waiting for the new wallet's accounts before the open view can ask for
-    /// anything. Set when the switch starts, cleared by the first dashboard that has accounts.
-    pub reload_view_on_accounts: bool,
     /// Destinations already asked about on this form, and whether an answer came back at all.
     ///
     /// Without this a probe that fails — an unresolvable address, the node down, a Qi destination
     /// — clears both fields above, so the next keystroke sees nothing remembered and asks again,
     /// and the form turns into one chain read per keypress for as long as it stays open.
     pub contract_asked: std::collections::HashSet<String>,
-    pub selected: usize,
-    pub jump_pending: Option<char>,
+    /// A copy for the frame loop to carry out after the next frame (see `clipboard`).
+    pub clipboard: Option<super::clipboard::CopyRequest>,
+    /// A copy under way, answering with how it went.
+    pub copying: Option<std::sync::mpsc::Receiver<(super::clipboard::CopyRequest, super::clipboard::Outcome)>>,
+}
+
+/// What the app is doing and has said: toasts, the busy and signing lines, the log.
+pub struct Status {
     pub toasts: Vec<Toast>,
     pub busy: Option<String>,
     /// What the signing lane is doing, kept apart from `busy` so only that lane clears it.
     pub signing: Option<String>,
+    /// When the current busy and signing labels began (for how long they have run).
+    pub busy_at: Option<Instant>,
+    pub signing_at: Option<Instant>,
+    /// Recent messages (toasts disappear; this keeps them readable).
+    pub log: std::collections::VecDeque<Toast>,
+    /// Desktop notices the UI itself raises (a limit reachable), sent while the window is in
+    /// the background like the worker's own.
+    pub notices_out: Vec<(String, String)>,
+    /// Kind of the review being committed (follow-ups after submission).
+    pub committing_kind: Option<wallet_core::journal::OpKind>,
+}
+
+/// The lock screen: locked or not, the password being typed, the unlock in flight and what it said.
+pub struct Lock {
+    pub pending: Option<Zeroizing<String>>,
     pub locked: bool,
-    pub lock_input: String,
-    pub last_input: Instant,
-    pub quit: bool,
+    pub input: String,
+    /// The frame a finished lock effect left behind, dissolving under the one that replaced it.
+    pub fade: Option<(String, Instant)>,
+    /// The lock screen's one effect has played (or was cut short by typing); it stays still now.
+    pub rested: bool,
+    pub error: Option<String>,
+    /// An unlock is in flight. The vault's KDF is deliberately slow, so the lock screen says so
+    /// while the password is checked.
+    pub unlocking: bool,
+    /// When that unlock was submitted, so one that never answers is given up on.
+    pub unlocking_since: Option<Instant>,
+    /// A standalone unlock's password, kept until it opens the wallet to hand it to the daemon
+    /// (`daemon_share_unlock`). A daemon-hosted engine shares keys itself.
+    pub handoff_pending: Option<(String, Zeroizing<String>)>,
+    /// A wallet switch locked the screen before the worker reached it. The worker's own `Locked`
+    /// for that switch arrives later and must not lock a wallet unlocked in the meantime.
+    pub switch_pending: bool,
+    pub warned: bool,
+    /// A review the lock discarded, said once the wallet is unlocked again.
+    pub dropped_review: Option<String>,
+    pub unlocked_at: Option<Instant>,
+    /// A password on its way to the daemon: the answer (wallet name, or why not).
+    pub handoff: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
+}
+
+/// Effects: the ambient scene, the header's lights, row and drawer flashes, and the small celebrations.
+pub struct Fx {
     /// Whole-main-area ambient effect (lock screen, easter egg).
     pub ambient: Option<Ceremony>,
-    /// The frame a finished lock effect left behind, dissolving under the one that replaced it.
-    pub lock_fade: Option<(String, Instant)>,
-    /// The lock screen's one effect has played (or was cut short by typing); it stays still now.
-    pub lock_rested: bool,
     /// Border draw-in started on the last screen change.
     pub edge_intro: Option<Instant>,
     /// Order of the block behind the last heartbeat: 0 prime, 1 region, 2 zone.
@@ -1155,115 +1202,90 @@ pub struct App {
     pub drawer_flash: HashMap<u8, Instant>,
     /// Haiku to decrypt when the `:poem` hash rain ends.
     pub poem_haiku: Option<String>,
-    pub kitty: KittyGraphics,
-    pub dirty: bool,
-    pub last_frame: Instant,
-    pub pending_theme_reload: bool,
     pub bell: bool,
     pub beat: Option<Instant>,
     /// A one-shot light running along the header hairline (`edge::Signal`), and when it began.
     pub hairline: Option<(super::edge::Signal, Instant)>,
-    /// Money arrived since Activity was last opened: the rail marks Activity until it is. The
-    /// static half of the arrival, kept at every motion level.
-    pub arrivals_unseen: bool,
     /// The hero's `▌` lights when value arrives, fading back (Full and Vivid).
     pub gutter_flash: Option<Instant>,
     /// When the focused panel's data last changed: its border glints once (`edge::paint`).
     pub glint_at: Option<Instant>,
-    /// The last screen switch (`start_transition`), for fast hands.
-    pub last_switch: Option<Instant>,
     /// A transaction that just left the pending pill, said in its place for a moment.
     pub pill_resolved: Option<(String, Instant)>,
-    /// When the bell last rang (it rings at most once in ten seconds).
-    pub last_bell: Option<Instant>,
-    /// When an arrival was last said in a toast (the worker's own notice is not repeated then).
-    pub arrival_said: Option<Instant>,
-    /// The first payment this wallet ever received, until Activity is opened: Home's recent
-    /// activity says so in its title.
-    pub first_payment: Option<String>,
-    /// Time locks that opened since Accounts or Qi was last looked at, said in Home's attention
-    /// panel until they are ("2.4 Qi unlocked · spendable now").
-    pub unlocked_news: Vec<String>,
-    /// Drawer slots that got a coin since Qi was last on screen (marked with `•` there).
-    pub drawer_new: std::collections::HashSet<u8>,
-    /// Hold to sign: the review being held (its op id), when Enter went down, and when the last
-    /// repeat arrived.
-    pub hold: Option<(String, Instant, Instant)>,
     /// How far into the Konami code the keys in Help have come.
     pub konami: usize,
-    /// A review the lock discarded, said once the wallet is unlocked again.
-    pub dropped_review: Option<String>,
-    /// Where the keyboard's focus is on screen (the hidden terminal cursor waits there).
-    pub focus_at: Option<(u16, u16)>,
-    /// Desktop notices the UI itself raises (a limit reachable), sent while the window is in
-    /// the background like the worker's own.
-    pub notices_out: Vec<(String, String)>,
-    /// The paste check has been suggested this session (after the first address copied).
-    pub paste_hint_shown: bool,
-    /// When the current busy and signing labels began (for how long they have run).
-    pub busy_at: Option<Instant>,
-    pub signing_at: Option<Instant>,
+    /// The last frame showed a spinner (a loading line, a status): it turns at its own rate.
+    pub spun: bool,
     /// The smallest head hash seen this session, and its height: the entropy minimum `:poem`
     /// talks about, on the Network screen.
     pub lowest_hash: Option<(String, u64)>,
-    pub unlocked_at: Option<Instant>,
-    /// A copy for the frame loop to carry out after the next frame (see `clipboard`).
-    pub clipboard: Option<super::clipboard::CopyRequest>,
-    /// A copy under way, answering with how it went.
-    pub copying: Option<std::sync::mpsc::Receiver<(super::clipboard::CopyRequest, super::clipboard::Outcome)>>,
-    /// Recent messages (toasts disappear; this keeps them readable).
-    pub log: std::collections::VecDeque<Toast>,
-    /// A non-secret form set aside by auto-lock, restored after unlock.
-    pub parked: Option<Form>,
-    pub lock_error: Option<String>,
-    /// An unlock is in flight. The vault's KDF is deliberately slow, so the lock screen says so
-    /// while the password is checked.
-    pub unlocking: bool,
-    /// When that unlock was submitted, so one that never answers is given up on.
-    pub unlocking_since: Option<Instant>,
-    /// A standalone unlock's password, kept until it opens the wallet to hand it to the daemon
-    /// (`daemon_share_unlock`). A daemon-hosted engine shares keys itself.
-    pub handoff_pending: Option<(String, Zeroizing<String>)>,
-    /// A wallet switch locked the screen before the worker reached it. The worker's own `Locked`
-    /// for that switch arrives later and must not lock a wallet unlocked in the meantime.
-    pub switch_lock_pending: bool,
-    pub lock_warned: bool,
-    /// Session-only theme (QUAI_TERMINAL_THEME); cleared when a theme is chosen.
-    pub theme_override: Option<String>,
-    /// Session-only plain mode (NO_COLOR, Linux console): no block digits, reduced motion.
-    pub plain: bool,
-    /// Focused pane within the view (Tab / Shift-Tab).
-    pub pane: usize,
-    /// The terminal window has focus (ambient light pauses without it).
-    pub focused: bool,
-    /// When the window last regained focus (the first click after it is ignored).
-    pub focus_gained_at: Option<Instant>,
+    /// Drawer slots that got a coin since Qi was last on screen (marked with `•` there).
+    pub drawer_new: std::collections::HashSet<u8>,
+}
+
+/// The keyboard and pointer: hit areas and lists on screen, the pointer, holds, and when input last came.
+pub struct Input {
     /// This frame's clickable regions (written while drawing, read by `pointer`).
     pub hits: std::cell::RefCell<super::hit::HitMap>,
     /// Each list's own scroll position.
     pub lists: std::cell::RefCell<HashMap<super::hit::ListId, super::hit::ListState>>,
     pub pointer: super::pointer::PointerState,
+    /// The mouse was handed back to the terminal for text selection (this session only).
+    pub mouse_released: bool,
     /// When the open modal appeared, and which kind it is (clicks right after are ignored).
     pub modal_since: std::cell::Cell<Option<Instant>>,
     pub modal_kind: std::cell::Cell<u8>,
-    /// Lines the help overlay is scrolled down.
-    pub help_scroll: u16,
-    /// The mouse was handed back to the terminal for text selection (this session only).
-    pub mouse_released: bool,
+    /// Hold to sign: the review being held (its op id), when Enter went down, and when the last
+    /// repeat arrived.
+    pub hold: Option<(String, Instant, Instant)>,
+    pub last_input: Instant,
+    /// The paste check has been suggested this session (after the first address copied).
+    pub paste_hint_shown: bool,
+    /// Where the keyboard's focus is on screen (the hidden terminal cursor waits there).
+    pub focus_at: Option<(u16, u16)>,
+}
+
+/// The terminal: its capabilities, colors, pictures and links, its size and focus.
+pub struct TermState {
+    pub qr_rect: Option<(ratatui::layout::Rect, String)>,
+    /// Text drawn larger than a cell this frame (OSC 66), placed after the cells by the loop.
+    pub big_text: std::cell::RefCell<Vec<super::term::backend::BigText>>,
+    /// The wallet's own hashes and addresses, for hyperlinks (`links`).
+    pub links_known: std::cell::RefCell<super::links::Known>,
+    /// The links the last frame showed (for tooltips and the pointer).
+    pub links_shown: std::cell::RefCell<Vec<super::links::Link>>,
+    pub light_hint: bool,
+    pub no_color: bool,
+    pub caps: Caps,
+    pub kitty: KittyGraphics,
+    pub pending_theme_reload: bool,
+    /// Session-only theme (QUAI_TERMINAL_THEME); cleared when a theme is chosen.
+    pub theme_override: Option<String>,
+    /// Session-only plain mode (NO_COLOR, Linux console): no block digits, reduced motion.
+    pub plain: bool,
     /// The terminal's own background (OSC 11), when it said.
-    pub terminal_background: Option<(u8, u8, u8)>,
-    /// Writes preferences off the UI thread.
-    pub persist: super::persist::Lane,
-    /// The last frame showed a spinner (a loading line, a status): it turns at its own rate.
-    pub spun: bool,
-    /// The last frame's composed content before the edge light (see `ui::draw_edges`).
-    pub content: Option<ratatui::buffer::Buffer>,
-    /// The open network's profile, and what it was built for (`net`).
-    pub net_cache: std::cell::RefCell<Option<(String, std::rc::Rc<wallet_core::network::NetworkProfile>)>>,
-    /// `activity_rows`, and the fingerprint of what it was built from.
-    pub activity_cache: std::cell::RefCell<Option<(u64, Vec<ActivityRow>)>>,
+    pub background: Option<(u8, u8, u8)>,
     /// The terminal size of the last frame.
     pub last_size: (u16, u16),
+    /// The terminal's size class this frame (`ui::layout`).
+    pub breakpoint: super::ui::Breakpoint,
+    /// Too few rows for full headlines this frame: heroes shrink to one line.
+    pub short: bool,
+    /// The terminal window has focus (ambient light pauses without it).
+    pub focused: bool,
+    /// When the window last regained focus (the first click after it is ignored).
+    pub focus_gained_at: Option<Instant>,
+}
+
+/// Where the user is: the screen and pane, the cursor, the detail stack, tabs and history.
+pub struct Nav {
+    pub screen: Screen,
+    /// Focused pane within the view (Tab / Shift-Tab).
+    pub pane: usize,
+    pub selected: usize,
+    pub jump_pending: Option<char>,
+    /// The last screen switch (`start_transition`), for fast hands.
+    pub last_switch: Option<Instant>,
     /// Last sub-tab per section.
     pub section_tabs: [usize; 7],
     /// Where each screen was left: its pane and cursor, and the row the cursor was on.
@@ -1274,42 +1296,80 @@ pub struct App {
     pub going_back: bool,
     /// The exchange view last shown (Swap, Convert or Wrap): the Exchange tab returns to it.
     pub last_exchange: Screen,
-    /// The terminal's size class this frame (`ui::layout`).
-    pub breakpoint: super::ui::Breakpoint,
-    /// Too few rows for full headlines this frame: heroes shrink to one line.
-    pub short: bool,
-    /// Markets and the swap card are drawn side by side (the trader layout, at this width).
-    pub trader: bool,
-    /// The pinned chat was drawn this frame, so Tab can reach it.
-    pub dock_shown: bool,
-    /// The pinned chat has the keyboard: typing goes into its message box.
-    pub dock_focus: bool,
-    /// What is being written in the pinned chat, kept while focus is elsewhere.
-    pub dock_draft: String,
-    /// Moves on at every lock and every wallet or network switch. A decrypted conversation that
-    /// was asked for under an older value is dropped when it arrives, so nothing private
-    /// reappears after the wallet locked or changed.
-    pub private_epoch: u64,
-    /// A password on its way to the daemon: the answer (wallet name, or why not).
-    pub handoff: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
-    /// Palette entries chosen lately, newest first (`palette::Entry::key`).
-    pub palette_recent: Vec<String>,
-    /// Activity filter tab.
-    pub activity_filter: ActivityFilter,
-    /// Activity shows only the account that acts (`.` on Activity).
-    pub activity_account_only: bool,
     /// Detail stack (Enter pushes, Esc pops).
     pub detail: Vec<Detail>,
     /// Selection inside the top detail view (collection items, listings).
     pub detail_selected: usize,
+    /// Lines the help overlay is scrolled down.
+    pub help_scroll: u16,
+    /// The help overlay shows the one-time "what moved" note.
+    pub help_moved: bool,
+    /// Activity filter tab.
+    pub activity_filter: ActivityFilter,
+    /// Activity shows only the account that acts (`.` on Activity).
+    pub activity_account_only: bool,
+}
+
+pub struct App {
+    pub paths: wallet_core::paths::Paths,
+    pub registry: wallet_core::registry::Registry,
+    pub network_id: String,
+    pub config: AppConfig,
+    pub theme: Theme,
+    pub meta: Option<WalletMeta>,
+    /// The engine: in the daemon, or here when standalone ([`quai_engine::client::Engine`]).
+    pub worker: Option<quai_engine::client::Engine>,
+    pub dash: Dashboard,
+    pub modal: Modal,
+    pub onboarding: Option<Onboarding>,
+    /// A wallet switch is waiting for the new wallet's accounts before the open view can ask for
+    /// anything. Set when the switch starts, cleared by the first dashboard that has accounts.
+    pub reload_view_on_accounts: bool,
+    pub quit: bool,
+    pub dirty: bool,
+    pub last_frame: Instant,
+    /// A non-secret form set aside by auto-lock, restored after unlock.
+    pub parked: Option<Form>,
+    /// Writes preferences off the UI thread.
+    pub persist: super::persist::Lane,
+    /// The last frame's composed content before the edge light (see `ui::draw_edges`).
+    pub content: Option<ratatui::buffer::Buffer>,
+    /// The open network's profile, and what it was built for (`net`).
+    pub net_cache: std::cell::RefCell<Option<(String, std::rc::Rc<wallet_core::network::NetworkProfile>)>>,
+    /// `activity_rows`, and the fingerprint of what it was built from.
+    pub activity_cache: std::cell::RefCell<Option<(u64, Vec<ActivityRow>)>>,
+    /// Markets and the swap card are drawn side by side (the trader layout, at this width).
+    pub trader: bool,
+    /// Moves on at every lock and every wallet or network switch. A decrypted conversation that
+    /// was asked for under an older value is dropped when it arrives, so nothing private
+    /// reappears after the wallet locked or changed.
+    pub private_epoch: u64,
+    /// Palette entries chosen lately, newest first (`palette::Entry::key`).
+    pub palette_recent: Vec<String>,
     /// Ecosystem data: portfolio, images, swaps, NFTs.
     pub eco: super::eco::Eco,
     /// Background data worker (explorer, prices, images, quotes).
     pub data: Option<super::data::DataWorker>,
-    /// Kind of the review being committed (follow-ups after submission).
-    pub committing_kind: Option<wallet_core::journal::OpKind>,
-    /// The help overlay shows the one-time "what moved" note.
-    pub help_moved: bool,
+    /// The chat docked beside every screen.
+    pub dock: Dock,
+    /// Every wallet on this computer, for the Wallets screen.
+    pub cockpit: Cockpit,
+    /// What arrived, and how it was said.
+    pub news: News,
+    /// Work running off the UI thread for this screen.
+    pub tasks: Tasks,
+    /// What the app is doing and has said.
+    pub status: Status,
+    /// The lock screen and the unlock in flight.
+    pub lock: Lock,
+    /// Effects: lights, flashes and the ambient scene.
+    pub fx: Fx,
+    /// The keyboard and pointer: what can be clicked and what was pressed.
+    pub input: Input,
+    /// The terminal: what it can do and how the frame fits it.
+    pub term: TermState,
+    /// Where the user is: screen, pane, cursor, history.
+    pub nav: Nav,
 }
 
 mod actions;
@@ -1335,128 +1395,134 @@ impl App {
             registry: wallet_core::registry::Registry::new(paths.clone()),
             paths,
             network_id,
-            qr_rect: None,
-            big_text: Default::default(),
-            links_known: Default::default(),
-            links_shown: Default::default(),
-            pending_unlock: None,
             config,
             theme,
-            light_hint: false,
-            no_color: false,
-            caps,
             onboarding: if meta.is_none() { Some(Onboarding::Choose { selected: 0 }) } else { None },
-            creating: None,
-            wallets: Vec::new(),
-            wallet_summaries: HashMap::new(),
-            wallet_quai: HashMap::new(),
-            monitor_check: None,
-            ipfs_check: None,
             reload_view_on_accounts: false,
-            contract_probe: None,
-            contract_found: None,
-            contract_asked: Default::default(),
-            locked: signable,
             meta,
             worker: None,
             dash: Dashboard::default(),
-            screen: Screen::Home,
             modal: Modal::None,
-            selected: 0,
-            jump_pending: None,
-            toasts: Vec::new(),
-            busy: None,
-            signing: None,
-            lock_input: String::new(),
-            last_input: Instant::now(),
             quit: false,
-            ambient: None,
-            lock_fade: None,
-            lock_rested: false,
-            edge_intro: None,
-            beat_order: 2,
-            recent_hashes: std::collections::VecDeque::new(),
-            row_flash: HashMap::new(),
-            drawer_flash: HashMap::new(),
-            poem_haiku: None,
-            kitty: KittyGraphics::default(),
             dirty: true,
             last_frame: Instant::now(),
-            pending_theme_reload: false,
-            bell: false,
-            beat: None,
-            hairline: None,
-            arrivals_unseen: false,
-            gutter_flash: None,
-            glint_at: None,
-            last_switch: None,
-            pill_resolved: None,
-            last_bell: None,
-            arrival_said: None,
-            first_payment: None,
-            unlocked_news: Vec::new(),
-            drawer_new: Default::default(),
-            hold: None,
-            konami: 0,
-            dropped_review: None,
-            focus_at: None,
-            notices_out: Vec::new(),
-            paste_hint_shown: false,
-            busy_at: None,
-            signing_at: None,
-            lowest_hash: None,
-            unlocked_at: None,
-            clipboard: None,
-            copying: None,
-            log: std::collections::VecDeque::new(),
             parked: None,
-            lock_error: None,
-            unlocking: false,
-            unlocking_since: None,
-            handoff_pending: None,
-            switch_lock_pending: false,
-            lock_warned: false,
-            theme_override: None,
-            plain: false,
-            pane: 0,
-            focused: true,
-            focus_gained_at: None,
-            hits: Default::default(),
-            lists: Default::default(),
-            pointer: Default::default(),
-            modal_since: Default::default(),
-            modal_kind: Default::default(),
-            help_scroll: 0,
-            mouse_released: false,
-            terminal_background: None,
             activity_cache: std::cell::RefCell::new(None),
-            activity_account_only: false,
             net_cache: std::cell::RefCell::new(None),
             content: None,
-            spun: false,
             persist: super::persist::Lane::start(),
-            last_size: (80, 24),
-            section_tabs: [0; 7],
-            last_exchange: Screen::Swap,
-            views: HashMap::new(),
-            history: Vec::new(),
-            going_back: false,
-            breakpoint: Default::default(),
-            short: false,
             trader: false,
-            dock_shown: false,
-            dock_focus: false,
-            dock_draft: String::new(),
             private_epoch: 0,
-            handoff: None,
             palette_recent: Vec::new(),
-            activity_filter: ActivityFilter::All,
-            detail: Vec::new(),
-            detail_selected: 0,
             eco,
             data: None,
-            committing_kind: None,
-            help_moved: false,
+            dock: Dock { shown: false, focus: false, draft: String::new() },
+            cockpit: Cockpit { list: Vec::new(), summaries: HashMap::new(), quai: HashMap::new() },
+            news: News { arrivals_unseen: false, arrival_said: None, first_payment: None, unlocked_news: Vec::new(), last_bell: None },
+            tasks: Tasks {
+                creating: None,
+                monitor_check: None,
+                ipfs_check: None,
+                contract_probe: None,
+                contract_found: None,
+                contract_asked: Default::default(),
+                clipboard: None,
+                copying: None,
+            },
+            status: Status {
+                toasts: Vec::new(),
+                busy: None,
+                signing: None,
+                busy_at: None,
+                signing_at: None,
+                log: std::collections::VecDeque::new(),
+                notices_out: Vec::new(),
+                committing_kind: None,
+            },
+            lock: Lock {
+                pending: None,
+                locked: signable,
+                input: String::new(),
+                fade: None,
+                rested: false,
+                error: None,
+                unlocking: false,
+                unlocking_since: None,
+                handoff_pending: None,
+                switch_pending: false,
+                warned: false,
+                dropped_review: None,
+                unlocked_at: None,
+                handoff: None,
+            },
+            fx: Fx {
+                ambient: None,
+                edge_intro: None,
+                beat_order: 2,
+                recent_hashes: std::collections::VecDeque::new(),
+                row_flash: HashMap::new(),
+                drawer_flash: HashMap::new(),
+                poem_haiku: None,
+                bell: false,
+                beat: None,
+                hairline: None,
+                gutter_flash: None,
+                glint_at: None,
+                pill_resolved: None,
+                konami: 0,
+                spun: false,
+                lowest_hash: None,
+                drawer_new: Default::default(),
+            },
+            input: Input {
+                hits: Default::default(),
+                lists: Default::default(),
+                pointer: Default::default(),
+                mouse_released: false,
+                modal_since: Default::default(),
+                modal_kind: Default::default(),
+                hold: None,
+                last_input: Instant::now(),
+                paste_hint_shown: false,
+                focus_at: None,
+            },
+            term: TermState {
+                qr_rect: None,
+                big_text: Default::default(),
+                links_known: Default::default(),
+                links_shown: Default::default(),
+                light_hint: false,
+                no_color: false,
+                caps,
+                kitty: KittyGraphics::default(),
+                pending_theme_reload: false,
+                theme_override: None,
+                plain: false,
+                background: None,
+                last_size: (80, 24),
+                breakpoint: Default::default(),
+                short: false,
+                focused: true,
+                focus_gained_at: None,
+            },
+            nav: Nav {
+                screen: Screen::Home,
+                pane: 0,
+                selected: 0,
+                jump_pending: None,
+                last_switch: None,
+                section_tabs: [0; 7],
+                views: HashMap::new(),
+                history: Vec::new(),
+                going_back: false,
+                last_exchange: Screen::Swap,
+                detail: Vec::new(),
+                detail_selected: 0,
+                help_scroll: 0,
+                help_moved: false,
+                activity_filter: ActivityFilter::All,
+                activity_account_only: false,
+            },
         }
     }
 
@@ -1470,9 +1536,9 @@ impl App {
     pub fn motion(&self) -> Motion {
         // Plain is still: a screen reader has nothing to gain from motion, and every frame it
         // would cost is one more thing re-read.
-        if self.plain {
+        if self.term.plain {
             Motion::Off
-        } else if self.caps.ssh && self.config.motion.effects() {
+        } else if self.term.caps.ssh && self.config.motion.effects() {
             Motion::Reduced
         } else {
             self.config.motion
@@ -1490,7 +1556,7 @@ impl App {
             // Only a match: the terminal's background under a different theme would change
             // every contrast the theme was checked against.
             BackgroundMode::Auto => {
-                let (tr, tg, tb) = self.terminal_background?;
+                let (tr, tg, tb) = self.term.background?;
                 let close = |a: u8, b: u8| a.abs_diff(b) <= 3;
                 (close(r, tr) && close(g, tg) && close(b, tb)).then_some(self.theme.surface)
             }
@@ -1515,7 +1581,7 @@ impl App {
     /// The screen pane drawn as focused: none while the pinned chat has the keyboard, so there
     /// is one lit panel. (Input reads `pane`; drawing reads this.)
     pub fn lit_pane(&self) -> Option<usize> {
-        (!self.dock_focus).then_some(self.pane)
+        (!self.dock.focus).then_some(self.nav.pane)
     }
 
     /// The account picker, on the account that acts now.
@@ -1541,15 +1607,15 @@ impl App {
     /// The wallet switcher, on the open wallet.
     pub fn open_wallet_switcher(&mut self) {
         self.load_wallets();
-        let here = self.meta.as_ref().and_then(|m| self.wallets.iter().position(|w| w.id == m.id)).unwrap_or(0);
+        let here = self.meta.as_ref().and_then(|m| self.cockpit.list.iter().position(|w| w.id == m.id)).unwrap_or(0);
         self.modal = Modal::Wallets { selected: here };
     }
 
     /// Go to a tab: the Exchange tab returns to the exchange view last shown.
     pub fn open_tab(&mut self, tab: Screen) {
         let features = self.config.features;
-        if tab.is_exchange() && self.last_exchange.enabled(&features) {
-            self.switch(self.last_exchange);
+        if tab.is_exchange() && self.nav.last_exchange.enabled(&features) {
+            self.switch(self.nav.last_exchange);
         } else {
             self.switch(tab);
         }
@@ -1563,7 +1629,7 @@ impl App {
             IconMode::Nerd => Set::Nerd,
             IconMode::Unicode => Set::Unicode,
             IconMode::Ascii => Set::Ascii,
-            IconMode::Auto if self.plain || std::env::var("TERM").is_ok_and(|t| t == "linux") => Set::Ascii,
+            IconMode::Auto if self.term.plain || std::env::var("TERM").is_ok_and(|t| t == "linux") => Set::Ascii,
             IconMode::Auto if super::icons::nerd_detected() => Set::Nerd,
             IconMode::Auto => Set::Unicode,
         }
@@ -1581,7 +1647,7 @@ impl App {
     pub fn pointer_mode(&self) -> super::term::Pointer {
         use super::term::Pointer;
         use wallet_core::config::MouseMode;
-        if self.mouse_released {
+        if self.input.mouse_released {
             return Pointer::Off;
         }
         match self.config.mouse {
@@ -1589,7 +1655,7 @@ impl App {
             MouseMode::Click => Pointer::Clicks,
             MouseMode::Full => Pointer::Hover,
             MouseMode::Auto if std::env::var("TERM").is_ok_and(|t| t == "linux") => Pointer::Off,
-            MouseMode::Auto if self.caps.ssh => Pointer::Clicks,
+            MouseMode::Auto if self.term.caps.ssh => Pointer::Clicks,
             MouseMode::Auto => Pointer::Hover,
         }
     }
@@ -1599,18 +1665,18 @@ impl App {
     }
 
     pub fn animating(&self) -> bool {
-        self.edge_intro.is_some_and(|s| s.elapsed().as_millis() < super::edge::INTRO_TOTAL_MS)
-            || self.row_flash.values().any(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
-            || self.drawer_flash.values().any(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
-            || self.gutter_flash.is_some_and(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
-            || self.ambient.is_some()
-            || self.lock_fade.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() < 500)
+        self.fx.edge_intro.is_some_and(|s| s.elapsed().as_millis() < super::edge::INTRO_TOTAL_MS)
+            || self.fx.row_flash.values().any(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
+            || self.fx.drawer_flash.values().any(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
+            || self.fx.gutter_flash.is_some_and(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
+            || self.fx.ambient.is_some()
+            || self.lock.fade.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() < 500)
             || matches!(self.modal, Modal::Effects(_))
     }
 
     /// Input arrived: the screen's auto-lock starts over, and the engine's with it.
     pub(crate) fn note_input(&mut self) {
-        self.last_input = Instant::now();
+        self.input.last_input = Instant::now();
         if let Some(w) = &self.worker {
             w.activity();
         }
@@ -1627,7 +1693,7 @@ impl App {
         if let Cmd::Quote { direction, amount } = cmd {
             let key = self.eco.convert.protocol_key.get().wrapping_add(1).max(1);
             self.eco.convert.protocol_key.set(key);
-            self.send_data(super::data::DataCmd::ProtocolQuote { key, direction, amount, card: self.screen == Screen::Convert });
+            self.send_data(super::data::DataCmd::ProtocolQuote { key, direction, amount, card: self.nav.screen == Screen::Convert });
             return;
         }
         if matches!(cmd, Cmd::Prepare(_)) {
@@ -1641,7 +1707,7 @@ impl App {
     /// Send a light along the header hairline. It plays in Full and Vivid; the other levels
     /// keep the news in its static form (a toast, a marker, a state).
     pub fn signal(&mut self, s: super::edge::Signal) {
-        self.hairline = Some((s, Instant::now()));
+        self.fx.hairline = Some((s, Instant::now()));
         self.dirty = true;
     }
 
@@ -1657,11 +1723,11 @@ impl App {
     /// A toast of any severity; `id` names one the app will update or take back.
     pub fn toast_as(&mut self, text: impl Into<String>, level: Severity, id: Option<&'static str>) {
         let toast = Toast { text: text.into(), level, at: Instant::now(), id };
-        self.log.push_front(toast.clone());
-        self.log.truncate(50);
-        self.toasts.push(toast);
-        if self.toasts.len() > 4 {
-            self.toasts.remove(0);
+        self.status.log.push_front(toast.clone());
+        self.status.log.truncate(50);
+        self.status.toasts.push(toast);
+        if self.status.toasts.len() > 4 {
+            self.status.toasts.remove(0);
         }
         self.dirty = true;
     }
@@ -1674,31 +1740,31 @@ impl App {
     pub(crate) fn konami(&mut self, code: crossterm::event::KeyCode) -> bool {
         use crossterm::event::KeyCode::{Char, Down, Left, Right, Up};
         const CODE: [crossterm::event::KeyCode; 10] = [Up, Up, Down, Down, Left, Right, Left, Right, Char('b'), Char('a')];
-        if CODE.get(self.konami) == Some(&code) {
-            self.konami += 1;
+        if CODE.get(self.fx.konami) == Some(&code) {
+            self.fx.konami += 1;
         } else {
-            self.konami = usize::from(code == CODE[0]);
+            self.fx.konami = usize::from(code == CODE[0]);
         }
-        if self.konami == CODE.len() {
-            self.konami = 0;
+        if self.fx.konami == CODE.len() {
+            self.fx.konami = 0;
             self.theme = super::themes::genesis(&self.theme);
             self.info("Genesis · Quai red on true black, for this session");
             return true;
         }
-        self.konami > 0 && !matches!(code, Up | Down)
+        self.fx.konami > 0 && !matches!(code, Up | Down)
     }
 
     /// Hold to sign: count an Enter on this review. True once it has been held long enough;
     /// a pause longer than a key repeat starts the hold over.
     pub(crate) fn held_to_sign(&mut self, op: &str) -> bool {
         let now = Instant::now();
-        match self.hold.as_mut() {
+        match self.input.hold.as_mut() {
             Some((id, start, last)) if id == op && now.duration_since(*last) < HOLD_GAP => {
                 *last = now;
                 now.duration_since(*start) >= HOLD_TO_SIGN
             }
             _ => {
-                self.hold = Some((op.to_string(), now, now));
+                self.input.hold = Some((op.to_string(), now, now));
                 false
             }
         }
@@ -1732,7 +1798,7 @@ impl App {
         // Unicode marks: a window manager's title font may have no Nerd Font glyphs.
         let status = if self.meta.is_none() {
             String::new()
-        } else if self.locked {
+        } else if self.lock.locked {
             format!("{} locked", Icon::Locked.glyph(Set::Unicode))
         } else if let n @ 1.. = self.confirming_ops().len() {
             format!("{} {n} confirming", Icon::InFlight.glyph(Set::Unicode))
@@ -1747,7 +1813,7 @@ impl App {
     /// Taskbar progress (OSC 9;4 state): busy (3) while transactions confirm or one is being
     /// prepared, nothing (0) otherwise.
     pub fn taskbar_state(&self) -> u8 {
-        if !self.locked && (self.busy_label().is_some() || !self.confirming_ops().is_empty()) { 3 } else { 0 }
+        if !self.lock.locked && (self.busy_label().is_some() || !self.confirming_ops().is_empty()) { 3 } else { 0 }
     }
 
     pub fn confirming_ops(&self) -> Vec<&wallet_core::appdb::Operation> {
@@ -1762,12 +1828,12 @@ impl App {
         // Borders draw themselves in (see `edge`); content appears at once, so amounts never
         // animate. Fast hands win: a switch right after another (a held `]`, digits in a row)
         // just shows the screen, with no borders blanking on every step.
-        let rapid = self.last_switch.is_some_and(|at| at.elapsed() < FAST_HANDS);
-        self.last_switch = Some(Instant::now());
+        let rapid = self.nav.last_switch.is_some_and(|at| at.elapsed() < FAST_HANDS);
+        self.nav.last_switch = Some(Instant::now());
         if self.motion().effects() && !rapid {
-            self.edge_intro = Some(Instant::now());
+            self.fx.edge_intro = Some(Instant::now());
         } else {
-            self.edge_intro = None;
+            self.fx.edge_intro = None;
         }
     }
 
@@ -1776,9 +1842,9 @@ impl App {
     /// The busy label as the header shows it: after a few seconds, how long it has run, and for
     /// the slow first Qi scan what it usually takes. Setting the expectation is the kindness.
     pub fn busy_text(&self) -> Option<String> {
-        let (label, at) = match &self.signing {
-            Some(s) => (s.as_str(), self.signing_at),
-            None => (self.busy.as_deref()?, self.busy_at),
+        let (label, at) = match &self.status.signing {
+            Some(s) => (s.as_str(), self.status.signing_at),
+            None => (self.status.busy.as_deref()?, self.status.busy_at),
         };
         let secs = at.map(|a| a.elapsed().as_secs()).unwrap_or(0);
         let mut text = label.to_string();
@@ -1792,7 +1858,7 @@ impl App {
     }
 
     pub fn busy_label(&self) -> Option<&str> {
-        self.signing.as_deref().or(self.busy.as_deref())
+        self.status.signing.as_deref().or(self.status.busy.as_deref())
     }
 
     pub fn can_sign(&self) -> bool {
@@ -1801,8 +1867,8 @@ impl App {
 
     /// Seconds until auto-lock, when it applies.
     pub fn autolock_remaining(&self) -> Option<u64> {
-        (!self.locked && self.can_sign() && self.config.auto_lock_minutes > 0)
-            .then(|| (u64::from(self.config.auto_lock_minutes) * 60).saturating_sub(self.last_input.elapsed().as_secs()))
+        (!self.lock.locked && self.can_sign() && self.config.auto_lock_minutes > 0)
+            .then(|| (u64::from(self.config.auto_lock_minutes) * 60).saturating_sub(self.input.last_input.elapsed().as_secs()))
     }
 
     /// The sections in the sidebar: those with at least one view whose feature is on.
@@ -1820,21 +1886,21 @@ impl App {
             return;
         };
         let idx = Section::ALL.iter().position(|s| *s == section).unwrap_or(0);
-        let last = section.all_screens().get(self.section_tabs[idx]).copied();
+        let last = section.all_screens().get(self.nav.section_tabs[idx]).copied();
         let features = self.config.features;
         self.switch(last.filter(|s| screens.contains(&s.tab_of(&features)) && s.enabled(&features)).unwrap_or(first));
     }
 
     /// Breadcrumb for the header: `Home › Portfolio › WQI`.
     pub fn breadcrumb(&self) -> Vec<String> {
-        let section = self.screen.section();
+        let section = self.nav.screen.section();
         let mut parts = vec![section.title().to_string()];
         if section == Section::Activity {
-            parts.push(self.activity_filter.title().to_string());
+            parts.push(self.nav.activity_filter.title().to_string());
         } else if section.screens(&self.config.features).len() > 1 {
-            parts.push(self.screen.tab_title().to_string());
+            parts.push(self.nav.screen.tab_title().to_string());
         }
-        for d in &self.detail {
+        for d in &self.nav.detail {
             parts.push(self.detail_title(d));
         }
         parts
@@ -1842,65 +1908,65 @@ impl App {
 
     pub fn switch(&mut self, screen: Screen) {
         // Leaving Qi: its new-coin marks have been seen.
-        if self.screen == Screen::Qi && screen != Screen::Qi {
-            self.drawer_new.clear();
+        if self.nav.screen == Screen::Qi && screen != Screen::Qi {
+            self.fx.drawer_new.clear();
         }
         if screen == Screen::Activity {
-            self.arrivals_unseen = false;
-            self.first_payment = None;
+            self.news.arrivals_unseen = false;
+            self.news.first_payment = None;
         }
         if matches!(screen, Screen::Accounts | Screen::Qi) {
-            self.unlocked_news.clear();
+            self.news.unlocked_news.clear();
         }
         if let Some(feature) = screen.feature().filter(|f| !self.config.features.on(*f)) {
             self.info(format!("{} · System › Settings", feature.off_note()));
             return;
         }
         if screen.is_exchange() {
-            self.last_exchange = screen;
+            self.nav.last_exchange = screen;
         }
         // Leaving Markets from its pair list: the chart keeps that pair wherever it is drawn next.
-        if self.screen == Screen::Markets && self.pane == 0 && screen != Screen::Markets {
-            self.eco.markets_view.pair_selected = self.selected;
+        if self.nav.screen == Screen::Markets && self.nav.pane == 0 && screen != Screen::Markets {
+            self.eco.markets_view.pair_selected = self.nav.selected;
         }
         let section = screen.section();
         if let (Some(si), Some(ti)) =
             (Section::ALL.iter().position(|s| *s == section), section.all_screens().iter().position(|s| *s == screen))
         {
-            self.section_tabs[si] = ti;
+            self.nav.section_tabs[si] = ti;
         }
-        if self.screen != screen || !self.detail.is_empty() {
-            if self.screen != screen {
+        if self.nav.screen != screen || !self.nav.detail.is_empty() {
+            if self.nav.screen != screen {
                 // Leaving: remember where, and that it was here (for going back).
-                let key = self.row_key(super::hit::ListId::Screen(self.screen, self.pane), self.selected);
-                self.views.insert(self.screen, ViewState { pane: self.pane, selected: self.selected, key });
-                if !self.going_back {
-                    self.history.retain(|s| *s != self.screen);
-                    self.history.push(self.screen);
-                    if self.history.len() > 20 {
-                        self.history.remove(0);
+                let key = self.row_key(super::hit::ListId::Screen(self.nav.screen, self.nav.pane), self.nav.selected);
+                self.nav.views.insert(self.nav.screen, ViewState { pane: self.nav.pane, selected: self.nav.selected, key });
+                if !self.nav.going_back {
+                    self.nav.history.retain(|s| *s != self.nav.screen);
+                    self.nav.history.push(self.nav.screen);
+                    if self.nav.history.len() > 20 {
+                        self.nav.history.remove(0);
                     }
                 }
             }
-            self.kitty.clear(self.caps.tmux);
-            self.screen = screen;
-            self.selected = 0;
-            self.pane = 0;
-            self.detail.clear();
-            self.detail_selected = 0;
+            self.term.kitty.clear(self.term.caps.tmux);
+            self.nav.screen = screen;
+            self.nav.selected = 0;
+            self.nav.pane = 0;
+            self.nav.detail.clear();
+            self.nav.detail_selected = 0;
             // Arriving: where this screen was left, on the same row if it is still there.
-            if let Some(v) = self.views.get(&screen).cloned() {
-                self.pane = v.pane.min(screen.panes().saturating_sub(1));
-                let list = super::hit::ListId::Screen(screen, self.pane);
+            if let Some(v) = self.nav.views.get(&screen).cloned() {
+                self.nav.pane = v.pane.min(screen.panes().saturating_sub(1));
+                let list = super::hit::ListId::Screen(screen, self.nav.pane);
                 let len = self.list_len();
-                self.selected = v
+                self.nav.selected = v
                     .key
                     .as_ref()
                     .and_then(|k| (0..len).find(|i| self.row_key(list, *i).as_ref() == Some(k)))
                     .unwrap_or(if len == 0 { v.selected } else { v.selected.min(len - 1) });
             }
             if screen == Screen::Network {
-                self.selected = self.dash.networks.iter().position(|(id, _)| *id == self.dash.network_id).unwrap_or(0);
+                self.nav.selected = self.dash.networks.iter().position(|(id, _)| *id == self.dash.network_id).unwrap_or(0);
             }
             self.start_transition();
             self.unfocus_cards();
@@ -1911,16 +1977,16 @@ impl App {
     /// Backspace, ctrl-o: close an open detail, or return to the screen before this one, as it
     /// was left.
     pub fn go_back(&mut self) {
-        if !self.detail.is_empty() {
-            self.detail.pop();
-            self.detail_selected = 0;
+        if !self.nav.detail.is_empty() {
+            self.nav.detail.pop();
+            self.nav.detail_selected = 0;
             return;
         }
-        while let Some(prev) = self.history.pop() {
-            if prev != self.screen && prev.enabled(&self.config.features) {
-                self.going_back = true;
+        while let Some(prev) = self.nav.history.pop() {
+            if prev != self.nav.screen && prev.enabled(&self.config.features) {
+                self.nav.going_back = true;
                 self.switch(prev);
-                self.going_back = false;
+                self.nav.going_back = false;
                 return;
             }
         }
@@ -1932,16 +1998,16 @@ impl App {
         if let Some(left) = self.autolock_remaining()
             && left <= 60
             && left > 0
-            && !self.lock_warned
+            && !self.lock.warned
         {
-            self.lock_warned = true;
-            self.bell = self.config.sound;
+            self.lock.warned = true;
+            self.fx.bell = self.config.sound;
             self.toast_as(format!("locking in {left}s · any key keeps it open"), Severity::Attention, Some("autolock"));
         }
         // The countdown counts, and goes the moment a key has kept the wallet open.
         match self.autolock_remaining() {
-            Some(left) if left <= 60 && self.lock_warned => {
-                if let Some(t) = self.toasts.iter_mut().find(|t| t.id == Some("autolock")) {
+            Some(left) if left <= 60 && self.lock.warned => {
+                if let Some(t) = self.status.toasts.iter_mut().find(|t| t.id == Some("autolock")) {
                     let text = format!("locking in {left}s · any key keeps it open");
                     if t.text != text {
                         t.text = text;
@@ -1950,27 +2016,27 @@ impl App {
                 }
             }
             _ => {
-                let before = self.toasts.len();
-                self.toasts.retain(|t| t.id != Some("autolock"));
-                self.dirty |= before != self.toasts.len();
+                let before = self.status.toasts.len();
+                self.status.toasts.retain(|t| t.id != Some("autolock"));
+                self.dirty |= before != self.status.toasts.len();
             }
         }
         if self.autolock_remaining() == Some(0) {
             self.lock_now(Some(size));
-            self.last_input = Instant::now();
+            self.input.last_input = Instant::now();
         }
         // A hold that stopped short lets go: the bar goes back to showing what was read.
-        if self.hold.as_ref().is_some_and(|(_, _, last)| last.elapsed() >= HOLD_GAP) {
-            self.hold = None;
+        if self.input.hold.as_ref().is_some_and(|(_, _, last)| last.elapsed() >= HOLD_GAP) {
+            self.input.hold = None;
             self.dirty = true;
         }
-        if self.pill_resolved.as_ref().is_some_and(|(_, at)| at.elapsed() >= PILL_RESOLVED) {
-            self.pill_resolved = None;
+        if self.fx.pill_resolved.as_ref().is_some_and(|(_, at)| at.elapsed() >= PILL_RESOLVED) {
+            self.fx.pill_resolved = None;
             self.dirty = true;
         }
-        let before = self.toasts.len();
-        self.toasts.retain(|t| t.at.elapsed().as_secs() < t.lasts());
-        if before != self.toasts.len() {
+        let before = self.status.toasts.len();
+        self.status.toasts.retain(|t| t.at.elapsed().as_secs() < t.lasts());
+        if before != self.status.toasts.len() {
             self.dirty = true;
         }
         // A lock screen that isn't being drawn yet (no size) gets its first effect here. Effects
@@ -1978,23 +2044,23 @@ impl App {
         // stilled it and the field was cleared. Without looping the screen rests until the next lock.
         // The fade is judged by its age, not by whether a frame has cleared it: once it is over,
         // nothing animates, so no frame is drawn to clear it.
-        let faded = self.lock_fade.as_ref().is_none_or(|(_, at)| at.elapsed().as_millis() >= super::ui::HANDOVER_MS);
-        let replay = self.config.lock_loop && self.lock_rested && faded && self.lock_input.is_empty() && !self.unlocking;
-        if self.locked && self.ambient.is_none() && (!self.lock_rested || replay) && self.meta.is_some() {
-            self.lock_rested = false;
-            self.lock_fade = None;
+        let faded = self.lock.fade.as_ref().is_none_or(|(_, at)| at.elapsed().as_millis() >= super::ui::HANDOVER_MS);
+        let replay = self.config.lock_loop && self.lock.rested && faded && self.lock.input.is_empty() && !self.lock.unlocking;
+        if self.lock.locked && self.fx.ambient.is_none() && (!self.lock.rested || replay) && self.meta.is_some() {
+            self.lock.rested = false;
+            self.lock.fade = None;
             self.start_lock_ceremony(size);
         }
         if matches!(self.modal, Modal::Effects(_)) {
             self.dirty = true;
         }
         // An unlock that never answers must not leave the screen ignoring the keyboard.
-        if let Some(at) = self.unlocking_since
+        if let Some(at) = self.lock.unlocking_since
             && at.elapsed() > std::time::Duration::from_secs(30)
         {
-            self.unlocking = false;
-            self.unlocking_since = None;
-            self.lock_error = Some("the wallet did not answer — try again".into());
+            self.lock.unlocking = false;
+            self.lock.unlocking_since = None;
+            self.lock.error = Some("the wallet did not answer — try again".into());
             self.dirty = true;
         }
     }

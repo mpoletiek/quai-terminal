@@ -20,7 +20,7 @@ fn every_collected_tile_gets_its_picture() {
         ..Default::default()
     };
     let mut app = App::new(paths, "local".into(), connected, theme, caps, Some(meta));
-    app.locked = false;
+    app.lock.locked = false;
     app.onboarding = None;
     app.config.motion = Motion::Off;
     let mut items = Vec::new();
@@ -35,7 +35,10 @@ fn every_collected_tile_gets_its_picture() {
             enc.write_header().unwrap().write_image_data(&px).unwrap();
         }
         let r = std::sync::Arc::new(wallet_core::media::trusted_rendition(&png, wallet_core::media::THUMB).unwrap());
-        app.eco.images.insert((url.clone(), wallet_core::media::THUMB), super::super::eco::ImageSlot::Ready(r, std::time::Instant::now()));
+        app.eco
+            .media
+            .images
+            .insert((url.clone(), wallet_core::media::THUMB), super::super::eco::ImageSlot::Ready(r, std::time::Instant::now()));
         let item = NftItem {
             contract: format!("0x00{i}"),
             token_id: i.to_string(),
@@ -45,7 +48,7 @@ fn every_collected_tile_gets_its_picture() {
         };
         items.push(OwnedNft { item, owner: "0x00".into(), kind: TokenKind::Erc721, quantity: "1".into(), verified: true });
     }
-    app.eco.nfts.settle(Ok(items));
+    app.eco.nft.nfts.settle(Ok(items));
     app.switch(Screen::Collected);
     let mut term = Terminal::new(TestBackend::new(160, 48)).unwrap();
     // Pictures are fitted and encoded off the UI thread: the first frame reserves their cells, and

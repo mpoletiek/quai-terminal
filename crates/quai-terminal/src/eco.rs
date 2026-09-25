@@ -1,12 +1,12 @@
 //! Ecosystem commands: portfolio, prices, token discovery, swaps, NFTs, marketplace, data sources.
 
-use wallet_core::journal::OpKind;
 use crate::args::*;
 use crate::commands::Ctx;
 use serde_json::json;
 use wallet_core::amount;
 use wallet_core::appdb::OpStatus;
 use wallet_core::explorer::TokenKind;
+use wallet_core::journal::OpKind;
 use wallet_core::portfolio::{PriceKind, Trust};
 use wallet_core::registry::now;
 use wallet_core::sdk::U256;
@@ -35,7 +35,7 @@ fn trust_mark(ctx: &Ctx, t: Trust) -> String {
 
 /// All clients use the same durable operation dependencies and next-review builders.
 pub async fn plan(ctx: &Ctx, cmd: PlanCmd) -> Result<()> {
-    use wallet_core::execution::Coordinator;
+    use quai_engine::plans::Runner;
     match cmd {
         PlanCmd::List => {
             let s = ctx.session().await?;
@@ -71,20 +71,18 @@ pub async fn plan(ctx: &Ctx, cmd: PlanCmd) -> Result<()> {
         PlanCmd::Resume { id, discard_unsigned } => {
             let mut s = ctx.unlocked().await?;
             s.track().await?;
-            let mut runner = Coordinator::resume(&s, &id)?;
-            if discard_unsigned {
-                runner.discard_unsigned(&mut s)?;
-            }
+            let mut runner = Runner::resume(&mut s, Some(&id), discard_unsigned)?;
             continue_plan(ctx, &mut s, &mut runner).await?;
         }
         PlanCmd::Cancel { id } => {
             let mut s = ctx.session().await?;
-            let mut runner = Coordinator::resume(&s, &id)?;
+            let mut runner = Runner::resume(&mut s, Some(&id), false)?;
             runner.cancel(&mut s)?;
+            let plan = s.app.trade_plan(&id)?.ok_or_else(|| CoreError::NotFound("trade plan".into()))?;
             if ctx.out.json() {
-                ctx.out.emit("plan cancelled", &runner.plan);
+                ctx.out.emit("plan cancelled", &plan);
             } else {
-                println!("plan {} cancelled; completed transactions and allowances remain", runner.plan.id);
+                println!("plan {} cancelled; completed transactions and allowances remain", plan.id);
             }
         }
     }
@@ -101,50 +99,75 @@ pub(crate) async fn run_action(
 ) -> Result<wallet_core::tx::Submitted> {
     let intent =
         wallet_core::execution::TradingIntent { account: s.account(account)?.address, max_fee: max_fee.map(str::to_owned), action };
-    let mut runner = wallet_core::execution::Coordinator::create(s, label, intent)?;
+    let mut runner = quai_engine::plans::Runner::start(s, label, intent)?;
     if ctx.out.json() {
-        ctx.out.emit("plan created", &runner.plan);
+        let plan = s.app.trade_plan(runner.id())?;
+        ctx.out.emit("plan created", &plan);
     } else {
-        eprintln!("plan {} · resume with `plan resume {}`", runner.plan.id, runner.plan.id);
+        eprintln!("plan {} · resume with `plan resume {}`", runner.id(), runner.id());
     }
     continue_plan(ctx, s, &mut runner).await?.ok_or_else(|| CoreError::Invalid("plan already complete".into()))
 }
 
-async fn continue_plan(
-    ctx: &Ctx,
-    s: &mut Session,
-    runner: &mut wallet_core::execution::Coordinator,
-) -> Result<Option<wallet_core::tx::Submitted>> {
+/// Walk a plan with the runner the engine uses (`quai_engine::plans`): each step reviewed and
+/// authorized here, and the next prepared only once the last one is in.
+async fn continue_plan(ctx: &Ctx, s: &mut Session, runner: &mut quai_engine::plans::Runner) -> Result<Option<wallet_core::tx::Submitted>> {
+    use quai_engine::plans::{Next, Phase};
     let mut last_submission = None;
+    let mut waits = 0u32;
     loop {
-        let Some(review) = runner.prepare(s).await? else {
-            if ctx.out.json() {
-                ctx.out.emit("plan complete", &runner.plan);
-            } else {
-                println!("plan {} complete · {}", runner.plan.id, runner.plan.reason);
+        // A step sent before (a resumed plan, or the one just authorized) is waited on first.
+        if let Phase::Waiting(op_id) = runner.phase().clone() {
+            if let Err(error) = wait_confirmed(ctx, s, &op_id, 300).await {
+                runner.failed(s, &error.to_string());
+                return Err(error);
             }
-            return Ok(last_submission);
+            runner.poll(s);
+            if let Phase::Stopped(said) = runner.phase() {
+                return Err(CoreError::Execution(said.clone()));
+            }
+        }
+        let review = match runner.next(s).await {
+            Next::Review(review) => review,
+            Next::Done(said) => {
+                let plan = s.app.trade_plan(runner.id())?;
+                if ctx.out.json() {
+                    ctx.out.emit("plan complete", &plan);
+                } else {
+                    println!("plan {} complete · {}", runner.id(), plan.map(|p| p.reason).unwrap_or(said));
+                }
+                return Ok(last_submission);
+            }
+            Next::Stopped { error, .. } => return Err(CoreError::Rejected(error)),
+            // The receipt the next step needs is not in yet: track, then ask again.
+            Next::Wait(why) => {
+                waits += 1;
+                if waits > 100 {
+                    let why = why.unwrap_or_else(|| "the last step's receipt is not complete".into());
+                    runner.failed(s, &why);
+                    return Err(CoreError::Timeout(format!("{why}; resume the plan once it is")));
+                }
+                let _ = s.track().await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                continue;
+            }
         };
-        let step = wallet_core::flows::is_step(&review).then(|| review.kind.clone());
-        let submitted = match ctx.authorize(s, review).await {
+        let kind = review.kind.clone();
+        let step = wallet_core::flows::is_step(&review).then(|| kind.clone());
+        let label = runner.view().label;
+        let submitted = match ctx.authorize(s, *review).await {
             Ok(submitted) => submitted,
             Err(error) => {
-                runner.pause(s, &error.to_string())?;
+                runner.failed(s, &error.to_string());
                 return Err(error);
             }
         };
-        runner.submitted(s)?;
-        ctx.print_submitted(step.as_ref().map(|k| k.as_str()).unwrap_or(&runner.plan.label), &submitted);
-        let intent: wallet_core::execution::TradingIntent = serde_json::from_value(runner.plan.intent["intent"].clone())?;
-        if step.is_none() && !intent.has_more_allocations() {
+        runner.committed(s, &submitted, &kind)?;
+        ctx.print_submitted(step.as_ref().map(|k| k.as_str()).unwrap_or(&label), &submitted);
+        if runner.last_step_sent() {
             return Ok(Some(submitted));
         }
-        let operation_id = submitted.op_id.clone();
         last_submission = Some(submitted);
-        if let Err(error) = wait_confirmed(ctx, s, &operation_id, 300).await {
-            runner.pause(s, &error.to_string())?;
-            return Err(error);
-        }
     }
 }
 
@@ -664,7 +687,7 @@ pub async fn swap(ctx: &Ctx, args: SwapArgs) -> Result<()> {
         &format!("sequential swap via {hub_symbol}"),
         account,
         max_fee,
-        wallet_core::execution::TradingAction::CrossVenue { from, hub, to, amount: value, stage: 0, slippage, deadline },
+        wallet_core::execution::TradingAction::CrossVenue { from, hub, to, amount: value, stage: 0, slippage, deadline, redeem: false },
     )
     .await?;
     Ok(())

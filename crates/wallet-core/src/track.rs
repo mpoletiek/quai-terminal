@@ -2,10 +2,10 @@
 //!
 //! Tracking never releases claims or rebroadcasts. Missing receipts leave operations open.
 
-use crate::journal::{Detail, OpKind};
 use crate::amount;
 use crate::appdb::{Activity, OpStatus, Operation};
 use crate::error::{CoreError, Result};
+use crate::journal::{Detail, OpKind};
 use crate::network::ZONE;
 use crate::registry::now;
 use crate::session::{Session, parse_op_id};
@@ -301,7 +301,8 @@ impl Session {
                         "token_id": t.token_id,
                         "name": t.name,
                         "counterparty": if incoming { t.from.clone() } else { t.to.clone() },
-                    }).into(),
+                    })
+                    .into(),
                     observed: if t.timestamp > 0 { t.timestamp } else { now() },
                 };
                 if self.app.record_activity(&activity)? && seeded && incoming {
@@ -404,7 +405,9 @@ impl Session {
                 let kind = match op.kind.as_str() {
                     "convert_quai_to_qi" => SettlementKind::Conversion,
                     "unwrap_wqi" => SettlementKind::WqiRedemption {
-                        contract: op.detail.contract()
+                        contract: op
+                            .detail
+                            .contract()
                             .as_str()
                             .and_then(|s| s.parse().ok())
                             .ok_or_else(|| CoreError::Storage("missing WQI contract".into()))?,
@@ -412,7 +415,9 @@ impl Session {
                     },
                     _ => return Ok(None),
                 };
-                let hash = op.detail.canonical_tx()
+                let hash = op
+                    .detail
+                    .canonical_tx()
                     .as_str()
                     .or(op.tx_hash.as_deref())
                     .and_then(|h| h.parse().ok())
@@ -526,7 +531,9 @@ impl Session {
             }
             OpStatus::Settling | OpStatus::Locked if matches!(op.kind, OpKind::ConvertQiToQuai | OpKind::WrapQi) => {
                 let kind = if op.kind == OpKind::WrapQi { SettlementKind::QiWrapping } else { SettlementKind::Conversion };
-                let hash = op.detail.canonical_tx()
+                let hash = op
+                    .detail
+                    .canonical_tx()
                     .as_str()
                     .or(op.tx_hash.as_deref())
                     .and_then(|hash| hash.parse().ok())
@@ -577,7 +584,8 @@ impl Session {
                     address: coin.address.clone(),
                     tx_hash: Some(hash),
                     block: None,
-                    detail: serde_json::json!({"origin": coin.origin, "peer": coin.peer, "unlock_height": coin.unlock_height.to_string()}).into(),
+                    detail: serde_json::json!({"origin": coin.origin, "peer": coin.peer, "unlock_height": coin.unlock_height.to_string()})
+                        .into(),
                     observed: now(),
                 };
                 if self.app.record_activity(&activity)? && seeded {
@@ -739,8 +747,16 @@ async fn recheck_operation_anchors<T: Transport>(
     for (stage, (height, expected)) in [("source", source), ("destination", destination), ("source", final_source)] {
         let (Some(height), Some(expected)) = (height, expected) else { continue };
         let Some(header) = provider.header_at(ZONE, height).await? else {
-            app.transition_operation(&op.id, op.status, op.status, None, None,
-                Some(&crate::journal::Detail::from(serde_json::json!({format!("{stage}_canonicality"):"unverified", "spendability":"unverified", "finality":"unverified"}))))?;
+            app.transition_operation(
+                &op.id,
+                op.status,
+                op.status,
+                None,
+                None,
+                Some(&crate::journal::Detail::from(
+                    serde_json::json!({format!("{stage}_canonicality"):"unverified", "spendability":"unverified", "finality":"unverified"}),
+                )),
+            )?;
             report
                 .errors
                 .push(format!("{}: {stage} anchor is currently unavailable; retaining historical observation without advancing", op.id));
@@ -961,9 +977,7 @@ fn settle_result(op: &Operation, update: SettlementEvidence<'_>) -> Result<Optio
         // observed, the credit is reported by that receipt rather than verified, and spendability
         // is unattributed. A locked receipt keeps the operation open, since its maturity is a real
         // future event even though only the aggregate lock balance reports it.
-        if matches!(effect, Some(ConversionEffect::ConversionReported))
-            && patch.destination_canonicality().as_str() == Some("observed")
-        {
+        if matches!(effect, Some(ConversionEffect::ConversionReported)) && patch.destination_canonicality().as_str() == Some("observed") {
             // The proceeds of this direction are held by the protocol's conversion lockup — the
             // wallet says so in its own review ("locked ~2 weeks") — so a succeeded receipt reports
             // execution, not maturity, and the account's spendable balance does not move yet.
@@ -1252,7 +1266,9 @@ pub fn describe(op: &Operation) -> String {
             format!("swap {paid} → {approx}{} {to_symbol}", amount::group_thousands(&out))
         }
         "nft_list" | "nft_reprice" | "nft_unlist" => {
-            let name = op.detail.name()
+            let name = op
+                .detail
+                .name()
                 .as_str()
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("NFT #{}", op.detail.token_id().as_str().unwrap_or("?")));
@@ -1265,7 +1281,9 @@ pub fn describe(op: &Operation) -> String {
             }
         }
         "nft_buy" | "nft_transfer" => {
-            let name = op.detail.name()
+            let name = op
+                .detail
+                .name()
                 .as_str()
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("NFT #{}", op.detail.token_id().as_str().unwrap_or("?")));
@@ -1577,8 +1595,7 @@ mod tests {
         op.detail = serde_json::json!({}).into();
         assert_eq!(op_cost(&op).value, None, "an unknown value is not guessed as zero");
         // The UTXO ledger counts both in Qi, and its fee is fixed once signed.
-        let qi =
-            Operation { store: "qi".into(), kind: OpKind::SendQi, asset: "QI".into(), amount: "12345".into(), fee: "5".into(), ..op };
+        let qi = Operation { store: "qi".into(), kind: OpKind::SendQi, asset: "QI".into(), amount: "12345".into(), fee: "5".into(), ..op };
         let cost = op_cost(&qi);
         assert!(cost.qi && cost.fee_final);
         assert_eq!((cost.text(cost.value.unwrap()), cost.text(cost.fee.unwrap())), ("12.345 Qi".to_string(), "0.005 Qi".to_string()));

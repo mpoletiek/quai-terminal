@@ -48,11 +48,11 @@ fn id(s: &str) -> Option<String> {
 impl Known {
     fn refresh(&mut self, app: &App) {
         let d = &app.dash;
-        let pools = match &app.eco.markets_view.pools {
+        let pools = match app.eco.markets_view.pools.shown() {
             Some(Ok((pools, _))) => pools.as_slice(),
             _ => &[],
         };
-        let held = app.eco.portfolio.value().map(|p| p.rows.as_slice()).unwrap_or_default();
+        let held = app.eco.feeds.portfolio.value().map(|p| p.rows.as_slice()).unwrap_or_default();
         let key = (d.accounts.len(), d.ops.len(), d.activity.len(), d.contacts.len(), pools.len(), held.len(), app.network_id.clone());
         if key == self.key {
             return;
@@ -183,11 +183,11 @@ fn candidates(cells: &[&str]) -> Vec<Seen> {
 
 /// The links in a finished frame.
 pub fn scan(app: &App, buf: &Buffer) -> Vec<Link> {
-    if !app.caps.hyperlinks || app.plain {
+    if !app.term.caps.hyperlinks || app.term.plain {
         return Vec::new();
     }
     let Some(net) = app.net() else { return Vec::new() };
-    let mut known = app.links_known.borrow_mut();
+    let mut known = app.term.links_known.borrow_mut();
     known.refresh(app);
     if known.ids.is_empty() {
         return Vec::new();

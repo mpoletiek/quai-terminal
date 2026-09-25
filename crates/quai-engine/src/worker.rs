@@ -58,7 +58,8 @@ impl Dashboard {
     /// The account that acts when none is named: the wallet's chosen one (`@`, `account use`),
     /// else the first. Every card, sequence and form starts from it.
     pub fn active_account(&self) -> Option<&AccountBalance> {
-        let chosen = self.meta.as_ref().and_then(|m| m.active_account.clone().or_else(|| m.default_quai_account().ok().map(|a| a.address.clone())));
+        let chosen =
+            self.meta.as_ref().and_then(|m| m.active_account.clone().or_else(|| m.default_quai_account().ok().map(|a| a.address.clone())));
         chosen.and_then(|address| self.accounts.iter().find(|a| a.address.eq_ignore_ascii_case(&address))).or(self.accounts.first())
     }
 }
@@ -328,6 +329,8 @@ pub enum Cmd {
     },
     /// This wallet's trading performance.
     Pnl,
+    /// A multi-step trade (`crate::plans`), on the signing lane.
+    Plan(crate::plans::PlanCmd),
     Refresh {
         full: bool,
     },
@@ -454,6 +457,7 @@ impl Cmd {
             Cmd::Quote { .. } => "quote",
             Cmd::QiMax { .. } => "max_quote",
             Cmd::Pnl => "pnl",
+            Cmd::Plan(_) => "plan",
             Cmd::SplitQuote { .. } => "split_quote",
             Cmd::InspectContract { .. } => "inspect_contract",
             Cmd::AddAccount(_) => "add_account",
@@ -509,6 +513,8 @@ pub enum Ev {
         result: Result<wallet_core::ops::QiSpecialMax, String>,
     },
     Pnl(Result<Box<wallet_core::pnl::Pnl>, String>),
+    /// Where the running plan stands (`crate::plans`).
+    Plan(Box<crate::plans::PlanView>),
     Dashboard(Box<Dashboard>),
     /// What [`Cmd::InspectContract`] found, with the address that was asked about so a late
     /// answer for an address the user has since edited away can be dropped.
@@ -680,6 +686,9 @@ impl Worker {
             Cmd::Discard(id) => {
                 let _ = self.sign.send(SignJob::Discard(id));
             }
+            Cmd::Plan(p) => {
+                let _ = self.sign.send(SignJob::Plan(p));
+            }
             // Never the signing lane: that one is serial, and a gateway timing out in front of a
             // Prepare or a Lock would hold up a transaction — or an unlock — for as long as it
             // takes. The wallet worker already does background reads.
@@ -739,6 +748,25 @@ impl Worker {
             for job in jobs {
                 if let SignJob::Commit(id, words) = job
                     && commits.send((id, words)).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        (Worker { tx, rx, sign, pending, events }, out)
+    }
+
+    /// A worker whose trade-plan commands land in the returned receiver.
+    pub fn capture_plans() -> (Worker, std::sync::mpsc::Receiver<crate::plans::PlanCmd>) {
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
+        let (events, rx) = std::sync::mpsc::channel::<Ev>();
+        let (sign, jobs) = std::sync::mpsc::channel::<SignJob>();
+        let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
+        let (plans, out) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for job in jobs {
+                if let SignJob::Plan(p) = job
+                    && plans.send(p).is_err()
                 {
                     break;
                 }
@@ -904,9 +932,13 @@ fn recheck_monitor(runtime: &tokio::runtime::Runtime, session: &mut Session) {
     }
 }
 
+/// How often a plan waiting on a step looks at the journal (a local read).
+const PLAN_POLL: Duration = Duration::from_secs(1);
+
 /// Work for the signing lane.
 enum SignJob {
     Prepare(Prepare),
+    Plan(crate::plans::PlanCmd),
     /// Commit a review, with the typed words when the review is risky.
     Commit(String, Option<String>),
     Discard(String),
@@ -945,13 +977,57 @@ impl SignLane {
             };
             let (mut wallet, mut network) = (wallet, network);
             let mut session = open(&wallet, &network);
-            while let Ok(job) = rx.recv() {
+            // The trade plan being walked (one at a time), and what it has to say.
+            let mut runner: Option<crate::plans::Runner> = None;
+            // Plans whose last step was sent: they finish (and are recorded complete) when it
+            // confirms, while the next trade can already start.
+            let mut finishing: Vec<crate::plans::Runner> = Vec::new();
+            let say_plan = |runner: &crate::plans::Runner| send(Ev::Plan(Box::new(runner.view())));
+            loop {
+                // While a plan waits on a step, its journal row is looked at every second (the
+                // pending lane is what reads the chain); otherwise this lane sleeps until asked.
+                let waiting =
+                    !finishing.is_empty() || runner.as_ref().is_some_and(|r| matches!(r.phase(), crate::plans::Phase::Waiting(_)));
+                let job = if waiting {
+                    match rx.recv_timeout(PLAN_POLL) {
+                        Ok(job) => Some(job),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                } else {
+                    match rx.recv() {
+                        Ok(job) => Some(job),
+                        Err(_) => return,
+                    }
+                };
                 // Accounts can be added between jobs (by the worker); the wallet file is the truth.
                 if let Some(s) = session.as_mut()
                     && let Ok(meta) = registry.resolve(Some(&wallet), None)
                 {
                     s.meta = meta;
                 }
+                let Some(job) = job else {
+                    let Some(s) = session.as_mut() else { continue };
+                    if let Some(r) = runner.as_mut()
+                        && r.poll(s)
+                    {
+                        say_plan(r);
+                        if matches!(r.phase(), crate::plans::Phase::Done(_) | crate::plans::Phase::Stopped(_)) {
+                            runner = None;
+                        }
+                    }
+                    // The last step is in: the plan finishes here, with nothing to review.
+                    for r in &mut finishing {
+                        if r.poll(s) && *r.phase() == crate::plans::Phase::Ready {
+                            let _ = runtime.block_on(r.next(s));
+                        }
+                        if matches!(r.phase(), crate::plans::Phase::Done(_) | crate::plans::Phase::Stopped(_)) {
+                            say_plan(r);
+                        }
+                    }
+                    finishing.retain(|r| !matches!(r.phase(), crate::plans::Phase::Done(_) | crate::plans::Phase::Stopped(_)));
+                    continue;
+                };
                 match job {
                     SignJob::Shutdown => {
                         if let Some(s) = session.as_mut() {
@@ -963,6 +1039,10 @@ impl SignLane {
                         if let Some(s) = session.as_mut() {
                             s.lock();
                         }
+                        if let Some(r) = runner.as_mut() {
+                            r.locked();
+                            say_plan(r);
+                        }
                     }
                     SignJob::Wallet(id) => {
                         // The worker locks the old wallet; this lane only lets its reviews go.
@@ -971,6 +1051,9 @@ impl SignLane {
                         }
                         wallet = id;
                         session = open(&wallet, &network);
+                        // The plan belongs to the wallet left; its lease goes with it.
+                        runner = None;
+                        finishing.clear();
                     }
                     SignJob::Network(id) => {
                         // Same wallet, same custody: the session on the new network signs with the
@@ -980,6 +1063,83 @@ impl SignLane {
                         }
                         network = id;
                         session = open(&wallet, &network);
+                        runner = None;
+                        finishing.clear();
+                    }
+                    SignJob::Plan(cmd) => {
+                        let Some(s) = session.as_mut() else {
+                            send(Ev::Error("the wallet could not be opened for signing".into()));
+                            continue;
+                        };
+                        use crate::plans::{Next, Phase, PlanCmd, Runner};
+                        let busy = runner.as_ref().filter(|r| !matches!(r.phase(), Phase::Done(_) | Phase::Stopped(_)));
+                        let step = match cmd {
+                            PlanCmd::Start { .. } | PlanCmd::Resume { .. } if busy.is_some() => {
+                                let label = busy.map(|r| r.view().label).unwrap_or_default();
+                                send(Ev::Error(format!("finish or cancel “{label}” first")));
+                                continue;
+                            }
+                            PlanCmd::Start { label, intent } => match Runner::start(s, &label, intent) {
+                                Ok(r) => {
+                                    runner = Some(r);
+                                    true
+                                }
+                                Err(e) => {
+                                    send(Ev::PrepareError(e.to_string()));
+                                    continue;
+                                }
+                            },
+                            PlanCmd::Resume { id } => {
+                                let _ = runtime.block_on(s.track());
+                                match Runner::resume(s, id.as_deref(), true) {
+                                    Ok(r) if r.last_step_sent() => {
+                                        // Only the last step's confirmation is left: it completes on its own.
+                                        say_plan(&r);
+                                        finishing.push(r);
+                                        send(Ev::Info("the trade's last step was sent; it completes when it confirms".into()));
+                                        continue;
+                                    }
+                                    Ok(r) => {
+                                        let ready = *r.phase() == Phase::Ready;
+                                        say_plan(&r);
+                                        runner = Some(r);
+                                        send(Ev::Info("trade restored; each remaining step is reviewed afresh".into()));
+                                        ready
+                                    }
+                                    Err(e) => {
+                                        send(Ev::Info(e.to_string()));
+                                        continue;
+                                    }
+                                }
+                            }
+                            PlanCmd::Next { id } => runner.as_ref().is_some_and(|r| r.id() == id && *r.phase() == Phase::Ready),
+                            PlanCmd::Cancel { id } => {
+                                if let Some(r) = runner.as_mut().filter(|r| r.id() == id) {
+                                    match r.cancel(s) {
+                                        Ok(()) => say_plan(r),
+                                        Err(e) => send(Ev::Error(e.to_string())),
+                                    }
+                                    runner = None;
+                                }
+                                continue;
+                            }
+                        };
+                        let Some(r) = runner.as_mut().filter(|_| step) else { continue };
+                        send(Ev::SignBusy(Some("preparing transaction…".into())));
+                        let t = std::time::Instant::now();
+                        let next = runtime.block_on(r.next(s));
+                        wallet_core::diag::timing("sign.prepare", t);
+                        send(Ev::SignBusy(None));
+                        say_plan(r);
+                        match next {
+                            Next::Review(review) => send(Ev::Review(review)),
+                            Next::Stopped { error, .. } => send(Ev::PrepareError(error)),
+                            Next::Wait(Some(why)) => send(Ev::Info(why)),
+                            Next::Wait(None) | Next::Done(_) => {}
+                        }
+                        if matches!(r.phase(), Phase::Done(_) | Phase::Stopped(_)) {
+                            runner = None;
+                        }
                     }
                     SignJob::Prepare(req) => {
                         let Some(s) = session.as_mut() else {
@@ -1017,6 +1177,34 @@ impl SignLane {
                         send(Ev::SignBusy(Some("signing and broadcasting…".into())));
                         let result = runtime.block_on(s.commit_with(&id, words.as_deref()));
                         send(Ev::SignBusy(None));
+                        // A plan's step: where the plan stands goes first, so the screen knows
+                        // whether this was the last step when the submission arrives.
+                        if let Some(r) = runner.as_mut().filter(|r| r.reviewing(&id)) {
+                            match &result {
+                                Ok(sub) => {
+                                    let kind = s
+                                        .app
+                                        .operation(&id)
+                                        .ok()
+                                        .flatten()
+                                        .map(|op| op.kind)
+                                        .unwrap_or(wallet_core::journal::OpKind::Other(String::new()));
+                                    if let Err(e) = r.committed(s, sub, &kind) {
+                                        send(Ev::Error(format!("trade checkpoint: {e}")));
+                                    }
+                                }
+                                Err(wallet_core::error::CoreError::Ambiguous(_) | wallet_core::error::CoreError::Timeout(_)) => {
+                                    r.sent_uncertain(&id);
+                                }
+                                Err(e) => r.failed(s, &e.to_string()),
+                            }
+                            say_plan(r);
+                            if matches!(r.phase(), crate::plans::Phase::Done(_) | crate::plans::Phase::Stopped(_)) {
+                                runner = None;
+                            } else if r.last_step_sent() {
+                                finishing.extend(runner.take());
+                            }
+                        }
                         match result {
                             Ok(sub) => send(Ev::Submitted(sub)),
                             Err(e) => {
@@ -1029,6 +1217,11 @@ impl SignLane {
                     }
                     SignJob::Discard(id) => {
                         let Some(s) = session.as_mut() else { continue };
+                        if let Some(r) = runner.as_mut().filter(|r| r.reviewing(&id)) {
+                            r.rejected(s);
+                            say_plan(r);
+                            runner = None;
+                        }
                         match s.discard(&id) {
                             Ok(()) => send(Ev::Info("rejected; nothing was signed".into())),
                             Err(e) => send(Ev::Error(e.to_string())),
@@ -1391,31 +1584,10 @@ async fn prepare(session: &mut Session, req: Prepare) -> wallet_core::Result<wal
             }
         }
         Prepare::NftBuyNext { account, contract, token_id, price } => {
-            match session.check_listing(account.as_deref(), &contract, &token_id).await {
-                Ok(c) if !c.valid => Err(wallet_core::CoreError::Rejected(format!("cannot buy: {}", c.problems.join("; ")))),
-                Ok(c) if c.buyer_module_approval_needed => session.review_zora_module_approval(account.as_deref(), None).await,
-                Ok(c) if c.buyer_token_approval_needed => {
-                    session.review_zora_token_approval(account.as_deref(), &contract, &token_id, None).await
-                }
-                Ok(c) => {
-                    let expected = price.or_else(|| c.ask.as_ref().map(|a| a.price.clone()));
-                    session.review_nft_buy(account.as_deref(), &contract, &token_id, expected.as_deref(), None).await
-                }
-                Err(e) => Err(e),
-            }
+            session.nft_buy_next(account.as_deref(), &contract, &token_id, price.as_deref(), None).await
         }
         Prepare::NftListNext { account, contract, token_id, price, currency } => {
-            match session.seller_state(account.as_deref(), &contract, &token_id).await {
-                Ok(s) if !s.owns => Err(wallet_core::CoreError::Rejected("this account no longer owns the item".into())),
-                Ok(_) if price.is_none() => session.review_nft_unlist(account.as_deref(), &contract, &token_id, None).await,
-                Ok(s) if !s.module_approved => session.review_zora_module_approval(account.as_deref(), None).await,
-                Ok(s) if !s.helper_approved => session.review_zora_collection_approval(account.as_deref(), &contract, None).await,
-                Ok(_) => {
-                    let price = price.unwrap_or_default();
-                    session.review_nft_list(account.as_deref(), &contract, &token_id, &price, &currency, None).await
-                }
-                Err(e) => Err(e),
-            }
+            session.nft_list_next(account.as_deref(), &contract, &token_id, price.as_deref(), &currency, None).await
         }
         Prepare::NftTransfer { account, contract, token_id, to, quantity } => {
             session.review_nft_transfer(account.as_deref(), &contract, &token_id, &to, quantity.as_deref(), None).await
@@ -1777,7 +1949,7 @@ async fn run(
             }
             // The signing lane's: the UI routes these to it, so a transaction is prepared beside
             // whatever this worker is doing rather than after it.
-            Cmd::Prepare(_) | Cmd::Commit(_) | Cmd::CommitConfirmed { .. } | Cmd::Discard(_) => {}
+            Cmd::Prepare(_) | Cmd::Commit(_) | Cmd::CommitConfirmed { .. } | Cmd::Discard(_) | Cmd::Plan(_) => {}
             Cmd::Quote { direction, amount } => match session.conversion_quote(&direction, &amount).await {
                 Ok(q) => send(Ev::Quote(Box::new(q))),
                 Err(e) => send(Ev::Error(e.to_string())),
@@ -2150,21 +2322,9 @@ fn simple(send: &impl Fn(Ev), r: wallet_core::Result<String>) {
 /// saying nothing had changed. The two the user actually watches — the node's height and their
 /// QUAI balances — still run every time; the rest move at the speed they can actually change at.
 /// A refresh the user asked for, and the one after a commit, ignore all of this (`force`).
-/// Token and wrapped balances: one multicall, so every block, like QUAI.
-const TOKENS_EVERY: Duration = Duration::from_secs(5);
-const QI_EVERY: Duration = Duration::from_secs(15);
-/// The price feed's own cache holds a minute; asking more often only reads the same answer.
-const PRICE_EVERY: Duration = Duration::from_secs(60);
-/// Locked conversion balances: three calls each, and they only move when a conversion settles.
-const LOCKED_EVERY: Duration = Duration::from_secs(60);
-/// The node's gas price, client version and block order: System-screen detail, not per-block news.
-const NODE_DETAIL_EVERY: Duration = Duration::from_secs(60);
-/// How long the wallet waits before refreshing on its own when no block has arrived.
-const IDLE_REFRESH: Duration = Duration::from_secs(15);
-/// Reconciling open operations and observing incoming activity.
-const TRACK_EVERY: Duration = Duration::from_secs(5);
-/// Scanning payment channels for senders never seen before.
-const PAYMENT_SYNC_EVERY: Duration = Duration::from_secs(90);
+use crate::resource::fresh::stage::{
+    IDLE_REFRESH, LOCKED_EVERY, NODE_DETAIL_EVERY, PAYMENT_SYNC_EVERY, PRICE_EVERY, QI_EVERY, TOKENS_EVERY, TRACK_EVERY,
+};
 
 /// When each refresh stage last finished.
 #[derive(Default)]

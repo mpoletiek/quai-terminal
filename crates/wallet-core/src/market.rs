@@ -2,7 +2,6 @@
 //! asks. The indexer only suggests; before any transfer or purchase the wallet re-reads
 //! ownership and the ask on-chain, and the SDK simulates the exact call.
 
-use crate::journal::OpKind;
 use crate::amount::{self, QUAI_DECIMALS};
 use crate::appdb::AppDb;
 use crate::chain::{addr, interface, is_zero_address};
@@ -10,6 +9,7 @@ use crate::data::{DataCtx, ERC1155_ABI, NFT_ABI, READ_CALLER, with_access_list};
 use crate::error::{CoreError, Result};
 use crate::explorer::{NftItem, TokenKind, clean_text};
 use crate::http;
+use crate::journal::OpKind;
 use crate::network::{NetworkProfile, Node};
 use crate::session::Session;
 use crate::tx::{AccountRequest, Review, field};
@@ -1116,12 +1116,12 @@ impl Session {
         let ops = self.app.operations(&self.network.id, 2_000)?;
         // Newest listing-related operation per item decides whether it is still being watched.
         let mut latest: Vec<&crate::appdb::Operation> = Vec::new();
-        for op in
-            ops.iter().filter(|o| matches!(o.kind, OpKind::NftList | OpKind::NftReprice | OpKind::NftUnlist) && o.status == OpStatus::Confirmed)
+        for op in ops
+            .iter()
+            .filter(|o| matches!(o.kind, OpKind::NftList | OpKind::NftReprice | OpKind::NftUnlist) && o.status == OpStatus::Confirmed)
         {
-            let same = |o: &&crate::appdb::Operation| {
-                o.detail.contract() == op.detail.contract() && o.detail.token_id() == op.detail.token_id()
-            };
+            let same =
+                |o: &&crate::appdb::Operation| o.detail.contract() == op.detail.contract() && o.detail.token_id() == op.detail.token_id();
             if !latest.iter().any(same) {
                 latest.push(op);
             }
@@ -1279,6 +1279,55 @@ impl Session {
     }
 
     /// Check a listing for this wallet's account (on-chain).
+    /// The next review of a purchase: the marketplace module's approval while it is missing, then
+    /// the token's, then the buy at `price` (or the ask as read now).
+    pub async fn nft_buy_next(
+        &mut self,
+        account: Option<&str>,
+        contract: &str,
+        token_id: &str,
+        price: Option<&str>,
+        max_fee: Option<&str>,
+    ) -> Result<crate::tx::Review> {
+        let check = self.check_listing(account, contract, token_id).await?;
+        if !check.valid {
+            return Err(CoreError::Rejected(format!("cannot buy: {}", check.problems.join("; "))));
+        }
+        if check.buyer_module_approval_needed {
+            return self.review_zora_module_approval(account, max_fee).await;
+        }
+        if check.buyer_token_approval_needed {
+            return self.review_zora_token_approval(account, contract, token_id, max_fee).await;
+        }
+        let expected = price.map(str::to_string).or_else(|| check.ask.as_ref().map(|a| a.price.clone()));
+        self.review_nft_buy(account, contract, token_id, expected.as_deref(), max_fee).await
+    }
+
+    /// The next review of a listing: the module's approval, the collection's, then the listing at
+    /// `price` in `currency`. No price cancels the listing.
+    pub async fn nft_list_next(
+        &mut self,
+        account: Option<&str>,
+        contract: &str,
+        token_id: &str,
+        price: Option<&str>,
+        currency: &str,
+        max_fee: Option<&str>,
+    ) -> Result<crate::tx::Review> {
+        let state = self.seller_state(account, contract, token_id).await?;
+        if !state.owns {
+            return Err(CoreError::Rejected("this account no longer owns the item".into()));
+        }
+        let Some(price) = price else { return self.review_nft_unlist(account, contract, token_id, max_fee).await };
+        if !state.module_approved {
+            return self.review_zora_module_approval(account, max_fee).await;
+        }
+        if !state.helper_approved {
+            return self.review_zora_collection_approval(account, contract, max_fee).await;
+        }
+        self.review_nft_list(account, contract, token_id, price, currency, max_fee).await
+    }
+
     pub async fn check_listing(&self, account: Option<&str>, contract: &str, token_id: &str) -> Result<AskCheck> {
         // Watch-only wallets (no account) can still check whether a listing is valid.
         let buyer = match account {

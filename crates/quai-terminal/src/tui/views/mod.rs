@@ -142,11 +142,11 @@ pub fn activity_text(a: &Activity) -> String {
 /// Sub-tab strip at the top of the content area: the labels, and on two rows a rule under them
 /// that is lit beneath the open tab.
 pub fn draw_tabs(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let section = app.screen.section();
+    let section = app.nav.screen.section();
     let active = if section == Section::Activity {
-        app::ActivityFilter::ALL.iter().position(|x| *x == app.activity_filter).unwrap_or(0)
+        app::ActivityFilter::ALL.iter().position(|x| *x == app.nav.activity_filter).unwrap_or(0)
     } else {
-        section.screens(&app.config.features).iter().position(|s| *s == app.screen.tab_of(&app.config.features)).unwrap_or(0)
+        section.screens(&app.config.features).iter().position(|s| *s == app.nav.screen.tab_of(&app.config.features)).unwrap_or(0)
     };
     let labels = section.tab_labels(&app.config.features);
     let mut spans = vec![Span::styled(format!(" {} ", section.title()), t.dim_style()), Span::styled("· ", t.dim_style())];
@@ -167,7 +167,8 @@ pub fn draw_tabs(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     // Each label is its tab: span 2 + 2i (after the section title and the dot), up to the last
     // label; the `[ ]` hint after them is not a tab.
     let tabs = labels.len();
-    app.hits
+    app.input
+        .hits
         .borrow_mut()
         .spans(row, &spans, |i| (i >= 2 && i % 2 == 0 && (i - 2) / 2 < tabs).then(|| crate::tui::hit::Target::Tab((i - 2) / 2)));
     f.render_widget(Paragraph::new(Line::from(spans)), row);

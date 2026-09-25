@@ -133,7 +133,10 @@ impl crate::session::Session {
         let network = &self.network.id;
         for op in self.app.operations(network, 10_000).unwrap_or_default() {
             let signed = !matches!(op.status, crate::appdb::OpStatus::Prepared | crate::appdb::OpStatus::Cancelled);
-            if signed && op.counterparty.starts_with("0x") && matches!(op.kind, OpKind::SendQuai | OpKind::SendQi | OpKind::SendToken | OpKind::NftTransfer) {
+            if signed
+                && op.counterparty.starts_with("0x")
+                && matches!(op.kind, OpKind::SendQuai | OpKind::SendQi | OpKind::SendToken | OpKind::NftTransfer)
+            {
                 known.push(Known { address: op.counterparty.to_lowercase(), source: Source::SentTo });
             }
         }

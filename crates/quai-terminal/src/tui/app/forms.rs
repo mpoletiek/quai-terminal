@@ -22,7 +22,8 @@ impl App {
 
     pub(crate) fn open_form(&mut self, kind: FormKind) {
         let accounts = self.account_choices();
-        let preferred = self.dash.accounts.get(if self.screen == Screen::Accounts { self.selected } else { 0 }).map(|a| a.address.clone());
+        let preferred =
+            self.dash.accounts.get(if self.nav.screen == Screen::Accounts { self.nav.selected } else { 0 }).map(|a| a.address.clone());
         let account = |label: &str| {
             let f = Field::new(label, "←/→ to choose").with(preferred.clone().unwrap_or_default());
             if accounts.is_empty() { Field::new(label, "label, address or #").optional() } else { f.choice(accounts.clone()) }
@@ -206,7 +207,7 @@ impl App {
                 Some("A channel is just a name: following one only decides what this wallet shows."),
             ),
             FormKind::RenameWallet(id) => {
-                let current = self.wallets.iter().find(|w| &w.id == id).map(|w| w.name.clone()).unwrap_or_default();
+                let current = self.cockpit.list.iter().find(|w| &w.id == id).map(|w| w.name.clone()).unwrap_or_default();
                 ("Rename wallet", vec![Field::new("Name", "letters, digits, - and _").with(&current)], None)
             }
             FormKind::AddAccount => ("Add Quai account", vec![Field::new("Label", "e.g. Savings").optional()], None),
@@ -405,9 +406,9 @@ impl App {
             ),
         };
         let focus = fields.iter().position(|f| f.value.is_empty() && !matches!(f.kind, FieldKind::Choice(_))).unwrap_or(0);
-        self.contract_probe = None;
-        self.contract_found = None;
-        self.contract_asked.clear();
+        self.tasks.contract_probe = None;
+        self.tasks.contract_found = None;
+        self.tasks.contract_asked.clear();
         self.modal = Modal::Form(Form {
             kind,
             title: built_title.unwrap_or_else(|| title.into()),
@@ -478,19 +479,21 @@ impl App {
             } else {
                 format!("list {name} for {price} {currency}")
             };
-            self.start_flow(super::super::eco::FlowKind::NftList {
-                account: Some(owner.clone()),
-                contract: contract.clone(),
-                token_id: token_id.clone(),
-                price: Some(price),
-                currency,
+            self.start_steps(
+                Prepare::NftListNext {
+                    account: Some(owner.clone()),
+                    contract: contract.clone(),
+                    token_id: token_id.clone(),
+                    price: Some(price),
+                    currency,
+                },
                 label,
-            });
+            );
             return;
         }
         if let FormKind::RenameWallet(id) = &form.kind {
             let name = v(0);
-            let Some(mut meta) = self.wallets.iter().find(|w| &w.id == id).cloned() else {
+            let Some(mut meta) = self.cockpit.list.iter().find(|w| &w.id == id).cloned() else {
                 self.toast("that wallet is gone", true);
                 return;
             };
@@ -597,7 +600,7 @@ impl App {
             _ => None,
         };
         if let Some((prepare, label)) = steps {
-            self.start_flow(super::super::eco::FlowKind::Steps { prepare: Box::new(prepare), label });
+            self.start_steps(prepare, label);
             return;
         }
         let cmd = match &form.kind {
@@ -706,12 +709,12 @@ impl App {
 
     /// The channel offer under the cursor on Channels (offers are listed first).
     pub(crate) fn channel_offer(&self) -> Option<&wallet_core::ops::ChannelOffer> {
-        self.dash.offers.get(self.selected)
+        self.dash.offers.get(self.nav.selected)
     }
 
     /// The registered channel under the cursor on Channels, below the offers.
     pub(crate) fn channel_peer(&self) -> Option<&wallet_core::ops::PeerView> {
-        self.selected.checked_sub(self.dash.offers.len()).and_then(|i| self.dash.peers.get(i))
+        self.nav.selected.checked_sub(self.dash.offers.len()).and_then(|i| self.dash.peers.get(i))
     }
 
     /// Save a payment channel's sender as a contact, or edit the contact it already belongs to.
@@ -782,7 +785,7 @@ impl App {
         }
         self.open_form(FormKind::ContractCall { address: found.address.clone(), name: metadata.name.clone(), functions });
         // `open_form` clears the probe; this form is about that contract, so it keeps it.
-        self.contract_found = Some(found);
+        self.tasks.contract_found = Some(found);
         true
     }
 
@@ -830,23 +833,23 @@ impl App {
         // Only a complete address; a contact name resolves to one the worker looks up itself.
         let looks_done = text.len() >= 42 && text.starts_with("0x");
         if !looks_done {
-            self.contract_found = None;
-            self.contract_probe = None;
+            self.tasks.contract_found = None;
+            self.tasks.contract_probe = None;
             return;
         }
         // Asked once per destination per form, whatever the answer was. A failure is an answer.
-        if self.contract_probe.as_deref() == Some(text.as_str()) || !self.contract_asked.insert(text.to_lowercase()) {
+        if self.tasks.contract_probe.as_deref() == Some(text.as_str()) || !self.tasks.contract_asked.insert(text.to_lowercase()) {
             return;
         }
-        self.contract_found = None;
-        self.contract_probe = Some(text.clone());
+        self.tasks.contract_found = None;
+        self.tasks.contract_probe = Some(text.clone());
         self.send(Cmd::InspectContract { address: text });
     }
 
     /// Put what the probe found under the open form, without disturbing what is typed in it.
     pub(crate) fn refresh_form_note(&mut self) {
         let Modal::Form(mut form) = std::mem::replace(&mut self.modal, Modal::None) else { return };
-        form.contract_note = Self::contract_note(&form.kind, self.contract_found.as_ref());
+        form.contract_note = Self::contract_note(&form.kind, self.tasks.contract_found.as_ref());
         self.modal = Modal::Form(form);
         self.dirty = true;
     }

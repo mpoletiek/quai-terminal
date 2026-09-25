@@ -333,14 +333,14 @@ fn color(id: u32) -> Color {
 /// and a virtual placement of the size it is shown at. Pictures under the text (`z < 0`, the
 /// backlight) have no placeholder form and are left out.
 pub fn place(app: &mut App, buf: &mut Buffer) {
-    let items: Vec<_> = app.eco.kitty.borrow_mut().drain(..).collect();
-    let tmux = app.caps.tmux;
-    app.kitty.begin_frame();
+    let items: Vec<_> = app.eco.media.kitty.borrow_mut().drain(..).collect();
+    let tmux = app.term.caps.tmux;
+    app.term.kitty.begin_frame();
     for (rect, (png, key), z) in items {
         if z < 0 {
             continue;
         }
-        let (id, pid) = app.kitty.ensure_virtual(&png, key, rect.width, rect.height, tmux);
+        let (id, pid) = app.term.kitty.ensure_virtual(&png, key, rect.width, rect.height, tmux);
         for row in 0..rect.height {
             for col in 0..rect.width {
                 let (Some(symbol), Some(c)) = (cell(row as usize, col as usize), buf.cell_mut((rect.x + col, rect.y + row))) else {
@@ -353,7 +353,7 @@ pub fn place(app: &mut App, buf: &mut Buffer) {
             }
         }
     }
-    app.kitty.evict_idle(tmux);
+    app.term.kitty.evict_idle(tmux);
 }
 
 #[cfg(test)]

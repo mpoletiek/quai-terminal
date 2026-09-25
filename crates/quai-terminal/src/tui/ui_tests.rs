@@ -1,5 +1,5 @@
-use wallet_core::journal::OpKind;
 use super::*;
+use wallet_core::journal::OpKind;
 
 /// The receive tab reads " QUAI " in bold on the QUAI color, the same style as the QUAI
 /// badge: only the badge itself becomes a logo, and the label keeps its letters.
@@ -35,6 +35,7 @@ fn a_bold_label_is_not_mistaken_for_a_badge() {
         let wallet_core::media::Source::Inline(bytes) = wallet_core::media::resolve(url).unwrap() else { panic!("inline") };
         let r = std::sync::Arc::new(wallet_core::media::trusted_rendition(&bytes, wallet_core::media::ICON).unwrap());
         app.eco
+            .media
             .images
             .insert((url.to_string(), wallet_core::media::ICON), super::super::eco::ImageSlot::Ready(r, std::time::Instant::now()));
     }
@@ -69,7 +70,7 @@ fn drawable_app() -> (tempfile::TempDir, App) {
         ..Default::default()
     };
     let mut app = App::new(paths, "local".into(), connected, theme, caps, Some(meta));
-    app.locked = false;
+    app.lock.locked = false;
     app.onboarding = None;
     app.config.motion = Motion::Off;
     (dir, app)
@@ -130,10 +131,10 @@ fn the_board_list_finds_channels_it_does_not_follow() {
     use wallet_core::messages::ChannelSummary;
     let (_dir, mut app) = drawable_app();
     app.config.board_channels = vec!["general".into()];
-    app.eco.board.known = vec![
+    app.eco.board.known.settle(Ok(vec![
         ChannelSummary { name: "general".into(), messages: 6, last_at: 0, last_block: 100, recent_blocks: vec![100, 99] },
         ChannelSummary { name: "dev-talk".into(), messages: 1, last_at: 0, last_block: 90, recent_blocks: vec![90] },
-    ];
+    ]));
     // A channel already followed is not listed twice.
     let rows = app.board_rows();
     assert_eq!(rows.iter().filter(|r| matches!(r, BoardRow::Channel(c) if c == "general")).count(), 1);
@@ -168,19 +169,23 @@ fn a_followed_channel_counts_only_what_arrived_after_you_looked() {
         recent_blocks: blocks,
     };
     // The first scan only records where the board stands.
-    app.eco.board.known = vec![summary(vec![100, 99, 98])];
-    app.on_data_event(super::super::data::DataEv::BoardChannels(Ok(app.eco.board.known.clone())));
+    app.eco.board.known.settle(Ok(vec![summary(vec![100, 99, 98])]));
+    app.on_data_event(super::super::data::DataEv::BoardChannels(Ok(app.eco.board.channels().to_vec())));
     assert_eq!(app.board_unread("general"), 0, "opening the wallet is not news");
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
+    assert!(app.status.toasts.is_empty(), "{:?}", app.status.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
     // Two arrive while the wallet is elsewhere.
     app.switch(Screen::Home);
     app.on_data_event(super::super::data::DataEv::BoardChannels(Ok(vec![summary(vec![102, 101, 100, 99, 98])])));
     assert_eq!(app.board_unread("general"), 2);
-    assert!(app.toasts.iter().any(|t| t.text.contains("2 new messages in #general")), "{:?}", app.toasts.last().map(|t| &t.text));
+    assert!(
+        app.status.toasts.iter().any(|t| t.text.contains("2 new messages in #general")),
+        "{:?}",
+        app.status.toasts.last().map(|t| &t.text)
+    );
     // The same scan again says nothing further.
-    let said = app.toasts.len();
+    let said = app.status.toasts.len();
     app.on_data_event(super::super::data::DataEv::BoardChannels(Ok(vec![summary(vec![102, 101, 100, 99, 98])])));
-    assert_eq!(app.toasts.len(), said, "a count that has not moved is not news");
+    assert_eq!(app.status.toasts.len(), said, "a count that has not moved is not news");
     // The list says how many are waiting, where it would otherwise say how many there are.
     {
         use ratatui::{Terminal, backend::TestBackend};
@@ -209,7 +214,7 @@ fn the_wallets_screen_marks_the_open_wallet() {
     let registry = app.registry.clone();
     let other = registry.create_watch("zzsecond", &[("0x000B2E36297c1b133Ca1DCA9881Dc820018f1F79".into(), "Main".into())]).unwrap();
     app.load_wallets();
-    assert!(app.wallets.len() >= 2, "the test wallet and the one just made: {}", app.wallets.len());
+    assert!(app.cockpit.list.len() >= 2, "the test wallet and the one just made: {}", app.cockpit.list.len());
     app.switch(Screen::Wallets);
     let (w, h) = (120u16, 30u16);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -234,7 +239,7 @@ fn the_wallets_screen_marks_the_open_wallet() {
     let before = app.meta.as_ref().unwrap().id.clone();
     app.switch_wallet(&before);
     assert_eq!(app.meta.as_ref().unwrap().id, before);
-    assert!(app.toasts.iter().any(|t| t.text.contains("already on")), "{:?}", app.toasts.last().map(|t| &t.text));
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("already on")), "{:?}", app.status.toasts.last().map(|t| &t.text));
 }
 
 /// Tab hands the cursor to the flow column, a row there takes the chart to its pair, and
@@ -246,21 +251,21 @@ fn a_flow_row_takes_the_chart_to_its_pair() {
     app.switch(Screen::Markets);
     let size = (160, 44);
     let key = |app: &mut App, c: KeyCode| app.on_key(KeyEvent::new(c, crossterm::event::KeyModifiers::NONE), size);
-    assert_eq!((app.pane, app.markets_pair()), (0, 0), "the pairs list starts with the cursor");
+    assert_eq!((app.nav.pane, app.markets_pair()), (0, 0), "the pairs list starts with the cursor");
     key(&mut app, KeyCode::Tab);
-    assert_eq!(app.pane, 1, "tab moves it to the flow");
+    assert_eq!(app.nav.pane, 1, "tab moves it to the flow");
     // The second row is the WQUAI/QOWBOY pool; taking it moves the chart, not the cursor.
     key(&mut app, KeyCode::Char('j'));
-    assert_eq!(app.selected, 1);
+    assert_eq!(app.nav.selected, 1);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.markets_pair(), 1, "the chart followed the swap to its pair");
-    assert_eq!(app.selected, 1, "the flow kept its own place");
+    assert_eq!(app.nav.selected, 1, "the flow kept its own place");
     key(&mut app, KeyCode::Tab);
-    assert_eq!((app.pane, app.selected), (0, 1), "and the pairs list came back on that pair");
+    assert_eq!((app.nav.pane, app.nav.selected), (0, 1), "and the pairs list came back on that pair");
     // `o` copies the swap's transaction, not the pool's.
     key(&mut app, KeyCode::Tab);
     key(&mut app, KeyCode::Char('o'));
-    assert!(app.clipboard.as_ref().is_none_or(|c| c.text.as_str().contains("0x2")), "{:?}", app.clipboard);
+    assert!(app.tasks.clipboard.as_ref().is_none_or(|c| c.text.as_str().contains("0x2")), "{:?}", app.tasks.clipboard);
 }
 
 /// The dust floor hides the small trades, and a swap nobody can price survives it.
@@ -270,7 +275,7 @@ fn the_dust_floor_hides_small_trades_but_never_unpriced_ones() {
     let (_dir, mut app) = markets_app();
     app.switch(Screen::Markets);
     // QOWBOY is worth a cent, so the 8-QOWBOY swap is 8 cents; the USDT one is $120.
-    app.eco.markets = vec![wallet_core::explorer::TokenMarket {
+    app.eco.feeds.markets = vec![wallet_core::explorer::TokenMarket {
         address: "0x0031".into(),
         symbol: "QOWBOY".into(),
         price_usd: Some(0.01),
@@ -286,7 +291,7 @@ fn the_dust_floor_hides_small_trades_but_never_unpriced_ones() {
     assert_eq!(rows[0].pool, "0x0021");
     // Without USDT configured on this network the first swap cannot be priced — and an
     // unpriceable swap is never hidden, because nothing proves it is small.
-    app.eco.markets.clear();
+    app.eco.feeds.markets.clear();
     assert_eq!(app.flow_rows().len(), 2, "what cannot be judged is not dropped");
 }
 
@@ -317,8 +322,8 @@ fn markets_app() -> (tempfile::TempDir, App) {
         amount_out,
         trader: "0x00ab".into(),
     };
-    app.eco.markets_view.pools = Some(Ok((pools, DexOverview::default())));
-    app.eco.markets_view.flow = vec![swap("0x0021", 1, &usdt, 120.0, &wquai, 11_800.0), swap("0x0022", 2, &qowboy, 8.0, &wquai, 1200.0)];
+    app.eco.markets_view.pools.settle(Ok((pools, DexOverview::default())));
+    app.eco.markets_view.flow.set(vec![swap("0x0021", 1, &usdt, 120.0, &wquai, 11_800.0), swap("0x0022", 2, &qowboy, 8.0, &wquai, 1200.0)]);
     (dir, app)
 }
 
@@ -339,7 +344,7 @@ fn a_partial_market_list_admits_it() {
     app.switch(Screen::Markets);
     let whole = render(&mut app, 160, 44).join("\n");
     assert!(!whole.contains("⚠") && !whole.contains("newest"), "a whole list claims nothing");
-    if let Some(Ok((_, overview))) = app.eco.markets_view.pools.as_mut() {
+    if let Some((_, overview)) = app.eco.markets_view.pools.value_mut() {
         overview.omitted.push(Omitted { source: "launch AMM factory".into(), read: 600, total: 812 });
     }
     let wide = render(&mut app, 160, 44);
@@ -347,7 +352,7 @@ fn a_partial_market_list_admits_it() {
     // The warning comes first and survives the panel's width whole: a mark, the number, the word.
     assert!(title.contains("pairs · ⚠ 212 not listed"), "{title}");
     // Two sources add up rather than crowding each other out.
-    if let Some(Ok((_, overview))) = app.eco.markets_view.pools.as_mut() {
+    if let Some((_, overview)) = app.eco.markets_view.pools.value_mut() {
         overview.omitted.push(Omitted { source: "Quainance factory".into(), read: 600, total: 610 });
     }
     let both = render(&mut app, 160, 44);
@@ -365,7 +370,7 @@ fn a_bonding_curve_market_shows_its_progress() {
     use ratatui::{Terminal, backend::TestBackend};
     use wallet_core::markets::{CurveMark, Pool, PoolToken, Venue};
     let (_dir, mut app) = markets_app();
-    if let Some(Ok((pools, _))) = app.eco.markets_view.pools.as_mut() {
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
         pools.push(Pool {
             address: "0x004ce1".into(),
             token0: PoolToken { address: "0x0016c3".into(), symbol: "CHEEZ".into(), decimals: 18 },
@@ -385,7 +390,7 @@ fn a_bonding_curve_market_shows_its_progress() {
         });
     }
     app.switch(Screen::Markets);
-    app.selected = 2;
+    app.nav.selected = 2;
     let (w, h) = (160u16, 44u16);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| draw(f, &mut app)).unwrap();
@@ -407,7 +412,7 @@ fn a_bonded_curve_shows_its_locked_depth() {
     use ratatui::{Terminal, backend::TestBackend};
     use wallet_core::markets::{CurveMark, Pool, PoolToken, PriceBasis, Venue};
     let (_dir, mut app) = markets_app();
-    if let Some(Ok((pools, _))) = app.eco.markets_view.pools.as_mut() {
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
         pools.push(Pool {
             address: "0x004bc4".into(),
             token0: PoolToken { address: "0x003518".into(), symbol: "QAXE".into(), decimals: 18 },
@@ -427,7 +432,7 @@ fn a_bonded_curve_shows_its_locked_depth() {
         });
     }
     app.switch(Screen::Markets);
-    app.selected = 2;
+    app.nav.selected = 2;
     let (w, h) = (160u16, 44u16);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| draw(f, &mut app)).unwrap();
@@ -790,7 +795,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
         let icon = "data:image/png;base64,icon";
         let thumb = "data:image/png;base64,thumb";
         let wqi = "0x002b2596ecf05c93a31ff916e8b456df6c77c750".to_string();
-        app.eco.portfolio.set(Portfolio {
+        app.eco.feeds.portfolio.set(Portfolio {
             network: "local".into(),
             rows: vec![
                 row(AssetKey::Quai, "QUAI", "90412200000000000000000", 18, Some(0.00881), Trust::Verified, None),
@@ -837,11 +842,11 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
         let rendition = |w: u32, h: u32| {
             Arc::new(wallet_core::media::trusted_rendition(&wallet_core::media::fixture_png(w, h, (200, 40, 90)), w.max(h)).unwrap())
         };
-        app.eco.images.insert(
+        app.eco.media.images.insert(
             (icon.to_string(), wallet_core::media::ICON),
             super::super::eco::ImageSlot::Ready(rendition(32, 32), std::time::Instant::now()),
         );
-        app.eco.images.insert(
+        app.eco.media.images.insert(
             (thumb.to_string(), wallet_core::media::THUMB),
             super::super::eco::ImageSlot::Ready(rendition(256, 180), std::time::Instant::now()),
         );
@@ -858,7 +863,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             owner: Some("0x00aa".into()),
             quantity: "1".into(),
         };
-        app.eco.nfts.settle(Ok(vec![
+        app.eco.nft.nfts.settle(Ok(vec![
             OwnedNft { item: item.clone(), owner: "0x00aa".into(), kind: TokenKind::Erc721, quantity: "1".into(), verified: true },
             OwnedNft {
                 item: NftItem { token_id: "7".into(), image: None, name: "Miner #17".into(), ..item.clone() },
@@ -882,9 +887,9 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             image: None,
         };
         let seaport = Listing { protocol: "seaport".into(), token_id: "9".into(), ..listing.clone() };
-        app.eco.listings.insert(None, Ok(vec![listing.clone(), seaport]));
-        app.eco.listings.insert(Some(pepe.clone()), Ok(vec![listing]));
-        app.eco.collections.settle(Ok(vec![Collection {
+        app.eco.nft.listings.settle(None, Ok(vec![listing.clone(), seaport]));
+        app.eco.nft.listings.settle(Some(pepe.clone()), Ok(vec![listing]));
+        app.eco.nft.collections.settle(Ok(vec![Collection {
             address: pepe.clone(),
             name: "Quai Pepes".into(),
             symbol: "PEPE".into(),
@@ -894,9 +899,9 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             floor_quai: Some(1000.0),
             floor_usd: Some(8.81),
         }]));
-        app.eco.collection_items.insert(pepe.clone(), Ok(vec![item.clone()]));
-        app.eco.nft_meta.insert((pepe.clone(), "212".into()), Ok(item));
-        app.eco.asks.insert(
+        app.eco.nft.items.insert(pepe.clone(), Ok(vec![item.clone()]));
+        app.eco.nft.meta.insert((pepe.clone(), "212".into()), Ok(item));
+        app.eco.nft.asks.insert(
             (pepe.clone(), "212".into()),
             Ok(AskCheck {
                 ask: Some(Ask {
@@ -953,8 +958,8 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             liquidity_at: Some(1),
             legs: vec![],
         }));
-        app.eco.lockups = Some(Ok(0));
-        app.eco.pnl.settle(Ok(sample_pnl()));
+        app.eco.feeds.lockups = Some(Ok(0));
+        app.eco.feeds.pnl.settle(Ok(sample_pnl()));
         // Markets: one pool with a day of swaps and syncs.
         {
             use wallet_core::markets::{DexOverview, Pool, PoolEvent, PoolToken};
@@ -1023,7 +1028,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
                 }),
                 ..Default::default()
             };
-            app.eco.markets_view.pools = Some(Ok((
+            app.eco.markets_view.pools.settle(Ok((
                 vec![pool, graduated, bonding],
                 DexOverview {
                     tvl_usd: Some(11_900.0),
@@ -1040,7 +1045,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             use wallet_core::markets::PoolToken;
             let tok = |a: &str, sym: &str, d: u8| PoolToken { address: a.into(), symbol: sym.into(), decimals: d };
             let e18 = |n: u128| U256::from(n) * U256::from(10u128.pow(18));
-            app.eco.pools_view.positions = Some(Ok(vec![
+            app.eco.pools_view.positions.settle(Ok(vec![
                 LpPosition {
                     gauge_address: None,
                     pair: "0x0021".into(),
@@ -1125,7 +1130,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
                 ..wallet_core::zone::ZoneView::default()
             });
         }
-        app.eco.test =
+        app.eco.test.results =
             Some(vec![("explorer.qu.ai".into(), Ok("QUAI $0.0088".into()), 80), ("node".into(), Err("timed out".into()), 12000)]);
         app.dash.activity.push(wallet_core::appdb::Activity {
                 network: "local".into(),
@@ -1190,7 +1195,7 @@ fn every_screen_renders_at_every_size() {
             })
             .collect();
         let e18 = |n: u128| wallet_core::sdk::U256::from(n) * wallet_core::sdk::U256::from(10u128.pow(18));
-        app.eco.curves.settle(
+        app.eco.launch.curves.settle(
             cheez.token.clone(),
             Ok(wallet_core::curve::CurveMarket {
                 token_decimals: 18,
@@ -1209,7 +1214,11 @@ fn every_screen_renders_at_every_size() {
                 claimable: e18(3),
             }),
         );
-        app.eco.launches.set(vec![cheez, launch("QOGE", Phase::Graduated, Some(10_000), Some(0.00027)), launch("PUNK", Phase::Pooled, None, None)]);
+        app.eco.launch.list.set(vec![
+            cheez,
+            launch("QOGE", Phase::Graduated, Some(10_000), Some(0.00027)),
+            launch("PUNK", Phase::Pooled, None, None),
+        ]);
     }
     // Both markets quoted for 5,000 QUAI: the market route pays more, the protocol is selected.
     {
@@ -1242,7 +1251,7 @@ fn every_screen_renders_at_every_size() {
         }));
     }
     for tier in [super::super::terminal::Tier::Pixels, super::super::terminal::Tier::Cells, super::super::terminal::Tier::Text] {
-        app.caps.tier = tier;
+        app.term.caps.tier = tier;
         for theme_id in ["terminal", "catppuccin-latte", "tokyo-night"] {
             app.theme = super::super::theme::resolve(app.paths.root(), theme_id, false, false).0;
             for (w, h) in [(60u16, 18u16), (80, 24), (100, 30), (160, 48)] {
@@ -1250,9 +1259,9 @@ fn every_screen_renders_at_every_size() {
                 for screen in Screen::ALL {
                     app.switch(screen);
                     for filter in super::super::app::ActivityFilter::ALL {
-                        app.activity_filter = filter;
+                        app.nav.activity_filter = filter;
                         for pane in 0..2 {
-                            app.pane = pane;
+                            app.nav.pane = pane;
                             app.modal = Modal::None;
                             term.draw(|f| draw(f, &mut app)).unwrap();
                         }
@@ -1275,19 +1284,19 @@ fn every_screen_renders_at_every_size() {
                     app.unfocus_cards();
                 }
                 for d in &details {
-                    app.detail = vec![d.clone()];
+                    app.nav.detail = vec![d.clone()];
                     term.draw(|f| draw(f, &mut app)).unwrap();
                     let _ = super::super::images::kitty_items(&app);
                 }
-                app.detail.clear();
-                app.help_moved = true;
+                app.nav.detail.clear();
+                app.nav.help_moved = true;
                 app.modal = Modal::Help;
                 term.draw(|f| draw(f, &mut app)).unwrap();
-                app.help_moved = false;
+                app.nav.help_moved = false;
                 app.modal = Modal::None;
-                app.locked = true;
+                app.lock.locked = true;
                 term.draw(|f| draw(f, &mut app)).unwrap();
-                app.locked = false;
+                app.lock.locked = false;
                 app.onboarding = Some(super::super::app::Onboarding::Choose { selected: 1 });
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 app.onboarding = Some(super::super::app::Onboarding::Theme(Picker::new(&app)));
@@ -1303,7 +1312,7 @@ fn every_screen_renders_at_every_size() {
         }
     }
     // The portfolio total and holdings are on Home; images went to kitty in the pixel tier.
-    app.caps.tier = super::super::terminal::Tier::Pixels;
+    app.term.caps.tier = super::super::terminal::Tier::Pixels;
     app.switch(Screen::Home);
     let mut term = Terminal::new(TestBackend::new(160, 48)).unwrap();
     term.draw(|f| draw(f, &mut app)).unwrap();
@@ -1314,6 +1323,7 @@ fn every_screen_renders_at_every_size() {
         let wallet_core::media::Source::Inline(bytes) = wallet_core::media::resolve(url).unwrap() else { panic!("inline") };
         let r = std::sync::Arc::new(wallet_core::media::trusted_rendition(&bytes, wallet_core::media::ICON).unwrap());
         app.eco
+            .media
             .images
             .insert((url.to_string(), wallet_core::media::ICON), super::super::eco::ImageSlot::Ready(r, std::time::Instant::now()));
     }
@@ -1330,14 +1340,14 @@ fn every_screen_renders_at_every_size() {
     // and a modal stops it.
     let saved_theme = app.theme.clone();
     app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
-    app.caps.truecolor = true;
+    app.term.caps.truecolor = true;
     // Over SSH or inside tmux the wallet calms motion itself; this checks the local case.
-    app.caps.ssh = false;
-    app.caps.tmux = false;
+    app.term.caps.ssh = false;
+    app.term.caps.tmux = false;
     app.config.motion = Motion::Vivid;
     // Someone is here: the light rests a minute after the last key, and the sweep above can
     // take that long on a slow machine.
-    app.last_input = std::time::Instant::now();
+    app.input.last_input = std::time::Instant::now();
     term.draw(|f| draw(f, &mut app)).unwrap();
     // The pass has already recolored the focused corner, so look for the lit border itself.
     let buf = term.backend().buffer();
@@ -1352,7 +1362,7 @@ fn every_screen_renders_at_every_size() {
         .max_by_key(|colors| colors.len())
         .unwrap_or_default();
     assert!(edge_colors.len() > 3, "gradient border: {edge_colors:?}");
-    assert!(app.eco.anim_step.get().is_some(), "Vivid border schedules redraws");
+    assert!(app.eco.anim.step.get().is_some(), "Vivid border schedules redraws");
     assert!(
         term.backend().buffer().cell((5, 0)).is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::UNDERLINED)),
         "header hairline"
@@ -1366,21 +1376,21 @@ fn every_screen_renders_at_every_size() {
             ("markets", Screen::Markets, 2_000),
         ] {
             app.switch(screen);
-            app.edge_intro = None;
-            app.last_input = std::time::Instant::now() - std::time::Duration::from_secs(10);
-            app.eco.anim_ms = clock;
+            app.fx.edge_intro = None;
+            app.input.last_input = std::time::Instant::now() - std::time::Duration::from_secs(10);
+            app.eco.anim.ms = clock;
             term.draw(|f| draw(f, &mut app)).unwrap();
             raster(term.backend().buffer(), &format!("{dir}/{name}.png"));
         }
         app.switch(Screen::Home);
-        app.edge_intro = Some(std::time::Instant::now() - std::time::Duration::from_millis(110));
+        app.fx.edge_intro = Some(std::time::Instant::now() - std::time::Duration::from_millis(110));
         term.draw(|f| draw(f, &mut app)).unwrap();
         raster(term.backend().buffer(), &format!("{dir}/intro_mid.png"));
-        app.edge_intro = None;
+        app.fx.edge_intro = None;
     }
     app.modal = Modal::Help;
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.eco.anim_step.get().is_none(), "nothing turns under a modal");
+    assert!(app.eco.anim.step.get().is_none(), "nothing turns under a modal");
     app.modal = Modal::None;
     app.config.motion = Motion::Off;
     app.theme = saved_theme;
@@ -1393,7 +1403,7 @@ fn every_screen_renders_at_every_size() {
     assert!(placed.iter().any(|p| (p.x, p.y) == (1, 0)), "header logo still placed");
     assert!(placed.iter().all(|p| p.y == 0), "nothing behind the glass: {:?}", placed.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>());
     app.modal = Modal::None;
-    app.caps.tier = super::super::terminal::Tier::Cells;
+    app.term.caps.tier = super::super::terminal::Tier::Cells;
     term.draw(|f| draw(f, &mut app)).unwrap();
     let text: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
     assert!(text.contains("1,284") || text.contains("█▀█"), "total rendered");
@@ -1407,11 +1417,11 @@ fn every_screen_renders_at_every_size() {
     {
         app.theme = super::super::theme::resolve(app.paths.root(), "terminal", false, false).0;
         // What the terminal was detected as comes from the environment, which CI does not share.
-        app.caps.terminal = "xterm-256color".into();
-        app.caps.truecolor = true;
-        app.caps.tmux = false;
-        app.caps.ssh = false;
-        app.caps.kitty_keyboard = false;
+        app.term.caps.terminal = "xterm-256color".into();
+        app.term.caps.truecolor = true;
+        app.term.caps.tmux = false;
+        app.term.caps.ssh = false;
+        app.term.caps.kitty_keyboard = false;
         for (w, h) in [(160u16, 48u16), (100, 30), (80, 24)] {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
             for screen in Screen::ALL {
@@ -1421,8 +1431,8 @@ fn every_screen_renders_at_every_size() {
                 }
                 app.switch(screen);
                 // Each screen as first opened: screens remember their pane and cursor now.
-                app.pane = 0;
-                app.selected = 0;
+                app.nav.pane = 0;
+                app.nav.selected = 0;
                 app.eco.swap.field = 5;
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 let buf = term.backend().buffer();
@@ -1473,9 +1483,9 @@ fn every_screen_renders_at_every_size() {
         }
         // Plain (NO_COLOR, `--plain`, the Linux console): no color at all, ASCII marks, nothing
         // moving. Every meaning must still be on the screen as text; these hold that.
-        let (saved_theme, saved_plain) = (app.theme.clone(), app.plain);
+        let (saved_theme, saved_plain) = (app.theme.clone(), app.term.plain);
         app.theme = super::super::theme::Theme::mono();
-        app.plain = true;
+        app.term.plain = true;
         let (w, h) = (80u16, 24u16);
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         let review = modals(&app).into_iter().find(|m| matches!(m, Modal::Review(_)));
@@ -1486,8 +1496,8 @@ fn every_screen_renders_at_every_size() {
             ("review", Screen::Home, review),
         ] {
             app.switch(screen);
-            app.pane = 0;
-            app.selected = 0;
+            app.nav.pane = 0;
+            app.nav.selected = 0;
             if let Some(mut m) = modal {
                 if let Modal::Review(r) = &mut m {
                     r.opened = std::time::Instant::now() - std::time::Duration::from_secs(600);
@@ -1512,7 +1522,7 @@ fn every_screen_renders_at_every_size() {
             }
         }
         app.theme = saved_theme;
-        app.plain = saved_plain;
+        app.term.plain = saved_plain;
     }
     assert!(drift.is_empty(), "screens differ from their golden files (QW_BLESS=1 to accept):\n{}", drift.join("\n"));
     if let Ok(dir) = std::env::var("QW_DUMP_VIEWS") {
@@ -1528,7 +1538,7 @@ fn every_screen_renders_at_every_size() {
                 app.switch(screen);
                 app.eco.swap.field = if focus == 1 { 1 } else { 5 };
                 if let Some(d) = detail {
-                    app.detail = vec![d];
+                    app.nav.detail = vec![d];
                 }
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 let buf = term.backend().buffer();
@@ -1540,17 +1550,17 @@ fn every_screen_renders_at_every_size() {
                     out.push('\n');
                 }
                 std::fs::write(format!("{dir}/{name}_{w}x{h}.txt"), out).unwrap();
-                app.detail.clear();
+                app.nav.detail.clear();
             }
             // The lock screen in each of the states it can answer in.
             for (name, unlocking, error) in
                 [("lock_unlocking", true, None), ("lock_wrong", false, Some(app::friendly_error("incorrect password or corrupted vault")))]
             {
-                app.locked = true;
-                app.ambient = None;
-                app.unlocking = unlocking;
-                app.lock_error = error;
-                app.lock_input = "hunter2".into();
+                app.lock.locked = true;
+                app.fx.ambient = None;
+                app.lock.unlocking = unlocking;
+                app.lock.error = error;
+                app.lock.input = "hunter2".into();
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 let buf = term.backend().buffer();
                 let out: String = (0..h)
@@ -1558,10 +1568,10 @@ fn every_screen_renders_at_every_size() {
                     .collect();
                 std::fs::write(format!("{dir}/{name}_{w}x{h}.txt"), out).unwrap();
             }
-            app.locked = false;
-            app.unlocking = false;
-            app.lock_error = None;
-            app.lock_input.clear();
+            app.lock.locked = false;
+            app.lock.unlocking = false;
+            app.lock.error = None;
+            app.lock.input.clear();
             // The deposit card, which only exists while one is being composed.
             {
                 let tok = |s: &str, d: u8| wallet_core::markets::PoolToken { address: format!("0x00{s}"), symbol: s.into(), decimals: d };
@@ -1805,14 +1815,14 @@ fn the_selected_row_is_inspected_beside_or_under_the_list() {
     let title = format!("account · {label}");
     let find = |rows: &[String], needle: &str| rows.iter().position(|r| r.contains(needle));
     let wide = screen_text(&mut app, 160, 48);
-    assert_eq!(app.breakpoint, Breakpoint::Wide);
+    assert_eq!(app.term.breakpoint, Breakpoint::Wide);
     let list_row = find(&wide, "quai accounts").expect("the list");
     let inspector_row = find(&wide, &title).expect("the inspector");
     assert_eq!(list_row, inspector_row, "side by side at 160 columns");
     assert!(wide[inspector_row].find(&title) > wide[list_row].find("quai accounts"), "the inspector is on the right");
     assert!(find(&wide, "time locks").is_some(), "the locks sit under the accounts");
     let regular = screen_text(&mut app, 100, 30);
-    assert_eq!(app.breakpoint, Breakpoint::Regular);
+    assert_eq!(app.term.breakpoint, Breakpoint::Regular);
     assert!(find(&regular, &title) > find(&regular, "time locks"), "stacked under the list and the locks");
     // The panels are as tall as what they hold: one account is one row, not the whole screen.
     let locks = find(&regular, "time locks").unwrap();
@@ -1827,9 +1837,9 @@ fn the_headline_total_is_sized_text_where_the_terminal_can() {
     use super::super::term::backend::BIG_TEXT_CELL;
     let (_dir, mut app) = populated_app();
     app.switch(Screen::Home);
-    app.caps.text_sizing = true;
+    app.term.caps.text_sizing = true;
     let rows = screen_text(&mut app, 160, 48);
-    let sized = app.big_text.borrow().clone();
+    let sized = app.term.big_text.borrow().clone();
     assert_eq!(sized.len(), 1, "one headline");
     let b = &sized[0];
     assert!(b.text.starts_with('$') && b.text.contains(',') && !b.text.contains('.'), "dollars, grouped, cents apart: {:?}", b.text);
@@ -1841,13 +1851,13 @@ fn the_headline_total_is_sized_text_where_the_terminal_can() {
     // A modal: block digits, nothing sized.
     app.modal = Modal::Help;
     let rows = screen_text(&mut app, 160, 48);
-    assert!(app.big_text.borrow().is_empty(), "nothing sized under a modal");
+    assert!(app.term.big_text.borrow().is_empty(), "nothing sized under a modal");
     assert!(!rows.iter().any(|r| r.contains(BIG_TEXT_CELL)));
     app.modal = Modal::None;
     // Without the capability, never.
-    app.caps.text_sizing = false;
+    app.term.caps.text_sizing = false;
     screen_text(&mut app, 160, 48);
-    assert!(app.big_text.borrow().is_empty());
+    assert!(app.term.big_text.borrow().is_empty());
 }
 
 /// The wallet's own addresses link to the explorer wherever they are shown: grouped in the
@@ -1855,7 +1865,7 @@ fn the_headline_total_is_sized_text_where_the_terminal_can() {
 #[test]
 fn the_wallets_addresses_link_to_the_explorer() {
     let (_dir, mut app) = populated_app();
-    app.caps.hyperlinks = true;
+    app.term.caps.hyperlinks = true;
     // A network with an explorer (the fixture's local one has none, and links nothing).
     app.network_id = "mainnet".into();
     app.switch(Screen::Accounts);
@@ -1878,7 +1888,7 @@ fn the_wallets_addresses_link_to_the_explorer() {
     assert!(shown.iter().any(|s| s.contains('…')), "the shortened one in the table: {shown:?}");
     assert!(shown.iter().any(|s| s.starts_with("0x ") && s.len() > 20), "the grouped one in the inspector: {shown:?}");
     assert!(shown.iter().all(|s| s.starts_with("0x") && !s.ends_with(' ')), "exactly the address: {shown:?}");
-    app.caps.hyperlinks = false;
+    app.term.caps.hyperlinks = false;
     screen_text(&mut app, 160, 48);
 }
 
@@ -1915,7 +1925,7 @@ fn the_network_screen_shows_hashrate_transactions_and_gas() {
             fees_wei: 19_000e18 + (i as f64) * 1e20,
         })
         .collect();
-    app.eco.chain_stats.set(ChainStats {
+    app.eco.feeds.chain_stats.set(ChainStats {
         observed_at: wallet_core::registry::now() - 90,
         avg_block_secs: Some(5.25),
         total_transactions: Some(100_701_162),
@@ -1953,7 +1963,7 @@ fn the_network_screen_shows_hashrate_transactions_and_gas() {
     assert!(narrow.iter().all(|l| l.chars().count() == 96), "rows keep the terminal's width");
     assert!(narrow.join("\n").contains("node health"), "node health keeps its room when narrow");
     // Before the statistics arrive the charts say so rather than drawing nothing.
-    app.eco.chain_stats.clear();
+    app.eco.feeds.chain_stats.clear();
     assert!(screen_text(&mut app, 160, 45).join("\n").contains("loading"));
 }
 
@@ -1982,11 +1992,11 @@ fn launch_rows_carry_an_icon() {
         created_at: wallet_core::registry::now() - 3600,
         metadata_uri: Some("ipfs://bafkreigynbdigag634tzagcofoclwl7yqaehe4gq4s4gnx6yxal764fzfa".into()),
     };
-    app.eco.launches.set(vec![
+    app.eco.launch.list.set(vec![
         launch("0x0016c3221b6a1707427d660945cd284a9be58cec", "CHEEZ"),
         launch("0x0048848ca70ea1560577b4725a84b23b6bc589e2", "QOGE"),
     ]);
-    app.eco.launch_logos.insert("0x0016c3221b6a1707427d660945cd284a9be58cec".into(), "https://www.quainance.com/api/media/bafy".into());
+    app.eco.launch.logos.insert("0x0016c3221b6a1707427d660945cd284a9be58cec".into(), "https://www.quainance.com/api/media/bafy".into());
     assert_eq!(
         app.asset_icon_url("0x0016C3221B6A1707427D660945CD284A9BE58CEC").as_deref(),
         Some("https://www.quainance.com/api/media/bafy")
@@ -2036,7 +2046,7 @@ fn sample_pnl() -> wallet_core::pnl::Pnl {
 #[test]
 fn pnl_shows_totals_positions_and_what_a_token_leaves_out() {
     let (_dir, mut app) = drawable_app();
-    app.eco.pnl.settle(Ok(sample_pnl()));
+    app.eco.feeds.pnl.settle(Ok(sample_pnl()));
     app.switch(Screen::Pnl);
     let screen = screen_text(&mut app, 160, 45);
     let text = screen.join("\n");
@@ -2050,7 +2060,7 @@ fn pnl_shows_totals_positions_and_what_a_token_leaves_out() {
     assert!(text.contains("latest trades") && text.contains("−4.0M CHEEZ"), "{text}");
     assert!(text.contains("−100.0000 MOON  +25.0000 STAR"), "a token-for-token trade reads in full: {text}");
     // Focus CHEEZ: the sale with no recorded buy is said, not counted.
-    app.selected = app.pnl_positions().iter().position(|p| p.symbol == "CHEEZ").unwrap();
+    app.nav.selected = app.pnl_positions().iter().position(|p| p.symbol == "CHEEZ").unwrap();
     let text = screen_text(&mut app, 160, 45).join("\n");
     assert!(text.contains("CHEEZ: 4.0M sold with no buy recorded here"), "{text}");
     // Narrow: the price and trade columns give way, the figures stay.
@@ -2069,7 +2079,7 @@ fn settings_name_the_ipfs_gateways() {
     let (_dir, mut app) = drawable_app();
     app.switch(Screen::Settings);
     // The list scrolls to the cursor: stand on the gateways.
-    app.selected = app.settings_rows().iter().position(|(id, _)| *id == "abi_ipfs").unwrap();
+    app.nav.selected = app.settings_rows().iter().position(|(id, _)| *id == "abi_ipfs").unwrap();
     let screen = screen_text(&mut app, 140, 40).join("\n");
     let rows: Vec<&str> = screen.lines().filter(|l| l.contains("IPFS gateway")).collect();
     assert_eq!(rows.len(), 2, "one row per gateway: {rows:?}");
@@ -2104,11 +2114,12 @@ fn an_operation_shows_its_timeline() {
             {"s": "signed", "at": t0 + 19},
             {"s": "submitted", "at": t0 + 20},
             {"s": "replaced", "at": t0 + 68, "tx": "0x00bbccddeeff00112233445566778899aabbccdd"},
-        ]}).into(),
+        ]})
+        .into(),
         created: t0,
         updated: t0 + 68,
     }];
-    app.detail = vec![super::super::app::Detail::Activity("op:op1".into())];
+    app.nav.detail = vec![super::super::app::Detail::Activity("op:op1".into())];
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     term.draw(|f| draw(f, &mut app)).unwrap();
     let text: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
@@ -2132,7 +2143,7 @@ fn layouts_split_and_hide_as_asked() {
         term.backend().buffer().content().iter().map(|c| c.symbol()).collect::<String>()
     };
     app.network_id = "mainnet".into();
-    app.eco.markets_view.pools = Some(Ok((Vec::new(), wallet_core::markets::DexOverview::default())));
+    app.eco.markets_view.pools.settle(Ok((Vec::new(), wallet_core::markets::DexOverview::default())));
     app.switch(Screen::Markets);
     app.config.layout = "auto".into();
     let wide = text(&mut app, 220);
@@ -2170,7 +2181,7 @@ fn channel_offers_render_above_channels_with_their_answer_keys() {
         send_addresses: 1,
     }];
     app.switch(Screen::Channels);
-    app.selected = 0;
+    app.nav.selected = 0;
     for (w, h) in [(160, 48), (100, 30), (80, 24)] {
         let text = screen_text(&mut app, w, h).join("\n");
         assert!(text.contains("1 offered"), "{w}x{h}: panel title counts offers\n{text}");
@@ -2183,7 +2194,7 @@ fn channel_offers_render_above_channels_with_their_answer_keys() {
     let wide = screen_text(&mut app, 160, 48).join("\n");
     assert!(wide.contains("channel offer") && wide.contains("not a channel until you"), "details explain the offer\n{wide}");
     // The cursor on the channel below shows that channel, not the offer.
-    app.selected = 1;
+    app.nav.selected = 1;
     let wide = screen_text(&mut app, 160, 48).join("\n");
     assert!(wide.contains("rescan") && !wide.contains("not a channel until you"), "{wide}");
 }
@@ -2203,13 +2214,13 @@ fn the_lock_effect_loops_or_plays_once_then_rests() {
     caps.truecolor = true;
     let theme = super::super::theme::resolve(std::path::Path::new("/nonexistent"), "quai-dark", false, false).0;
     let mut app = App::new(paths, "local".into(), wallet_core::config::AppConfig::default(), theme, caps, Some(meta));
-    app.locked = true;
+    app.lock.locked = true;
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     app.tick((120, 40));
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.ambient.is_some(), "locking plays an effect");
+    assert!(app.fx.ambient.is_some(), "locking plays an effect");
 
-    let (w, h) = app.ambient.as_ref().unwrap().size();
+    let (w, h) = app.fx.ambient.as_ref().unwrap().size();
     // A ceremony with a single frame left, so the next draw is the one it ends on.
     let ending = || {
         let mut c = super::super::fx::Ceremony::new("rings", &super::super::fx::wordmark_block(), w, h, 1).unwrap();
@@ -2227,41 +2238,41 @@ fn the_lock_effect_loops_or_plays_once_then_rests() {
     // matter: in the background it plays on.
     assert!(app.config.lock_loop, "looping is the default");
     for focused in [true, false] {
-        app.focused = focused;
-        app.ambient = Some(ending());
-        app.lock_rested = false;
+        app.term.focused = focused;
+        app.fx.ambient = Some(ending());
+        app.lock.rested = false;
         term.draw(|f| draw(f, &mut app)).unwrap();
-        assert!(app.ambient.as_ref().is_some_and(|c| c.frame().is_none()), "focused {focused}: a fresh effect began at once");
-        assert!(!app.lock_rested && app.lock_fade.is_some(), "focused {focused}: the old frame dissolves over it");
+        assert!(app.fx.ambient.as_ref().is_some_and(|c| c.frame().is_none()), "focused {focused}: a fresh effect began at once");
+        assert!(!app.lock.rested && app.lock.fade.is_some(), "focused {focused}: the old frame dissolves over it");
         assert!(inked(&term), "focused {focused}: never an empty canvas in between");
         assert!(super::wants_animation(&app), "focused {focused}: frames keep coming");
     }
     // Typing stills it; once the field is empty again the loop picks up, focused or not.
-    app.lock_input.push('x');
+    app.lock.input.push('x');
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.ambient.is_none() && app.lock_rested, "nothing moves near a password");
+    assert!(app.fx.ambient.is_none() && app.lock.rested, "nothing moves near a password");
     app.tick((120, 40));
-    assert!(app.ambient.is_none(), "nothing starts near a password");
-    app.lock_input.clear();
+    assert!(app.fx.ambient.is_none(), "nothing starts near a password");
+    app.lock.input.clear();
     // Whatever was fading has aged out with no frame drawn to clear it, as in the running terminal.
-    app.lock_fade = Some(("·".into(), std::time::Instant::now() - std::time::Duration::from_millis(600)));
-    app.focused = false;
+    app.lock.fade = Some(("·".into(), std::time::Instant::now() - std::time::Duration::from_millis(600)));
+    app.term.focused = false;
     app.tick((120, 40));
-    assert!(app.ambient.is_some() && !app.lock_rested, "the loop resumes, in the background too");
+    assert!(app.fx.ambient.is_some() && !app.lock.rested, "the loop resumes, in the background too");
 
     // Played once: a finished effect is not replaced, and rests on the wordmark.
     app.config.lock_loop = false;
-    app.focused = true;
-    app.ambient = Some(ending());
+    app.term.focused = true;
+    app.fx.ambient = Some(ending());
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.ambient.is_none() && app.lock_rested, "a finished effect is not replaced");
-    assert!(app.lock_fade.is_some(), "its last frame dissolves over the resting wordmark");
+    assert!(app.fx.ambient.is_none() && app.lock.rested, "a finished effect is not replaced");
+    assert!(app.lock.fade.is_some(), "its last frame dissolves over the resting wordmark");
     assert!(inked(&term), "the resting screen is never an empty canvas");
     app.tick((120, 40));
-    assert!(app.ambient.is_none(), "the tick does not restart it");
-    app.locked = false;
+    assert!(app.fx.ambient.is_none(), "the tick does not restart it");
+    app.lock.locked = false;
     app.enter_lock(Some((120, 40)));
-    assert!(app.ambient.is_some() && !app.lock_rested, "the next lock plays one again");
+    assert!(app.fx.ambient.is_some() && !app.lock.rested, "the next lock plays one again");
 }
 
 /// With a modal open, what is behind it goes quiet: no text behind keeps a full-strength color,
@@ -2441,7 +2452,7 @@ fn one_panel_is_lit() {
     for screen in Screen::ALL {
         app.switch(screen);
         for pane in 0..screen.panes().max(1) {
-            app.pane = pane;
+            app.nav.pane = pane;
             app.modal = Modal::None;
             term.draw(|f| draw(f, &mut app)).unwrap();
             let buf = term.backend().buffer();
@@ -2465,18 +2476,18 @@ fn one_panel_is_lit() {
 fn an_edges_only_frame_equals_a_full_one() {
     let (_dir, mut app) = populated_app();
     app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
-    app.caps.truecolor = true;
+    app.term.caps.truecolor = true;
     app.config.motion = Motion::Vivid;
-    app.focused = true;
-    app.last_input = std::time::Instant::now() - std::time::Duration::from_secs(10);
+    app.term.focused = true;
+    app.input.last_input = std::time::Instant::now() - std::time::Duration::from_secs(10);
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
     let mut relit = 0;
     for screen in Screen::ALL {
         app.switch(screen);
         // The border intro is a full-frame animation of its own; this compares the frames after it.
-        app.edge_intro = None;
+        app.fx.edge_intro = None;
         app.modal = Modal::None;
-        app.eco.anim_ms = 1_000;
+        app.eco.anim.ms = 1_000;
         term.draw(|f| draw(f, &mut app)).unwrap();
         // A picture fading in or a border drawing itself in is a full frame by rule
         // (`wants_animation`); compare once those rest.
@@ -2484,10 +2495,10 @@ fn an_edges_only_frame_equals_a_full_one() {
             std::thread::sleep(std::time::Duration::from_millis(50));
             term.draw(|f| draw(f, &mut app)).unwrap();
         }
-        if app.eco.anim_step.get().is_none() {
+        if app.eco.anim.step.get().is_none() {
             continue;
         }
-        app.eco.anim_ms = 5_000;
+        app.eco.anim.ms = 5_000;
         term.draw(|f| draw_edges(f, &mut app)).unwrap();
         let edges = term.backend().buffer().clone();
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -2513,21 +2524,21 @@ fn an_edges_only_frame_equals_a_full_one() {
 fn the_edge_light_rests_when_nobody_is_there() {
     let (_dir, mut app) = populated_app();
     app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
-    app.caps.truecolor = true;
+    app.term.caps.truecolor = true;
     app.config.motion = Motion::Vivid;
-    app.focused = true;
+    app.term.focused = true;
     app.switch(Screen::Home);
-    app.edge_intro = None;
+    app.fx.edge_intro = None;
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
-    app.last_input = std::time::Instant::now() - std::time::Duration::from_secs(5);
+    app.input.last_input = std::time::Instant::now() - std::time::Duration::from_secs(5);
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.eco.anim_step.get().is_some(), "in use, the light turns");
-    app.last_input = std::time::Instant::now() - super::super::edge::REST_AFTER - std::time::Duration::from_secs(1);
+    assert!(app.eco.anim.step.get().is_some(), "in use, the light turns");
+    app.input.last_input = std::time::Instant::now() - super::super::edge::REST_AFTER - std::time::Duration::from_secs(1);
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.eco.anim_step.get().is_none(), "left alone, nothing asks for a frame");
-    app.last_input = std::time::Instant::now();
+    assert!(app.eco.anim.step.get().is_none(), "left alone, nothing asks for a frame");
+    app.input.last_input = std::time::Instant::now();
     term.draw(|f| draw(f, &mut app)).unwrap();
-    assert!(app.eco.anim_step.get().is_some(), "a key wakes it");
+    assert!(app.eco.anim.step.get().is_some(), "a key wakes it");
 }
 
 /// The frame budget, on the golden fixture: every screen draws a full frame and a decoration
@@ -2541,9 +2552,9 @@ fn the_edge_light_rests_when_nobody_is_there() {
 fn frame_budget() {
     let (_dir, mut app) = populated_app();
     app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
-    app.caps.truecolor = true;
+    app.term.caps.truecolor = true;
     app.config.motion = Motion::Vivid;
-    app.focused = true;
+    app.term.focused = true;
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
     let at = |mut v: Vec<u128>, q: usize| {
         v.sort_unstable();
@@ -2553,7 +2564,7 @@ fn frame_budget() {
     let mut over = Vec::new();
     for screen in Screen::ALL {
         app.switch(screen);
-        app.edge_intro = None;
+        app.fx.edge_intro = None;
         app.modal = Modal::None;
         // Warm the caches a first frame fills.
         for _ in 0..3 {
@@ -2565,7 +2576,7 @@ fn frame_budget() {
         for round in 0..3u64 {
             let (mut full, mut edges) = (Vec::new(), Vec::new());
             for i in 0..40u64 {
-                app.eco.anim_ms = 1_000 + (round * 40 + i) * 150;
+                app.eco.anim.ms = 1_000 + (round * 40 + i) * 150;
                 let t = std::time::Instant::now();
                 term.draw(|f| draw(f, &mut app)).unwrap();
                 full.push(t.elapsed().as_micros());
@@ -2594,7 +2605,7 @@ fn frame_budget() {
 fn liquidity_positions_are_holdings_on_home() {
     let (_dir, mut app) = populated_app();
     app.switch(Screen::Home);
-    let tokens = app.eco.portfolio.value().unwrap().rows.len();
+    let tokens = app.eco.feeds.portfolio.value().unwrap().rows.len();
     let positions = app.home_positions().len();
     assert!(positions > 0, "the fixture holds positions");
     assert_eq!(app.list_len(), tokens + positions, "the cursor reaches them");
@@ -2604,10 +2615,10 @@ fn liquidity_positions_are_holdings_on_home() {
     let pools = app.pools_usd();
     assert!(text.contains(&format!("incl. {} in pools", wallet_core::amount::usd(pools))), "the hero says what it includes");
     let pair = app.home_positions()[1].pair.clone();
-    app.selected = tokens + 1;
+    app.nav.selected = tokens + 1;
     app.screen_enter();
-    assert_eq!(app.screen, Screen::Pools);
-    assert_eq!(app.position_rows()[app.selected].pair, pair, "the same position, under the cursor");
+    assert_eq!(app.nav.screen, Screen::Pools);
+    assert_eq!(app.position_rows()[app.nav.selected].pair, pair, "the same position, under the cursor");
 }
 
 /// A picture stays placed when its row is restyled after it was reserved (the selection moving
@@ -2616,7 +2627,7 @@ fn liquidity_positions_are_holdings_on_home() {
 fn a_picture_survives_its_row_being_selected() {
     use super::super::images::{RESERVED, place_inline_icons};
     let (_dir, mut app) = populated_app();
-    app.caps.tier = super::super::terminal::Tier::Pixels;
+    app.term.caps.tier = super::super::terminal::Tier::Pixels;
     app.modal = Modal::None;
     let t = app.theme.clone();
     let area = Rect::new(0, 0, 20, 4);
@@ -2636,7 +2647,7 @@ fn a_picture_survives_its_row_being_selected() {
             // A popup draws over part of it.
             buf[(3, 2)].set_symbol(" ");
         }
-        app.eco.kitty.borrow_mut().push((picture, png.clone(), 0));
+        app.eco.media.kitty.borrow_mut().push((picture, png.clone(), 0));
         place_inline_icons(&app, &mut buf, &t);
         let placed = super::super::images::kitty_items(&app);
         assert_eq!(placed.len() == 1, kept, "restyled {restyle}: {} placed", placed.len());
@@ -2660,7 +2671,7 @@ fn a_long_list_shows_a_scrollbar() {
 fn hover_marks_without_filling() {
     let (_dir, mut app) = populated_app();
     app.network_id = "mainnet".into();
-    app.caps.hyperlinks = true;
+    app.term.caps.hyperlinks = true;
     app.switch(Screen::Accounts);
     let draw = |app: &mut App| {
         use ratatui::{Terminal, backend::TestBackend};
@@ -2674,7 +2685,7 @@ fn hover_marks_without_filling() {
     let y = row_of("…").expect("a shortened address");
     let line: String = (0..100u16).map(|x| buf[(x, y)].symbol()).collect();
     let x = line.chars().position(|c| c == '…').unwrap() as u16;
-    app.pointer.at = Some((x, y));
+    app.input.pointer.at = Some((x, y));
     let hovered = draw(&mut app);
     let tooltip: String = (0..100u16).map(|cx| hovered[(cx, y + 1)].symbol()).collect();
     let full = app.dash.accounts[0].address.clone();
@@ -2686,11 +2697,11 @@ fn hover_marks_without_filling() {
     let tabs = row_of("Accounts").unwrap();
     let tab_line: String = (0..100u16).map(|x| buf[(x, tabs)].symbol()).collect();
     let tx = tab_line[..tab_line.find("Qi coins").unwrap()].chars().count() as u16;
-    app.pointer.at = Some((tx + 1, tabs));
+    app.input.pointer.at = Some((tx + 1, tabs));
     let hovered = draw(&mut app);
     assert!(hovered[(tx + 1, tabs)].modifier.contains(Modifier::UNDERLINED));
     assert_eq!(hovered[(tx + 1, tabs)].bg, buf[(tx + 1, tabs)].bg, "no fill");
-    app.pointer.at = None;
+    app.input.pointer.at = None;
 }
 
 /// The terminal's own cursor waits (hidden) at the focus, for magnifiers and screen readers:
@@ -2699,16 +2710,16 @@ fn hover_marks_without_filling() {
 fn the_cursor_waits_at_the_focus_and_off_means_still() {
     let (_dir, mut app) = populated_app();
     app.switch(Screen::Activity);
-    app.selected = 0;
+    app.nav.selected = 0;
     screen_text(&mut app, 100, 30);
-    let (x, y) = app.focus_at.expect("the selected row");
-    let row = app.hits.borrow().live_regions().iter().find(|(r, _)| r.x == x && r.y == y).map(|(_, t)| t.clone());
+    let (x, y) = app.input.focus_at.expect("the selected row");
+    let row = app.input.hits.borrow().live_regions().iter().find(|(r, _)| r.x == x && r.y == y).map(|(_, t)| t.clone());
     assert!(matches!(row, Some(Target::Row { index: 0, .. })), "{row:?}");
     app.config.motion = Motion::Off;
-    app.busy = Some("syncing…".into());
+    app.status.busy = Some("syncing…".into());
     let rows = screen_text(&mut app, 100, 30);
     assert!(rows[0].contains("◌ syncing"), "a still mark: {:?}", rows[0]);
-    assert!(!app.spun, "and no frames asked for it");
+    assert!(!app.fx.spun, "and no frames asked for it");
 }
 
 fn messaging_view(need: wallet_core::messaging::service::KeyNeed) -> super::super::eco::MessagingView {
@@ -2749,14 +2760,14 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
     let (_dir, mut app) = drawable_app();
     app.meta.as_mut().unwrap().kind = wallet_core::registry::WalletKind::Hd;
     app.config.board_channels = vec!["general".into()];
-    app.eco.board.msg = Some(Ok(messaging_view(KeyNeed::NotSetUp)));
+    app.eco.board.msg.settle(Ok(messaging_view(KeyNeed::NotSetUp)));
     assert_eq!(app.board_rows(), vec![BoardRow::Channel("general".into()), BoardRow::Messaging]);
     app.switch(Screen::Board);
-    app.selected = 1;
+    app.nav.selected = 1;
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("never backed up") && text.contains("never your main"), "{text}");
 
-    app.eco.board.msg = Some(Ok(messaging_view(KeyNeed::Ready)));
+    app.eco.board.msg.settle(Ok(messaging_view(KeyNeed::Ready)));
     let bob = "0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".to_string();
     let carol = "0x00cacacacacacacacacacacacacacacacacacaca".to_string();
     assert_eq!(
@@ -2777,7 +2788,7 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
         tx: String::new(),
     };
     app.eco.board.msg_lines.insert(bob.clone(), Ok(vec![line(false, "meet at nine", "received"), line(true, "see you there", "pending")]));
-    app.selected = 2;
+    app.nav.selected = 2;
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("bob · private"), "{text}");
     assert!(text.contains("meet at nine") && text.contains("see you there   · pending"), "{text}");
@@ -2785,14 +2796,14 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
     assert!(text.contains("◉ private") && text.contains("◉ requests"), "the groups are headed: {text}");
 
     app.eco.board.msg_lines.insert(carol.clone(), Ok(vec![line(false, "hello?", "received")]));
-    app.selected = 3;
+    app.nav.selected = 3;
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("request") && text.contains("a accept") && text.contains("Wrote to you first"), "{text}");
 
-    if let Some(Ok(v)) = &mut app.eco.board.msg {
+    if let Some(v) = app.eco.board.msg.value_mut() {
         v.conversations[0].identity_changed = true;
     }
-    app.selected = 2;
+    app.nav.selected = 2;
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("Their identity key changed"), "{text}");
 }
@@ -2817,11 +2828,11 @@ fn the_messaging_account_is_chosen_and_funded_from_the_board() {
         extra.label = format!("Account {n}");
         app.dash.accounts.push(extra);
     }
-    app.eco.board.msg = Some(Ok(messaging_view(KeyNeed::NotSetUp)));
+    app.eco.board.msg.settle(Ok(messaging_view(KeyNeed::NotSetUp)));
     app.switch(Screen::Board);
     let row = app.board_rows().iter().position(|r| *r == BoardRow::Messaging).unwrap();
-    app.pane = 0;
-    app.selected = row;
+    app.nav.pane = 0;
+    app.nav.selected = row;
     let choices = app.messaging_choices();
     assert_eq!(choices.len(), app.dash.accounts.len(), "every account but the main one, and a new one");
     assert!(choices.iter().all(|(a, _)| a.as_deref() != Some(app.dash.accounts[0].address.as_str())), "never the main one");
@@ -2829,18 +2840,18 @@ fn the_messaging_account_is_chosen_and_funded_from_the_board() {
     assert!(text.contains("Choose the account your messages go from") && text.contains("a new account, just for messaging"), "{text}");
     assert!(text.contains("messages go from") && !text.contains("F fund it"), "nothing to fund before there is an account: {text}");
     press(&mut app, KeyCode::Char('p'));
-    assert_eq!(app.pane, 1, "enter goes to the list beside");
-    app.eco.board.msg_loading = false;
+    assert_eq!(app.nav.pane, 1, "enter goes to the list beside");
+    app.eco.board.msg.confirm();
     press(&mut app, KeyCode::Char('p'));
-    assert!(app.eco.board.msg_loading, "picking one sets messaging up");
+    assert!(app.eco.board.msg.loading(), "picking one sets messaging up");
 
     // Set up: the pane shows the account and how to fund it; another account asks first.
     let mut view = messaging_view(KeyNeed::Ready);
     view.status.account = Some(app.dash.accounts[1].address.clone());
-    app.eco.board.msg = Some(Ok(view));
-    app.eco.board.msg_loading = false;
-    app.pane = 0;
-    app.selected = app.board_rows().iter().position(|r| *r == BoardRow::Messaging).unwrap();
+    app.eco.board.msg.settle(Ok(view));
+    app.eco.board.msg.confirm();
+    app.nav.pane = 0;
+    app.nav.selected = app.board_rows().iter().position(|r| *r == BoardRow::Messaging).unwrap();
     let text = screen_text(&mut app, 160, 48).join("\n");
     assert!(text.contains("F fund it") && text.contains("move messaging to") && text.contains(" ✓ "), "{text}");
     press(&mut app, KeyCode::Char('p'));

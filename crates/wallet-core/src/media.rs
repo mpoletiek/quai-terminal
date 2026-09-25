@@ -211,7 +211,8 @@ pub fn dominant_color(img: &image::RgbaImage) -> (u8, u8, u8) {
 /// decoded again in this process.
 pub fn rendition_from_pixels(hash: String, pixels: crate::media_helper::Pixels) -> Result<Rendition> {
     let crate::media_helper::Pixels { width, height, rgba } = pixels;
-    let img = image::RgbaImage::from_raw(width, height, rgba).ok_or_else(|| CoreError::Invalid("image pixels do not match their size".into()))?;
+    let img =
+        image::RgbaImage::from_raw(width, height, rgba).ok_or_else(|| CoreError::Invalid("image pixels do not match their size".into()))?;
     let dominant = dominant_color(&img);
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(img.clone())
@@ -392,7 +393,8 @@ pub async fn load(app: &AppDb, url: &str, edge: u32) -> Result<Option<Rendition>
     let hash = hash_bytes(&bytes);
     let mut decoded = crate::media_helper::decode(bytes, &[THUMB, ICON]).await?.into_iter();
     let mut next = || -> Result<Rendition> {
-        let pixels = decoded.next().ok_or_else(|| CoreError::Invalid("image decoder answered short".into()))?.map_err(CoreError::Invalid)?;
+        let pixels =
+            decoded.next().ok_or_else(|| CoreError::Invalid("image decoder answered short".into()))?.map_err(CoreError::Invalid)?;
         rendition_from_pixels(hash.clone(), pixels)
     };
     let (thumb, icon) = (next(), next());

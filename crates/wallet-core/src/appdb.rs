@@ -739,10 +739,7 @@ impl AppDb {
     /// review open (its reservation was released when the custody records were reconciled).
     /// A row with a transaction hash is never touched.
     pub fn remove_unsigned_operation(&self, id: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM operations WHERE id=?1 AND tx_hash IS NULL AND status IN ('cancelled','prepared')",
-            params![id],
-        )?;
+        self.conn.execute("DELETE FROM operations WHERE id=?1 AND tx_hash IS NULL AND status IN ('cancelled','prepared')", params![id])?;
         Ok(())
     }
 
@@ -1610,7 +1607,8 @@ mod tests {
             let mut dm = op("dm1", OpStatus::Confirmed);
             dm.kind = crate::journal::OpKind::BoardPost;
             dm.detail = serde_json::json!({"sealed": true, "review": {"fields": [
-                {"label": "To", "value": "PM8T…abcd"}, {"label": "Message", "value": secret}]}}).into();
+                {"label": "To", "value": "PM8T…abcd"}, {"label": "Message", "value": secret}]}})
+            .into();
             db.insert_operation(&dm).unwrap();
             let mut post = op("post1", OpStatus::Confirmed);
             post.kind = crate::journal::OpKind::BoardPost;
@@ -1890,10 +1888,22 @@ mod tests {
         let db = AppDb::memory().unwrap();
         db.insert_operation(&op("cc33", OpStatus::Signed)).unwrap();
         db.update_operation("cc33", OpStatus::Submitted, Some("0xhash"), None, None).unwrap();
-        db.update_operation("cc33", OpStatus::Submitted, Some("0xhash"), None, Some(&crate::journal::Detail::from(serde_json::json!({"note": 1})))).unwrap();
+        db.update_operation(
+            "cc33",
+            OpStatus::Submitted,
+            Some("0xhash"),
+            None,
+            Some(&crate::journal::Detail::from(serde_json::json!({"note": 1}))),
+        )
+        .unwrap();
         db.update_operation("cc33", OpStatus::Submitted, Some("0xother"), None, None).unwrap();
         db.update_operation("cc33", OpStatus::Confirmed, None, None, None).unwrap();
-        let stages: Vec<String> = db.operation("cc33").unwrap().unwrap().detail.timeline()
+        let stages: Vec<String> = db
+            .operation("cc33")
+            .unwrap()
+            .unwrap()
+            .detail
+            .timeline()
             .as_array()
             .unwrap()
             .iter()
@@ -1928,7 +1938,14 @@ mod tests {
         let db = AppDb::memory().unwrap();
         db.insert_operation(&op("aa11", OpStatus::Signed)).unwrap();
         db.insert_operation(&op("bb22", OpStatus::Confirmed)).unwrap();
-        db.update_operation("aa11", OpStatus::Submitted, Some("0xhash"), Some("5"), Some(&crate::journal::Detail::from(serde_json::json!({"label":2})))).unwrap();
+        db.update_operation(
+            "aa11",
+            OpStatus::Submitted,
+            Some("0xhash"),
+            Some("5"),
+            Some(&crate::journal::Detail::from(serde_json::json!({"label":2}))),
+        )
+        .unwrap();
         let got = db.operation("aa11").unwrap().unwrap();
         assert_eq!(got.status, OpStatus::Submitted);
         assert_eq!(*got.detail.note(), 1);

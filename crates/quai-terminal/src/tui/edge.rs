@@ -58,13 +58,13 @@ fn heartbeat(order: u8) -> (f32, f32, f32) {
 
 /// Heartbeat progress (0..1) when the current block light should play at this motion level.
 fn beat_progress(app: &App) -> Option<(f32, u8)> {
-    let order = app.beat_order;
+    let order = app.fx.beat_order;
     let allowed = match order {
         0 | 1 => app.motion().effects(),
         _ => app.motion() == Motion::Vivid,
     };
     let (ms, ..) = heartbeat(order);
-    let elapsed = app.beat?.elapsed().as_millis() as f32;
+    let elapsed = app.fx.beat?.elapsed().as_millis() as f32;
     (allowed && elapsed < ms).then(|| (elapsed / ms, order))
 }
 
@@ -98,7 +98,7 @@ pub fn spark_spans(app: &App, t: &Theme, text: &str, base: Color) -> Vec<ratatui
     let (Some(b), Some(s), Some(strong)) = (rgb(base), rgb(t.surface), rgb(t.strong)) else {
         return vec![Span::styled(text.to_string(), Style::default().fg(base))];
     };
-    if !app.caps.truecolor || app.plain || app.no_color {
+    if !app.term.caps.truecolor || app.term.plain || app.term.no_color {
         return vec![Span::styled(text.to_string(), Style::default().fg(base))];
     }
     let count = text.chars().count();
@@ -118,7 +118,7 @@ pub fn spark_spans(app: &App, t: &Theme, text: &str, base: Color) -> Vec<ratatui
 /// Recolor a rendered multi-row sparkline by height: the higher a bar cell, the brighter.
 pub fn ramp_bars(app: &App, buf: &mut Buffer, area: Rect, base: Color, t: &Theme) {
     let (Some(b), Some(s)) = (rgb(base), rgb(t.surface)) else { return };
-    if !app.caps.truecolor || app.plain || app.no_color || area.height == 0 {
+    if !app.term.caps.truecolor || app.term.plain || app.term.no_color || area.height == 0 {
         return;
     }
     for y in area.top()..area.bottom() {
@@ -271,28 +271,29 @@ pub fn perimeter(r: Rect) -> Vec<(u16, u16)> {
 
 /// Light the frame's edges. Sets `anim_step` when something moves on its own.
 pub fn paint(app: &App, buf: &mut Buffer, t: &Theme) {
-    app.eco.anim_step.set(None);
-    if !app.caps.truecolor || app.plain || app.no_color || t.monochrome {
+    app.eco.anim.step.set(None);
+    if !app.term.caps.truecolor || app.term.plain || app.term.no_color || t.monochrome {
         return;
     }
     let Some((start, end, glint)) = ramp(t) else { return };
     let Some(surface) = rgb(t.surface) else { return };
     let quiet = matches!(app.modal, Modal::None);
-    let vivid = app.motion() == Motion::Vivid && quiet && app.focused;
-    let clock = app.eco.anim_ms;
+    let vivid = app.motion() == Motion::Vivid && quiet && app.term.focused;
+    let clock = app.eco.anim.ms;
     // Nothing moves while a modal is open: the modal's own border counts as a panel here, and a
     // review or a secret is read, not watched. The focused gradient stays, still.
-    let intro = app.edge_intro.map(|s| s.elapsed().as_millis()).filter(|ms| quiet && *ms < INTRO_TOTAL_MS && app.motion().effects());
+    let intro = app.fx.edge_intro.map(|s| s.elapsed().as_millis()).filter(|ms| quiet && *ms < INTRO_TOTAL_MS && app.motion().effects());
     let found = panels(buf, t);
     let angle = if vivid { 45.0 + 360.0 * (clock % TURN_MS) as f32 / TURN_MS as f32 } else { 45.0 };
     let (cos, sin) = (angle.to_radians().cos(), angle.to_radians().sin());
-    let turning = vivid && app.last_input.elapsed() < REST_AFTER;
+    let turning = vivid && app.input.last_input.elapsed() < REST_AFTER;
     // The glint is a messenger: one lap of the focused border when its data changes (a quote
     // landed, the chart loaded, the total moved), never on a timer. Idle means still.
     let glint_ms = app
+        .fx
         .glint_at
         .map(|at| at.elapsed().as_millis() as u64)
-        .filter(|ms| quiet && app.focused && app.motion().effects() && *ms < GLINT_LAP_MS);
+        .filter(|ms| quiet && app.term.focused && app.motion().effects() && *ms < GLINT_LAP_MS);
     let glinting = glint_ms.is_some();
     // A prime block sends a light around every panel.
     let prime_lap = beat_progress(app).filter(|(_, order)| quiet && *order == 0).map(|(p, _)| ease_in_out(p));
@@ -348,8 +349,8 @@ pub fn paint(app: &App, buf: &mut Buffer, t: &Theme) {
     let hairline = header_rule(app, buf, t, start, end, quiet);
     let turn = if glinting { Some(GLINT_STEP_MS) } else { moving.then_some(TURN_STEP_MS) };
     if let Some(step) = [turn, hairline].into_iter().flatten().min() {
-        app.eco.anim_step.set(Some(step));
-        app.eco.anim_drawn.set(clock / step);
+        app.eco.anim.step.set(Some(step));
+        app.eco.anim.drawn.set(clock / step);
     }
 }
 
@@ -401,7 +402,7 @@ pub const DRAIN_SECS: u64 = 60;
 /// the last minute before auto-lock a drain from the right. Returns when it next changes (ms).
 fn header_rule(app: &App, buf: &mut Buffer, t: &Theme, start: Rgb, end: Rgb, quiet: bool) -> Option<u64> {
     let area = buf.area;
-    if app.locked || app.onboarding.is_some() || super::ui::too_small((area.width, area.height)) {
+    if app.lock.locked || app.onboarding.is_some() || super::ui::too_small((area.width, area.height)) {
         return None;
     }
     let raised = rgb(t.raised).unwrap_or((0, 0, 0));
@@ -409,24 +410,24 @@ fn header_rule(app: &App, buf: &mut Buffer, t: &Theme, start: Rgb, end: Rgb, qui
     let moves = quiet && app.motion().effects();
     let w = f32::from(area.width);
     // (head position, tail, strength, color) of whatever runs along it now.
-    let signal = app.hairline.filter(|(s, at)| moves && at.elapsed().as_millis() < s.ms()).and_then(|(s, at)| {
+    let signal = app.fx.hairline.filter(|(s, at)| moves && at.elapsed().as_millis() < s.ms()).and_then(|(s, at)| {
         let (ms, tail, leftward) = s.shape();
         let p = ease_out(at.elapsed().as_millis() as f32 / ms) * (w + tail);
         let head = if leftward { w - 1.0 - p } else { p };
         rgb(s.color(t)).map(|c| (head, tail, 1.0, c, leftward))
     });
-    let (_, beat_tail, strength) = heartbeat(app.beat_order);
+    let (_, beat_tail, strength) = heartbeat(app.fx.beat_order);
     let beat =
         beat_progress(app).filter(|_| quiet).zip(spark).map(|((p, _), c)| (ease_out(p) * (w + beat_tail), beat_tail, strength, c, false));
     let comet = (moves && app.busy_label().is_some())
         .then(|| rgb(t.pending))
         .flatten()
-        .map(|c| ((app.eco.anim_ms % COMET_LAP_MS) as f32 / COMET_LAP_MS as f32 * (w + COMET_LEN), COMET_LEN, 0.9, c, false));
+        .map(|c| ((app.eco.anim.ms % COMET_LAP_MS) as f32 / COMET_LAP_MS as f32 * (w + COMET_LEN), COMET_LEN, 0.9, c, false));
     let light = signal.or(beat).or(comet);
     // The drain: what is left of the minute, as the lit part from the left.
     let drain = app.autolock_remaining().filter(|left| *left <= DRAIN_SECS && moves).map(|_| {
         let limit = u128::from(app.config.auto_lock_minutes) * 60_000;
-        let left = limit.saturating_sub(app.last_input.elapsed().as_millis()) as f32;
+        let left = limit.saturating_sub(app.input.last_input.elapsed().as_millis()) as f32;
         (left / (DRAIN_SECS as f32 * 1000.0)).clamp(0.0, 1.0)
     });
     for x in area.left()..area.right() {

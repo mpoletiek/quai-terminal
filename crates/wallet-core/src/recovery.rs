@@ -1,9 +1,9 @@
 //! Local reconciliation of SDK custody records with the application journal.
 //! Signed bytes remain authoritative; recovery never submits or signs.
 
-use crate::journal::OpKind;
 use crate::appdb::{OpStatus, Operation};
 use crate::error::{CoreError, Result};
+use crate::journal::OpKind;
 use crate::registry::now;
 use crate::session::{Session, op_hex};
 use quai_sdk::consensus::{SignedQiOperation, SignedQuaiTransaction};

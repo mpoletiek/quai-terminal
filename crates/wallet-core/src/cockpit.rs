@@ -24,29 +24,35 @@ pub struct WalletSummary {
     pub at: u64,
 }
 
-fn summary_path(paths: &Paths, wallet: &str, network: &str) -> std::path::PathBuf {
+/// Where a wallet's summary on a network is kept.
+pub fn summary_path(paths: &Paths, wallet: &str, network: &str) -> std::path::PathBuf {
     paths.wallet_dir(wallet).join(format!("summary-{network}.json"))
 }
 
 /// Keep a wallet's summary from a freshly priced portfolio. A stale or partial answer is not kept.
 pub fn save_summary(paths: &Paths, wallet: &str, portfolio: &Portfolio) {
+    let Some(summary) = summarize(portfolio) else { return };
+    if let Ok(text) = serde_json::to_string(&summary) {
+        let _ = std::fs::write(summary_path(paths, wallet, &portfolio.network), text);
+    }
+}
+
+/// The summary a freshly priced portfolio leaves (none for a stale or partial answer).
+pub fn summarize(portfolio: &Portfolio) -> Option<WalletSummary> {
     if portfolio.stale {
-        return;
+        return None;
     }
     let base = |key: &AssetKey| portfolio.rows.iter().find(|r| r.key == *key).map(|r| r.balance.clone()).unwrap_or_else(|| "0".into());
     let mut ranked: Vec<(&str, f64)> =
         portfolio.rows.iter().filter_map(|r| r.value_usd.filter(|v| *v > 0.0).map(|v| (r.symbol.as_str(), v))).collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let summary = WalletSummary {
+    Some(WalletSummary {
         total_usd: portfolio.total_usd,
         quai: base(&AssetKey::Quai),
         qi: base(&AssetKey::Qi),
         top: ranked.into_iter().take(3).map(|(s, _)| s.to_string()).collect(),
         at: portfolio.observed_at,
-    };
-    if let Ok(text) = serde_json::to_string(&summary) {
-        let _ = std::fs::write(summary_path(paths, wallet, &portfolio.network), text);
-    }
+    })
 }
 
 /// A wallet's last summary on a network, if it has been priced there.

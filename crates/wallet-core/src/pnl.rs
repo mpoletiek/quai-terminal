@@ -13,9 +13,9 @@
 //! cost, neither gain nor loss. Only trades made through this wallet are here; a buy made
 //! elsewhere shows up as a sale with no recorded cost, which is reported, never guessed.
 
-use crate::journal::OpKind;
 use crate::appdb::{OpStatus, Operation};
 use crate::error::Result;
+use crate::journal::OpKind;
 use crate::session::Session;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

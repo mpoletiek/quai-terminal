@@ -1,10 +1,10 @@
 //! Durable client-side limit triggers. No daemon receives signing authority. A fixed input and
 //! minimum output define the limit price; each signing client re-quotes and checks frozen bounds.
-use crate::journal::OpKind;
 use crate::appdb::{OpStatus, Operation};
 use crate::data::Trust;
 use crate::error::{CoreError, Result};
 use crate::execution::{TradingAction, TradingIntent};
+use crate::journal::OpKind;
 use crate::markets::Venue;
 use crate::plans::{PlanState, TradePlan};
 use crate::session::Session;
@@ -474,8 +474,7 @@ pub async fn create(session: &mut Session, request: Create) -> Result<TradePlan>
     if q.legs.len() > 1 {
         return Err(CoreError::Rejected("limit orders require an atomic route".into()));
     }
-    let venue = [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm]
-        .into_iter()
+    let venue = crate::venues::routable()
         .find(|venue| crate::swap::venue_pins(&session.network, *venue).is_some_and(|(r, _)| r.address.eq_ignore_ascii_case(&q.router)))
         .ok_or_else(|| CoreError::Rejected("order router is not a configured venue".into()))?;
     let (router, factory) = crate::swap::venue_pins(&session.network, venue).unwrap();

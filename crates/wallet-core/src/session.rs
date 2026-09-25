@@ -583,12 +583,8 @@ impl Session {
     pub fn set_active_account(&mut self, selector: &str) -> Result<QuaiAccount> {
         // A watch-only wallet's addresses act too (for what they can do: quotes, views).
         let watched = || {
-            self.meta.watch.iter().find(|w| w.address.eq_ignore_ascii_case(selector) || w.label.eq_ignore_ascii_case(selector)).map(|w| QuaiAccount {
-                address: w.address.clone(),
-                label: w.label.clone(),
-                hd_index: None,
-                archived: false,
-                public_key: None,
+            self.meta.watch.iter().find(|w| w.address.eq_ignore_ascii_case(selector) || w.label.eq_ignore_ascii_case(selector)).map(|w| {
+                QuaiAccount { address: w.address.clone(), label: w.label.clone(), hd_index: None, archived: false, public_key: None }
             })
         };
         let account = match self.meta.find_quai_account(selector) {

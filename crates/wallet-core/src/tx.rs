@@ -1,9 +1,9 @@
 //! Prepare → review → commit (sign, persist, broadcast) for every value-changing operation.
 
-use crate::journal::{Detail, OpKind};
 use crate::amount;
 use crate::appdb::{OpStatus, Operation};
 use crate::error::{CoreError, Result};
+use crate::journal::{Detail, OpKind};
 use crate::registry::QuaiAccount;
 use crate::session::{Session, op_hex, parse_op_id, qi_stale, stale_pause};
 use quai_sdk::U256;
@@ -203,7 +203,8 @@ pub fn balance_changes(
     if matches!(kind, OpKind::SendQi | OpKind::WrapQi | OpKind::ConvertQiToQuai) && !amount_base.is_zero() {
         out.push(change("out", "Qi", show(amount_base, amount::QI_DECIMALS), ""));
     }
-    let nft = || detail.name().as_str().filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("#{}", text(detail.token_id())));
+    let nft =
+        || detail.name().as_str().filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("#{}", text(detail.token_id())));
     match kind {
         OpKind::NftTransfer => out.push(change("out", &nft(), "1".into(), "NFT")),
         OpKind::NftBuy => out.push(change("in", &nft(), "1".into(), "NFT")),
@@ -298,8 +299,12 @@ pub fn review_visuals(kind: &OpKind, asset: &str, detail: &Detail) -> Vec<Review
         },
         OpKind::SendQuai | OpKind::WrapQuai => vec![visual("token", "QUAI".into(), "quai".into(), None)],
         OpKind::SendQi | OpKind::WrapQi | OpKind::SweepQi | OpKind::AggregateQi => vec![visual("token", "Qi".into(), "qi".into(), None)],
-        OpKind::ConvertQuaiToQi => vec![visual("pay", "QUAI".into(), "quai".into(), None), visual("receive", "Qi".into(), "qi".into(), None)],
-        OpKind::ConvertQiToQuai => vec![visual("pay", "Qi".into(), "qi".into(), None), visual("receive", "QUAI".into(), "quai".into(), None)],
+        OpKind::ConvertQuaiToQi => {
+            vec![visual("pay", "QUAI".into(), "quai".into(), None), visual("receive", "Qi".into(), "qi".into(), None)]
+        }
+        OpKind::ConvertQiToQuai => {
+            vec![visual("pay", "Qi".into(), "qi".into(), None), visual("receive", "QUAI".into(), "quai".into(), None)]
+        }
         _ => match text(detail.token()).filter(|t| t.starts_with("0x")) {
             Some(token) => vec![visual("token", asset.to_string(), token, None)],
             None => vec![],
@@ -981,7 +986,8 @@ impl Session {
             Pending::Qi { prepared, op } => {
                 let id = prepared.reservation_id();
                 let held = self.held();
-                let keys = held.as_deref()
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1009,7 +1015,8 @@ impl Session {
             Pending::QiPortable { prepared, op } => {
                 let id = prepared.reservation_id();
                 let held = self.held();
-                let keys = held.as_deref()
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let signing_started = std::time::Instant::now();
@@ -1036,7 +1043,8 @@ impl Session {
             Pending::QiSpecial { prepared, op } => {
                 let id = prepared.reservation_id();
                 let held = self.held();
-                let keys = held.as_deref()
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1064,7 +1072,8 @@ impl Session {
                 let id = prepared.reservation_id();
                 let fee = prepared.fee().to_string();
                 let held = self.held();
-                let keys = held.as_deref()
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1074,7 +1083,8 @@ impl Session {
                 drop(keys);
                 self.record_candidate(&op_id, hash.to_string(), Some(&fee))?;
                 let held = self.held();
-                let keys = held.as_deref()
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1293,9 +1303,8 @@ impl Session {
             )
         } else {
             let held = self.held();
-            let keys = held.as_deref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
             let target = hash.parse().map_err(|_| CoreError::Storage("bad hash".into()))?;
             let result = session.broadcast_candidate(id, target).await;
@@ -1500,9 +1509,8 @@ impl Session {
                 intent = intent.aggregating_destination();
             }
             let held = self.held();
-            let keys = held.as_deref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
             let result = session.prepare_replacement(id, intent, policy, profile).await;
             drop(session);
@@ -1705,7 +1713,9 @@ mod tests {
         let approval = canonical_identity_warnings(&network, "USDT", &Detail::from(json!({"token":fake})));
         assert_eq!(approval.len(), 1);
         for (symbol, key) in [("USDT", "lp"), ("UЅDT", "curve")] {
-            let effects = crate::journal::Detail::from(json!({"kind":key,"financial_effects":[{"asset":symbol,"token":fake},{"asset":symbol,"token":fake}]}));
+            let effects = crate::journal::Detail::from(
+                json!({"kind":key,"financial_effects":[{"asset":symbol,"token":fake},{"asset":symbol,"token":fake}]}),
+            );
             assert_eq!(canonical_identity_warnings(&network, "LP", &effects).len(), 1);
         }
         let canonical = network.ecosystem.usdt.unwrap().address;
@@ -1725,12 +1735,16 @@ mod tests {
 
     #[test]
     fn visuals_follow_the_operation() {
-        let swap = review_visuals(&OpKind::Swap, "WQI", &Detail::from(json!({"from_token": "0x002b", "to_symbol": "USDT", "to_token": "0x0049"})));
+        let swap =
+            review_visuals(&OpKind::Swap, "WQI", &Detail::from(json!({"from_token": "0x002b", "to_symbol": "USDT", "to_token": "0x0049"})));
         assert_eq!(swap.len(), 2);
         assert_eq!((swap[0].role.as_str(), swap[0].contract.as_str()), ("pay", "0x002b"));
         assert_eq!((swap[1].role.as_str(), swap[1].symbol.as_str()), ("receive", "USDT"));
         // Older journal rows without from_token picture native QUAI.
-        assert_eq!(review_visuals(&OpKind::Swap, "QUAI", &Detail::from(json!({"to_symbol": "USDT", "to_token": "0x0049"})))[0].contract, "quai");
+        assert_eq!(
+            review_visuals(&OpKind::Swap, "QUAI", &Detail::from(json!({"to_symbol": "USDT", "to_token": "0x0049"})))[0].contract,
+            "quai"
+        );
         let nft = review_visuals(&OpKind::NftBuy, "QUAI", &Detail::from(json!({"contract": "0x004d", "token_id": "7", "name": ""})));
         assert_eq!((nft[0].role.as_str(), nft[0].symbol.as_str(), nft[0].token_id.as_deref()), ("nft", "#7", Some("7")));
         assert_eq!(review_visuals(&OpKind::Approve, "USDT", &Detail::from(json!({"token": "0x0049"})))[0].role, "token");
@@ -1758,13 +1772,17 @@ mod balance_change_tests {
         assert_eq!((arrives.asset.as_str(), arrives.amount.as_str()), ("Qi", "≈ 7.582"));
         assert!(arrives.note.contains("refunded if under 7.596"), "{}", arrives.note);
         // Without the node's estimate the spot figure is shown as a ceiling, and said to be one.
-        let spot_only = balance_changes(&OpKind::ConvertQuaiToQi, "QUAI", e18(100), 18, U256::ZERO, fee, &Detail::from(json!({"quoted_qits": "759"})));
+        let spot_only =
+            balance_changes(&OpKind::ConvertQuaiToQi, "QUAI", e18(100), 18, U256::ZERO, fee, &Detail::from(json!({"quoted_qits": "759"})));
         let arrives = spot_only.iter().find(|r| r.direction == "in").unwrap();
         assert_eq!(arrives.amount, "≤ 0.759");
         assert!(arrives.note.contains("spot rate"));
         // Qi → QUAI says what arrives too; it used to show nothing.
-        let back = crate::journal::Detail::from(json!({"quoted_its": e18(12).to_string(), "expected_its": e18(11).to_string(), "slippage_bps": 300}));
-        let c = balance_changes(&OpKind::ConvertQiToQuai, "QI", U256::from(1_000_000u64), 3, U256::ZERO, (U256::from(36u64), "QI", 3), &back);
+        let back = crate::journal::Detail::from(
+            json!({"quoted_its": e18(12).to_string(), "expected_its": e18(11).to_string(), "slippage_bps": 300}),
+        );
+        let c =
+            balance_changes(&OpKind::ConvertQiToQuai, "QI", U256::from(1_000_000u64), 3, U256::ZERO, (U256::from(36u64), "QI", 3), &back);
         let arrives = c.iter().find(|r| r.direction == "in").unwrap();
         assert_eq!((arrives.asset.as_str(), arrives.amount.as_str()), ("QUAI", "≈ 11"));
     }
@@ -1775,7 +1793,9 @@ mod balance_change_tests {
 
     #[test]
     fn a_swap_shows_what_leaves_what_arrives_and_the_fee() {
-        let detail = crate::journal::Detail::from(json!({"to_symbol": "USDT", "to_decimals": 6, "expected_out": "51940000", "minimum_out": "51680000"}));
+        let detail = crate::journal::Detail::from(
+            json!({"to_symbol": "USDT", "to_decimals": 6, "expected_out": "51940000", "minimum_out": "51680000"}),
+        );
         let c = balance_changes(&OpKind::Swap, "WQI", e18(50), 18, U256::ZERO, (U256::from(2_100_000_000_000_000u64), "QUAI", 18), &detail);
         fn row(c: &BalanceChange) -> (&str, &str, &str) {
             (c.direction.as_str(), c.asset.as_str(), c.amount.as_str())
@@ -1804,7 +1824,8 @@ mod balance_change_tests {
 
     #[test]
     fn an_nft_transfer_is_one_item_out() {
-        let c = balance_changes(&OpKind::NftTransfer,
+        let c = balance_changes(
+            &OpKind::NftTransfer,
             "Quai Pepe",
             U256::from(1u8),
             0,
@@ -1817,7 +1838,15 @@ mod balance_change_tests {
 
     #[test]
     fn qi_sends_count_in_qi() {
-        let c = balance_changes(&OpKind::SendQi, "QI", U256::from(2_500u64), 3, U256::ZERO, (U256::from(5u8), "Qi", 3), &Detail::from(json!({})));
+        let c = balance_changes(
+            &OpKind::SendQi,
+            "QI",
+            U256::from(2_500u64),
+            3,
+            U256::ZERO,
+            (U256::from(5u8), "Qi", 3),
+            &Detail::from(json!({})),
+        );
         assert_eq!((c[0].asset.as_str(), c[0].amount.as_str()), ("Qi", "2.5"));
         assert_eq!((c[1].asset.as_str(), c[1].amount.as_str()), ("Qi", "0.005"));
     }
@@ -1899,7 +1928,9 @@ mod broadcast_race_tests {
                         status,
                         Some(winner),
                         Some("receipt-fee"),
-                        Some(&crate::journal::Detail::from(serde_json::json!({"original_tx":"0x01", "canonical_tx":winner, "actual_out":"1000"}))),
+                        Some(&crate::journal::Detail::from(
+                            serde_json::json!({"original_tx":"0x01", "canonical_tx":winner, "actual_out":"1000"}),
+                        )),
                     )
                     .unwrap();
                 s.record_candidate(id, "0x02".into(), Some("replacement-fee")).unwrap();

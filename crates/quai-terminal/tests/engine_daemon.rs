@@ -61,9 +61,13 @@ fn start_daemon(home: &Path, runtime: &Path) -> Daemon {
 }
 
 fn start_daemon_with(home: &Path, runtime: &Path, env: &[(&str, &str)]) -> Daemon {
+    start_daemon_on(home, runtime, "offline", env)
+}
+
+fn start_daemon_on(home: &Path, runtime: &Path, network: &str, env: &[(&str, &str)]) -> Daemon {
     let log = std::fs::File::create(home.join("daemon.test.log")).unwrap();
     let child = std::process::Command::new(bin())
-        .args(["--network", "offline", "daemon", "run", "--locked", "--detached", "--interval", "5"])
+        .args(["--network", network, "daemon", "run", "--locked", "--detached", "--interval", "5"])
         .env("QUAI_TERMINAL_HOME", home)
         .env("XDG_RUNTIME_DIR", runtime)
         .envs(env.iter().copied())
@@ -266,4 +270,95 @@ fn the_engine_socket_survives_hostile_clients() {
     // Still serving.
     let engine = connect(&daemon, &meta.id);
     wait_for(&engine, "a dashboard after all that", 20, |ev| matches!(ev, Ev::Dashboard(_)));
+}
+
+/// A trade plan walked by the daemon's engine on the local dev chain, as a terminal would walk it:
+/// every review answered, each next one asked for when the engine says the last step is in.
+///
+/// Run by hand against a trading fixture (`scripts/devnet-trading-e2e.sh` leaves one):
+///   QW_PLAN_HOME=/tmp/quai-trading-e2e.X/wallet QW_PLAN_PASSWORD=/tmp/quai-trading-e2e.X/password \
+///   QW_PLAN_FROM=<token> QW_PLAN_AMOUNT=1 cargo test --test engine_daemon -- --ignored plan
+#[test]
+#[ignore = "needs the local dev chain and a trading fixture"]
+fn a_plan_runs_through_the_daemon_on_the_dev_chain() {
+    use quai_engine::plans::{Phase, PlanCmd};
+    let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k}"));
+    let home = tempfile::tempdir().unwrap();
+    let copied = std::process::Command::new("cp").args(["-a", &format!("{}/.", env("QW_PLAN_HOME"))]).arg(home.path()).status().unwrap();
+    assert!(copied.success());
+    let runtime = tempfile::tempdir().unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let password = std::fs::read_to_string(env("QW_PLAN_PASSWORD")).unwrap().trim().to_string();
+    let daemon = start_daemon_on(home.path(), runtime.path(), "trading-fixture", &[("QUAI_WALLET_INSECURE_FAST_KDF", "1")]);
+    let paths = wallet_core::paths::Paths::resolve(Some(home.path().to_path_buf())).unwrap();
+    let registry = wallet_core::registry::Registry::new(paths);
+    let meta = registry.list().unwrap().into_iter().find(|m| m.name == "trader").expect("the trader wallet");
+    let engine = {
+        let runtime = daemon.runtime.clone();
+        let dialer = Dialer {
+            socket: runtime_file(&runtime, "engine-", ".sock").unwrap(),
+            daemon_pid: Box::new(move || daemon_pid(&runtime)),
+            ensure_daemon: Box::new(|| Err("not in this test".into())),
+        };
+        Engine::Remote(Remote::connect(dialer, meta.id.clone(), "trading-fixture".into(), || {}).unwrap())
+    };
+    wait_for(&engine, "first dashboard", 30, |ev| matches!(ev, Ev::Dashboard(_)));
+    engine.unlock(meta.id.clone(), Zeroizing::new(password));
+    wait_for(&engine, "unlock", 60, |ev| matches!(ev, Ev::Unlocked));
+    let account = meta.default_quai_account().unwrap().address.clone();
+    let intent = wallet_core::execution::TradingIntent {
+        account,
+        max_fee: None,
+        action: wallet_core::execution::TradingAction::Swap {
+            from: env("QW_PLAN_FROM"),
+            to: "quai".into(),
+            amount: env("QW_PLAN_AMOUNT"),
+            slippage: 300,
+            deadline: 20,
+        },
+    };
+    engine.send(Cmd::Plan(PlanCmd::Start { label: "plan e2e".into(), intent }));
+    let started = Instant::now();
+    let mut kinds = Vec::new();
+    let mut id = String::new();
+    let mut finished = false;
+    while !finished {
+        assert!(started.elapsed() < Duration::from_secs(600), "the plan did not finish: {kinds:?}");
+        let Some(ev) = engine.try_recv() else {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
+        match ev {
+            Ev::Plan(view) => {
+                id = view.id.clone();
+                eprintln!("plan: {:?} done={:?} last_step={}", view.phase, view.done, view.last_step);
+                match &view.phase {
+                    Phase::Ready => engine.send(Cmd::Plan(PlanCmd::Next { id: id.clone() })),
+                    Phase::Stopped(said) => panic!("stopped: {said}"),
+                    Phase::Done(_) => finished = true,
+                    _ => {}
+                }
+            }
+            Ev::Review(review) => {
+                eprintln!("review: {} {:?} risks={:?}", review.op_id, review.kind, review.risks);
+                kinds.push(review.kind.clone());
+                match review.confirm.clone() {
+                    Some(words) => engine.send(Cmd::CommitConfirmed { op_id: review.op_id.clone(), words }),
+                    None => engine.send(Cmd::Commit(review.op_id.clone())),
+                }
+            }
+            Ev::Submitted(sub) => eprintln!("submitted {} {}", sub.op_id, sub.tx_hash),
+            Ev::PrepareError(e) | Ev::Error(e) => eprintln!("error: {e}"),
+            Ev::CommitError { message, .. } => panic!("commit failed: {message}"),
+            _ => {}
+        }
+    }
+    assert!(!id.is_empty());
+    assert_eq!(kinds.last(), Some(&wallet_core::journal::OpKind::Swap), "the swap was the last step: {kinds:?}");
+    let app = wallet_core::appdb::AppDb::open(&registry.paths().wallet_dir(&meta.id).join("app.sqlite")).unwrap();
+    let saved = app.trade_plan(&id).unwrap().unwrap();
+    assert_eq!(saved.state, wallet_core::plans::PlanState::Complete, "the engine recorded it complete: {}", saved.reason);
 }

@@ -1,6 +1,7 @@
 //! Trade › Markets: the pairs, the DEX-wide flow and a pair's chart and tape.
 
 use super::*;
+use wallet_core::venues::Badge;
 
 // ---------------------------------------------------------------- Trade › Markets
 
@@ -56,7 +57,7 @@ fn token_info(
         Span::styled(format!(" · {venue} "), t.dim_style()),
         Span::styled(short(&pool.address), t.text_style()),
     ];
-    if app.caps.hyperlinks && !app.plain {
+    if app.term.caps.hyperlinks && !app.term.plain {
         spans.push(Span::styled(" · ctrl+click opens · y copies", t.dim_style()));
     } else {
         spans.push(Span::styled(" · y copies · Y its link", t.dim_style()));
@@ -109,7 +110,7 @@ pub(crate) fn pct_span(t: &Theme, pct: Option<f64>) -> Span<'static> {
 pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::markets::{TIMEFRAMES, Venue};
     let mv = &app.eco.markets_view;
-    let (pools, overview) = match &mv.pools {
+    let (pools, overview) = match mv.pools.shown() {
         None => {
             let block = panel(t, "markets · Quainance", true);
             let inner = block.inner(area);
@@ -180,9 +181,9 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let freshness = if stale { " · stale/partial source" } else { "" };
     // Prices say which block they are from when they were read at one: the header's, normally.
     let mv = &app.eco.markets_view;
-    let reserves = match (mv.reserves_block, mv.reserves_at) {
-        (Some(block), Some(_)) => format!(" · at #{}", amount::group_thousands(&block.to_string())),
-        (None, Some(at)) => format!(" · reserves {}s", at.elapsed().as_secs()),
+    let reserves = match (mv.reserves.value(), mv.reserves.age()) {
+        (Some(&block), Some(_)) if block > 0 => format!(" · at #{}", amount::group_thousands(&block.to_string())),
+        (Some(_), Some(age)) => format!(" · reserves {}s", age.as_secs()),
         _ => " · reserves unverified".into(),
     };
     let title = if overview.source == "chain" {
@@ -190,14 +191,14 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     } else {
         format!("pairs{partial}{freshness}{reserves}{ordered} · TVL {tvl} · 24h {vol}")
     };
-    let block = panel(t, &title, app.screen == Screen::Markets && app.lit_pane() == Some(0));
+    let block = panel(t, &title, app.nav.screen == Screen::Markets && app.lit_pane() == Some(0));
     let inner = block.inner(list_area);
     f.render_widget(block, list_area);
     let visible = inner.height.saturating_sub(1) as usize;
     let pairs_id = crate::tui::hit::ListId::Screen(Screen::Markets, 0);
     let offset = app.list_window(pairs_id, selected, rows_pools.len(), visible);
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         hits.add(list_area, crate::tui::hit::Target::Pane(0));
         let body = Rect { y: inner.y + 1, height: visible as u16, ..inner };
         hits.rows(pairs_id, body, offset, rows_pools.len(), |i| rows_pools.get(i).map(|p| p.address.clone()));
@@ -223,16 +224,14 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let [base_icon, quote_icon] = icons;
             // Where it trades: a graduated launch is marked, a curve shows how far it has raised,
             // and a pair on the older exchange says so — its depth and its fees are its own.
-            let marker = match p.venue {
-                Venue::LaunchAmm => Span::styled(format!(" {}", t.icon(Icon::Launch)), Style::default().fg(t.link)),
-                Venue::Curve => Span::styled(format!(" {}", t.icon(Icon::Curve)), Style::default().fg(t.attention)),
-                Venue::Legacy => Span::styled(format!(" {}", t.icon(Icon::Legacy)), Style::default().fg(t.attention)),
-                // Quainance's revenue AMM: a launch exchange like the other, not HartiiLabs'.
-                Venue::HartiiAmm => Span::styled(format!(" {}", t.icon(Icon::Launch)), Style::default().fg(t.link)),
-                Venue::Main => Span::raw(""),
+            let marker = match p.venue.badge() {
+                Badge::Launch => Span::styled(format!(" {}", t.icon(Icon::Launch)), Style::default().fg(t.link)),
+                Badge::Curve => Span::styled(format!(" {}", t.icon(Icon::Curve)), Style::default().fg(t.attention)),
+                Badge::Legacy => Span::styled(format!(" {}", t.icon(Icon::Legacy)), Style::default().fg(t.attention)),
+                Badge::None => Span::raw(""),
             };
             // Watched pairs sit at the top, marked.
-            let watched = app.eco.watchlist.iter().any(|w| w.eq_ignore_ascii_case(&p.address));
+            let watched = app.eco.alerts.watchlist.iter().any(|w| w.eq_ignore_ascii_case(&p.address));
             let watch =
                 Span::styled(if watched { format!(" {}", t.icon(Icon::On)) } else { String::new() }, Style::default().fg(t.attention));
             let depth = match &p.curve {
@@ -351,7 +350,10 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let set: Vec<String> = app
         .eco
         .alerts
-        .iter()
+        .list
+        .value()
+        .into_iter()
+        .flatten()
         .filter(|a| a.pool.eq_ignore_ascii_case(&pool.address))
         .map(|a| a.describe().trim_start_matches(&format!("{} ", a.name)).to_string())
         .collect();
@@ -408,8 +410,8 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             if cs.is_empty() {
                 empty(f, chart_area, t, Icon::Trade, "No trades in this window yet.", &[(".", "longer timeframe")]);
             } else {
-                app.hits.borrow_mut().add(chart_area, crate::tui::hit::Target::Scroll(crate::tui::hit::Scroll::Chart));
-                draw_candles(f, t, chart_area, &cs, step, bucket, app.pointer.at);
+                app.input.hits.borrow_mut().add(chart_area, crate::tui::hit::Target::Scroll(crate::tui::hit::Scroll::Chart));
+                draw_candles(f, t, chart_area, &cs, step, bucket, app.input.pointer.at);
                 draw_volume(f, t, volume_area, &cs, step);
             }
             draw_trade_tape(f, app, t, tape_area, &app.market_trades(pool, base0), &base_sym, &quote_sym);
@@ -427,7 +429,7 @@ const TVL_PRICE_OLD: u64 = 15 * 60;
 fn tvl_price_taken(app: &App, pool: &wallet_core::markets::Pool) -> Option<u64> {
     let wquai = app.net()?.wquai.clone()?;
     let quai_side = [&pool.token0, &pool.token1].iter().any(|t| t.address.eq_ignore_ascii_case(&wquai));
-    let board = app.eco.portfolio.value()?.prices.as_ref()?;
+    let board = app.eco.feeds.portfolio.value()?.prices.as_ref()?;
     (quai_side && board.quai_usd.is_some() && board.taken_at > 0).then_some(board.taken_at)
 }
 
@@ -449,7 +451,7 @@ pub(crate) fn holding_line(
     bs: &str,
     qs: &str,
 ) -> String {
-    let Some(p) = app.eco.portfolio.value() else { return String::new() };
+    let Some(p) = app.eco.feeds.portfolio.value() else { return String::new() };
     let wquai = app.net().and_then(|n| n.wquai.clone()).map(|w| w.to_lowercase());
     let held = |tok: &wallet_core::markets::PoolToken| {
         p.rows
@@ -678,9 +680,10 @@ pub(crate) fn flow_age(at: u64) -> String {
 /// the later hops marked `»`.
 pub(crate) fn draw_dex_flow(f: &mut Frame, app: &App, t: &Theme, area: Rect, pools: &[wallet_core::markets::Pool]) {
     let mv = &app.eco.markets_view;
-    let focused = app.screen == Screen::Markets && app.lit_pane() == Some(1);
+    let focused = app.nav.screen == Screen::Markets && app.lit_pane() == Some(1);
     let floor = if mv.flow_min_usd > 0.0 { format!(" · over {}", wallet_core::swap::usd_compact(mv.flow_min_usd)) } else { String::new() };
-    let title = match (&mv.flow_error, mv.flow.is_empty()) {
+    let tape: &[wallet_core::markets::DexSwap] = mv.flow.value().map_or(&[], Vec::as_slice);
+    let title = match (mv.flow.error(), tape.is_empty()) {
         (Some(_), _) => "flow · all pools · not updating".to_string(),
         (None, false) => format!("flow · all pools{floor}"),
         (None, true) => "flow · all pools".to_string(),
@@ -688,8 +691,8 @@ pub(crate) fn draw_dex_flow(f: &mut Frame, app: &App, t: &Theme, area: Rect, poo
     let block = panel(t, &title, focused);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if mv.flow.is_empty() {
-        return match (&mv.flow_error, mv.flow_loading) {
+    if tape.is_empty() {
+        return match (mv.flow.error(), mv.flow.loading()) {
             (Some(e), _) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]),
             (None, true) => empty_state(f, inner, t, spinner(), "Watching for swaps…", &[]),
             (None, false) => empty(f, inner, t, Icon::Swap, "No swaps in the last few minutes.", &[]),
@@ -706,11 +709,11 @@ pub(crate) fn draw_dex_flow(f: &mut Frame, app: &App, t: &Theme, area: Rect, poo
         return empty(f, inner, t, Icon::Swap, &format!("No swaps over {floor} in the tape."), &[(".", "lower the floor")]);
     }
     // The cursor only lives here while this pane has the focus.
-    let cursor = (focused && rows_h > 0).then(|| app.selected.min(visible.len() - 1));
+    let cursor = (focused && rows_h > 0).then(|| app.nav.selected.min(visible.len() - 1));
     let flow_id = crate::tui::hit::ListId::Screen(Screen::Markets, 1);
     let offset = app.pane_window(flow_id, visible.len(), rows_h);
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         let body = Rect { y: inner.y + u16::from(header), height: rows_h as u16, ..inner };
         hits.rows(flow_id, body, offset, visible.len(), |_| None);
     }

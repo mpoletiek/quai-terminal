@@ -55,8 +55,8 @@ pub fn spec(screen: Screen) -> PaneSpec {
 /// The main pane and, when this screen has one and there is room for it, its inspector. The
 /// pinned chat and the trader layout already use the width, so neither leaves room.
 pub fn with_inspector(app: &App, area: Rect) -> (Rect, Option<Rect>) {
-    let room = app.breakpoint == Breakpoint::Wide && !app.dock_shown && !app.trader && area.width >= INSPECTOR_W + 60;
-    if room && spec(app.screen).inspector {
+    let room = app.term.breakpoint == Breakpoint::Wide && !app.dock.shown && !app.trader && area.width >= INSPECTOR_W + 60;
+    if room && spec(app.nav.screen).inspector {
         let [main, inspector] = Layout::horizontal([Constraint::Min(60), Constraint::Length(INSPECTOR_W)]).areas(area);
         (main, Some(inspector))
     } else {

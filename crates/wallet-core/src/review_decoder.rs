@@ -78,35 +78,130 @@ pub enum Call {
     /// No calldata: a plain transfer of the native value.
     NativeTransfer,
     /// The two-byte slippage of a QUAI → Qi conversion (sent to a Qi address).
-    Conversion { slippage_bps: u16 },
-    Erc20Transfer { to: String, amount: U256 },
-    Approve { spender: String, amount: U256 },
-    ApproveAll { operator: String, approved: bool },
-    ModuleApproval { module: String, approved: bool },
+    Conversion {
+        slippage_bps: u16,
+    },
+    Erc20Transfer {
+        to: String,
+        amount: U256,
+    },
+    Approve {
+        spender: String,
+        amount: U256,
+    },
+    ApproveAll {
+        operator: String,
+        approved: bool,
+    },
+    ModuleApproval {
+        module: String,
+        approved: bool,
+    },
     /// A router swap. `amount_in` is `None` when it spends the native value; `min_out` is the
     /// exact output for an exact-output swap.
-    Swap { exact_output: bool, amount_in: Option<U256>, min_out: U256, path: Vec<String>, native_out: bool, to: String, deadline: U256 },
-    AddLiquidity { token_a: String, token_b: Option<String>, amount_a: U256, amount_b: Option<U256>, min_a: U256, min_b: U256, to: String, deadline: U256 },
-    RemoveLiquidity { token_a: String, token_b: Option<String>, liquidity: U256, min_a: U256, min_b: U256, to: String, deadline: U256 },
+    Swap {
+        exact_output: bool,
+        amount_in: Option<U256>,
+        min_out: U256,
+        path: Vec<String>,
+        native_out: bool,
+        to: String,
+        deadline: U256,
+    },
+    AddLiquidity {
+        token_a: String,
+        token_b: Option<String>,
+        amount_a: U256,
+        amount_b: Option<U256>,
+        min_a: U256,
+        min_b: U256,
+        to: String,
+        deadline: U256,
+    },
+    RemoveLiquidity {
+        token_a: String,
+        token_b: Option<String>,
+        liquidity: U256,
+        min_a: U256,
+        min_b: U256,
+        to: String,
+        deadline: U256,
+    },
     WrapQuai,
-    UnwrapQuai { amount: U256 },
+    UnwrapQuai {
+        amount: U256,
+    },
     ClaimWqi,
-    UnwrapWqi { beneficiary: String, amount: U256 },
-    CurveBuy { min_tokens: U256, deadline: Option<U256> },
-    CurveSell { max_tokens: U256, min_quote: U256, deadline: Option<U256> },
-    CurveClaim { recipient: String },
-    GaugeStake { pid: U256, amount: U256 },
-    GaugeWithdraw { pid: U256, amount: U256 },
-    GaugeReward { pid: U256, exit: bool },
-    GaugeNotify { pid: U256, token: String, amount: U256, duration: U256 },
-    ZoraFill { contract: String, token_id: U256, currency: String, amount: U256 },
-    ZoraCreate { contract: String, token_id: U256, price: U256, currency: String, funds_recipient: String },
-    ZoraSetPrice { contract: String, token_id: U256, price: U256, currency: String },
-    ZoraCancel { contract: String, token_id: U256 },
-    NftTransfer { from: String, to: String, token_id: U256, amount: Option<U256> },
-    BoardPost { body_len: usize },
+    UnwrapWqi {
+        beneficiary: String,
+        amount: U256,
+    },
+    CurveBuy {
+        min_tokens: U256,
+        deadline: Option<U256>,
+    },
+    CurveSell {
+        max_tokens: U256,
+        min_quote: U256,
+        deadline: Option<U256>,
+    },
+    CurveClaim {
+        recipient: String,
+    },
+    GaugeStake {
+        pid: U256,
+        amount: U256,
+    },
+    GaugeWithdraw {
+        pid: U256,
+        amount: U256,
+    },
+    GaugeReward {
+        pid: U256,
+        exit: bool,
+    },
+    GaugeNotify {
+        pid: U256,
+        token: String,
+        amount: U256,
+        duration: U256,
+    },
+    ZoraFill {
+        contract: String,
+        token_id: U256,
+        currency: String,
+        amount: U256,
+    },
+    ZoraCreate {
+        contract: String,
+        token_id: U256,
+        price: U256,
+        currency: String,
+        funds_recipient: String,
+    },
+    ZoraSetPrice {
+        contract: String,
+        token_id: U256,
+        price: U256,
+        currency: String,
+    },
+    ZoraCancel {
+        contract: String,
+        token_id: U256,
+    },
+    NftTransfer {
+        from: String,
+        to: String,
+        token_id: U256,
+        amount: Option<U256>,
+    },
+    BoardPost {
+        body_len: usize,
+    },
     /// A selector none of the declarations match.
-    Unknown { selector: [u8; 4] },
+    Unknown {
+        selector: [u8; 4],
+    },
 }
 
 /// A decoded transaction.
@@ -191,9 +286,15 @@ fn decode_call(to: Option<&str>, data: &[u8]) -> Result<Call, String> {
             to: ad(3)?,
             deadline: u(4)?,
         },
-        (n, _) if n.starts_with("swapExactETHFor") => {
-            Call::Swap { exact_output: false, amount_in: None, min_out: u(0)?, path: path(1)?, native_out: false, to: ad(2)?, deadline: u(3)? }
-        }
+        (n, _) if n.starts_with("swapExactETHFor") => Call::Swap {
+            exact_output: false,
+            amount_in: None,
+            min_out: u(0)?,
+            path: path(1)?,
+            native_out: false,
+            to: ad(2)?,
+            deadline: u(3)?,
+        },
         ("swapTokensForExactTokens" | "swapTokensForExactETH", _) => Call::Swap {
             exact_output: true,
             amount_in: Some(u(1)?),
@@ -203,9 +304,15 @@ fn decode_call(to: Option<&str>, data: &[u8]) -> Result<Call, String> {
             to: ad(3)?,
             deadline: u(4)?,
         },
-        ("swapETHForExactTokens", _) => {
-            Call::Swap { exact_output: true, amount_in: None, min_out: u(0)?, path: path(1)?, native_out: false, to: ad(2)?, deadline: u(3)? }
-        }
+        ("swapETHForExactTokens", _) => Call::Swap {
+            exact_output: true,
+            amount_in: None,
+            min_out: u(0)?,
+            path: path(1)?,
+            native_out: false,
+            to: ad(2)?,
+            deadline: u(3)?,
+        },
         ("addLiquidity", _) => Call::AddLiquidity {
             token_a: ad(0)?,
             token_b: Some(ad(1)?),
@@ -235,9 +342,15 @@ fn decode_call(to: Option<&str>, data: &[u8]) -> Result<Call, String> {
             to: ad(5)?,
             deadline: u(6)?,
         },
-        ("removeLiquidityETH", _) => {
-            Call::RemoveLiquidity { token_a: ad(0)?, token_b: None, liquidity: u(1)?, min_a: u(2)?, min_b: u(3)?, to: ad(4)?, deadline: u(5)? }
-        }
+        ("removeLiquidityETH", _) => Call::RemoveLiquidity {
+            token_a: ad(0)?,
+            token_b: None,
+            liquidity: u(1)?,
+            min_a: u(2)?,
+            min_b: u(3)?,
+            to: ad(4)?,
+            deadline: u(5)?,
+        },
         ("deposit", 0) => Call::WrapQuai,
         ("withdraw", 1) => Call::UnwrapQuai { amount: u(0)? },
         ("claimDeposit", 0) => Call::ClaimWqi,
@@ -359,10 +472,7 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
     let deadline_ok = |deadline: &U256| -> bool { d.expires_at().as_u64().is_none_or(|e| *deadline == U256::from(e)) };
     let min_ok = |token: &str, minimum: U256| -> bool {
         match &effects {
-            Some(list) => list
-                .iter()
-                .filter(|e| !e.out && same(&e.token, token))
-                .all(|e| e.minimum.is_none_or(|m| m == minimum)),
+            Some(list) => list.iter().filter(|e| !e.out && same(&e.token, token)).all(|e| e.minimum.is_none_or(|m| m == minimum)),
             None => text(d.minimum_out()).is_none_or(|m| U256::from_str_radix(&m, 10).is_ok_and(|m| m == minimum)),
         }
     };
@@ -411,7 +521,13 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
                 return bad(format!("it approves on {target}, the review names the token {token}"));
             }
             let unlimited = d.unlimited().as_bool() == Some(true);
-            let expected = if *kind == OpKind::Revoke { U256::ZERO } else if unlimited { U256::MAX } else { declared.amount };
+            let expected = if *kind == OpKind::Revoke {
+                U256::ZERO
+            } else if unlimited {
+                U256::MAX
+            } else {
+                declared.amount
+            };
             if *amount != expected {
                 return bad(format!("it approves {amount}, the review {expected}"));
             }
@@ -427,7 +543,8 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
             said.push(format!("setApprovalForAll({operator}, true) on {target}"));
         }
         Call::ModuleApproval { module, approved } => {
-            if *kind != OpKind::Approve || !approved || text(d.module()).is_none_or(|m| !same(&m, module)) || !to_is(declared.counterparty) {
+            if *kind != OpKind::Approve || !approved || text(d.module()).is_none_or(|m| !same(&m, module)) || !to_is(declared.counterparty)
+            {
                 return bad(format!("a module approval of {module} the review does not name"));
             }
             said.push(format!("setApprovalForModule({module}, true) on {target}"));
@@ -461,7 +578,9 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
                 return bad("the swap's output is not the reviewed asset".into());
             }
             match amount_in {
-                Some(amount) if !spends(first, *amount) => return bad(format!("the swap spends {amount} of {first}, not the reviewed amount")),
+                Some(amount) if !spends(first, *amount) => {
+                    return bad(format!("the swap spends {amount} of {first}, not the reviewed amount"));
+                }
                 None if decoded.value.is_zero() => return bad("a native swap with no value".into()),
                 _ => {}
             }
@@ -486,7 +605,10 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
             if !spends(token_a, *amount_a) || token_b.as_deref().zip(*amount_b).is_some_and(|(b, amt)| !spends(b, amt)) {
                 return bad("the deposit amounts are not the reviewed ones".into());
             }
-            said.push(format!("add liquidity via {target}: {amount_a} {token_a} + {} , to {to}", amount_b.map_or("native".into(), |b| format!("{b} {}", token_b.clone().unwrap_or_default()))));
+            said.push(format!(
+                "add liquidity via {target}: {amount_a} {token_a} + {} , to {to}",
+                amount_b.map_or("native".into(), |b| format!("{b} {}", token_b.clone().unwrap_or_default()))
+            ));
         }
         Call::RemoveLiquidity { liquidity, min_a, min_b, to, deadline, .. } => {
             if *kind != OpKind::RemoveLiquidity || !to_is(declared.counterparty) || !same(to, owner) || !deadline_ok(deadline) {
@@ -521,7 +643,11 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
         }
         Call::UnwrapWqi { beneficiary, amount } => {
             let contract = text(d.contract()).unwrap_or_default();
-            if *kind != OpKind::UnwrapWqi || !same(target, &contract) || !same(beneficiary, declared.counterparty) || !spends(target, *amount) {
+            if *kind != OpKind::UnwrapWqi
+                || !same(target, &contract)
+                || !same(beneficiary, declared.counterparty)
+                || !spends(target, *amount)
+            {
                 return bad("a WQI redemption that is not the reviewed one".into());
             }
             said.push(format!("unwrapQi({beneficiary}, {amount}) on {target}"));
@@ -555,7 +681,8 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
         Call::GaugeStake { pid, amount } | Call::GaugeWithdraw { pid, amount } => {
             let staking = matches!(decoded.call, Call::GaugeStake { .. });
             let expected = if staking { OpKind::Stake } else { OpKind::Unstake };
-            if *kind != expected || !to_is(declared.counterparty) || uint(d.pid()).is_some_and(|p| p != *pid) || *amount != declared.amount {
+            if *kind != expected || !to_is(declared.counterparty) || uint(d.pid()).is_some_and(|p| p != *pid) || *amount != declared.amount
+            {
                 return bad("a gauge call that is not the reviewed one".into());
             }
             said.push(format!("{}(pid {pid}, {amount}) on {target}", if staking { "stake" } else { "withdraw" }));
@@ -589,12 +716,16 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
             }
             said.push(format!("fillAsk({contract} #{token_id}) paying {amount}"));
         }
-        Call::ZoraCreate { contract, token_id, price, funds_recipient, .. } | Call::ZoraSetPrice { contract, token_id, price, currency: funds_recipient } => {
+        Call::ZoraCreate { contract, token_id, price, funds_recipient, .. }
+        | Call::ZoraSetPrice { contract, token_id, price, currency: funds_recipient } => {
             let creating = matches!(decoded.call, Call::ZoraCreate { .. });
             if !matches!(kind, OpKind::NftList | OpKind::NftReprice) || !to_is(declared.counterparty) {
                 return bad("a listing that is not the reviewed one".into());
             }
-            if text(d.contract()).is_none_or(|c| !same(&c, contract)) || !token_matches(d, token_id) || uint(d.price()).is_some_and(|p| p != *price) {
+            if text(d.contract()).is_none_or(|c| !same(&c, contract))
+                || !token_matches(d, token_id)
+                || uint(d.price()).is_some_and(|p| p != *price)
+            {
                 return bad("the listing's item or price is not the reviewed one".into());
             }
             if creating && !same(funds_recipient, owner) {
@@ -603,7 +734,11 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
             said.push(format!("list {contract} #{token_id} at {price}"));
         }
         Call::ZoraCancel { contract, token_id } => {
-            if *kind != OpKind::NftUnlist || !to_is(declared.counterparty) || text(d.contract()).is_none_or(|c| !same(&c, contract)) || !token_matches(d, token_id) {
+            if *kind != OpKind::NftUnlist
+                || !to_is(declared.counterparty)
+                || text(d.contract()).is_none_or(|c| !same(&c, contract))
+                || !token_matches(d, token_id)
+            {
                 return bad("a cancellation of another listing".into());
             }
             said.push(format!("cancelAsk({contract} #{token_id})"));
@@ -675,7 +810,8 @@ impl Risk {
 /// confirmation typed for one review is not the same keystrokes as the next.
 pub fn confirm_phrase(risks: &[Risk], to: &str) -> Option<String> {
     let first = risks.first()?;
-    let tail: String = to.trim_start_matches("0x").chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<String>().to_lowercase();
+    let tail: String =
+        to.trim_start_matches("0x").chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<String>().to_lowercase();
     Some(match first {
         Risk::UnknownContract => format!("call {tail}"),
         Risk::UnlimitedApproval => format!("unlimited {tail}"),
@@ -703,7 +839,8 @@ mod tests {
         abi.function(name).unwrap().encode_call(args).unwrap()
     }
 
-    const SWAP: &str = "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline)";
+    const SWAP: &str =
+        "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline)";
 
     fn swap_detail() -> Detail {
         Detail::from(json!({
@@ -723,7 +860,17 @@ mod tests {
     fn check_swap(bytes: &[u8], value: U256, target: &str) -> Result<Vec<String>, Mismatch> {
         let detail = swap_detail();
         let decoded = decode(Some(target), value, bytes).map_err(Mismatch)?;
-        check(&decoded, &Declared { kind: &OpKind::Swap, owner: OWNER, counterparty: ROUTER, amount: U256::from(100), detail: &detail, wquai: Some(WQUAI) })
+        check(
+            &decoded,
+            &Declared {
+                kind: &OpKind::Swap,
+                owner: OWNER,
+                counterparty: ROUTER,
+                amount: U256::from(100),
+                detail: &detail,
+                wquai: Some(WQUAI),
+            },
+        )
     }
 
     #[test]
@@ -752,7 +899,14 @@ mod tests {
     fn approvals_must_name_the_reviewed_spender_and_amount() {
         let approve = "function approve(address spender, uint256 amount)";
         let detail = Detail::from(json!({"spender": ROUTER, "token": TOKEN}));
-        let declared = |kind: &'static OpKind, detail: &'static Detail| Declared { kind, owner: OWNER, counterparty: ROUTER, amount: U256::from(100), detail, wquai: None };
+        let declared = |kind: &'static OpKind, detail: &'static Detail| Declared {
+            kind,
+            owner: OWNER,
+            counterparty: ROUTER,
+            amount: U256::from(100),
+            detail,
+            wquai: None,
+        };
         let d: &'static Detail = Box::leak(Box::new(detail));
         let run = |spender: &str, amount: &str, on: &str| {
             let decoded = decode(Some(on), U256::ZERO, &encode(approve, &[json!(spender), json!(amount)])).unwrap();
@@ -978,8 +1132,14 @@ mod tests {
                 value: 0,
                 amount: 8,
                 detail: json!({"contract": TOKEN, "beneficiary": OWNER, "financial_effects": [e("out", TOKEN, "8")]}),
-                good: encode("function unwrapQi(address beneficiary, uint256 amount, uint64 etxGas)", &[json!(OWNER), json!("8"), json!("21000")]),
-                bad: encode("function unwrapQi(address beneficiary, uint256 amount, uint64 etxGas)", &[json!(EVIL), json!("8"), json!("21000")]),
+                good: encode(
+                    "function unwrapQi(address beneficiary, uint256 amount, uint64 etxGas)",
+                    &[json!(OWNER), json!("8"), json!("21000")],
+                ),
+                bad: encode(
+                    "function unwrapQi(address beneficiary, uint256 amount, uint64 etxGas)",
+                    &[json!(EVIL), json!("8"), json!("21000")],
+                ),
                 bad_value: None,
             },
             Case {
@@ -990,8 +1150,14 @@ mod tests {
                 value: 0,
                 amount: 1,
                 detail: json!({"contract": TOKEN, "token_id": "12"}),
-                good: encode("function safeTransferFrom(address from, address to, uint256 tokenId)", &[json!(OWNER), json!(OUT), json!("12")]),
-                bad: encode("function safeTransferFrom(address from, address to, uint256 tokenId)", &[json!(OWNER), json!(OUT), json!("13")]),
+                good: encode(
+                    "function safeTransferFrom(address from, address to, uint256 tokenId)",
+                    &[json!(OWNER), json!(OUT), json!("12")],
+                ),
+                bad: encode(
+                    "function safeTransferFrom(address from, address to, uint256 tokenId)",
+                    &[json!(OWNER), json!(OUT), json!("13")],
+                ),
                 bad_value: None,
             },
             Case {
@@ -1033,7 +1199,14 @@ mod tests {
         ];
         for c in cases {
             let detail = Detail::from(c.detail.clone());
-            let declared = Declared { kind: &c.kind, owner: OWNER, counterparty: c.counterparty, amount: U256::from(c.amount), detail: &detail, wquai: Some(WQUAI) };
+            let declared = Declared {
+                kind: &c.kind,
+                owner: OWNER,
+                counterparty: c.counterparty,
+                amount: U256::from(c.amount),
+                detail: &detail,
+                wquai: Some(WQUAI),
+            };
             let run = |bytes: &[u8], value: u64| {
                 let decoded = decode(Some(c.target), U256::from(value), bytes).map_err(Mismatch)?;
                 check(&decoded, &declared)

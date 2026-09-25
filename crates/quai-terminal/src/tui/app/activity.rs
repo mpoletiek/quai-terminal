@@ -1,14 +1,14 @@
 //! The activity list: operations and observed transfers, newest first.
 
-use wallet_core::journal::OpKind;
 use super::*;
+use wallet_core::journal::OpKind;
 
 impl App {
     /// Merged, newest-first activity rows: (time, is_operation, index).
     /// Activity as listed: (time, is an operation, index), newest first. Rebuilt only when the
     /// operations, the activity or the filter change; it is asked for every loop iteration.
     pub fn activity_rows(&self) -> Vec<(u64, bool, usize)> {
-        let filter = if self.screen == Screen::Activity { self.activity_filter } else { ActivityFilter::All };
+        let filter = if self.nav.screen == Screen::Activity { self.nav.activity_filter } else { ActivityFilter::All };
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -34,17 +34,20 @@ impl App {
 
     /// The account Activity is narrowed to, when it is (`.`), lowercase.
     fn activity_only(&self) -> Option<String> {
-        (self.activity_account_only && self.screen == Screen::Activity)
+        (self.nav.activity_account_only && self.nav.screen == Screen::Activity)
             .then(|| self.dash.active_account().map(|a| a.address.to_lowercase()))
             .flatten()
     }
 
     /// `.` on Activity: only the account that acts, or every account again.
     pub fn toggle_activity_account(&mut self) {
-        self.activity_account_only = !self.activity_account_only;
-        self.selected = 0;
+        self.nav.activity_account_only = !self.nav.activity_account_only;
+        self.nav.selected = 0;
         let label = self.dash.active_account().map(|a| a.label.clone()).unwrap_or_default();
-        self.toast(if self.activity_account_only { format!("activity: {label} only") } else { "activity: every account".into() }, false);
+        self.toast(
+            if self.nav.activity_account_only { format!("activity: {label} only") } else { "activity: every account".into() },
+            false,
+        );
     }
 
     pub(crate) fn build_activity_rows(&self, filter: ActivityFilter) -> Vec<(u64, bool, usize)> {

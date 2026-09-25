@@ -153,6 +153,8 @@ impl Host {
                         custody.install_shared(keys.clone());
                     }
                     let _ = tx.send(Cmd::UseKeys { wallet, keys });
+                    // The idle time counts from here: checking the password can take a while.
+                    *state.last_activity.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
                     let _ = events.send(Ev::Unlocked);
                     crate::wake();
                 }

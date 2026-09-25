@@ -22,7 +22,8 @@ use std::collections::{HashMap, HashSet};
 pub const THIN_ROUTE_USD: f64 = 100.0;
 
 /// The venues a swap can use, in preference order when two routes are otherwise equal.
-pub const VENUES: [Venue; 4] = [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm];
+/// Every routable exchange in `venues::AMMS`, the main one first.
+pub static VENUES: std::sync::LazyLock<Vec<Venue>> = std::sync::LazyLock::new(|| crate::venues::routable().collect());
 
 /// Every path the router will consider for a pair on one venue, in preference order: direct, then
 /// one hub, then two. Addresses are lowercased; `hubs` keeps the caller's order.
@@ -316,7 +317,7 @@ impl RouteGraph {
             return Vec::new();
         }
         let mut results = Vec::new();
-        for venue in VENUES {
+        for venue in VENUES.iter().copied() {
             if let Some(path) = self.venue_path(venue, &a, &b) {
                 results.push(self.build(vec![(venue, path)]));
             }
