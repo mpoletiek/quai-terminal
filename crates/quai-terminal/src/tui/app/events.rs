@@ -269,6 +269,7 @@ impl App {
                 // of the switch there were no accounts to ask about yet. The first dashboard that
                 // brings them is when the open view can load, so it is re-opened here.
                 if self.reload_view_on_accounts && !self.dash.accounts.is_empty() {
+                    wallet_core::diag::end("ux.wallet_switch");
                     self.reload_view_on_accounts = false;
                     self.on_view_opened();
                 }
@@ -345,6 +346,7 @@ impl App {
                     self.send(Cmd::Discard(r.op_id.clone()));
                     return;
                 }
+                wallet_core::diag::end("ux.review");
                 self.modal = Modal::Review(ReviewState {
                     review: *r,
                     scroll: 0,
@@ -413,6 +415,8 @@ impl App {
                 self.modal = Modal::Notice { title: title.into(), body, error: true, detail: Some(op_id) };
             }
             Ev::PrepareError(m) => {
+                // The prepare answered, if only with a refusal: that is the wait being measured.
+                wallet_core::diag::end("ux.review");
                 // Said with where the money is: preparing only reads and builds.
                 let text = format!("{} · nothing was sent", friendly_error(&m).trim_end_matches('.'));
                 self.on_event(Ev::Error(text), size);
@@ -794,6 +798,7 @@ impl App {
     /// [`App::poll_unlock`] takes the answer.
     pub fn begin_unlock(&mut self, password: Zeroizing<String>) {
         let Some(meta) = self.meta.clone() else { return };
+        wallet_core::diag::begin("ux.unlock");
         self.unlocking = true;
         self.unlocking_since = Some(Instant::now());
         self.lock_error = None;
@@ -894,6 +899,7 @@ impl App {
 
     /// Leave the lock screen for the dashboard.
     pub(crate) fn show_unlocked(&mut self) {
+        wallet_core::diag::end("ux.unlock");
         self.locked = false;
         self.unlocking = false;
         self.unlocking_since = None;

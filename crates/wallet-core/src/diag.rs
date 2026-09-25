@@ -75,3 +75,32 @@ pub fn mark(label: &str) {
         write(label, started().elapsed().as_millis());
     }
 }
+
+fn open_spans() -> &'static Mutex<std::collections::HashMap<&'static str, Instant>> {
+    static OPEN: OnceLock<Mutex<std::collections::HashMap<&'static str, Instant>>> = OnceLock::new();
+    OPEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Start a user-visible span (`ux.*`): what the user waits through between two moments that
+/// happen in different places, such as a key press and the answer it brought. A later [`begin`]
+/// of the same label restarts it.
+pub fn begin(label: &'static str) {
+    if log().is_none() {
+        return;
+    }
+    if let Ok(mut open) = open_spans().lock() {
+        open.insert(label, Instant::now());
+    }
+}
+
+/// End a span started with [`begin`] and write how long it took. Nothing happens when it was not
+/// started (or has already ended), so an answer that arrives twice is counted once.
+pub fn end(label: &'static str) {
+    if log().is_none() {
+        return;
+    }
+    let started = open_spans().lock().ok().and_then(|mut open| open.remove(label));
+    if let Some(started) = started {
+        write(label, started.elapsed().as_millis());
+    }
+}

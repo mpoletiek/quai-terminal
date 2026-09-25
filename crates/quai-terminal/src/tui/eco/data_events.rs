@@ -73,6 +73,7 @@ impl App {
         // The screen stays where it is, so nothing re-opens it to ask for the new wallet's data.
         // The dashboard that brings the new accounts does it instead.
         self.reload_view_on_accounts = true;
+        wallet_core::diag::begin("ux.wallet_switch");
         self.detail.clear();
         self.selected = 0;
         self.dash = super::super::worker::Dashboard {
@@ -580,6 +581,7 @@ impl App {
             }
             DataEv::SwapQuote { key, result, curve } => {
                 if key != 0 && key == self.eco.swap.requested_key && self.swap_input_key() == self.eco.swap.requested_input {
+                    wallet_core::diag::end("ux.quote");
                     let approval_done = self.eco.swap.approving && matches!(&result, Ok(q) if !q.approval_needed);
                     self.eco.swap.quote = Some(result.map(|b| *b));
                     self.eco.swap.curve = curve.map(|r| r.map(|b| *b));
@@ -842,6 +844,7 @@ impl App {
             self.eco.swap.requested_input = Some(input);
             self.eco.swap.quoted_at = Some(Instant::now());
             let curve = self.token_curve(&from, &to);
+            wallet_core::diag::begin("ux.quote");
             self.send_data(DataCmd::SwapQuote { key, from, to, amount: atoms.to_string(), slippage, owner, curve });
         }
     }

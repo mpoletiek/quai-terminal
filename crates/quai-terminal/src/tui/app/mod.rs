@@ -1582,6 +1582,9 @@ impl App {
             self.send_data(super::data::DataCmd::ProtocolQuote { key, direction, amount, card: self.screen == Screen::Convert });
             return;
         }
+        if matches!(cmd, Cmd::Prepare(_)) {
+            wallet_core::diag::begin("ux.review");
+        }
         if let Some(w) = &self.worker {
             w.send(cmd);
         }
