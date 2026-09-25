@@ -221,6 +221,44 @@ fn the_engine_locks_an_idle_terminal_by_itself() {
     assert!(unlocked.elapsed() >= Duration::from_secs(1), "not before the idle time is up");
 }
 
+/// A terminal attached to the daemon gets its data from the daemon's data service, answered on
+/// the same connection. The daemon decides which files a data worker opens: a wallet database
+/// that is not a registered wallet's own is never opened.
+#[test]
+fn a_terminal_s_data_comes_from_the_daemon_and_only_from_its_own_files() {
+    use quai_engine::data::{AlertOp, DataCmd, DataEv};
+    let (home, runtime, meta) = scratch();
+    let daemon = start_daemon(home.path(), runtime.path());
+    let engine = connect(&daemon, &meta.id);
+    let Engine::Remote(remote) = &engine else { unreachable!() };
+    let data = remote.data_worker().expect("the data service, once");
+    assert!(remote.data_worker().is_none(), "and only once");
+    let config =
+        wallet_core::config::AppConfig::load(&wallet_core::paths::Paths::resolve(Some(home.path().to_path_buf())).unwrap()).unwrap();
+    let network = config.network("offline").unwrap();
+    let elsewhere = home.path().join("elsewhere");
+    for forged in [elsewhere.join("app.sqlite"), home.path().join("wallets").join("not-a-wallet").join("app.sqlite")] {
+        std::fs::create_dir_all(forged.parent().unwrap()).unwrap();
+        data.tx.send(DataCmd::Configure { network: network.clone(), policy: config.data_policy(), app_db: Some(forged) });
+    }
+    data.tx.send(DataCmd::Alerts(AlertOp::Load));
+    let started = Instant::now();
+    loop {
+        match data.rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(DataEv::Alerts { alerts, .. }) => {
+                assert!(alerts.is_empty(), "a new wallet has none");
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => assert!(started.elapsed() < Duration::from_secs(20), "no answer from the daemon's data service"),
+        }
+    }
+    assert!(!elsewhere.join("app.sqlite").exists(), "a path the client named is not opened");
+    assert!(!home.path().join("wallets/not-a-wallet/app.sqlite").exists(), "nor a wallet that is not registered");
+    // The engine on the same connection still answers.
+    wait_for(&engine, "a dashboard", 20, |ev| matches!(ev, Ev::Dashboard(_)));
+}
+
 /// Whoever connects and says nonsense is dropped; the daemon keeps serving everyone else.
 #[test]
 fn the_engine_socket_survives_hostile_clients() {

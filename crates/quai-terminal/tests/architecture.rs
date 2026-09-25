@@ -46,8 +46,16 @@ fn local_dependencies(dir: &Path, names: &BTreeSet<String>) -> BTreeSet<String> 
 
 /// The allowed edges. A crate missing from this table fails the test until its layer is decided.
 const ALLOWED: &[(&str, &[&str])] = &[
+    // Domain types: nothing of ours below them (docs/ARCHITECTURE_REVIEW_2026-09-24.md §5).
+    ("quai-model", &[]),
+    // Untrusted inputs (explorer, HTTP, IPFS, pictures): never the engine, never the vault.
+    ("quai-feeds", &["quai-model"]),
+    // The messaging protocol (board format, sealing, v3 wire): pure, no node and no store.
+    ("quai-messaging", &["quai-model"]),
+    // Venues: the tables of where a trade can happen and what it is pinned to. No node, no store.
+    ("quai-venues", &[]),
     ("wallet-vault", &[]),
-    ("wallet-core", &["wallet-vault"]),
+    ("wallet-core", &["quai-feeds", "quai-messaging", "quai-model", "quai-venues", "wallet-vault"]),
     // The engine runs wallets; it never touches the vault except through wallet-core's custody.
     ("quai-engine", &["wallet-core"]),
     ("quai-terminal-cli", &["quai-engine", "wallet-core", "wallet-vault"]),
@@ -72,13 +80,13 @@ fn workspace_crates_depend_only_downward() {
     }
 }
 
-/// Only the custody layer may see the vault: `registry` (vault lifecycle), `identity` (unsealed
-/// keys), `extras` (encrypted backups) and `messaging/keys` (the messaging key file). Two more
-/// touch it without secrets: `error` maps its errors, and `config` borrows its atomic private
-/// file write.
+/// Only the custody layer may see the vault: `registry` (vault lifecycle, and the one place its
+/// errors are converted), `identity` (unsealed keys), `extras` (encrypted backups) and
+/// `messaging/keys` (the messaging key file). `config` touches it without secrets: it borrows
+/// the atomic private file write. `quai-model` never sees it (the dependency test says so).
 #[test]
 fn the_vault_is_reached_only_through_custody_modules() {
-    let allowed = ["registry.rs", "identity.rs", "extras.rs", "messaging/keys.rs", "error.rs", "config.rs"];
+    let allowed = ["registry.rs", "identity.rs", "extras.rs", "messaging/keys.rs", "config.rs"];
     for file in source_files(&workspace().join("crates/wallet-core/src")) {
         let text = non_test_source(&file);
         if text.contains("wallet_vault::") {
@@ -250,17 +258,21 @@ fn ratchets_only_go_down() {
     eprintln!("{}", report.join("\n"));
 }
 
-/// Phase 7: the exchanges are rows in one table (`wallet_core::venues::AMMS`). Nothing outside it
-/// names a particular exchange beyond the main one, so adding a UniswapV2 exchange is a variant,
-/// a row and its pins — in one crate.
+/// Phase 7: the exchanges are rows in one table (`quai_venues::table::AMMS`). Nothing outside the
+/// venues crate names a particular exchange beyond the main one, so adding a UniswapV2 exchange is
+/// a variant, a row and its pins, all in `quai-venues`.
 #[test]
 fn exchanges_are_named_only_in_the_venue_table() {
     let mut found = Vec::new();
-    for dir in ["crates/wallet-core/src", "crates/quai-engine/src", "crates/quai-terminal/src"] {
+    for dir in [
+        "crates/quai-model/src",
+        "crates/quai-feeds/src",
+        "crates/quai-messaging/src",
+        "crates/wallet-core/src",
+        "crates/quai-engine/src",
+        "crates/quai-terminal/src",
+    ] {
         for file in source_files(&workspace().join(dir)) {
-            if file.ends_with("venues.rs") {
-                continue;
-            }
             let text = non_test_source(&file);
             for name in ["Venue::LaunchAmm", "Venue::Legacy", "Venue::HartiiAmm"] {
                 let n = text.matches(name).count();
@@ -270,5 +282,5 @@ fn exchanges_are_named_only_in_the_venue_table() {
             }
         }
     }
-    assert!(found.is_empty(), "exchange-specific code outside wallet_core::venues:\n{}", found.join("\n"));
+    assert!(found.is_empty(), "exchange-specific code outside quai-venues:\n{}", found.join("\n"));
 }

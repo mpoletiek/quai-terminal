@@ -15,6 +15,7 @@ use crate::data::{DataCtx, READ_CALLER, Trust, verify_pinned_all, with_access_li
 use crate::error::{CoreError, Result};
 use crate::journal::OpKind;
 use crate::markets::Venue;
+use crate::network::PinTrust;
 use crate::network::{NetworkProfile, Node, PinnedContract};
 use crate::registry::now;
 use crate::session::Session;
@@ -517,7 +518,7 @@ struct VenueRouter {
 
 /// The pins of an exchange's router and factory on a network.
 pub fn venue_pins(network: &NetworkProfile, venue: Venue) -> Option<(&PinnedContract, &PinnedContract)> {
-    crate::venues::kind(venue).pins(network)
+    crate::venues::kind(venue).pins(&network.ecosystem)
 }
 
 /// Where a UniswapV2 factory keeps `getPair[a][b]` (`venues::Amm::get_pair_slot`).

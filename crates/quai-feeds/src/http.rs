@@ -7,7 +7,7 @@
 //! on HTTP 429. `QW_HTTP_LOG=<file>` traces every request. Responses are untrusted display data and never feed amount arithmetic
 //! or signing.
 
-use crate::error::{CoreError, Result};
+use quai_model::error::{CoreError, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -26,7 +26,7 @@ static PROXY: OnceLock<Option<String>> = OnceLock::new();
 /// proxy that is down fails the request instead of revealing the address it was hiding.
 ///
 /// This covers the wallet's own lookups (explorer, prices, images, indexers) and node RPC to a
-/// public node ([`crate::network::rpc_proxy`]); a node on this machine or the LAN is reached
+/// public node (`wallet_core::network::rpc_proxy`); a node on this machine or the LAN is reached
 /// directly.
 pub fn set_proxy(url: Option<&str>) -> Result<()> {
     let url = url.map(str::trim).filter(|u| !u.is_empty());
@@ -80,13 +80,24 @@ pub enum Priority {
 
 static BACKGROUND_PROCESS: AtomicBool = AtomicBool::new(false);
 
-/// Treat every request of this process as background (the daemon).
+/// Treat every request of this process as background (the daemon), except on threads that
+/// serve someone waiting ([`serve_interactive`]).
 pub fn set_background_process(background: bool) {
     BACKGROUND_PROCESS.store(background, Ordering::SeqCst);
 }
 
+thread_local! {
+    static SERVES_A_TERMINAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread serves a terminal (a data worker in the daemon): its requests keep the priority
+/// they ask for, even in a background process.
+pub fn serve_interactive() {
+    SERVES_A_TERMINAL.with(|s| s.set(true));
+}
+
 fn effective(priority: Priority) -> Priority {
-    if BACKGROUND_PROCESS.load(Ordering::SeqCst) { Priority::Background } else { priority }
+    if BACKGROUND_PROCESS.load(Ordering::SeqCst) && !SERVES_A_TERMINAL.with(|s| s.get()) { Priority::Background } else { priority }
 }
 
 /// The server's own view of the limit (IETF `RateLimit-*` headers), shared by every client on
@@ -178,7 +189,7 @@ impl Bucket {
         let (Some(limit), Some(remaining)) = (limit, remaining) else { return };
         // `reset` is seconds until the window resets (a unix time on some servers).
         let secs = match reset {
-            Some(r) if r > 1_000_000_000 => r.saturating_sub(crate::registry::now()),
+            Some(r) if r > 1_000_000_000 => r.saturating_sub(quai_model::time::now()),
             Some(r) => r,
             None => 60,
         };
@@ -282,7 +293,7 @@ pub fn host_statuses() -> Vec<HostStatus> {
 
 fn record_error(host: &str, message: &str) {
     if let Ok(mut e) = last_errors().lock() {
-        e.insert(host.to_string(), (crate::registry::now(), message.to_string()));
+        e.insert(host.to_string(), (quai_model::time::now(), message.to_string()));
     }
 }
 
@@ -468,8 +479,73 @@ pub async fn post_json_with(url: &str, body: &serde_json::Value, priority: Prior
     serde_json::from_slice(&fetched.bytes).map_err(|e| CoreError::Network(format!("{host}: invalid JSON ({e})")))
 }
 
-/// One request, GET when `body` is None and POST when it is Some.
+/// A read's answer as the callers who joined it get it: the bytes, or what went wrong.
+type Answer = Option<std::result::Result<Fetched, String>>;
+
+/// Reads in flight across the whole process, by request. The daemon serves every terminal's data
+/// from one process, so two terminals (or a terminal and the daemon's own watch) asking for the
+/// same page at the same moment would otherwise spend the host's budget twice.
+fn in_flight() -> &'static Mutex<HashMap<String, tokio::sync::watch::Receiver<Answer>>> {
+    static IN_FLIGHT: OnceLock<Mutex<HashMap<String, tokio::sync::watch::Receiver<Answer>>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The caller that went out for a read. It takes the read off the list when it is done or
+/// dropped; callers still waiting on a read nobody finished go out themselves.
+struct Leader {
+    key: String,
+    answer: tokio::sync::watch::Sender<Answer>,
+}
+
+impl Drop for Leader {
+    fn drop(&mut self) {
+        if let Ok(mut map) = in_flight().lock() {
+            map.remove(&self.key);
+        }
+    }
+}
+
+/// One request, GET when `body` is None and POST when it is Some. A caller asking for exactly
+/// what another is already fetching (same URL, body and size cap) waits for that answer instead.
+/// It gets the same bytes; a failure reaches it as a network error with the same message.
 async fn fetch(url: &str, max_bytes: usize, priority: Priority, body: Option<&serde_json::Value>) -> Result<Fetched> {
+    let key = format!("{max_bytes} {url} {}", body.map(|b| b.to_string()).unwrap_or_default());
+    let joined = {
+        let mut map = in_flight().lock().map_err(|_| CoreError::Network("http: in-flight list poisoned".into()))?;
+        match map.get(&key) {
+            Some(waiting) => Err(waiting.clone()),
+            None => {
+                let (answer, waiting) = tokio::sync::watch::channel(None);
+                map.insert(key.clone(), waiting);
+                Ok(Leader { key, answer })
+            }
+        }
+    };
+    let leader = match joined {
+        Ok(leader) => leader,
+        Err(mut waiting) => {
+            if let Ok(answer) = waiting.wait_for(Option::is_some).await
+                && let Some(answer) = answer.clone()
+            {
+                return answer.map_err(CoreError::Network);
+            }
+            // The one who went out gave up (its screen moved on): go out ourselves.
+            return fetch_once(url, max_bytes, priority, body).await;
+        }
+    };
+    let result = fetch_once(url, max_bytes, priority, body).await;
+    // Off the list first: nobody joins from here, so a copy is made only for who already did.
+    if let Ok(mut map) = in_flight().lock() {
+        map.remove(&leader.key);
+    }
+    if leader.answer.receiver_count() > 0 {
+        leader.answer.send_replace(Some(result.as_ref().map(Clone::clone).map_err(|e| e.to_string())));
+    }
+    result
+}
+
+/// One request, sent.
+async fn fetch_once(url: &str, max_bytes: usize, priority: Priority, body: Option<&serde_json::Value>) -> Result<Fetched> {
     let priority = effective(priority);
     let max_wait = if priority == Priority::Background { Duration::from_secs(8) } else { Duration::from_secs(20) };
     if offline() {
@@ -682,7 +758,7 @@ mod tests {
         // The window resets; limits apply again from scratch.
         assert!(b.take(now + Duration::from_secs(41), Priority::Background).is_zero());
         // Unix-time resets are understood too.
-        b.observe(now, Some(300), Some(1), Some(crate::registry::now() + 30));
+        b.observe(now, Some(300), Some(1), Some(quai_model::time::now() + 30));
         assert!(b.take(now, Priority::Interactive) >= Duration::from_secs(29));
     }
 
@@ -794,6 +870,94 @@ mod tests {
         assert!(get(&format!("http://127.0.0.1:{port}/start"), 1024).await.is_err(), "the 302 itself is not a success");
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!hit.load(Ordering::SeqCst), "the other host was never contacted");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identical_reads_at_once_are_one_request() {
+        use tokio::io::AsyncWriteExt;
+        let _flag = OFFLINE_FLAG.lock().await;
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = server.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut req = [0u8; 1024];
+                    let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut req).await;
+                    // Slow enough that the second caller arrives while the first is out.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 5\r\n\r\nhello").await;
+                });
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/same");
+        // Two workers, each on a runtime of its own, as in the daemon.
+        let reads: Vec<_> = (0..2)
+            .map(|_| {
+                let url = url.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                    rt.block_on(get(&url, 1024)).map(|f| f.bytes)
+                })
+            })
+            .collect();
+        for read in reads {
+            assert_eq!(read.join().unwrap().unwrap(), b"hello");
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "one request served both");
+        // Done reads are not remembered: the next one goes out again.
+        assert_eq!(get(&url, 1024).await.unwrap().bytes, b"hello");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert!(in_flight().lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_whose_first_caller_gave_up_is_still_answered() {
+        use tokio::io::AsyncWriteExt;
+        let _flag = OFFLINE_FLAG.lock().await;
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = server.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut req = [0u8; 1024];
+                    let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut req).await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok").await;
+                });
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/abandoned");
+        let first = {
+            let url = url.clone();
+            tokio::spawn(async move { tokio::time::timeout(Duration::from_millis(80), get(&url, 64)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let second = get(&url, 64).await.unwrap();
+        assert!(first.await.unwrap().is_err(), "the first caller gave up");
+        assert_eq!(second.bytes, b"ok", "the one who joined went out itself");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_background_process_keeps_interactive_reads_for_the_terminals_it_serves() {
+        let _flag = OFFLINE_FLAG.blocking_lock();
+        set_background_process(true);
+        let own = effective(Priority::Interactive);
+        let served = std::thread::spawn(|| {
+            serve_interactive();
+            (effective(Priority::Interactive), effective(Priority::Background))
+        })
+        .join()
+        .unwrap();
+        set_background_process(false);
+        assert_eq!(own, Priority::Background, "the daemon's own polling yields");
+        assert_eq!(served, (Priority::Interactive, Priority::Background), "a terminal's read keeps its priority");
     }
 
     #[tokio::test]

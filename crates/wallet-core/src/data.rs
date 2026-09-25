@@ -126,7 +126,7 @@ impl DataCtx {
     /// Build from an open database, with no shared cache: every feed answers from this one.
     pub fn with_app(app: AppDb, network: NetworkProfile, policy: DataPolicy) -> Result<Self> {
         let node = network.node()?;
-        let explorer = Explorer::for_network(&network);
+        let explorer = Explorer::for_api(network.explorer_api.as_ref());
         Ok(DataCtx { network, node, app, shared: None, policy, explorer, cache_only: false, monitored: false, trust: Trust::Cached })
     }
 

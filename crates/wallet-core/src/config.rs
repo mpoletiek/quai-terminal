@@ -3,6 +3,7 @@
 use crate::error::{CoreError, Result};
 use crate::network::NetworkProfile;
 use crate::paths::Paths;
+use crate::registry::VaultExt;
 use serde::{Deserialize, Serialize};
 
 /// Motion preference for TUI effects.
@@ -90,7 +91,7 @@ pub enum IconMode {
 pub const LAYOUT_VERSION: u32 = 5;
 
 /// What third-party data a caller may fetch, from the preferences plus `--offline-data`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataPolicy {
     /// Address-linked explorer lookups.
     pub explorer: bool,
@@ -404,7 +405,7 @@ impl AppConfig {
     /// Atomically save configuration.
     pub fn save(&self, paths: &Paths) -> Result<()> {
         let text = toml::to_string_pretty(self).map_err(|e| CoreError::Storage(format!("config encode: {e}")))?;
-        wallet_vault::write_private_atomic(&paths.config_file(), text.as_bytes())?;
+        wallet_vault::write_private_atomic(&paths.config_file(), text.as_bytes()).vault()?;
         Ok(())
     }
 

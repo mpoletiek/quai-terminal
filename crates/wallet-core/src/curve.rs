@@ -16,6 +16,7 @@ use crate::data::{DataCtx, READ_CALLER};
 use crate::error::{CoreError, Result, approval_needed};
 use crate::journal::OpKind;
 use crate::multicall::{Arg, Call, Multicall, word};
+use crate::network::PinTrust;
 use crate::network::PinnedContract;
 use crate::session::Session;
 use crate::tx::{AccountRequest, Review, field};

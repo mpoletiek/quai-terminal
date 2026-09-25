@@ -3190,6 +3190,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "quai-feeds"
+version = "0.1.0-alpha.8"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "hex",
+ "image",
+ "libc",
+ "quai-model",
+ "quai-sdk",
+ "reqwest",
+ "resvg",
+ "rustix",
+ "seccompiler",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "quai-keystore"
 version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3208,6 +3230,36 @@ dependencies = [
  "thiserror 2.0.20",
  "unicode-normalization",
  "zeroize",
+]
+
+[[package]]
+name = "quai-messaging"
+version = "0.1.0-alpha.8"
+dependencies = [
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hex",
+ "hkdf 0.12.4",
+ "hpke",
+ "quai-model",
+ "quai-sdk",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "zeroize",
+]
+
+[[package]]
+name = "quai-model"
+version = "0.1.0-alpha.8"
+dependencies = [
+ "quai-sdk",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -3343,6 +3395,13 @@ dependencies = [
  "wallet-core",
  "wallet-vault",
  "zeroize",
+]
+
+[[package]]
+name = "quai-venues"
+version = "0.1.0-alpha.8"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -5143,15 +5202,17 @@ dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
  "directories",
- "ed25519-dalek",
  "futures",
  "hex",
  "hkdf 0.12.4",
  "hmac 0.12.1",
- "hpke",
  "image",
  "libc",
+ "quai-feeds",
+ "quai-messaging",
+ "quai-model",
  "quai-sdk",
+ "quai-venues",
  "reqwest",
  "resvg",
  "rusqlite",

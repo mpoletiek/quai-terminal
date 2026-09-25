@@ -10,6 +10,7 @@ use crate::error::{CoreError, Result};
 use crate::explorer::{NftItem, TokenKind, clean_text};
 use crate::http;
 use crate::journal::OpKind;
+use crate::network::PinTrust;
 use crate::network::{NetworkProfile, Node};
 use crate::session::Session;
 use crate::tx::{AccountRequest, Review, field};

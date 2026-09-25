@@ -7,4 +7,4 @@
 pub mod keys;
 pub mod service;
 pub mod store;
-pub mod wire;
+pub use quai_messaging::wire;

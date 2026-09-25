@@ -1000,7 +1000,7 @@ pub async fn market(ctx: &mut Ctx, cmd: MarketCmd) -> Result<()> {
 pub async fn data(ctx: &Ctx, cmd: DataCmd) -> Result<()> {
     let network = ctx.network()?;
     let policy = ctx.config.data_policy();
-    let explorer = wallet_core::explorer::Explorer::for_network(&network);
+    let explorer = wallet_core::explorer::Explorer::for_api(network.explorer_api.as_ref());
     match cmd {
         DataCmd::Status => {
             let value = json!({

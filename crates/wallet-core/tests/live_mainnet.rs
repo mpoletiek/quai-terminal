@@ -996,7 +996,7 @@ async fn gauge_pools_and_reward_rates() {
 #[ignore = "network"]
 async fn trading_readonly_directory_routes_are_capability_bounded() {
     live_trading_check("directory_routes", async {
-        use wallet_core::capabilities::{Action, Family};
+        use wallet_core::capabilities::{Action, family_for_pool};
         use wallet_core::routes::{RouteGraph, VENUES};
         let ctx = mainnet();
         let (pools, overview) = wallet_core::markets::all_markets(&ctx).await?;
@@ -1033,7 +1033,7 @@ async fn trading_readonly_directory_routes_are_capability_bounded() {
         }
         for pool in pools.iter().take(120) {
             assert_ne!(pool.token0.address, pool.token1.address);
-            if let Some(family) = Family::for_pool(pool) {
+            if let Some(family) = family_for_pool(pool) {
                 assert!(family.support(Action::Discover).supported);
             }
         }
@@ -1141,7 +1141,7 @@ async fn chain_pools_batched_matches_unbatched() {
     let chain_only = || {
         let mut ctx = mainnet();
         ctx.network.explorer_api = None;
-        ctx.explorer = wallet_core::explorer::Explorer::for_network(&ctx.network);
+        ctx.explorer = wallet_core::explorer::Explorer::for_api(ctx.network.explorer_api.as_ref());
         ctx
     };
     let ctx = chain_only();

@@ -94,8 +94,9 @@ impl Host {
             ClientMsg::Cmd(cmd) => self.send(cmd),
             ClientMsg::Unlock { wallet, password } => self.unlock(wallet, password),
             ClientMsg::Activity => self.touch(),
-            // Only the server reads these, before it builds a host.
-            ClientMsg::Hello { .. } | ClientMsg::Attach { .. } => {}
+            // Only the server reads these: the handshake before it builds a host, and data
+            // requests, which go to the client's data worker.
+            ClientMsg::Hello { .. } | ClientMsg::Attach { .. } | ClientMsg::Data(_) => {}
         }
     }
 

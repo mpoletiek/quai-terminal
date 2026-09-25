@@ -11,6 +11,7 @@
 
 use super::wire::{self, IdentitySecret, WeeklySecret};
 use crate::error::{CoreError, Result};
+use crate::registry::VaultExt;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -164,7 +165,7 @@ impl KeyFile {
         if let Some(dir) = path.parent() {
             crate::paths::ensure_private_dir(dir)?;
         }
-        wallet_vault::write_private_atomic(path, &out)?;
+        wallet_vault::write_private_atomic(path, &out).vault()?;
         Ok(())
     }
 

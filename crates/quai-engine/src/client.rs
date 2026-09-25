@@ -8,6 +8,7 @@
 //! The client then reconnects on its own, starting the daemon again if it has to, and attaches
 //! to the wallet and network on screen — locked, until the password is given again.
 
+use crate::data::{DataCmd, DataEv, DataSender, DataWorker};
 use crate::host::Host;
 use crate::protocol::{self, ClientMsg, FrameError, HOST_FRAME_LIMIT, HostMsg, PROTOCOL};
 use crate::worker::{Cmd, Ev};
@@ -87,6 +88,8 @@ pub struct Dialer {
 pub struct Remote {
     outbox: tokio::sync::mpsc::UnboundedSender<ClientMsg>,
     events: Receiver<Ev>,
+    /// The data service's results, until [`Remote::data_worker`] takes them.
+    data: std::cell::RefCell<Option<Receiver<DataEv>>>,
     activity_sent: std::cell::Cell<Option<Instant>>,
 }
 
@@ -97,6 +100,7 @@ impl Remote {
     pub fn connect(dialer: Dialer, wallet: String, network: String, wake: fn()) -> std::io::Result<Remote> {
         let (outbox, commands) = tokio::sync::mpsc::unbounded_channel::<ClientMsg>();
         let (events_tx, events) = std::sync::mpsc::channel::<Ev>();
+        let (data_tx, data) = std::sync::mpsc::channel::<DataEv>();
         std::thread::Builder::new().name("engine-client".into()).spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
                 let _ = events_tx.send(Ev::Error("engine client: no runtime".into()));
@@ -107,9 +111,22 @@ impl Remote {
                 let _ = events_tx.send(ev);
                 wake();
             };
-            runtime.block_on(run(dialer, wallet, network, commands, say));
+            let answer = move |ev: DataEv| {
+                let _ = data_tx.send(ev);
+                wake();
+            };
+            runtime.block_on(run(dialer, wallet, network, commands, say, answer));
         })?;
-        Ok(Remote { outbox, events, activity_sent: std::cell::Cell::new(None) })
+        Ok(Remote { outbox, events, data: std::cell::RefCell::new(Some(data)), activity_sent: std::cell::Cell::new(None) })
+    }
+
+    /// The daemon's data service for this terminal, as a data worker: requests travel on this
+    /// connection, in order with the engine's commands, and are answered by a worker of this
+    /// terminal's own in the daemon. Requests made while the engine is away are dropped (a
+    /// screen asks again when its read goes stale). Once per connection: `None` after the first.
+    pub fn data_worker(&self) -> Option<DataWorker> {
+        let rx = self.data.borrow_mut().take()?;
+        Some(DataWorker { tx: DataSender::Remote(self.outbox.clone()), rx })
     }
 
     fn send(&self, msg: ClientMsg) {
@@ -123,6 +140,50 @@ struct Attached {
     network: String,
 }
 
+/// Data requests made while no engine was connected, and how this terminal last configured its
+/// data service. Unlike engine commands they are only reads, so they are kept and sent when the
+/// engine is back instead of being refused: a terminal asks for its first screen's data before a
+/// daemon it had to start is listening. A daemon's new data worker hears the configuration again
+/// first, since it knows nothing of this terminal's.
+#[derive(Default)]
+struct DataReplay {
+    configured: Option<(wallet_core::network::NetworkProfile, wallet_core::config::DataPolicy, Option<std::path::PathBuf>)>,
+    held: std::collections::VecDeque<DataCmd>,
+}
+
+/// Requests held while disconnected, at most: the newest are kept.
+const DATA_HELD: usize = 512;
+
+impl DataReplay {
+    /// Note a configuration on its way out.
+    fn saw(&mut self, cmd: &DataCmd) {
+        if let DataCmd::Configure { network, policy, app_db } = cmd {
+            // A wallet database once named stays named: a rebind to the same network keeps it.
+            let app_db = app_db.clone().or_else(|| self.configured.as_ref().and_then(|c| c.2.clone()));
+            self.configured = Some((network.clone(), *policy, app_db));
+        }
+    }
+
+    /// Keep a request until the engine is back.
+    fn hold(&mut self, cmd: DataCmd) {
+        self.saw(&cmd);
+        if matches!(cmd, DataCmd::Configure { .. } | DataCmd::Shutdown) {
+            return;
+        }
+        if self.held.len() == DATA_HELD {
+            self.held.pop_front();
+        }
+        self.held.push_back(cmd);
+    }
+
+    /// What a newly attached engine hears first: the configuration, then what was held.
+    fn replay(&mut self) -> Vec<ClientMsg> {
+        let configure =
+            self.configured.clone().map(|(network, policy, app_db)| ClientMsg::Data(DataCmd::Configure { network, policy, app_db }));
+        configure.into_iter().chain(self.held.drain(..).map(ClientMsg::Data)).collect()
+    }
+}
+
 /// Connect, attach, relay; and again when the engine goes away, until the terminal closes.
 async fn run(
     dialer: Dialer,
@@ -130,8 +191,10 @@ async fn run(
     network: String,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<ClientMsg>,
     say: impl Fn(Ev),
+    answer: impl Fn(DataEv),
 ) {
     let mut at = Attached { wallet, network };
+    let mut data = DataReplay::default();
     let build = protocol::build();
     let mut attempt = 0u32;
     let mut replaced = false;
@@ -154,7 +217,7 @@ async fn run(
                 }
                 connected_before = true;
                 wallet_core::diag::mark("engine.attached");
-                let why = relay(stream, &mut at, &mut commands, &say).await;
+                let why = relay(stream, &mut at, &mut data, &mut commands, &say, &answer).await;
                 match why {
                     Gone::Closed => return,
                     Gone::Engine(why) => {
@@ -193,6 +256,7 @@ async fn run(
         while let Ok(msg) = commands.try_recv() {
             match msg {
                 ClientMsg::Cmd(Cmd::Shutdown) => return,
+                ClientMsg::Data(cmd) => data.hold(cmd),
                 ClientMsg::Cmd(cmd) => {
                     track(&mut at, &cmd);
                     refuse(cmd, &say);
@@ -212,6 +276,7 @@ async fn run(
                 None | Some(ClientMsg::Cmd(Cmd::Shutdown)) => return,
                 Some(ClientMsg::Cmd(cmd)) => { track(&mut at, &cmd); refuse(cmd, &say); }
                 Some(ClientMsg::Unlock { .. }) => say(Ev::UnlockFailed("the engine is not connected yet — try again in a moment".into())),
+                Some(ClientMsg::Data(cmd)) => data.hold(cmd),
                 Some(_) => {}
             },
         }
@@ -269,7 +334,7 @@ async fn dial(dialer: &Dialer, build: &str, at: &Attached) -> Result<(tokio::net
             HostMsg::Welcome { protocol, build } if protocol == PROTOCOL => build,
             HostMsg::Welcome { protocol, .. } => return Ok(Err(format!("the daemon speaks protocol {protocol}"))),
             HostMsg::Refused(why) => return Ok(Err(why)),
-            HostMsg::Ev(_) => return Ok(Err("the daemon spoke out of turn".into())),
+            HostMsg::Ev(_) | HostMsg::Data(_) => return Ok(Err("the daemon spoke out of turn".into())),
         };
         protocol::write_msg(&mut stream, &ClientMsg::Attach { wallet: at.wallet.clone(), network: at.network.clone() }).await?;
         Ok::<_, FrameError>(Ok(their))
@@ -310,35 +375,99 @@ enum Gone {
 async fn relay(
     stream: tokio::net::UnixStream,
     at: &mut Attached,
+    data: &mut DataReplay,
     commands: &mut tokio::sync::mpsc::UnboundedReceiver<ClientMsg>,
     say: &impl Fn(Ev),
+    answer: &impl Fn(DataEv),
 ) -> Gone {
     let (mut read, mut write) = stream.into_split();
+    for msg in data.replay() {
+        if let Err(e) = protocol::write_msg(&mut write, &msg).await {
+            return Gone::Engine(e.to_string());
+        }
+    }
     loop {
         tokio::select! {
             msg = commands.recv() => {
                 let Some(msg) = msg else { return Gone::Closed };
                 let closing = matches!(msg, ClientMsg::Cmd(Cmd::Shutdown));
-                if let ClientMsg::Cmd(cmd) = &msg {
-                    track(at, cmd);
+                match &msg {
+                    ClientMsg::Cmd(cmd) => track(at, cmd),
+                    ClientMsg::Data(cmd) => data.saw(cmd),
+                    _ => {}
                 }
                 if closing {
                     // The engine ends with the connection; nothing waits for it.
                     return Gone::Closed;
                 }
                 if let Err(e) = protocol::write_msg(&mut write, &msg).await {
-                    if let ClientMsg::Cmd(cmd) = msg {
-                        refuse(cmd, say);
+                    match msg {
+                        ClientMsg::Cmd(cmd) => refuse(cmd, say),
+                        ClientMsg::Data(cmd) => data.hold(cmd),
+                        _ => {}
                     }
                     return Gone::Engine(e.to_string());
                 }
             }
             incoming = protocol::read_msg::<HostMsg>(&mut read, HOST_FRAME_LIMIT) => match incoming {
                 Ok(HostMsg::Ev(ev)) => say(ev),
+                Ok(HostMsg::Data(ev)) => answer(ev),
                 Ok(HostMsg::Refused(why)) => return Gone::Engine(why),
                 Ok(HostMsg::Welcome { .. }) => return Gone::Engine("the daemon repeated its welcome".into()),
                 Err(e) => return Gone::Engine(e.to_string()),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn configure(app_db: Option<&str>) -> DataCmd {
+        DataCmd::Configure {
+            network: wallet_core::network::NetworkProfile::builtins().remove(0),
+            policy: wallet_core::config::AppConfig::default().data_policy(),
+            app_db: app_db.map(Into::into),
+        }
+    }
+
+    fn names(msgs: &[ClientMsg]) -> Vec<String> {
+        msgs.iter()
+            .map(|m| match m {
+                ClientMsg::Data(DataCmd::Configure { app_db, .. }) => {
+                    format!("configure {}", app_db.as_ref().map_or("-".into(), |p| p.display().to_string()))
+                }
+                ClientMsg::Data(DataCmd::TokenInfo(a)) => format!("token {a}"),
+                ClientMsg::Data(_) => "data".into(),
+                _ => "other".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reads_asked_before_the_engine_is_back_are_sent_after_its_configuration() {
+        let mut data = DataReplay::default();
+        data.hold(DataCmd::TokenInfo("a".into()));
+        data.hold(configure(Some("/w/app.sqlite")));
+        data.hold(DataCmd::TokenInfo("b".into()));
+        data.hold(DataCmd::Shutdown);
+        assert_eq!(names(&data.replay()), ["configure /w/app.sqlite", "token a", "token b"]);
+        // A later connection hears the configuration again, and nothing already sent.
+        assert_eq!(names(&data.replay()), ["configure /w/app.sqlite"]);
+        // A rebind that names no database (a network switch) keeps the one named before.
+        data.saw(&configure(None));
+        assert_eq!(names(&data.replay()), ["configure /w/app.sqlite"]);
+    }
+
+    #[test]
+    fn a_long_outage_keeps_the_newest_reads() {
+        let mut data = DataReplay::default();
+        for i in 0..DATA_HELD + 10 {
+            data.hold(DataCmd::TokenInfo(i.to_string()));
+        }
+        let sent = names(&data.replay());
+        assert_eq!(sent.len(), DATA_HELD);
+        assert_eq!(sent.first().map(String::as_str), Some("token 10"));
     }
 }

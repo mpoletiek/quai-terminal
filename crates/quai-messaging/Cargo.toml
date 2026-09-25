@@ -1,0 +1,23 @@
+[package]
+name = "quai-messaging"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Quai Terminal's messaging protocol: the board's format, sealed conversations, and the v3 HPKE wire format. Pure: no node, no store, no keys it did not derive itself."
+
+[dependencies]
+quai-model = { path = "../quai-model" }
+quai-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+sha2.workspace = true
+hkdf.workspace = true
+chacha20poly1305.workspace = true
+zeroize.workspace = true
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
+
+[lints]
+workspace = true

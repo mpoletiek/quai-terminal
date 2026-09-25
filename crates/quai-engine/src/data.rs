@@ -15,7 +15,7 @@ use wallet_core::portfolio::{Known, Portfolio};
 use wallet_core::swap::{SwapAsset, SwapQuote};
 
 /// What to do with the alerts.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum AlertOp {
     Load,
     /// Check them; pair alerts only with trading on (`pairs`), gas alerts always. With
@@ -33,6 +33,7 @@ pub enum AlertOp {
 }
 
 /// Requests to the data worker.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum DataCmd {
     ProtocolQuote {
         key: u64,
@@ -184,10 +185,11 @@ pub enum DataCmd {
     Shutdown,
     /// The screen now in front, as the job names it needs (`portfolio`, `market_pools`, …). Those
     /// jobs jump the queue: a background preload never holds up what the user is looking at.
-    Focus(&'static [&'static str]),
+    Focus(Vec<String>),
 }
 
 /// Results from the data worker.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum DataEv {
     ProtocolQuote {
         key: u64,
@@ -259,7 +261,7 @@ pub enum DataEv {
     /// Logo URLs for launch tokens, by token address. Sent after the list it belongs to.
     LaunchLogos(std::collections::HashMap<String, String>),
     ChainStats(Result<Box<wallet_core::chainstats::ChainStats>, String>),
-    WalletQuai(Vec<(String, wallet_core::sdk::U256)>),
+    WalletQuai(#[serde(with = "wallet_core::ser::u256_pairs")] Vec<(String, wallet_core::sdk::U256)>),
     /// The alerts and watchlist as stored after the operation; what fired; a line to show.
     Alerts {
         alerts: Vec<wallet_core::alerts::Alert>,
@@ -305,9 +307,35 @@ pub enum DataEv {
     Notice(String),
 }
 
+/// A data worker: in this process, or the daemon's data service reached over the engine socket
+/// ([`crate::client::Remote::data_worker`]). Screens say the same things to either.
 pub struct DataWorker {
-    pub tx: tokio::sync::mpsc::UnboundedSender<DataCmd>,
+    pub tx: DataSender,
     pub rx: Receiver<DataEv>,
+}
+
+/// Where data requests go.
+pub enum DataSender {
+    /// A worker thread in this process.
+    Local(tokio::sync::mpsc::UnboundedSender<DataCmd>),
+    /// The daemon, on the engine connection (in order with the engine's own commands).
+    Remote(tokio::sync::mpsc::UnboundedSender<crate::protocol::ClientMsg>),
+}
+
+impl DataSender {
+    /// Send a request; false when nothing is listening any more.
+    pub fn send(&self, cmd: DataCmd) -> bool {
+        match self {
+            DataSender::Local(tx) => tx.send(cmd).is_ok(),
+            DataSender::Remote(tx) => tx.send(crate::protocol::ClientMsg::Data(cmd)).is_ok(),
+        }
+    }
+}
+
+impl From<tokio::sync::mpsc::UnboundedSender<DataCmd>> for DataSender {
+    fn from(tx: tokio::sync::mpsc::UnboundedSender<DataCmd>) -> Self {
+        DataSender::Local(tx)
+    }
 }
 
 impl DataWorker {
@@ -320,10 +348,12 @@ impl DataWorker {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DataCmd>();
         let (ev_tx, ev_rx) = std::sync::mpsc::channel::<DataEv>();
         crate::worker::lane_thread("wallet-data").spawn(move || {
+            // Someone is waiting on what this worker reads, even when it runs in the daemon.
+            wallet_core::http::serve_interactive();
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
             runtime.block_on(run(Stores { wallet: app_db, shared: shared_db }, network, policy, cmd_rx, ev_tx));
         })?;
-        Ok(DataWorker { tx: cmd_tx, rx: ev_rx })
+        Ok(DataWorker { tx: DataSender::Local(cmd_tx), rx: ev_rx })
     }
 }
 
@@ -549,7 +579,7 @@ async fn run(
     let mut previews: std::collections::HashMap<String, futures::future::AbortHandle> = std::collections::HashMap::new();
     let mut image_hosts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     // What the visible screen needs; see `DataCmd::Focus`.
-    let mut focus: &'static [&'static str] = &[];
+    let mut focus: Vec<String> = Vec::new();
     loop {
         while let Ok(c) = cmds.try_recv() {
             match c {
@@ -622,12 +652,12 @@ async fn run(
         // Start what the lanes have room for: what the user is looking at first, then the rest in
         // the order it was asked for. A job for the visible screen may take one slot beyond the
         // lane's share, so a lane full of preloads cannot keep it waiting.
-        queue.sort_by_key(|c| u8::from(!urgent(c, focus)));
+        queue.sort_by_key(|c| u8::from(!urgent(c, &focus)));
         let mut i = 0;
         while i < queue.len() {
             let l = lane(&queue[i]);
             let key = flight_key(&queue[i]);
-            let room = LANES[l] + usize::from(urgent(&queue[i], focus));
+            let room = LANES[l] + usize::from(urgent(&queue[i], &focus));
             if busy[l] >= room || key.as_ref().is_some_and(|k| flying.contains(k)) {
                 i += 1;
                 continue;
@@ -1096,8 +1126,8 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
 
 /// Whether a job is for what the user is looking at. The portfolio always is: it is the number the
 /// wallet opens on, and every other screen's header leans on its prices.
-fn urgent(cmd: &DataCmd, focus: &[&str]) -> bool {
-    matches!(cmd, DataCmd::Portfolio(_)) || focus.contains(&cmd_name(cmd))
+fn urgent(cmd: &DataCmd, focus: &[String]) -> bool {
+    matches!(cmd, DataCmd::Portfolio(_)) || focus.iter().any(|f| f == cmd_name(cmd))
 }
 
 impl DataCmd {

@@ -249,7 +249,7 @@ impl Session {
     /// Transfers belonging to the wallet's own operations are skipped; returns new incoming rows.
     pub async fn observe_token_transfers(&mut self) -> Result<Vec<Activity>> {
         let policy = self.config.data_policy();
-        let explorer = crate::explorer::Explorer::for_network(&self.network);
+        let explorer = crate::explorer::Explorer::for_api(self.network.explorer_api.as_ref());
         if !policy.explorer || explorer.backend == crate::explorer::Backend::ChainOnly {
             return Ok(Vec::new());
         }
@@ -1106,11 +1106,13 @@ pub fn incoming_verb(a: &crate::appdb::Activity) -> &'static str {
 
 /// What a transaction cost, in the coin of the ledger it ran on: QUAI for account transactions,
 /// Qi for UTXO ones. A token transfer moves no native value, but still pays gas in QUAI.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxCost {
     /// Native value the transaction carried. `None` when it cannot be told from what is stored.
+    #[serde(with = "crate::ser::u256_opt")]
     pub value: Option<U256>,
     /// The fee: paid when `fee_final`, otherwise the most it can cost.
+    #[serde(with = "crate::ser::u256_opt")]
     pub fee: Option<U256>,
     pub fee_final: bool,
     /// Counted in Qi (qits) rather than QUAI (wei).

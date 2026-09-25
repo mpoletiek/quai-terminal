@@ -15,6 +15,7 @@
 use crate::amount;
 use crate::journal::OpKind;
 use crate::markets::PoolToken;
+use crate::network::PinTrust;
 use quai_sdk::U256;
 use serde::{Deserialize, Serialize};
 

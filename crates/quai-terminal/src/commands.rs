@@ -458,7 +458,7 @@ pub async fn wallet(ctx: &mut Ctx, cmd: WalletCmd) -> Result<()> {
             let ks_password = prompt::new_secret("Keystore password", 8)?;
             let encrypted = wallet_core::sdk::keystore::encrypt(&key, wallet_core::sdk::keystore::Password::Text(&ks_password))
                 .map_err(|e| CoreError::Invalid(format!("keystore: {e}")))?;
-            wallet_vault::write_private_atomic(&out, encrypted.as_json().as_bytes())?;
+            wallet_vault::write_private_atomic(&out, encrypted.as_json().as_bytes()).map_err(|e| CoreError::Storage(e.to_string()))?;
             done(ctx, "wallet export-keystore", json!({"file": out}), &format!("wrote {}", out.display()))
         }
         WalletCmd::ImportKey { label } => {

@@ -36,7 +36,7 @@ pub const KIND_KEYS: u8 = 2;
 /// The contract's `kind` for a sealed direct message.
 pub const KIND_DM: u8 = 3;
 /// Longest body the contract accepts.
-pub const MAX_BODY: usize = crate::messages::MAX_BODY;
+pub const MAX_BODY: usize = crate::board::MAX_BODY;
 
 const KEYS_LABEL: &[u8] = b"quai-messages:v3:keys";
 const DM_INFO: &[u8] = b"quai-messages:v3:dm";
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn the_keys_tag_is_the_hash_of_its_label() {
         assert_eq!(hex::encode(keys_tag()), hex::encode(quai_sdk::crypto::keccak256(b"quai-messages:v3:keys")));
-        assert_ne!(crate::messages::tag_name(&crate::messages::tag_topic(&keys_tag())), Some("quai-messages:v3:keys".into()));
+        assert_ne!(crate::board::tag_name(&crate::board::tag_topic(&keys_tag())), Some("quai-messages:v3:keys".into()));
     }
 
     #[test]
@@ -508,7 +508,7 @@ mod tests {
     /// DM opens to its content (and the moved copies do not), every key and fingerprint matches.
     #[test]
     fn the_published_vectors_hold() {
-        let v: serde_json::Value = serde_json::from_str(include_str!("../fixtures/messaging_v3_vectors.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(include_str!("fixtures/messaging_v3_vectors.json")).unwrap();
         let b32 = |x: &serde_json::Value| -> [u8; 32] { hex::decode(x.as_str().unwrap()).unwrap().try_into().unwrap() };
         let b20 =
             |x: &serde_json::Value| -> [u8; 20] { hex::decode(x.as_str().unwrap().trim_start_matches("0x")).unwrap().try_into().unwrap() };

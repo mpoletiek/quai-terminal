@@ -164,23 +164,27 @@ impl WalletMeta {
     }
 }
 
-/// Current unix time in seconds.
-pub fn now() -> u64 {
-    if let Some(at) = FROZEN.with(std::cell::Cell::get) {
-        return at;
+pub use quai_model::time::{freeze_clock, now};
+
+/// A vault's error, as the rest of the wallet speaks. Only the modules that may reach the vault
+/// convert its errors (see the architecture test).
+pub(crate) fn vault_error(e: wallet_vault::VaultError) -> CoreError {
+    match e {
+        wallet_vault::VaultError::Authentication => CoreError::Locked(e.to_string()),
+        wallet_vault::VaultError::WeakPassword => CoreError::Invalid(e.to_string()),
+        _ => CoreError::Storage(e.to_string()),
     }
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-thread_local! {
-    static FROZEN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+/// `.vault()?` on a vault call.
+pub(crate) trait VaultExt<T> {
+    fn vault(self) -> Result<T>;
 }
 
-/// Hold [`now`] at `at` on this thread only (`None` lets it run again). For snapshot tests,
-/// whose screens are dated from now: other threads, and so other tests, keep the real clock.
-#[doc(hidden)]
-pub fn freeze_clock(at: Option<u64>) {
-    FROZEN.with(|f| f.set(at));
+impl<T> VaultExt<T> for std::result::Result<T, wallet_vault::VaultError> {
+    fn vault(self) -> Result<T> {
+        self.map_err(vault_error)
+    }
 }
 
 fn random_id() -> Result<String> {
@@ -333,11 +337,11 @@ impl Registry {
             return Err(CoreError::Storage("wallet mutation lacks its encrypted custody state".into()));
         }
         if let Some(vault) = &mutation.vault {
-            vault.write_atomic(&self.vault_path(id))?;
+            vault.write_atomic(&self.vault_path(id)).vault()?;
         }
         mutation_fault("vault")?;
         let file = MetadataFile { format: METADATA_FORMAT.into(), metadata: mutation.metadata };
-        wallet_vault::write_private_atomic(&self.meta_path(id), serde_json::to_vec_pretty(&file)?.as_slice())?;
+        wallet_vault::write_private_atomic(&self.meta_path(id), serde_json::to_vec_pretty(&file)?.as_slice()).vault()?;
         mutation_fault("metadata")?;
         std::fs::remove_file(path)?;
         File::open(self.paths.wallet_dir(id))?.sync_all()?;
@@ -360,7 +364,7 @@ impl Registry {
         let custody_changed = match &vault {
             None => false,
             Some(v) => match VaultFile::read(&self.vault_path(&meta.id)) {
-                Ok(current) => current.to_json()? != v.to_json()?,
+                Ok(current) => current.to_json().vault()? != v.to_json().vault()?,
                 Err(_) => true,
             },
         };
@@ -368,7 +372,7 @@ impl Registry {
             next.custody_generation = next.generation;
         }
         let mutation = Mutation { format: MUTATION_FORMAT.into(), metadata: next.clone(), vault };
-        wallet_vault::write_private_atomic(&self.journal_path(&meta.id), &serde_json::to_vec_pretty(&mutation)?)?;
+        wallet_vault::write_private_atomic(&self.journal_path(&meta.id), &serde_json::to_vec_pretty(&mutation)?).vault()?;
         mutation_fault("journal")?;
         self.recover(&meta.id)?;
         // Persist newly created wallet/parent entries as well as the files inside the wallet.
@@ -379,7 +383,7 @@ impl Registry {
     }
 
     fn current_vault(&self, meta: &WalletMeta) -> Result<Option<VaultFile>> {
-        if meta.can_sign() { Ok(Some(VaultFile::read(&self.vault_path(&meta.id))?)) } else { Ok(None) }
+        if meta.can_sign() { Ok(Some(VaultFile::read(&self.vault_path(&meta.id)).vault()?)) } else { Ok(None) }
     }
 
     fn load_locked(&self, id: &str) -> Result<WalletMeta> {
@@ -480,9 +484,9 @@ impl Registry {
         }
         ensure_private_dir(&dir)?;
         let result = (|| {
-            let vault = VaultFile::seal(secrets, password, self.kdf)?;
+            let vault = VaultFile::seal(secrets, password, self.kdf).vault()?;
             // Prove the vault opens before the encrypted recovery record becomes authoritative.
-            vault.open(password, self.allow_weak_kdf)?;
+            vault.open(password, self.allow_weak_kdf).vault()?;
             self.commit(&mut meta.clone(), Some(vault))
         })();
         if result.is_err() && !self.journal_path(&meta.id).exists() && !self.meta_path(&meta.id).exists() {
@@ -629,10 +633,10 @@ impl Registry {
         if meta.kind == WalletKind::Watch {
             return Err(CoreError::Locked("watch-only wallets have no keys".into()));
         }
-        let vault = VaultFile::read(&self.vault_path(&meta.id))?;
+        let vault = VaultFile::read(&self.vault_path(&meta.id)).vault()?;
         let secrets = vault.open(password, self.allow_weak_kdf).map_err(|e| match e {
             wallet_vault::VaultError::Authentication => CoreError::Locked("incorrect password".into()),
-            other => other.into(),
+            other => vault_error(other),
         })?;
         let mut unlocked = Unlocked::new(secrets)?;
         unlocked.vault_generation = Some(meta.generation);
@@ -642,8 +646,8 @@ impl Registry {
     fn seal_current(&self, meta: &WalletMeta, unlocked: &Unlocked, password: &str) -> Result<VaultFile> {
         let current = self.current_vault(meta)?.map(|v| v.kdf());
         let kdf = current.filter(|c| kdf_cost(*c) > kdf_cost(self.kdf)).unwrap_or(self.kdf);
-        let vault = VaultFile::seal(unlocked.secrets(), password, kdf)?;
-        vault.open(password, self.allow_weak_kdf)?;
+        let vault = VaultFile::seal(unlocked.secrets(), password, kdf).vault()?;
+        vault.open(password, self.allow_weak_kdf).vault()?;
         Ok(vault)
     }
 
@@ -776,7 +780,7 @@ impl Registry {
         if dir.exists() {
             return Err(CoreError::Storage("wallet directory already exists".into()));
         }
-        let vault = vault_json.map(VaultFile::from_json).transpose()?;
+        let vault = vault_json.map(VaultFile::from_json).transpose().vault()?;
         if meta.can_sign() != vault.is_some() {
             return Err(CoreError::Storage("restored wallet metadata does not match its custody envelope".into()));
         }
@@ -793,7 +797,7 @@ impl Registry {
     pub fn encrypted_snapshot(&self, id: &str) -> Result<(WalletMeta, Option<String>)> {
         let _lock = self.mutation_lock()?;
         let meta = self.load_locked(id)?;
-        let encrypted = self.current_vault(&meta)?.map(|v| v.to_json()).transpose()?;
+        let encrypted = self.current_vault(&meta)?.map(|v| v.to_json()).transpose().vault()?;
         Ok((meta, encrypted))
     }
 

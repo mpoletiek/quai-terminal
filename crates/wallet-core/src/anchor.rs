@@ -287,7 +287,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::appdb::AppDb;
     use crate::data::{Trust, verify_pinned_all};
-    use crate::network::PinnedContract;
+    use crate::network::{PinTrust, PinnedContract};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

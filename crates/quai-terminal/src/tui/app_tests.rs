@@ -4176,7 +4176,7 @@ fn a_collection_loads_its_next_page_as_the_selection_nears_the_end() {
     app.config.features.nfts = true;
     let (tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
     let (_events, rx) = std::sync::mpsc::channel();
-    app.data = Some(DataWorker { tx, rx });
+    app.data = Some(DataWorker { tx: tx.into(), rx });
     let c = "0x005dac5bdc0f2baf613187df241a7564de08ed74".to_string();
     let page = |from: usize| CollectionPage {
         items: (from..(from + COLLECTION_PAGE).min(237))

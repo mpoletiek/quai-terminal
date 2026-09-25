@@ -6,6 +6,7 @@ use crate::appdb::Token;
 use crate::data::Trust;
 use crate::error::{CoreError, Result};
 use crate::journal::OpKind;
+use crate::network::PinTrust;
 use crate::network::ZONE;
 use crate::registry::{QuaiAccount, parse_any_address};
 use crate::session::{Session, new_operation_id, qi_stale, stale_pause};
@@ -110,22 +111,7 @@ pub struct PeerView {
     pub send_addresses: usize,
 }
 
-/// One message in a sealed conversation, as the wallet shows it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SealedLine {
-    /// Unix seconds.
-    pub at: u64,
-    /// Sender address.
-    pub from: String,
-    /// Sent by this wallet.
-    pub mine: bool,
-    /// The text, or `None` when the body will not open for this conversation.
-    pub text: Option<String>,
-    /// Posted from an account not recorded for this contact. A sealed body opening is not proof
-    /// of who posted it (anyone can copy a body onto the board from their own address), so this
-    /// is shown, never recorded; naming the account is the user's call.
-    pub new_address: bool,
-}
+pub use quai_messaging::board::SealedLine;
 
 /// Conversion quote with settlement-risk scenarios.
 #[derive(Clone, Debug, Serialize, Deserialize)]

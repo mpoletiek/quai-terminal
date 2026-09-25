@@ -12,18 +12,20 @@
 //! does not parse closes the connection. Every buffer a frame passes through is wiped when it
 //! goes: an unlock carries a password, and an export carries the recovery phrase.
 
+use crate::data::{DataCmd, DataEv};
 use crate::worker::{Cmd, Ev};
 use zeroize::Zeroizing;
 
 /// This build's protocol. Both ends must speak the same one; anything that changes a message's
 /// shape changes it.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
-/// The largest frame a host reads from a client. A client sends commands, never data.
-pub const CLIENT_FRAME_LIMIT: usize = 1 << 20;
+/// The largest frame a host reads from a client. A client sends commands, never bulk data; the
+/// largest are data requests naming the pools on screen (a few hundred bytes each).
+pub const CLIENT_FRAME_LIMIT: usize = 4 << 20;
 
 /// The largest frame a client reads from the host: a dashboard carries the wallet's recent
-/// activity and a journal read carries its operations.
+/// activity, a journal read carries its operations, and a picture carries its pixels.
 pub const HOST_FRAME_LIMIT: usize = 64 << 20;
 
 /// From a client.
@@ -41,6 +43,11 @@ pub enum ClientMsg {
     Cmd(Cmd),
     /// Someone is at the keyboard: the engine's auto-lock starts over.
     Activity,
+    /// A request for the daemon's data service: third-party and read-only chain data, fetched
+    /// for this client by a data worker of its own in the daemon (one process, one API budget,
+    /// one set of caches for every terminal). Paths and network profiles in it are the host's to
+    /// decide, never taken from the client.
+    Data(DataCmd),
 }
 
 /// From the host.
@@ -52,6 +59,8 @@ pub enum HostMsg {
     Refused(String),
     /// An engine event.
     Ev(Ev),
+    /// A data service result.
+    Data(DataEv),
 }
 
 /// A frame that could not be read or written.
@@ -204,6 +213,26 @@ mod tests {
             ClientMsg::Cmd(Cmd::Chat(ChatOp::Pin { target: None, label: "x".into() })),
             ClientMsg::Cmd(Cmd::ImportKey { label: None, key: Zeroizing::new("00".repeat(32)), password: Zeroizing::new("pw".into()) }),
             ClientMsg::Cmd(Cmd::ExportPhrase(Zeroizing::new("pw".into()))),
+            ClientMsg::Data(DataCmd::Focus(vec!["portfolio".into(), "market_pools".into()])),
+            ClientMsg::Data(DataCmd::Portfolio(wallet_core::portfolio::Known {
+                owners: vec!["0x00".into()],
+                quai: wallet_core::sdk::U256::MAX,
+                qi: Some(wallet_core::sdk::U256::from(7u8)),
+                tokens: vec![(
+                    "0x01".into(),
+                    "T".into(),
+                    "Token".into(),
+                    18,
+                    wallet_core::sdk::U256::from(10u64).pow(wallet_core::sdk::U256::from(30u8)),
+                )],
+            })),
+            ClientMsg::Data(DataCmd::Configure {
+                network: wallet_core::network::NetworkProfile::builtins().remove(0),
+                policy: wallet_core::config::AppConfig::default().data_policy(),
+                app_db: Some("/somewhere/app.sqlite".into()),
+            }),
+            ClientMsg::Data(DataCmd::Alerts(crate::data::AlertOp::Check { pairs: true, unless_daemon: false })),
+            ClientMsg::Data(DataCmd::Images(vec![("ipfs://x".into(), 64)])),
         ]
     }
 
@@ -219,6 +248,31 @@ mod tests {
             HostMsg::Ev(Ev::Secret(Zeroizing::new("abandon ".repeat(12)))),
             HostMsg::Ev(Ev::ChatNews { epoch: 3, news: vec![("t".into(), "b".into())] }),
             HostMsg::Ev(Ev::Pnl(Err("no trades".into()))),
+            HostMsg::Data(DataEv::WalletQuai(vec![("w".into(), wallet_core::sdk::U256::MAX)])),
+            HostMsg::Data(DataEv::TxCost {
+                hash: "0xab".into(),
+                result: Ok(wallet_core::track::TxCost {
+                    value: Some(wallet_core::sdk::U256::from(5u8)),
+                    fee: None,
+                    fee_final: true,
+                    qi: false,
+                }),
+            }),
+            HostMsg::Data(DataEv::Image {
+                url: "ipfs://x".into(),
+                edge: 64,
+                rendition: Some(std::sync::Arc::new(wallet_core::media::Rendition {
+                    hash: "h".into(),
+                    width: 2,
+                    height: 1,
+                    png: vec![0x89, b'P', b'N', b'G'],
+                    rgba: vec![255; 8],
+                    dominant: (1, 2, 3),
+                })),
+                transient: false,
+            }),
+            HostMsg::Data(DataEv::Portfolio(Ok(Box::default()))),
+            HostMsg::Data(DataEv::Notice("the monitor endpoint answered for another chain".into())),
         ]
     }
 

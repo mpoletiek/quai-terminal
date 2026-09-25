@@ -7,9 +7,8 @@
 //! scripts). Anything that fails falls back to a monogram badge, so an image is never the only
 //! carrier of meaning.
 
-use crate::appdb::AppDb;
-use crate::error::{CoreError, Result};
 use crate::http;
+use quai_model::error::{CoreError, Result};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
@@ -52,7 +51,7 @@ const MAX_DIMENSION: u32 = 8192;
 const MAX_SVG_BYTES: usize = 1024 * 1024;
 
 /// A decoded, resized rendition.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rendition {
     /// Content hash of the source bytes.
     pub hash: String,
@@ -290,9 +289,9 @@ pub fn resolve(url: &str) -> Result<Source> {
     Err(CoreError::Invalid("unsupported media URL".into()))
 }
 
-/// `https://www.quainance.com/api/media/<cid>`, exactly: what [`crate::launches`] builds.
+/// `https://www.quainance.com/api/media/<cid>`, exactly: what the launch index builds.
 fn quainance_media(url: &str) -> bool {
-    url.strip_prefix(&format!("{}/", crate::launches::MEDIA_PROXY))
+    url.strip_prefix(&format!("{}/", MEDIA_PROXY))
         .is_some_and(|cid| !cid.is_empty() && cid.len() <= 128 && cid.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
@@ -328,7 +327,23 @@ pub(crate) fn percent_decode(text: &str) -> Vec<u8> {
 /// Returns `Ok(None)` for a failure worth remembering (not found, too large, undecodable, or a
 /// recent such attempt) and `Err` for a passing one (timeout, busy request budget, rate limit)
 /// that callers can retry soon.
-pub async fn load(app: &AppDb, url: &str, edge: u32) -> Result<Option<Rendition>> {
+/// Quainance's resizing media proxy: launch logos and pictures come through it by content id.
+pub const MEDIA_PROXY: &str = "https://www.quainance.com/api/media";
+
+/// A rendition as remembered: width, height, PNG, RGBA, dominant color.
+pub type StoredRendition = (u32, u32, Vec<u8>, Vec<u8>, u32);
+
+/// Where pictures are remembered between runs (the wallet's database, in the engine's crate).
+pub trait MediaCache {
+    /// What a URL gave last time: its rendition hash, its error, and when.
+    fn media_get(&self, url: &str) -> Result<Option<(Option<String>, String, u64)>>;
+    fn media_put(&self, url: &str, hash: Option<&str>, error: &str) -> Result<()>;
+    fn rendition_get(&self, hash: &str, size: u32) -> Result<Option<StoredRendition>>;
+    #[allow(clippy::too_many_arguments)]
+    fn rendition_put(&self, hash: &str, size: u32, width: u32, height: u32, png: &[u8], rgba: &[u8], dominant: u32) -> Result<()>;
+}
+
+pub async fn load(app: &(impl MediaCache + ?Sized), url: &str, edge: u32) -> Result<Option<Rendition>> {
     if let Some((hash, error, fetched)) = app.media_get(url)? {
         match hash {
             Some(h) => {
@@ -356,7 +371,7 @@ pub async fn load(app: &AppDb, url: &str, edge: u32) -> Result<Option<Rendition>
                     }));
                 }
             }
-            None if !error.is_empty() && crate::registry::now().saturating_sub(fetched) < RETRY_AFTER => return Ok(None),
+            None if !error.is_empty() && quai_model::time::now().saturating_sub(fetched) < RETRY_AFTER => return Ok(None),
             None => {}
         }
     }
@@ -454,6 +469,33 @@ pub fn fixture_png(width: u32, height: u32, color: (u8, u8, u8)) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remembered fetch: the content hash when it loaded, the error when it did not, and when.
+    type Entry = (Option<String>, String, u64);
+
+    /// The cache, in memory.
+    #[derive(Default)]
+    pub(super) struct Memory {
+        media: std::sync::Mutex<std::collections::HashMap<String, Entry>>,
+        renditions: std::sync::Mutex<std::collections::HashMap<(String, u32), StoredRendition>>,
+    }
+
+    impl MediaCache for Memory {
+        fn media_get(&self, url: &str) -> Result<Option<(Option<String>, String, u64)>> {
+            Ok(self.media.lock().unwrap().get(url).cloned())
+        }
+        fn media_put(&self, url: &str, hash: Option<&str>, error: &str) -> Result<()> {
+            self.media.lock().unwrap().insert(url.into(), (hash.map(str::to_string), error.into(), quai_model::time::now()));
+            Ok(())
+        }
+        fn rendition_get(&self, hash: &str, size: u32) -> Result<Option<StoredRendition>> {
+            Ok(self.renditions.lock().unwrap().get(&(hash.to_string(), size)).cloned())
+        }
+        fn rendition_put(&self, hash: &str, size: u32, width: u32, height: u32, png: &[u8], rgba: &[u8], dominant: u32) -> Result<()> {
+            self.renditions.lock().unwrap().insert((hash.into(), size), (width, height, png.to_vec(), rgba.to_vec(), dominant));
+            Ok(())
+        }
+    }
 
     /// Quainance's proxy fetches what it is asked for, so a token's image there is taken only in
     /// the one shape the wallet builds: a CID, nothing after it.
@@ -567,7 +609,7 @@ mod tests {
                 let _ = socket.write_all(&png).await;
             }
         });
-        let app = AppDb::memory().unwrap();
+        let app = tests::Memory::default();
         // "hello world" is what this CID names; the gateway sends a PNG instead.
         let lying = "ipfs://bafkreifzjut3te2nhyekklss27nh3k72ysco7y32koao5eei66wof36n5e";
         let honest_path = "ipfs://QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n/pic.png";
@@ -616,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn load_caches_inline_images() {
         use base64::Engine;
-        let app = AppDb::memory().unwrap();
+        let app = tests::Memory::default();
         let url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(fixture_png(64, 64, (10, 200, 10))));
         let first = load(&app, &url, ICON).await.unwrap().unwrap();
         assert_eq!(first.width, 32);
@@ -628,7 +670,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_logos_render_in_brand_colors() {
-        let app = AppDb::memory().unwrap();
+        let app = tests::Memory::default();
         assert!(native_icon("QUAI").is_some() && native_icon("wqi").is_none());
         for asset in ["quai", "qi"] {
             let url = native_icon(asset).unwrap();

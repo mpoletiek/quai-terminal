@@ -177,6 +177,23 @@ impl std::fmt::Debug for Session {
     }
 }
 
+/// Open a wallet store, retrying a first open that raced another. Switching a new store to WAL
+/// needs it to itself for a moment; when another session holds it, SQLite answers with the old
+/// journal mode instead of waiting, and the SDK reports a database failure. Opening is idempotent
+/// (the schema is created in one transaction), so trying again is safe.
+fn open_store(path: &std::path::Path, scope: quai_sdk::wallet::storage::NetworkScope) -> Result<SqliteStore> {
+    let mut attempt = 0u64;
+    loop {
+        match SqliteStore::open(path, scope) {
+            Err(quai_sdk::wallet::storage::StorageError::Database) if attempt < 8 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+            }
+            other => return Ok(other?),
+        }
+    }
+}
+
 impl Session {
     /// Attach public operation records to a durable plan before preparation starts. This grants
     /// no signing authority. The caller must hold the plan coordinator lease.
@@ -203,8 +220,8 @@ impl Session {
         let dir = registry.paths().network_dir(&meta.id, &network.id);
         crate::paths::ensure_private_dir(&dir)?;
         let scope = network.scope()?;
-        let quai_store = SqliteStore::open(dir.join("quai.sqlite"), scope)?;
-        let qi_store = SqliteStore::open(dir.join("qi.sqlite"), scope)?;
+        let quai_store = open_store(&dir.join("quai.sqlite"), scope)?;
+        let qi_store = open_store(&dir.join("qi.sqlite"), scope)?;
         let app = AppDb::open(&registry.paths().wallet_dir(&meta.id).join("app.sqlite"))?;
         let rpc = network.node()?;
         let custody = crate::custody::for_wallet_in(registry.custody_scope(), &id);

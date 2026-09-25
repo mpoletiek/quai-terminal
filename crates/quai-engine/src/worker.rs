@@ -1620,7 +1620,7 @@ struct Heads {
 
 impl Heads {
     fn start(session: &Session) -> Heads {
-        let explorer = wallet_core::explorer::Explorer::for_network(&session.network);
+        let explorer = wallet_core::explorer::Explorer::for_api(session.network.explorer_api.as_ref());
         let wanted =
             !session.monitoring() && session.config.data_policy().explorer && explorer.backend == wallet_core::explorer::Backend::Quai;
         let stream = wanted.then(|| {

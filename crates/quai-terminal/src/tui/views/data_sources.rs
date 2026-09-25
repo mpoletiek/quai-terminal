@@ -47,7 +47,7 @@ pub fn draw_data_sources(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let network = app.net();
     let mut lines = Vec::new();
     if let Some(n) = &network {
-        let ex = wallet_core::explorer::Explorer::for_network(n);
+        let ex = wallet_core::explorer::Explorer::for_api(n.explorer_api.as_ref());
         lines.push(kv(t, "network", Span::raw(n.name.clone())));
         // Node traffic first: it is the part every setting on this screen leaves alone.
         let host = |url: &str| wallet_core::http::host_of(url).unwrap_or_else(|_| url.to_string());

@@ -88,17 +88,6 @@ pub fn invalid(msg: impl Into<String>) -> CoreError {
     CoreError::Invalid(msg.into())
 }
 
-impl From<wallet_vault::VaultError> for CoreError {
-    fn from(e: wallet_vault::VaultError) -> Self {
-        match e {
-            wallet_vault::VaultError::Authentication => CoreError::Locked(e.to_string()),
-            wallet_vault::VaultError::WeakPassword => CoreError::Invalid(e.to_string()),
-            wallet_vault::VaultError::Io(_) => CoreError::Storage(e.to_string()),
-            _ => CoreError::Storage(e.to_string()),
-        }
-    }
-}
-
 impl From<std::io::Error> for CoreError {
     fn from(e: std::io::Error) -> Self {
         CoreError::Storage(format!("filesystem: {e}"))
@@ -128,7 +117,7 @@ impl From<quai_sdk::wallet::storage::StorageError> for CoreError {
 /// echo request values; the wallet shows it only to its owner, next to the code.
 fn remote_detail(e: &quai_sdk::rpc::RpcError) -> Option<String> {
     let quai_sdk::rpc::RpcError::Remote(remote) = e else { return None };
-    let text = crate::explorer::clean(&remote.message, 160);
+    let text = crate::text::clean(&remote.message, 160);
     let text = text.trim().to_string();
     (!text.is_empty()).then_some(text)
 }

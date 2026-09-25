@@ -7,9 +7,18 @@
 //! A connection must say [`ClientMsg::Hello`] with this [`PROTOCOL`] within a few seconds, then
 //! attach to a wallet; anything malformed, oversized or out of order closes it. When the client
 //! goes, its keys go with it.
+//!
+//! Each connection also gets the daemon's data service: a data worker of its own, started on its
+//! first request, in this one process. Every terminal's reads then share one HTTP client, one
+//! per-host pace (the explorer allows so many requests a minute per address, not per terminal),
+//! in-flight reads and caches, while each worker keeps its own queue and answers only its client.
+//! That worker parses third-party data (explorer, indexers, metadata) in the process that holds
+//! keys; pictures are still decoded in a sandboxed helper process of their own.
 
+use crate::data::{DataCmd, DataEv, DataSender, DataWorker};
 use crate::host::Host;
 use crate::protocol::{self, CLIENT_FRAME_LIMIT, ClientMsg, FrameError, HostMsg, PROTOCOL};
+use crate::worker::Cmd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -114,7 +123,7 @@ async fn connection(stream: tokio::net::UnixStream, registry: Registry, build: S
         |(meta, config)| {
             config.network(&network)?;
             // Whether keys go to the daemon's own watcher too is read at each unlock.
-            Host::attach(registry.clone(), config, &format!("engine:{id}"), true, meta, network, || {})
+            Host::attach(registry.clone(), config, &format!("engine:{id}"), true, meta, network.clone(), || {})
                 .map_err(|e| wallet_core::CoreError::Storage(format!("engine: {e}")))
         },
     );
@@ -135,11 +144,29 @@ async fn connection(stream: tokio::net::UnixStream, registry: Registry, build: S
             }
         }
     });
+    let mut at = Attached { wallet, network };
+    let mut data: Option<DataSender> = None;
+    let (data_out, mut data_inbox) = tokio::sync::mpsc::unbounded_channel::<DataEv>();
     let why = loop {
         tokio::select! {
             incoming = protocol::read_msg::<ClientMsg>(&mut read, CLIENT_FRAME_LIMIT) => match incoming {
                 Ok(ClientMsg::Hello { .. } | ClientMsg::Attach { .. }) => break "handshake repeated".to_string(),
-                Ok(msg) => host.handle(msg),
+                Ok(ClientMsg::Data(cmd)) => {
+                    let Some(cmd) = host_side(cmd, &registry) else { continue };
+                    if data.is_none() {
+                        data = start_data(&registry, &at, data_out.clone());
+                    }
+                    // A worker that has stopped (the client asked it to) starts again on the next request.
+                    if data.as_ref().is_some_and(|tx| !tx.send(cmd)) {
+                        data = None;
+                    }
+                }
+                Ok(msg) => {
+                    if let ClientMsg::Cmd(cmd) = &msg {
+                        at.track(cmd);
+                    }
+                    host.handle(msg)
+                }
                 Err(FrameError::Closed) => break "client left".to_string(),
                 Err(e) => break e.to_string(),
             },
@@ -151,12 +178,85 @@ async fn connection(stream: tokio::net::UnixStream, registry: Registry, build: S
                 }
                 None => break "engine stopped".to_string(),
             },
+            Some(ev) = data_inbox.recv() => {
+                if let Err(e) = protocol::write_msg(&mut write, &HostMsg::Data(ev)).await {
+                    break e.to_string();
+                }
+            }
         }
     };
+    if let Some(tx) = data {
+        tx.send(DataCmd::Shutdown);
+    }
     // The client is gone: so are its keys (the daemon's own, when shared, stay until its lock).
     if host.is_unlocked() {
         host.lock_now_keeping_shared();
     }
     drop(host);
     why
+}
+
+/// The wallet and network a client's engine is on, followed through its switches.
+struct Attached {
+    wallet: String,
+    network: String,
+}
+
+impl Attached {
+    fn track(&mut self, cmd: &Cmd) {
+        match cmd {
+            Cmd::SwitchWallet(w) => self.wallet = w.clone(),
+            Cmd::SwitchNetwork(n) => self.network = n.clone(),
+            _ => {}
+        }
+    }
+}
+
+/// A client's data worker, bound to the wallet and network its engine is on, with the data
+/// policy in the configuration (the client sends its own with its first `Configure`).
+fn start_data(registry: &Registry, at: &Attached, out: tokio::sync::mpsc::UnboundedSender<DataEv>) -> Option<DataSender> {
+    let config = AppConfig::load(registry.paths()).ok()?;
+    let network = config.network(&at.network).ok()?;
+    registry.load(&at.wallet).ok()?;
+    let app_db = registry.paths().wallet_dir(&at.wallet).join("app.sqlite");
+    let worker = DataWorker::spawn(app_db, registry.paths().shared_cache(), network, config.data_policy()).ok()?;
+    let events = worker.rx;
+    // The worker's channel blocks; its results reach the socket through a thread of their own.
+    std::thread::Builder::new()
+        .name("engine-data-events".into())
+        .spawn(move || {
+            for ev in events {
+                if out.send(ev).is_err() {
+                    return;
+                }
+            }
+        })
+        .ok()?;
+    Some(worker.tx)
+}
+
+/// A client's data request as the host serves it. A `Configure` names a network and a wallet
+/// database: the network's profile comes from this host's configuration, by id, and the database
+/// must be a registered wallet's own. Anything else is dropped.
+fn host_side(cmd: DataCmd, registry: &Registry) -> Option<DataCmd> {
+    match cmd {
+        DataCmd::Configure { network, policy, app_db } => {
+            let config = AppConfig::load(registry.paths()).ok()?;
+            let network = config.network(&network.id).ok()?;
+            let app_db = match app_db {
+                None => None,
+                Some(path) => Some(wallet_db(registry, &path)?),
+            };
+            Some(DataCmd::Configure { network, policy, app_db })
+        }
+        cmd => Some(cmd),
+    }
+}
+
+/// `path`, when it is exactly a registered wallet's cache database.
+fn wallet_db(registry: &Registry, path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let id = path.parent()?.file_name()?.to_str()?;
+    registry.load(id).ok()?;
+    let own = registry.paths().wallet_dir(id).join("app.sqlite");
+    (own == path).then_some(own)
 }

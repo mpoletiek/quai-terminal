@@ -9,7 +9,7 @@ impl App {
             return;
         }
         if let Some(d) = &self.data {
-            let _ = d.tx.send(cmd);
+            d.tx.send(cmd);
         }
     }
 
@@ -21,8 +21,18 @@ impl App {
         let Some(meta) = &self.meta else { return };
         let Some(network) = self.net() else { return };
         let path = self.paths.wallet_dir(&meta.id).join("app.sqlite");
-        let shared = self.paths.shared_cache();
-        if let Ok(worker) = super::super::data::DataWorker::spawn(path, shared, (*network).clone(), self.config.data_policy()) {
+        // With the engine in the daemon, so is the data service: one for every terminal.
+        let worker = match &self.worker {
+            Some(quai_engine::client::Engine::Remote(remote)) => remote.data_worker().inspect(|worker| {
+                worker.tx.send(DataCmd::Configure {
+                    network: (*network).clone(),
+                    policy: self.config.data_policy(),
+                    app_db: Some(path.clone()),
+                });
+            }),
+            _ => super::super::data::DataWorker::spawn(path, self.paths.shared_cache(), (*network).clone(), self.config.data_policy()).ok(),
+        };
+        if let Some(worker) = worker {
             self.data = Some(worker);
             self.on_view_opened();
             self.preload();
@@ -140,7 +150,7 @@ impl App {
     /// Load what a view needs when it opens.
     pub fn on_view_opened(&mut self) {
         // What this screen waits on goes to the front of the data worker's queue.
-        self.send_data(DataCmd::Focus(focus_jobs(self.nav.screen)));
+        self.send_data(DataCmd::Focus(focus_jobs(self.nav.screen).iter().map(|s| s.to_string()).collect()));
         match self.nav.screen {
             Screen::Home => self.maybe_refresh_portfolio(false),
             Screen::Collected if self.eco.nft.nfts.latest().is_none() && !self.eco.nft.nfts.loading() => {

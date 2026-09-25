@@ -23,7 +23,7 @@
 //!                  or 1 · u16 length · UTF-8 reason
 //! ```
 
-use crate::error::{CoreError, Result};
+use quai_model::error::{CoreError, Result};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -407,7 +407,7 @@ mod sandbox {
 mod tests {
     use super::*;
 
-    use crate::testutil::Rng;
+    use quai_model::testutil::Rng;
 
     #[test]
     fn requests_round_trip_and_refuse_anything_else() {

@@ -241,7 +241,7 @@ fn process_alive(pid: i64) -> bool {
 }
 
 /// A cached image rendition row: (width, height, png, rgba, dominant 0xRRGGBB).
-pub type StoredRendition = (u32, u32, Vec<u8>, Vec<u8>, u32);
+pub use quai_feeds::media::StoredRendition;
 
 /// Tables holding re-fetchable third-party data; excluded from backups.
 const CACHE_TABLES: [&str; 6] = ["cache", "fetch_leases", "media", "renditions", "pool_events", "dex_swaps"];
@@ -291,120 +291,7 @@ pub struct Token {
     pub hidden: bool,
 }
 
-/// Operation lifecycle status.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OpStatus {
-    /// Prepared and reserved, not signed.
-    Prepared,
-    /// Signed and durably stored, not submitted.
-    Signed,
-    /// Submitted; acknowledgement received.
-    Submitted,
-    /// Submission outcome unknown; reconcile before retrying.
-    Unknown,
-    /// Included and successful at origin.
-    Confirmed,
-    /// Included but failed/reverted.
-    Failed,
-    /// Waiting for destination settlement (conversions, wraps).
-    Settling,
-    /// Destination settled with locked output.
-    Locked,
-    /// Destination settled and spendable.
-    Settled,
-    /// Conversion refunded.
-    Refunded,
-    /// Replaced by another candidate in the same nonce family.
-    Replaced,
-    /// Abandoned before signing.
-    Cancelled,
-}
-
-impl OpStatus {
-    /// Stable text form.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OpStatus::Prepared => "prepared",
-            OpStatus::Signed => "signed",
-            OpStatus::Submitted => "submitted",
-            OpStatus::Unknown => "unknown",
-            OpStatus::Confirmed => "confirmed",
-            OpStatus::Failed => "failed",
-            OpStatus::Settling => "settling",
-            OpStatus::Locked => "locked",
-            OpStatus::Settled => "settled",
-            OpStatus::Refunded => "refunded",
-            OpStatus::Replaced => "replaced",
-            OpStatus::Cancelled => "cancelled",
-        }
-    }
-
-    /// Parse text form.
-    pub fn parse(text: &str) -> Result<Self> {
-        Ok(match text {
-            "prepared" => OpStatus::Prepared,
-            "signed" => OpStatus::Signed,
-            "submitted" => OpStatus::Submitted,
-            "unknown" => OpStatus::Unknown,
-            "confirmed" => OpStatus::Confirmed,
-            "failed" => OpStatus::Failed,
-            "settling" => OpStatus::Settling,
-            "locked" => OpStatus::Locked,
-            "settled" => OpStatus::Settled,
-            "refunded" => OpStatus::Refunded,
-            "replaced" => OpStatus::Replaced,
-            "cancelled" => OpStatus::Cancelled,
-            other => return Err(CoreError::Storage(format!("unknown operation status `{other}`"))),
-        })
-    }
-
-    /// Sent but not yet mined: a higher-fee replacement can still win.
-    pub fn replaceable(self) -> bool {
-        matches!(self, OpStatus::Submitted | OpStatus::Unknown)
-    }
-
-    /// No further automatic tracking is required.
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            OpStatus::Confirmed | OpStatus::Failed | OpStatus::Settled | OpStatus::Refunded | OpStatus::Replaced | OpStatus::Cancelled
-        )
-    }
-}
-
-/// A wallet-initiated operation (journal row).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Operation {
-    /// Reservation id (32 hex chars).
-    pub id: String,
-    /// Network id.
-    pub network: String,
-    /// Operation kind (stored as its name, e.g. `send_quai`).
-    pub kind: crate::journal::OpKind,
-    /// SDK store holding custody (`quai` or `qi`).
-    pub store: String,
-    /// Source account address or `qi`.
-    pub account: String,
-    /// Status.
-    pub status: OpStatus,
-    /// Transaction hash once signed.
-    pub tx_hash: Option<String>,
-    /// Asset label (`QUAI`, `QI`, token symbol).
-    pub asset: String,
-    /// Amount in base units.
-    pub amount: String,
-    /// Destination or peer.
-    pub counterparty: String,
-    /// Fee (base units of the fee asset), when known.
-    pub fee: String,
-    /// Detail (stored as JSON).
-    pub detail: crate::journal::Detail,
-    /// Created (unix seconds).
-    pub created: u64,
-    /// Updated (unix seconds).
-    pub updated: u64,
-}
+pub use quai_model::journal::{OpStatus, Operation};
 
 /// An observed incoming or external event.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1522,6 +1409,22 @@ impl AppDb {
             params![hash, size, width, height, png, rgba, dominant],
         )?;
         Ok(())
+    }
+}
+
+/// Pictures are remembered in the wallet's database.
+impl quai_feeds::media::MediaCache for AppDb {
+    fn media_get(&self, url: &str) -> Result<Option<(Option<String>, String, u64)>> {
+        AppDb::media_get(self, url)
+    }
+    fn media_put(&self, url: &str, hash: Option<&str>, error: &str) -> Result<()> {
+        AppDb::media_put(self, url, hash, error)
+    }
+    fn rendition_get(&self, hash: &str, size: u32) -> Result<Option<StoredRendition>> {
+        AppDb::rendition_get(self, hash, size)
+    }
+    fn rendition_put(&self, hash: &str, size: u32, width: u32, height: u32, png: &[u8], rgba: &[u8], dominant: u32) -> Result<()> {
+        AppDb::rendition_put(self, hash, size, width, height, png, rgba, dominant)
     }
 }
 

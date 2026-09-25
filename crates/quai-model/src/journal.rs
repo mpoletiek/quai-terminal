@@ -241,7 +241,8 @@ impl Detail {
     }
 
     /// The stored JSON for the journal's own storage code (merging a patch, the timeline).
-    pub(crate) fn json_mut(&mut self) -> &mut serde_json::Value {
+    #[doc(hidden)]
+    pub fn json_mut(&mut self) -> &mut serde_json::Value {
         if !self.0.is_object() {
             self.0 = serde_json::Value::Object(Default::default());
         }
@@ -249,20 +250,21 @@ impl Detail {
     }
 
     /// Any key, read as indexing reads it, for tests that sweep many keys.
-    #[cfg(test)]
-    pub(crate) fn test_get(&self, key: &str) -> &serde_json::Value {
+    #[doc(hidden)]
+    pub fn test_get(&self, key: &str) -> &serde_json::Value {
         self.read(key)
     }
 
     /// Any key, for tests that build or break a detail on purpose.
-    #[cfg(test)]
-    pub(crate) fn test_set(&mut self, key: &str, value: serde_json::Value) {
+    #[doc(hidden)]
+    pub fn test_set(&mut self, key: &str, value: serde_json::Value) {
         self.write(key, value);
     }
 
     /// Debug builds refuse a key no accessor names: a typo in a writer fails every test that
     /// reaches it instead of writing a fact no reader will find.
-    pub(crate) fn check_keys(&self) {
+    #[doc(hidden)]
+    pub fn check_keys(&self) {
         if cfg!(debug_assertions)
             && let Some(map) = self.0.as_object()
         {
@@ -510,8 +512,8 @@ impl Detail {
     }
 }
 
-fn included(op: &crate::appdb::Operation) -> bool {
-    matches!(op.status, crate::appdb::OpStatus::Confirmed | crate::appdb::OpStatus::Settled)
+fn included(op: &Operation) -> bool {
+    matches!(op.status, OpStatus::Confirmed | OpStatus::Settled)
 }
 
 /// Why a receipt was refused.
@@ -540,7 +542,7 @@ pub struct SwapReceipt {
 impl SwapReceipt {
     /// The receipt of `op`, which must be an included router swap by `owner`, with its output
     /// token named and its output attributed.
-    pub fn of(op: &crate::appdb::Operation, owner: &str) -> std::result::Result<SwapReceipt, ReceiptError> {
+    pub fn of(op: &Operation, owner: &str) -> std::result::Result<SwapReceipt, ReceiptError> {
         if op.kind != OpKind::Swap || !included(op) || !op.account.eq_ignore_ascii_case(owner) {
             return Err(ReceiptError::NotMatching);
         }
@@ -571,8 +573,8 @@ pub struct WrapDeposit {
 
 impl WrapDeposit {
     /// The deposit `op` made, which must be a settled `wrap_qi` naming its beneficiary.
-    pub fn of(op: &crate::appdb::Operation) -> std::result::Result<WrapDeposit, ReceiptError> {
-        if op.kind != OpKind::WrapQi || op.status != crate::appdb::OpStatus::Settled {
+    pub fn of(op: &Operation) -> std::result::Result<WrapDeposit, ReceiptError> {
+        if op.kind != OpKind::WrapQi || op.status != OpStatus::Settled {
             return Err(ReceiptError::NotMatching);
         }
         let beneficiary = op.detail.beneficiary().as_str().filter(|b| !b.is_empty()).ok_or(ReceiptError::NotMatching)?;
@@ -592,7 +594,7 @@ pub struct WqiClaim {
 
 impl WqiClaim {
     /// The claim `op` made, which must be an included `claim_wqi` by `owner`.
-    pub fn of(op: &crate::appdb::Operation, owner: &str) -> std::result::Result<WqiClaim, ReceiptError> {
+    pub fn of(op: &Operation, owner: &str) -> std::result::Result<WqiClaim, ReceiptError> {
         if op.kind != OpKind::ClaimWqi || !included(op) || !op.account.eq_ignore_ascii_case(owner) {
             return Err(ReceiptError::NotMatching);
         }
@@ -600,6 +602,121 @@ impl WqiClaim {
         let actual_out = op.detail.actual_out_atoms().ok_or(ReceiptError::OutputUnknown)?;
         Ok(WqiClaim { to_token: to_token.to_string(), actual_out })
     }
+}
+
+/// Operation lifecycle status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpStatus {
+    /// Prepared and reserved, not signed.
+    Prepared,
+    /// Signed and durably stored, not submitted.
+    Signed,
+    /// Submitted; acknowledgement received.
+    Submitted,
+    /// Submission outcome unknown; reconcile before retrying.
+    Unknown,
+    /// Included and successful at origin.
+    Confirmed,
+    /// Included but failed/reverted.
+    Failed,
+    /// Waiting for destination settlement (conversions, wraps).
+    Settling,
+    /// Destination settled with locked output.
+    Locked,
+    /// Destination settled and spendable.
+    Settled,
+    /// Conversion refunded.
+    Refunded,
+    /// Replaced by another candidate in the same nonce family.
+    Replaced,
+    /// Abandoned before signing.
+    Cancelled,
+}
+
+impl OpStatus {
+    /// Stable text form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OpStatus::Prepared => "prepared",
+            OpStatus::Signed => "signed",
+            OpStatus::Submitted => "submitted",
+            OpStatus::Unknown => "unknown",
+            OpStatus::Confirmed => "confirmed",
+            OpStatus::Failed => "failed",
+            OpStatus::Settling => "settling",
+            OpStatus::Locked => "locked",
+            OpStatus::Settled => "settled",
+            OpStatus::Refunded => "refunded",
+            OpStatus::Replaced => "replaced",
+            OpStatus::Cancelled => "cancelled",
+        }
+    }
+
+    /// Parse text form.
+    pub fn parse(text: &str) -> crate::Result<Self> {
+        Ok(match text {
+            "prepared" => OpStatus::Prepared,
+            "signed" => OpStatus::Signed,
+            "submitted" => OpStatus::Submitted,
+            "unknown" => OpStatus::Unknown,
+            "confirmed" => OpStatus::Confirmed,
+            "failed" => OpStatus::Failed,
+            "settling" => OpStatus::Settling,
+            "locked" => OpStatus::Locked,
+            "settled" => OpStatus::Settled,
+            "refunded" => OpStatus::Refunded,
+            "replaced" => OpStatus::Replaced,
+            "cancelled" => OpStatus::Cancelled,
+            other => return Err(crate::CoreError::Storage(format!("unknown operation status `{other}`"))),
+        })
+    }
+
+    /// Sent but not yet mined: a higher-fee replacement can still win.
+    pub fn replaceable(self) -> bool {
+        matches!(self, OpStatus::Submitted | OpStatus::Unknown)
+    }
+
+    /// No further automatic tracking is required.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            OpStatus::Confirmed | OpStatus::Failed | OpStatus::Settled | OpStatus::Refunded | OpStatus::Replaced | OpStatus::Cancelled
+        )
+    }
+}
+
+/// A wallet-initiated operation (journal row).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Operation {
+    /// Reservation id (32 hex chars).
+    pub id: String,
+    /// Network id.
+    pub network: String,
+    /// Operation kind (stored as its name, e.g. `send_quai`).
+    pub kind: crate::journal::OpKind,
+    /// SDK store holding custody (`quai` or `qi`).
+    pub store: String,
+    /// Source account address or `qi`.
+    pub account: String,
+    /// Status.
+    pub status: OpStatus,
+    /// Transaction hash once signed.
+    pub tx_hash: Option<String>,
+    /// Asset label (`QUAI`, `QI`, token symbol).
+    pub asset: String,
+    /// Amount in base units.
+    pub amount: String,
+    /// Destination or peer.
+    pub counterparty: String,
+    /// Fee (base units of the fee asset), when known.
+    pub fee: String,
+    /// Detail (stored as JSON).
+    pub detail: crate::journal::Detail,
+    /// Created (unix seconds).
+    pub created: u64,
+    /// Updated (unix seconds).
+    pub updated: u64,
 }
 
 #[cfg(test)]
@@ -703,8 +820,8 @@ mod tests {
         assert_eq!(d.to_decimals_u8(), None);
     }
 
-    fn op(kind: OpKind, status: crate::appdb::OpStatus, detail: serde_json::Value) -> crate::appdb::Operation {
-        crate::appdb::Operation {
+    fn op(kind: OpKind, status: OpStatus, detail: serde_json::Value) -> Operation {
+        Operation {
             id: "01".into(),
             network: "local".into(),
             kind,
@@ -724,7 +841,7 @@ mod tests {
 
     #[test]
     fn swap_receipts_refuse_what_they_cannot_prove() {
-        use crate::appdb::OpStatus::*;
+        use OpStatus::*;
         let good = serde_json::json!({"to_token": "0xT", "actual_out": "42", "to_decimals": 18});
         let r = SwapReceipt::of(&op(OpKind::Swap, Confirmed, good.clone()), "0x00aa").unwrap();
         assert_eq!((r.to_token.as_str(), r.actual_out, r.to_decimals), ("0xT", U256::from(42), Some(18)));
@@ -759,7 +876,7 @@ mod tests {
 
     #[test]
     fn deposits_and_claims_are_checked_the_same_way() {
-        use crate::appdb::OpStatus::*;
+        use OpStatus::*;
         let d = WrapDeposit::of(&op(OpKind::WrapQi, Settled, serde_json::json!({"beneficiary": "0xB"}))).unwrap();
         assert_eq!((d.beneficiary.as_str(), d.qits), ("0xB", U256::from(1000)));
         assert!(WrapDeposit::of(&op(OpKind::WrapQi, Confirmed, serde_json::json!({"beneficiary": "0xB"}))).is_err());

@@ -150,16 +150,35 @@ pub struct Portfolio {
 }
 
 /// Inputs the wallet already knows (exact, from the node and local stores).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Known {
     /// Quai account addresses.
     pub owners: Vec<String>,
     /// Total QUAI across accounts (base units).
+    #[serde(with = "crate::ser::u256_string")]
     pub quai: U256,
     /// Total Qi (Qits), when the wallet has Qi.
+    #[serde(with = "crate::ser::u256_opt")]
     pub qi: Option<U256>,
     /// Tokens imported locally (address, symbol, name, decimals) with exact balances summed.
+    #[serde(with = "known_tokens")]
     pub tokens: Vec<(String, String, String, u8, U256)>,
+}
+
+/// [`Known::tokens`] with each balance as a decimal string.
+mod known_tokens {
+    use super::U256;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    type Row = (String, String, String, u8, U256);
+    pub fn serialize<S: Serializer>(v: &[Row], s: S) -> Result<S::Ok, S::Error> {
+        v.iter().map(|(a, sym, name, dec, n)| (a, sym, name, dec, n.to_string())).collect::<Vec<_>>().serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Row>, D::Error> {
+        Vec::<(String, String, String, u8, String)>::deserialize(d)?
+            .into_iter()
+            .map(|(a, sym, name, dec, n)| U256::from_str_radix(&n, 10).map(|n| (a, sym, name, dec, n)).map_err(serde::de::Error::custom))
+            .collect()
+    }
 }
 
 /// Contracts considered verified without asking the explorer (native wrappers and pinned USDT).
