@@ -119,7 +119,7 @@ pub enum Command {
     /// The on-chain message board: read a channel.
     #[command(subcommand)]
     Board(BoardCmd),
-    /// Private messages: set up a messaging account, publish your weekly key, send and read.
+    /// Private messages from the account in use: publish your weekly key, send and read.
     #[command(subcommand, visible_alias = "msg")]
     Message(MessageCmd),
     /// Third-party data sources: status and connection test.
@@ -670,16 +670,13 @@ pub enum NftCmd {
 /// On-chain message board (the `messages` contract configured for the network).
 #[derive(Subcommand, Debug)]
 pub enum BoardCmd {
-    /// Be notified when someone says something in a channel, or in a sealed conversation with
-    /// `--dm` (a payment code or a contact who has one). Again stops.
-    Subscribe {
-        chat: String,
-        #[arg(long)]
-        dm: bool,
-    },
+    /// Be notified when someone says something in a channel. Again stops. Private conversations
+    /// always notify, with no subscription.
+    Subscribe { channel: String },
     /// Chats that notify.
     Subscriptions,
-    /// Pin a chat beside every screen of the TUI (`--clear` unpins).
+    /// Pin a chat beside every screen of the TUI (`--clear` unpins): a channel, or with `--dm` a
+    /// private conversation (an address or a contact).
     Pin {
         chat: Option<String>,
         #[arg(long)]
@@ -703,16 +700,7 @@ pub enum BoardCmd {
         #[arg(long, default_value_t = 720)]
         blocks: u64,
     },
-    /// An old (v1/v2) sealed conversation with a payment-code peer, oldest first. Read-only:
-    /// private messages are `message send` now.
-    Inbox {
-        /// Payment code, or a contact who has one.
-        peer: String,
-        /// Blocks of history to read.
-        #[arg(long, default_value_t = 720)]
-        blocks: u64,
-    },
-    /// Post a message from your messaging account. It is public and permanent.
+    /// Post a message from the account in use (`account use`). It is public and permanent.
     Post {
         /// Channel name, up to 32 bytes.
         channel: String,
@@ -726,28 +714,11 @@ pub enum BoardCmd {
 /// `message` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum MessageCmd {
-    /// Choose the messaging account (not your main one) and make this wallet's messaging identity.
-    Setup {
-        /// Account: label, number or address.
-        account: String,
-        /// Move to another account, or start over: the old keys and history are deleted and your
-        /// contacts see a new identity.
-        #[arg(long)]
-        new_identity: bool,
-    },
-    /// Messaging account, fingerprint, and whether this week's key is published.
+    /// The account messages go from (`account use` chooses it), its fingerprint, and whether this
+    /// week's key is published.
     Status,
-    /// Move QUAI to the messaging account for its fees. This links the two accounts on chain.
-    Fund {
-        /// Amount of QUAI.
-        amount: String,
-        /// Account to send from (default: the first).
-        #[arg(long)]
-        from: Option<String>,
-        #[command(flatten)]
-        fee: FeeArgs,
-    },
-    /// Publish this week's key. `send` does it for you when it is due.
+    /// Publish this week's key. `send` does it for you when it is due; the first one starts the
+    /// account's messaging identity on this computer.
     Keys {
         #[command(flatten)]
         fee: FeeArgs,
@@ -1382,7 +1353,17 @@ pub enum ContactCmd {
         #[arg(long)]
         clear_payment_code: bool,
     },
-    /// List contacts.
+    /// Save a Quai account or a payment code to an existing contact. An account is added beside
+    /// the ones it has; a payment code replaces the one saved. Anything replaced, or taken from
+    /// another contact, is said first and asks to continue (`--yes` skips the question).
+    Save {
+        name: String,
+        /// A Quai account (0x…) or a payment code (PM8T…).
+        value: String,
+    },
+    /// Forget one of a contact's accounts.
+    Forget { name: String, account: String },
+    /// List contacts, with every account each is known by.
     List,
     /// Remove a contact.
     Remove { name: String },

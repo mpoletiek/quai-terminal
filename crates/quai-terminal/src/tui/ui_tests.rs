@@ -2769,9 +2769,9 @@ fn messaging_view(need: wallet_core::messaging::service::KeyNeed) -> super::supe
     }
 }
 
-/// Private messages sit between the public channels and the old read-only conversations:
-/// a set-up row until there is an account, then conversations, then requests. Each draws what
-/// it is: what was said, and what needs deciding first.
+/// Private messages sit between the public channels and the old read-only conversations: the
+/// row of the account they go from, then its conversations, then requests. Each draws what it
+/// is: what was said, and what needs deciding first.
 #[test]
 fn private_conversations_and_requests_are_listed_and_drawn() {
     use super::super::eco::BoardRow;
@@ -2779,12 +2779,12 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
     let (_dir, mut app) = drawable_app();
     app.meta.as_mut().unwrap().kind = wallet_core::registry::WalletKind::Hd;
     app.config.board_channels = vec!["general".into()];
-    app.eco.board.msg.settle(Ok(messaging_view(KeyNeed::NotSetUp)));
+    app.eco.board.msg.settle(Ok(messaging_view(KeyNeed::NoKeys)));
     assert_eq!(app.board_rows(), vec![BoardRow::Channel("general".into()), BoardRow::Messaging]);
     app.switch(Screen::Board);
     app.nav.selected = 1;
     let text = screen_text(&mut app, 160, 48).join("\n");
-    assert!(text.contains("never backed up") && text.contains("never your main"), "{text}");
+    assert!(text.contains("never backed up") && text.contains("K publishes its first key"), "{text}");
 
     app.eco.board.msg.settle(Ok(messaging_view(KeyNeed::Ready)));
     let bob = "0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".to_string();
@@ -2827,59 +2827,53 @@ fn private_conversations_and_requests_are_listed_and_drawn() {
     assert!(text.contains("Their identity key changed"), "{text}");
 }
 
-/// The messaging account is chosen on the Board: its row opens a list of every account but the
-/// main one (and a new one); picking one sets messaging up, and picking another later asks first,
-/// since it starts a new identity. The account in use shows its balance and how to fund it.
+/// Private messages go from the account that acts: the Board names it, says how to change it,
+/// and writes from it. There is nothing to choose or fund. Choosing another account forgets the
+/// last one's conversations, since each account is an identity of its own.
 #[test]
-fn the_messaging_account_is_chosen_and_funded_from_the_board() {
+fn private_messages_go_from_the_account_in_use() {
     use super::super::eco::BoardRow;
-    use crate::tui::app::{ConfirmAction, FormKind};
+    use crate::tui::app::FormKind;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let press = |app: &mut App, code: KeyCode| app.on_key(KeyEvent::new(code, KeyModifiers::NONE), (160, 48));
     use wallet_core::messaging::service::KeyNeed;
     let (_dir, mut app) = populated_app();
     app.meta.as_mut().unwrap().kind = wallet_core::registry::WalletKind::Hd;
     app.config.board_channels = vec![];
-    // A second account, and a third, to choose between.
-    for (n, address) in [(2, "0x00b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"), (3, "0x00c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2")] {
-        let mut extra = app.dash.accounts[0].clone();
-        extra.address = address.into();
-        extra.label = format!("Account {n}");
-        app.dash.accounts.push(extra);
-    }
-    app.eco.board.msg.settle(Ok(messaging_view(KeyNeed::NotSetUp)));
+    let mut second = app.dash.accounts[0].clone();
+    second.address = "0x00b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1".into();
+    second.label = "Savings".into();
+    app.dash.accounts.push(second);
+    let first = app.dash.accounts[0].clone();
+    let mut view = messaging_view(KeyNeed::NoKeys);
+    view.status.account = Some(first.address.clone());
+    app.eco.board.msg.settle(Ok(view));
     app.switch(Screen::Board);
     let row = app.board_rows().iter().position(|r| *r == BoardRow::Messaging).unwrap();
     app.nav.pane = 0;
     app.nav.selected = row;
-    let choices = app.messaging_choices();
-    assert_eq!(choices.len(), app.dash.accounts.len(), "every account but the main one, and a new one");
-    assert!(choices.iter().all(|(a, _)| a.as_deref() != Some(app.dash.accounts[0].address.as_str())), "never the main one");
     let text = screen_text(&mut app, 160, 48).join("\n");
-    assert!(text.contains("Choose the account your messages go from") && text.contains("a new account, just for messaging"), "{text}");
-    assert!(text.contains("messages go from") && !text.contains("F fund it"), "nothing to fund before there is an account: {text}");
+    assert!(text.contains(&format!("@{}", first.label)), "the row is the account that acts: {text}");
+    assert!(text.contains(&first.label) && text.contains("@ changes it") && text.contains("K publishes its first key"), "{text}");
+    assert!(!text.contains("fund it") && !text.contains("main account"), "nothing to choose or fund: {text}");
+    press(&mut app, KeyCode::Char('F'));
+    assert!(matches!(app.modal, Modal::None), "F funds nothing now");
     press(&mut app, KeyCode::Char('p'));
-    assert_eq!(app.nav.pane, 1, "enter goes to the list beside");
-    app.eco.board.msg.confirm();
-    press(&mut app, KeyCode::Char('p'));
-    assert!(app.eco.board.msg.loading(), "picking one sets messaging up");
+    assert!(matches!(&app.modal, Modal::Form(f) if f.kind == FormKind::MessageNew), "p on the row writes a new message");
+    app.modal = Modal::None;
 
-    // Set up: the pane shows the account and how to fund it; another account asks first.
+    // Another account: the last one's conversations go, and the next read is this one's.
+    let epoch = app.private_epoch;
+    app.dash.meta = app.meta.clone();
+    app.use_account(1);
+    assert!(app.messaging().is_none() && app.private_epoch > epoch, "each account is its own identity");
     let mut view = messaging_view(KeyNeed::Ready);
     view.status.account = Some(app.dash.accounts[1].address.clone());
     app.eco.board.msg.settle(Ok(view));
-    app.eco.board.msg.confirm();
-    app.nav.pane = 0;
-    app.nav.selected = app.board_rows().iter().position(|r| *r == BoardRow::Messaging).unwrap();
     let text = screen_text(&mut app, 160, 48).join("\n");
-    assert!(text.contains("F fund it") && text.contains("move messaging to") && text.contains(" ✓ "), "{text}");
-    press(&mut app, KeyCode::Char('p'));
-    press(&mut app, KeyCode::Char('j'));
-    press(&mut app, KeyCode::Char('p'));
-    assert!(matches!(&app.modal, Modal::Confirm { action: ConfirmAction::MoveMessaging(_), .. }), "moving asks first");
-    app.modal = Modal::None;
-    press(&mut app, KeyCode::Char('F'));
-    assert!(matches!(&app.modal, Modal::Form(f) if f.kind == FormKind::MessagingFund), "F funds it from the Board");
+    assert!(text.contains("@Savings"), "{text}");
+    app.use_account(1);
+    assert_eq!(app.private_epoch, epoch + 1, "choosing the same account again forgets nothing");
 }
 
 /// A risky review draws its risk as a pill above the balance changes, and the line above the

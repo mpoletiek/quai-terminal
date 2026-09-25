@@ -1303,9 +1303,9 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
             println!("{} in #{name}", wallet_core::amount::count(posts.len(), "message"));
             Ok(())
         }
-        BoardCmd::Subscribe { chat, dm } => {
+        BoardCmd::Subscribe { channel } => {
             let s = ctx.session().await?;
-            let target = chat_target(&s, &chat, dm)?;
+            let target = chat_target(&s, &channel, false)?;
             let on = s.toggle_chat_subscription(&target)?;
             let label = if on { format!("notifying you about {target}") } else { format!("no more notifications from {target}") };
             println!("{} {label}", ctx.out.green("✓"));
@@ -1371,29 +1371,6 @@ pub async fn board(ctx: &Ctx, cmd: BoardCmd) -> Result<()> {
                 })
                 .collect();
             ctx.out.table(&["channel", "messages", "last"], &rows);
-            Ok(())
-        }
-        BoardCmd::Inbox { peer, blocks } => {
-            let s = ctx.unlocked().await?;
-            let lines = s.read_conversation(&peer, blocks).await?;
-            if ctx.out.json() {
-                ctx.out.emit("board inbox", &json!({"peer": peer, "messages": lines}));
-                return Ok(());
-            }
-            if lines.is_empty() {
-                println!("no sealed messages with {} over the last {}", short_address(&peer), wallet_core::amount::count(blocks, "block"));
-                return Ok(());
-            }
-            let rows: Vec<Vec<String>> = lines
-                .iter()
-                .map(|l| {
-                    let text = l.text.clone().unwrap_or_else(|| "<cannot read this>".into());
-                    let who = if l.mine { "you".to_string() } else { short_address(&l.from) };
-                    vec![human_duration(now().saturating_sub(l.at)), who, text]
-                })
-                .collect();
-            ctx.out.table(&["age", "from", "message"], &rows);
-            println!("{} · sealed: the text is private, the transactions are not", wallet_core::amount::count(rows.len(), "message"));
             Ok(())
         }
         BoardCmd::Post { channel: name, text, fee } => {
@@ -1833,21 +1810,13 @@ pub async fn farm(ctx: &Ctx, cmd: FarmCmd) -> Result<()> {
     }
 }
 
-/// `general` / `#general` names a channel; with `--dm`, a payment code or a contact who has one.
+/// `general` / `#general` names a channel; with `--dm`, a private conversation: an address or a
+/// contact.
 fn chat_target(s: &wallet_core::session::Session, chat: &str, dm: bool) -> wallet_core::Result<String> {
     if !dm {
         let name = chat.trim_start_matches('#');
         wallet_core::messages::channel_tag(name)?;
         return Ok(wallet_core::chat::channel_target(name));
     }
-    let code = s
-        .app
-        .contacts()?
-        .into_iter()
-        .find(|c| c.name.eq_ignore_ascii_case(chat))
-        .and_then(|c| c.payment_code)
-        .unwrap_or_else(|| chat.to_string());
-    wallet_core::sdk::payments::PaymentCode::from_base58(&code)
-        .map_err(|_| wallet_core::CoreError::Invalid(format!("`{chat}` is not a payment code or a contact with one")))?;
-    Ok(wallet_core::chat::dm_target(&code))
+    Ok(format!("msg:{}", s.resolve_peer(chat)?))
 }

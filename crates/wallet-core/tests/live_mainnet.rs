@@ -1380,23 +1380,6 @@ async fn batched_token_balances_match_sequential_ones() {
     assert_eq!(accounts.len(), 1);
 }
 
-/// A sealed conversation's read asks the node for several tags at once (each epoch the window
-/// touches, plus the v1 tag). The node must accept that filter, and a public channel read the
-/// same way still finds its posts.
-#[tokio::test]
-#[ignore = "network"]
-async fn conversation_reads_ask_for_every_epoch_tag() {
-    let ctx = mainnet();
-    let seed = |b: u8| wallet_core::sdk::payments::PrivatePaymentCode::from_seed(&[b; 32], 0).unwrap();
-    let (alice, bob) = (seed(41), seed(42));
-    let c = wallet_core::messages::conversation(&alice, bob.public_code()).unwrap();
-    // A made-up conversation has no posts, but the multi-topic query must still be answered.
-    let posts = wallet_core::messages::conversation_posts(&ctx, &c, wallet_core::messages::BOARD_BLOCKS).await.unwrap();
-    assert!(posts.is_empty());
-    let general = wallet_core::messages::channel_tag("general").unwrap();
-    wallet_core::messages::channel(&ctx, &general, wallet_core::messages::BOARD_BLOCKS).await.unwrap();
-}
-
 /// Read configured launch families with explicit adapter identity; optional families need not have rows.
 #[tokio::test]
 #[ignore = "network"]

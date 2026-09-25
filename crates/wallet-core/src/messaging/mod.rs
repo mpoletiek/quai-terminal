@@ -2,7 +2,7 @@
 //! and one HPKE seal per message, all on the existing `Messages` contract. The format is
 //! `docs/MESSAGING_V3.md`; the byte layouts are [`wire`].
 //!
-//! v1 and v2 (payment-code conversations, [`crate::messages`]) are still read, never written.
+//! The payment-code conversations of v1 and v2 are gone: nothing reads or writes them.
 
 pub mod keys;
 pub mod service;

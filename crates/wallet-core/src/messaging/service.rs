@@ -1,10 +1,13 @@
-//! Messaging v3 as the wallet uses it: setting up the messaging account, publishing weekly keys,
-//! sending, reading the chain for what arrived, and the local decisions (accept, block, trust,
-//! verify) that no transaction ever records.
+//! Messaging v3 as the wallet uses it: publishing weekly keys, sending, reading the chain for what
+//! arrived, and the local decisions (accept, block, trust, verify) that no transaction ever records.
 //!
-//! Anything that touches a key needs the wallet unlocked: the key file is sealed under the
-//! messaging account's own key. Listing conversations reads only the local store, but that store
-//! is encrypted under a key inside the key file, so it needs the unlock too.
+//! Messages go from the account the user chose (`@`, `account use`), and every account is an
+//! identity of its own: its own keys, conversations and requests. Choosing another account
+//! switches all of that; nothing is moved or deleted.
+//!
+//! Anything that touches a key needs the wallet unlocked: an account's key file is sealed under
+//! that account's own key. Listing conversations reads only the local store, but that store is
+//! encrypted under a key inside the key file, so it needs the unlock too.
 
 use super::keys::{self, KeyFile};
 use super::store::{KnownKey, MessageRecord, PeerRecord, PeerState, Store};
@@ -38,9 +41,8 @@ const PRIVATE_FIELDS: [&str; 3] = ["To", "Fingerprint", "Message"];
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyNeed {
-    /// No messaging account on this network.
-    NotSetUp,
-    /// The account is set, but this computer holds no keys for it (a restore, or another machine).
+    /// This computer holds no messaging keys for the account: it has not messaged from here yet
+    /// (or they went with a restore). Publishing this week's key makes them.
     NoKeys,
     /// This week's key is not on chain yet: publish it first.
     Publish,
@@ -132,9 +134,13 @@ impl Opened {
     }
 }
 
-fn kv_account(network: &str) -> String {
+/// Where messaging kept its one account before every account messaged for itself.
+fn kv_legacy_account(network: &str) -> String {
     format!("messaging_account:{network}")
 }
+
+/// The files of one account's messaging identity.
+const IDENTITY_FILES: [&str; 5] = ["keys.sealed", "messaging.sqlite", "messaging.sqlite-wal", "messaging.sqlite-shm", ".lock"];
 
 fn topic_of_address(address: &str) -> String {
     format!("0x{:0>64}", address.trim_start_matches("0x").to_lowercase())
@@ -153,54 +159,116 @@ fn display_text(bytes: &[u8]) -> Option<String> {
 }
 
 impl Session {
-    fn messaging_dir(&self) -> std::path::PathBuf {
+    /// This network's messaging folder, holding a folder per account.
+    fn messaging_root(&self) -> std::path::PathBuf {
         self.registry.paths().wallet_dir(&self.meta.id).join("messaging").join(&self.network.id)
     }
 
-    /// The messaging account on this network, if one is chosen. Public: it is on chain.
-    pub fn messaging_account(&self) -> Option<String> {
-        self.app.kv(&kv_account(&self.network.id)).ok().flatten().filter(|s| !s.is_empty())
+    /// The folder of the account messages go from.
+    fn messaging_dir(&self) -> Result<std::path::PathBuf> {
+        let account = self.require_messaging_account()?;
+        let dir = self.messaging_root().join(&account);
+        self.adopt_legacy_identity(&account, &dir);
+        Ok(dir)
     }
 
-    /// The account messaging and board posts go from; an error that says how to choose one.
+    /// Messaging once went from one account chosen for it, with its files straight under the
+    /// network's folder. They move into that account's own folder, so its identity carries on.
+    fn adopt_legacy_identity(&self, account: &str, dir: &std::path::Path) {
+        let key = kv_legacy_account(&self.network.id);
+        let Some(legacy) = self.app.kv(&key).ok().flatten().map(|a| a.to_lowercase()) else { return };
+        let root = self.messaging_root();
+        if legacy.is_empty() || !root.join("keys.sealed").exists() {
+            let _ = self.app.set_kv(&key, "");
+            return;
+        }
+        let target = if legacy == account { dir.to_path_buf() } else { root.join(&legacy) };
+        if target.join("keys.sealed").exists() || crate::paths::ensure_private_dir(&target).is_err() {
+            return;
+        }
+        for file in IDENTITY_FILES {
+            let _ = std::fs::rename(root.join(file), target.join(file));
+        }
+        let _ = self.app.set_kv(&key, "");
+    }
+
+    /// The account messages and board posts go from: the one the user chose, lowercase.
+    pub fn messaging_account(&self) -> Option<String> {
+        self.meta.default_quai_account().ok().map(|a| a.address.to_lowercase())
+    }
+
+    /// [`Self::messaging_account`], or an error when the wallet has no Quai account to post from.
     pub fn require_messaging_account(&self) -> Result<String> {
-        self.messaging_account().ok_or_else(|| {
-            CoreError::Invalid(
-                "choose a messaging account first: `quai-terminal message setup <account>` (not your main account; `account add` makes one)"
-                    .into(),
-            )
-        })
+        self.messaging_account().ok_or_else(|| CoreError::NotFound("this wallet has no Quai account to message from".into()))
+    }
+
+    /// Whether the account messages go from has keys on this computer. Needs no unlock.
+    pub fn has_messaging_keys(&self) -> bool {
+        self.messaging_dir().is_ok_and(|d| d.join("keys.sealed").exists())
     }
 
     fn account_secret(&self, address: &str) -> Result<Zeroizing<[u8; 32]>> {
         let account = self.meta.find_quai_account(address)?;
-        let parsed = account.address.parse().map_err(|_| CoreError::Invalid("messaging account address".into()))?;
+        let parsed = account.address.parse().map_err(|_| CoreError::Invalid("account address".into()))?;
         let key = self.keys()?.quai_key(parsed, account.hd_index)?;
         Ok(Zeroizing::new(*key.export_bytes().as_bytes()))
     }
 
     fn open_key_file(&self) -> Result<Option<Opened>> {
-        let Some(account) = self.messaging_account() else { return Ok(None) };
+        let account = self.require_messaging_account()?;
         let binding = keys::binding(&self.meta.id, &self.network.id, &account);
         let wrap = keys::wrap_key(&*self.account_secret(&account)?, &binding);
-        let path = self.messaging_dir().join("keys.sealed");
+        let path = self.messaging_dir()?.join("keys.sealed");
         Ok(KeyFile::load(&path, &wrap, &binding)?.map(|file| Opened { file, wrap, binding, path }))
     }
 
     fn require_key_file(&self) -> Result<Opened> {
-        self.require_messaging_account()?;
+        let account = self.require_messaging_account()?;
         self.open_key_file()?.ok_or_else(|| {
-            CoreError::NotFound(
-                "this computer holds no messaging keys for that account (they are never backed up): `message setup --new-identity` starts a new one"
-                    .into(),
-            )
+            CoreError::NotFound(format!(
+                "{} has not messaged from this computer yet: `quai-terminal message keys` publishes its key",
+                crate::session::short_address(&account)
+            ))
         })
+    }
+
+    /// Make the account's messaging identity if this computer has none for it; true when it was
+    /// made now. Nothing is on chain until its first key is published.
+    async fn ensure_key_file(&self) -> Result<bool> {
+        if self.open_key_file()?.is_some() {
+            return Ok(false);
+        }
+        // The board must be configured and its code must match the pin before anything is made.
+        self.messaging_context().await?;
+        let head = self.head_header().await?;
+        let account = self.require_messaging_account()?;
+        let dir = self.messaging_dir()?;
+        crate::paths::ensure_private_dir(&dir)?;
+        let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(".lock"))?;
+        lock.lock()?;
+        if self.open_key_file()?.is_some() {
+            return Ok(false);
+        }
+        // Whatever an earlier identity left here goes with it.
+        for file in ["messaging.sqlite", "messaging.sqlite-wal", "messaging.sqlite-shm"] {
+            let _ = std::fs::remove_file(dir.join(file));
+        }
+        let binding = keys::binding(&self.meta.id, &self.network.id, &account);
+        let wrap = keys::wrap_key(&*self.account_secret(&account)?, &binding);
+        let mut file = KeyFile::new(&account, now())?;
+        file.ensure_week(wire::week_of(now()))?;
+        file.save(&dir.join("keys.sealed"), &wrap, &binding)?;
+        // Nothing can have been sealed to keys that did not exist: reading starts here.
+        let store = self.open_store(&file)?;
+        store.set_scanned(head.number, &head.hash.to_string().to_lowercase())?;
+        store.set_origin(head.number)?;
+        Ok(true)
     }
 
     /// Change the key file under an exclusive lock, so two processes never make two keys for one
     /// week or undo each other's deletions.
     fn with_key_file<R>(&self, f: impl FnOnce(&mut KeyFile) -> Result<R>) -> Result<R> {
-        let dir = self.messaging_dir();
+        let dir = self.messaging_dir()?;
         crate::paths::ensure_private_dir(&dir)?;
         let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(".lock"))?;
         lock.lock()?;
@@ -211,7 +279,7 @@ impl Session {
     }
 
     fn open_store(&self, file: &KeyFile) -> Result<Store> {
-        Store::open(&self.messaging_dir().join("messaging.sqlite"), file.store_key())
+        Store::open(&self.messaging_dir()?.join("messaging.sqlite"), file.store_key())
     }
 
     async fn messaging_context(&self) -> Result<(wire::Context, quai_sdk::QuaiAddress)> {
@@ -383,67 +451,18 @@ impl Session {
         Ok(peer.key_for(weekly).cloned())
     }
 
-    // --------------------------------------------------------------------- setup
+    // --------------------------------------------------------------------- keys
 
-    /// Choose the messaging account and make this wallet's messaging identity. Never the wallet's
-    /// first account: messages should not be tied to the main holdings. Moving to another account
-    /// (`new_identity`) deletes the old keys, and contacts will see a new identity.
-    pub async fn messaging_setup(&mut self, account: &str, new_identity: bool) -> Result<Status> {
-        self.keys()?;
-        let chosen = self.meta.find_quai_account(account)?.address.to_lowercase();
-        let main = self.meta.quai_accounts.first().map(|a| a.address.to_lowercase());
-        if main.as_deref() == Some(chosen.as_str()) {
-            return Err(CoreError::Invalid(
-                "that is this wallet's main account; messaging uses an account of its own (`account add` makes one)".into(),
-            ));
-        }
-        let current = self.messaging_account();
-        let existing = if current.is_some() { self.open_key_file().ok().flatten() } else { None };
-        if let Some(current) = &current
-            && !new_identity
-        {
-            if current != &chosen {
-                return Err(CoreError::Invalid(format!(
-                    "messaging already uses {current}; pass --new-identity to move it (your contacts will see a new identity)"
-                )));
-            }
-            if existing.is_some() {
-                return self.messaging_status().await;
-            }
-        }
-        // The board must be configured and its code must match the pin before anything is made.
-        self.messaging_context().await?;
-        let head = self.head_header().await?;
-        // A new identity: whatever was here goes, keys and history.
-        let dir = self.messaging_dir();
-        for file in ["keys.sealed", "messaging.sqlite", "messaging.sqlite-wal", "messaging.sqlite-shm"] {
-            let _ = std::fs::remove_file(dir.join(file));
-        }
-        self.app.set_kv(&kv_account(&self.network.id), &chosen)?;
-        let binding = keys::binding(&self.meta.id, &self.network.id, &chosen);
-        let wrap = keys::wrap_key(&*self.account_secret(&chosen)?, &binding);
-        let mut file = KeyFile::new(&chosen, now())?;
-        file.ensure_week(wire::week_of(now()))?;
-        file.save(&dir.join("keys.sealed"), &wrap, &binding)?;
-        // Nothing can have been sealed to keys that did not exist: reading starts here.
-        let store = self.open_store(&file)?;
-        store.set_scanned(head.number, &head.hash.to_string().to_lowercase())?;
-        store.set_origin(head.number)?;
-        self.messaging_status().await
-    }
-
-    /// Where messaging stands. Reads the chain for this account's own announcements.
+    /// Where messaging stands for the account messages go from. Reads the chain for its own
+    /// announcements.
     pub async fn messaging_status(&self) -> Result<Status> {
         let account = self.messaging_account();
         let mut status =
-            Status { account: account.clone(), need: KeyNeed::NotSetUp, fingerprint: None, key: None, keys_held: 0, scanned_to: None };
+            Status { account: account.clone(), need: KeyNeed::NoKeys, fingerprint: None, key: None, keys_held: 0, scanned_to: None };
         let Some(account) = account else { return Ok(status) };
-        let Some(opened) = self.open_key_file()? else {
-            status.need = KeyNeed::NoKeys;
-            return Ok(status);
-        };
+        let Some(opened) = self.open_key_file()? else { return Ok(status) };
         let file = &opened.file;
-        let owner = wire::address_bytes(&account).ok_or_else(|| CoreError::Invalid("messaging account".into()))?;
+        let owner = wire::address_bytes(&account).ok_or_else(|| CoreError::Invalid("account".into()))?;
         status.fingerprint = Some(wire::fingerprint(&file.identity_public(), &owner));
         status.keys_held = file.weekly.len();
         let store = self.open_store(file)?;
@@ -478,18 +497,30 @@ impl Session {
         Ok(if in_flight { KeyNeed::Publishing } else { KeyNeed::Publish })
     }
 
-    /// Review publishing this week's key (making it first if the week has none yet).
+    /// Review publishing this week's key (making it first if the week has none yet, and the
+    /// account's messaging identity if this computer has none for it).
     pub async fn review_messaging_keys(&mut self, max_fee: Option<&str>) -> Result<Review> {
         let account = self.require_messaging_account()?;
         let (ctx, _) = self.messaging_context().await?;
+        let new_identity = self.ensure_key_file().await?;
         let week = wire::week_of(now());
         let (announcement, fingerprint) = self.with_key_file(|f| {
             f.ensure_week(week)?;
             let public = f.newest().map(|k| k.public).ok_or_else(|| CoreError::Invalid("no weekly key".into()))?;
-            let owner = wire::address_bytes(&f.account).ok_or_else(|| CoreError::Invalid("messaging account".into()))?;
+            let owner = wire::address_bytes(&f.account).ok_or_else(|| CoreError::Invalid("account".into()))?;
             Ok((f.announcement(&ctx, &public)?, wire::fingerprint(&f.identity_public(), &owner)))
         })?;
         let body = announcement.encode();
+        let mut warnings = vec![
+            "anyone can see that this address uses messaging; the key itself reveals nothing else".to_string(),
+            "one key a week, only in weeks you use messaging; older keys are deleted two weeks after this one lands".into(),
+        ];
+        if new_identity {
+            warnings.push(
+                "this starts this account's messaging identity on this computer: if it messaged before, from another computer or before a restore, people will see a new identity"
+                    .into(),
+            );
+        }
         self.review_board(
             Some(&account),
             &wire::keys_tag(),
@@ -500,10 +531,7 @@ impl Session {
                 field("Publishes", format!("this week's messaging key (week {}, #{})", announcement.week, announcement.sequence)),
                 field("Your fingerprint", fingerprint),
             ],
-            vec![
-                "anyone can see that this address uses messaging; the key itself reveals nothing else".into(),
-                "one key a week, only in weeks you use messaging; older keys are deleted two weeks after this one lands".into(),
-            ],
+            warnings,
             serde_json::json!({"messaging": "keys", "weekly": hex::encode(announcement.weekly), "sequence": announcement.sequence}),
             max_fee,
         )
@@ -594,7 +622,7 @@ impl Session {
     pub async fn messaging_verify(&self, peer: &str, confirm: bool) -> Result<Fingerprints> {
         let address = self.resolve_peer(peer)?;
         let opened = self.require_key_file()?;
-        let own = wire::address_bytes(&opened.file.account).ok_or_else(|| CoreError::Invalid("messaging account".into()))?;
+        let own = wire::address_bytes(&opened.file.account).ok_or_else(|| CoreError::Invalid("account".into()))?;
         let ours = wire::fingerprint(&opened.file.identity_public(), &own);
         let (ctx, contract) = self.messaging_context().await?;
         let head = self.head_header().await?.number;
@@ -625,7 +653,7 @@ impl Session {
         let account = self.require_messaging_account()?;
         let address = self.resolve_peer(peer)?;
         if address == account {
-            return Err(CoreError::Invalid("that is your own messaging address".into()));
+            return Err(CoreError::Invalid("that is the account messages go from".into()));
         }
         let text = text.trim_end();
         let opened = self.require_key_file()?;
@@ -657,7 +685,7 @@ impl Session {
             ))
         })?;
         let newest = opened.file.newest().ok_or_else(|| CoreError::Invalid("no weekly key".into()))?;
-        let sender = wire::address_bytes(&account).ok_or_else(|| CoreError::Invalid("messaging account".into()))?;
+        let sender = wire::address_bytes(&account).ok_or_else(|| CoreError::Invalid("account".into()))?;
         let recipient = wire::address_bytes(&address).ok_or_else(|| CoreError::Invalid("address".into()))?;
         let tag = wire::random_tag().ok_or_else(|| CoreError::Invalid("no randomness".into()))?;
         let envelope = wire::Envelope { ctx: &ctx, sender: &sender, recipient: &recipient, tag: &tag };
@@ -669,7 +697,7 @@ impl Session {
         let name = self.contact_name(&address).unwrap_or_else(|| crate::session::short_address(&address));
         let fingerprint = wire::fingerprint(&key.identity, &recipient);
         let mut warnings = vec![
-            "encrypted to them alone; on chain anyone sees your messaging address, the time and the size (to a bucket), not who it is for"
+            "encrypted to them alone; on chain anyone sees the account it goes from, the time and the size (to a bucket), not who it is for"
                 .into(),
             "it cannot be taken back once it is mined".into(),
         ];
@@ -724,7 +752,7 @@ impl Session {
         let mut times: HashMap<u64, u64> = HashMap::new();
         let mut report = SyncReport::default();
         let me = opened.file.account.clone();
-        let me_bytes = wire::address_bytes(&me).ok_or_else(|| CoreError::Invalid("messaging account".into()))?;
+        let me_bytes = wire::address_bytes(&me).ok_or_else(|| CoreError::Invalid("account".into()))?;
 
         // Our own announcements: the newest on chain supersedes the ones before it.
         let mut own = own_record(&store, &opened.file, head.number)?;
@@ -952,21 +980,6 @@ impl Session {
         }
         store.checkpoint();
         Ok(lines)
-    }
-
-    /// Review moving QUAI to the messaging account from another. The transfer is an ordinary
-    /// send, and it links the two accounts on chain: the review says so.
-    pub async fn review_messaging_fund(&mut self, from: Option<&str>, amount: &str, max_fee: Option<&str>) -> Result<Review> {
-        let account = self.require_messaging_account()?;
-        let source = self.account(from)?;
-        if source.address.eq_ignore_ascii_case(&account) {
-            return Err(CoreError::Invalid("that is the messaging account itself; fund it from another".into()));
-        }
-        let mut review = self.review_send_quai(Some(&source.address), &account, amount, max_fee).await?;
-        review
-            .warnings
-            .insert(0, "this transfer publicly links the two accounts: anyone can see which account funds your messaging address".into());
-        Ok(review)
     }
 }
 

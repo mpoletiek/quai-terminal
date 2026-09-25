@@ -14,9 +14,9 @@
   6  Activity          ││                                                                                      ││ enter  pay                                   │
                        ││                                                                                      ││     n  notify                                │
                        ││                                                                                      ││     e  edit                                  │
-  0  System            ││                                                                                      ││     y  copy                                  │
-                       ││                                                                                      ││     x  remove                                │
-   [ ] tabs            ││                                                                                      ││                                              │
+  0  System            ││                                                                                      ││ space  then c: save an account or code       │
+                       ││                                                                                      ││     y  copy                                  │
+   [ ] tabs            ││                                                                                      ││     x  remove                                │
                        ││                                                                                      ││                                              │
                        ││                                                                                      ││                                              │
                        ││                                                                                      ││                                              │

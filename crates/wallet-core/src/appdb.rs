@@ -662,6 +662,12 @@ impl AppDb {
         Ok(inserted > 0)
     }
 
+    /// Forget an address recorded for a contact; `true` when it was there.
+    pub fn remove_contact_address(&self, contact_id: i64, address: &str) -> Result<bool> {
+        let address = address.trim().to_lowercase();
+        Ok(self.conn.execute("DELETE FROM contact_addresses WHERE contact_id=?1 AND address=?2", params![contact_id, address])? > 0)
+    }
+
     /// The contact an address belongs to: its own address column, or any address recorded under
     /// its payment code.
     pub fn contact_by_address(&self, address: &str) -> Result<Option<Contact>> {

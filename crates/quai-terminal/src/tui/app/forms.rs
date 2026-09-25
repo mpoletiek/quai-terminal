@@ -181,7 +181,7 @@ impl App {
             FormKind::BoardPost { channel } => (
                 "Post a message",
                 vec![Field::new(&format!("Message to #{channel}"), "up to 1024 bytes")],
-                Some("Public and permanent: anyone can read it, it cannot be taken back, and it goes from your messaging account."),
+                Some("Public and permanent: anyone can read it, it cannot be taken back, and it goes from the account in use."),
             ),
             FormKind::Message { peer, name } => (
                 "Send a private message",
@@ -189,17 +189,12 @@ impl App {
                     &format!("Message to {}", name.clone().unwrap_or_else(|| wallet_core::session::short_address(peer))),
                     "only they can read it",
                 )],
-                Some("Encrypted to them alone. On chain anyone sees your messaging address, the time and the size, not who it is for."),
+                Some("Encrypted to them alone. On chain anyone sees the account it goes from, the time and the size, not who it is for."),
             ),
             FormKind::MessageNew => (
                 "New private message",
                 vec![Field::new("To", "messaging address or contact"), Field::new("Message", "only they can read it")],
-                Some("Encrypted to them alone. On chain anyone sees your messaging address, the time and the size, not who it is for."),
-            ),
-            FormKind::MessagingFund => (
-                "Fund the messaging account",
-                vec![account("From"), Field::new("Amount", "QUAI for its fees").amount("QUAI")],
-                Some("An ordinary send. Anyone can see which account funds your messaging address."),
+                Some("Encrypted to them alone. On chain anyone sees the account it goes from, the time and the size, not who it is for."),
             ),
             FormKind::FollowChannel => (
                 "Follow a channel",
@@ -247,21 +242,21 @@ impl App {
                     Some("An address, a payment code, or both. A payment code also lets the wallet find their payments automatically."),
                 )
             }
-            FormKind::ContactFromPeer { code, address } => {
-                let existing = self.dash.contacts.iter().find(|c| c.payment_code.as_deref() == Some(code.as_str())).cloned();
+            FormKind::SaveToContact { value, contact } => {
+                let mut choices = vec![(String::new(), "a new contact".to_string())];
+                choices.extend(self.dash.contacts.iter().map(|c| (c.name.clone(), c.name.clone())));
+                // Whoever already holds it comes first, so saving it again reads as the edit it is.
+                let holder = value.as_deref().and_then(|v| self.contact_holding(v));
+                let chosen = contact.clone().or(holder).unwrap_or_default();
                 (
-                    if existing.is_some() { "Update contact" } else { "Name this contact" },
+                    "Save to contact",
                     vec![
-                        Field::new("Name", "how you'll pick them when sending")
-                            .with(existing.as_ref().map(|c| c.name.clone()).unwrap_or_default()),
-                        Field::new("Address", "the account this message came from")
-                            .with(address.clone().or_else(|| existing.as_ref().and_then(|c| c.address.clone())).unwrap_or_default())
-                            .optional(),
-                        Field::new("Payment code", "").with(code.clone()),
-                        Field::new("Note", "").with(existing.map(|c| c.note).unwrap_or_default()).optional(),
+                        Field::new("Contact", "←/→ to choose").with(chosen).choice(choices),
+                        Field::new("Account or code", "a Quai account (0x…) or a payment code (PM8T…)")
+                            .with(value.clone().unwrap_or_default()),
                     ],
                     Some(
-                        "The payment code is who they are; the address is one account they write from. Both are kept, and later accounts are added as they appear.",
+                        "A contact keeps every Quai account they use, and one payment code. Replacing their code, or taking an account or code from another contact, asks first.",
                     ),
                 )
             }
@@ -434,6 +429,10 @@ impl App {
                 wallet_core::qi_market::Direction::QuaiToQi
             };
             self.start_protocol_conversion(direction, v(1), opt(2).and_then(|v| v.parse().ok()), opt(0));
+            return;
+        }
+        if let FormKind::SaveToContact { .. } = &form.kind {
+            self.save_to_contact(v(0), v(1));
             return;
         }
         if let FormKind::Monitor { network } = &form.kind {
@@ -621,7 +620,6 @@ impl App {
             FormKind::BoardPost { channel } => Cmd::Prepare(Prepare::BoardPost { channel: channel.clone(), text: v(0) }),
             FormKind::Message { peer, .. } => Cmd::Prepare(Prepare::Message { peer: peer.clone(), text: v(0) }),
             FormKind::MessageNew => Cmd::Prepare(Prepare::Message { peer: v(0), text: v(1) }),
-            FormKind::MessagingFund => Cmd::Prepare(Prepare::MessagingFund { from: opt(0), amount: v(1) }),
             FormKind::OrderCreate { .. } | FormKind::FollowChannel | FormKind::RenameWallet(_) => unreachable!("handled above"),
             FormKind::AddAccount => Cmd::AddAccount(opt(0)),
             // Moved straight into wiped buffers; the form's own copies are wiped when it drops.
@@ -632,12 +630,7 @@ impl App {
             FormKind::Contact(original) => {
                 Cmd::SaveContact { original: original.clone(), name: v(0), address: opt(1), code: opt(2), note: v(3) }
             }
-            FormKind::ContactFromPeer { code, .. } => {
-                // Editing the person already behind this code, when there is one: the code is
-                // the identity, so this must not create a second contact holding it.
-                let original = self.dash.contacts.iter().find(|c| c.payment_code.as_deref() == Some(code.as_str())).map(|c| c.name.clone());
-                Cmd::SaveContact { original, name: v(0), address: opt(1), code: opt(2), note: v(3) }
-            }
+            FormKind::SaveToContact { .. } => unreachable!("handled above"),
             FormKind::ImportToken => Cmd::ImportToken(v(0)),
             FormKind::DeepScan => Cmd::ScanQi { deep: v(0).parse().ok() },
             FormKind::ExportPhrase => Cmd::ExportPhrase(Zeroizing::new(v(0))),
@@ -717,12 +710,56 @@ impl App {
         self.nav.selected.checked_sub(self.dash.offers.len()).and_then(|i| self.dash.peers.get(i))
     }
 
-    /// Save a payment channel's sender as a contact, or edit the contact it already belongs to.
+    /// The contact a Quai account or payment code is saved to.
+    pub(crate) fn contact_holding(&self, value: &str) -> Option<String> {
+        let v = value.trim();
+        self.dash
+            .contacts
+            .iter()
+            .find(|c| c.payment_code.as_deref() == Some(v) || c.address.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(v)))
+            .map(|c| c.name.clone())
+            .or_else(|| self.dash.contact_addresses.iter().find(|(a, _)| a.eq_ignore_ascii_case(v)).map(|(_, n)| n.clone()))
+    }
+
+    /// Save a Quai account or payment code: to a new contact (the add form, filled in), or to one
+    /// already saved. What that replaces or moves is asked first; nothing lost, it just goes.
+    pub(crate) fn save_to_contact(&mut self, contact: String, value: String) {
+        if contact.is_empty() {
+            self.open_form(FormKind::Contact(None));
+            if let Modal::Form(f) = &mut self.modal {
+                let field = if value.starts_with("0x") { 1 } else { 2 };
+                f.fields[field].value = value;
+                f.focus = 0;
+            }
+            return;
+        }
+        let parsed = wallet_core::contacts::ContactValue::parse(&value);
+        let mine: Vec<String> = self.dash.accounts.iter().map(|a| a.address.clone()).collect();
+        let own_code = self.meta.as_ref().and_then(|m| m.payment_code.clone());
+        let plan = parsed.and_then(|v| {
+            wallet_core::contacts::plan(&self.dash.contacts, &self.dash.contact_addresses, &mine, own_code.as_deref(), &contact, v)
+        });
+        match plan {
+            Err(e) => self.toast(e.to_string(), true),
+            Ok(p) if p.unchanged => self.info(format!("{} already has that {}", p.contact, p.value.describe())),
+            Ok(p) if p.warnings.is_empty() => self.send(Cmd::SaveToContact { contact: p.contact, value }),
+            Ok(p) => {
+                self.modal = Modal::Confirm {
+                    title: format!("Save to {}", p.contact),
+                    body: format!("Save {} to {}? It {}.", p.value.describe(), p.contact, p.warnings.join("; it ")),
+                    action: ConfirmAction::SaveToContact(p.contact, value),
+                };
+            }
+        }
+    }
+
+    /// Save a payment channel's sender to a contact, or edit the contact it already belongs to.
     pub(crate) fn save_channel_contact(&mut self) {
         let Some(p) = self.channel_peer() else { return };
         let code = p.code.clone();
         match self.dash.contacts.iter().find(|c| c.payment_code.as_deref() == Some(code.as_str())).map(|c| c.name.clone()) {
             Some(name) => self.open_form(FormKind::Contact(Some(name))),
+            None if !self.dash.contacts.is_empty() => self.open_form(FormKind::SaveToContact { value: Some(code), contact: None }),
             None => {
                 self.open_form(FormKind::Contact(None));
                 if let Modal::Form(f) = &mut self.modal {

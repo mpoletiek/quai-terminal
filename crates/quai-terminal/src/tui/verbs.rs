@@ -298,6 +298,7 @@ const CONTACTS: ViewKeys = ViewKeys {
         it('q', "send QUAI to their address", Act(App::send_quai_to_contact)),
         it('n', "tell them your payment code", Act(App::notify_peer)),
         it('e', "edit", Act(App::edit_contact)),
+        it('c', "save another account or a payment code to them", Act(App::save_to_selected_contact)),
         it('x', "remove", Act(App::remove_contact)),
         it('p', "add a payment channel peer", Run("add_peer")),
         it('d', "scan the mailbox", Run("discover")),
@@ -343,10 +344,9 @@ const BOARD: ViewKeys = ViewKeys {
         it('T', "accept a new identity", V(ch('T'))),
         it('B', "block", V(ch('B'))),
         it('K', "publish this week's key", V(ch('K'))),
-        it('F', "fund the messaging account", V(ch('F'))),
         it('i', "pin beside every screen", V(ch('P'))),
         it('n', "notify me", V(ch('n'))),
-        it('c', "save the sender as a contact", V(ch('c'))),
+        it('c', "save the sender to a contact", V(ch('c'))),
         it('x', "unfollow", Act(App::confirm_unfollow)),
     ],
 };
@@ -707,6 +707,16 @@ impl App {
         if let Some(c) = self.dash.contacts.get(self.nav.selected) {
             let name = c.name.clone();
             self.open_form(FormKind::Contact(Some(name)));
+        }
+    }
+
+    fn save_to_selected_contact(&mut self) {
+        if let Some(c) = self.dash.contacts.get(self.nav.selected) {
+            let contact = Some(c.name.clone());
+            self.open_form(FormKind::SaveToContact { value: None, contact });
+            if let Modal::Form(f) = &mut self.modal {
+                f.focus = 1;
+            }
         }
     }
 

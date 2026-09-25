@@ -3236,10 +3236,8 @@ dependencies = [
 name = "quai-messaging"
 version = "0.1.0-alpha.10"
 dependencies = [
- "chacha20poly1305",
  "ed25519-dalek",
  "hex",
- "hkdf 0.12.4",
  "hpke",
  "quai-model",
  "quai-sdk",

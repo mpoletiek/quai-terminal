@@ -338,7 +338,7 @@ impl Watched {
                 Err(e) => eprintln!("[{name}] payment sync: {e}"),
             }
         }
-        // Subscribed chats: channels always (public reads), sealed conversations only while
+        // Subscribed chats: channels always (public reads), private conversations only while
         // unlocked. Each chat that has news becomes one notification saying who said what.
         let mut channels = Vec::new();
         if features.messaging {

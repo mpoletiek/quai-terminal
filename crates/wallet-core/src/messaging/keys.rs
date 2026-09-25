@@ -1,11 +1,12 @@
 //! The messaging key file: the identity key, the weekly keys and the key that encrypts the local
-//! message store, for one wallet on one network.
+//! message store, for one account of one wallet on one network.
 //!
-//! **Never backed up.** It lives in `wallets/<id>/messaging/<network>/`, outside `wallet.json`,
-//! `app.sqlite` and the network databases, which are all a backup copies. It is sealed under a
-//! key derived from the messaging account's private key, so a backup (which holds that account)
-//! still cannot open a key file it never contains. Losing the file means a new identity and no
-//! history, which is the decision this design is built on: nothing can bring back a deleted key.
+//! **Never backed up.** It lives in `wallets/<id>/messaging/<network>/<account>/`, outside
+//! `wallet.json`, `app.sqlite` and the network databases, which are all a backup copies. It is
+//! sealed under a key derived from the account's private key, so a backup (which holds that
+//! account) still cannot open a key file it never contains. Losing the file means a new identity
+//! and no history, which is the decision this design is built on: nothing can bring back a deleted
+//! key.
 //!
 //! Every key is random. None is derived from the seed, a signature or a password.
 
@@ -46,7 +47,7 @@ impl WeeklyKey {
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct KeyFile {
     version: u8,
-    /// The messaging account, lowercase.
+    /// The account this identity messages from, lowercase.
     pub account: String,
     identity: [u8; 32],
     store_key: [u8; 32],
@@ -141,7 +142,7 @@ impl KeyFile {
     /// The announcement for a held key, signed for `ctx`.
     pub fn announcement(&self, ctx: &wire::Context, public: &[u8; 32]) -> Result<wire::Announcement> {
         let key = self.key(public).ok_or_else(|| CoreError::NotFound("that weekly key is no longer held".into()))?;
-        let owner = wire::address_bytes(&self.account).ok_or_else(|| CoreError::Invalid("messaging account".into()))?;
+        let owner = wire::address_bytes(&self.account).ok_or_else(|| CoreError::Invalid("account".into()))?;
         Ok(wire::Announcement::sign(ctx, &owner, &self.identity(), key.week, key.sequence, key.public))
     }
 
@@ -205,7 +206,7 @@ fn no_randomness() -> CoreError {
     CoreError::Invalid("the operating system gave no randomness".into())
 }
 
-/// The key a key file is sealed under: HKDF over the messaging account's private key, bound to
+/// The key a key file is sealed under: HKDF over the account's private key, bound to
 /// the wallet, the network and the account. Whoever can spend from the account can open the file
 /// on this disk; nobody can recreate the file's contents from it.
 pub fn wrap_key(account_secret: &[u8; 32], binding: &str) -> Zeroizing<[u8; 32]> {

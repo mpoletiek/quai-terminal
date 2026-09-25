@@ -4,12 +4,12 @@
 //! implementation can be checked against it byte for byte (`docs/MESSAGING_V3.md` and the test
 //! vectors in `fixtures/messaging_v3_vectors.json`).
 //!
-//! **Announcement** (138 bytes), posted from the messaging account under [`keys_tag`]:
+//! **Announcement** (138 bytes), posted from the account it is for, under [`keys_tag`]:
 //! `version | suite | week (4) | sequence (4) | identity key (32) | weekly key (32) | signature (64)`.
 //! The Ed25519 signature covers a label, the chain, the contract, the posting address and the
 //! first 74 bytes, so an announcement cannot be replayed on another chain or under another address.
 //!
-//! **Direct message**, posted from the sender's messaging account under 32 random bytes:
+//! **Direct message**, posted from the sender's account under 32 random bytes:
 //! `version | suite | sender weekly key (32) | enc (32) | ciphertext`. The ciphertext is one HPKE
 //! seal in auth mode, from the sender's weekly key to the recipient's, over a padded plaintext
 //! `content type | length (2) | content | zeros`. The associated data binds the chain, the
@@ -189,7 +189,7 @@ fn signed_message(ctx: &Context, owner: &[u8; 20], prefix: &[u8]) -> Vec<u8> {
 }
 
 impl Announcement {
-    /// Sign a weekly key for `owner` (the messaging account that will post it).
+    /// Sign a weekly key for `owner` (the account that will post it).
     pub fn sign(ctx: &Context, owner: &[u8; 20], identity: &IdentitySecret, week: u32, sequence: u32, weekly: [u8; 32]) -> Self {
         use ed25519_dalek::Signer;
         let mut a = Self { week, sequence, identity: identity.public(), weekly, signature: [0; 64] };

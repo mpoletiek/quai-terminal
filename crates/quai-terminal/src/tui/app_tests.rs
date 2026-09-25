@@ -1199,42 +1199,6 @@ fn market_derived_cache_reuses_frames_and_invalidates_changed_history_and_window
     assert_eq!(app.market_stats(&empty, true, 3610).price, Some(10.0), "live reserve fallback changes the cache key");
 }
 
-/// A sealed conversation needs only two payment codes. A contact who has one must therefore
-/// appear on the board — otherwise a message that has already arrived stays invisible.
-#[test]
-fn a_contact_with_a_payment_code_can_be_opened_without_a_payment_channel() {
-    use super::super::eco::BoardRow;
-    let (_dir, mut app) = test_app(WalletKind::Hd);
-    let contact = |name: &str, code: Option<&str>, address: Option<&str>| wallet_core::appdb::Contact {
-        id: 1,
-        name: name.into(),
-        address: address.map(str::to_string),
-        payment_code: code.map(str::to_string),
-        note: String::new(),
-    };
-    app.dash.contacts = vec![
-        contact("alice", Some("PM8Talice"), Some("0x00a1")),
-        // No payment code: cannot hold a sealed conversation, so no row.
-        contact("bob", None, Some("0x00b1")),
-    ];
-    assert!(app.dash.peers.is_empty(), "no payment channel has been established");
-    let rows = app.board_rows();
-    assert!(
-        rows.iter().any(|r| matches!(r, BoardRow::Peer(code, name) if code == "PM8Talice" && name.as_deref() == Some("alice"))),
-        "a contact with a payment code is reachable: {rows:?}"
-    );
-    assert!(!rows.iter().any(|r| matches!(r, BoardRow::Peer(_, name) if name.as_deref() == Some("bob"))));
-    // An established channel and a contact for the same code produce one row, not two.
-    app.dash.peers = vec![wallet_core::ops::PeerView {
-        code: "PM8Talice".into(),
-        contact: Some("alice".into()),
-        receive_addresses: 1,
-        send_addresses: 0,
-    }];
-    let peers = app.board_rows().into_iter().filter(|r| matches!(r, BoardRow::Peer(..))).count();
-    assert_eq!(peers, 1, "the channel and the contact are the same person");
-}
-
 /// Board posts from someone in your contacts read as their name.
 #[test]
 fn board_posts_from_contacts_show_the_contact_name() {
@@ -2267,6 +2231,53 @@ fn tab_into_the_pinned_chat_and_post() {
     app.eco.swap.field = 4;
     press(&mut app, KeyCode::Tab);
     assert!(app.dock.focus, "from the card's last field");
+}
+
+/// A Quai account or a payment code is saved to a contact already there: space, `c` on Contacts asks
+/// for it, an added account goes straight through, and replacing a payment code asks first,
+/// sending only once confirmed.
+#[test]
+fn saving_to_a_contact_adds_quietly_and_asks_before_replacing() {
+    use crate::tui::app::{ConfirmAction, FormKind};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let (worker, mut sent) = Worker::capture();
+    app.use_worker(worker);
+    const OLD: &str =
+        "PM8TJbuTpdxoPzWYyXBe3v28HwBi9sdhRMxBg1wwfzHhCDKHvV2HbM5YYYejtZsDKMPqh7ygrhQ8Ygdbovx38QQcmPTKVhtyozcedXn8BfRWY7dgnfn7";
+    const NEW: &str =
+        "PM8TJbmQ2ocBeDo8FnRPq3M2uzG82zZC2UcMwtJFsWtcuzwjppmXD6nLtGAF7RK1U8heYjadxrh6dcX2Zfp9QV17m9BWkYcMdWyuoS4C5QbgmjYPDGG9";
+    let second = "0x002162a69c50b31bf09a2727ab89a1a9852ccefe";
+    app.dash.contacts = vec![wallet_core::appdb::Contact {
+        id: 1,
+        name: "Bob".into(),
+        address: Some("0x004dd9afaa2768642b5cde15c24f37bf19d842e4".into()),
+        payment_code: Some(OLD.into()),
+        note: String::new(),
+    }];
+    app.go(Place::Pane(Screen::Contacts, 0));
+    app.nav.selected = 0;
+    while sent.try_recv().is_ok() {}
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('c'));
+    let Modal::Form(form) = &app.modal else { panic!("space, c opens the form") };
+    assert_eq!(form.kind, FormKind::SaveToContact { value: None, contact: Some("Bob".into()) });
+    assert_eq!(form.fields[0].value, "Bob", "on the selected contact");
+    app.modal = Modal::None;
+
+    app.save_to_contact("Bob".into(), second.into());
+    assert!(matches!(app.modal, Modal::None), "another account replaces nothing");
+    assert!(matches!(sent.try_recv(), Ok(Cmd::SaveToContact { contact, value }) if contact == "Bob" && value == second));
+
+    app.save_to_contact("Bob".into(), NEW.into());
+    let Modal::Confirm { body, action: ConfirmAction::SaveToContact(..), .. } = &app.modal else { panic!("replacing asks") };
+    assert!(body.contains("replaces Bob's payment code"), "{body}");
+    assert!(sent.try_recv().is_err(), "nothing is saved before it is confirmed");
+    press(&mut app, KeyCode::Char('y'));
+    assert!(matches!(sent.try_recv(), Ok(Cmd::SaveToContact { value, .. }) if value == NEW));
+
+    app.save_to_contact(String::new(), second.into());
+    let Modal::Form(form) = &app.modal else { panic!("a new contact is the add form") };
+    assert_eq!((form.kind.clone(), form.fields[1].value.as_str()), (FormKind::Contact(None), second));
 }
 
 /// Announced senders are offers above the registered channels: enter asks before registering
@@ -4704,31 +4715,18 @@ fn a_new_block_refreshes_what_is_on_screen_at_once() {
     const { assert!(wallet_core::launches::TRADES_TTL < 5 && wallet_core::markets::HISTORY_SHARE_SECS < 5) };
 }
 
-/// Locking forgets every decrypted conversation, the draft of a private message and a private
-/// form, and a conversation read that was already in flight is dropped when it lands.
+/// Locking forgets the draft of a private message pinned beside every screen, and a private
+/// message form is not kept for after the unlock.
 #[test]
-fn locking_forgets_private_messages_and_drops_reads_still_in_flight() {
-    use wallet_core::ops::SealedLine;
+fn locking_forgets_the_private_draft_and_form() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    let size = (120, 40);
-    let line = |text: &str| SealedLine { at: 1, from: "0xabc".into(), mine: false, text: Some(text.into()), new_address: false };
-    let asked = app.private_epoch;
-    app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
-    assert!(app.eco.board.dms.get("PM8code").is_some(), "a read in the current generation is shown");
-    app.eco.board.pin = Some("dm:PM8code".into());
+    app.eco.board.pin = Some("msg:0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".into());
     app.dock.draft = "half a secret".into();
     app.open_form(FormKind::Message { peer: "0x00b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0".into(), name: None });
     assert!(matches!(app.modal, Modal::Form(_)), "the message form is open when the lock comes");
     app.enter_lock(None);
-    assert!(app.eco.board.dms.is_empty(), "decrypted conversations are gone");
     assert!(app.dock.draft.is_empty(), "the private draft is gone");
     assert!(app.parked.is_none(), "a private message form is not kept for after the unlock");
-    // The worker answers a read asked before the lock: it must not bring the text back.
-    app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
-    assert!(app.eco.board.dms.is_empty(), "a stale read is dropped while locked");
-    app.show_unlocked();
-    app.on_event(Ev::Conversation { peer: "PM8code".into(), result: Ok(vec![line("the plan")]), epoch: asked }, size);
-    assert!(app.eco.board.dms.is_empty(), "and still dropped after unlocking, since it was asked before the lock");
 }
 
 /// Private messages (v3) are forgotten at lock like everything else decrypted, and an answer

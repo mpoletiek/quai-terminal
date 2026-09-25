@@ -14,9 +14,9 @@
                        ││                                                                                      ││ enter  pay                                   │
   0  System            ││                                                                                      ││     n  notify                                │
                        ││                                                                                      ││     e  edit                                  │
-   [ ] tabs            ││                                                                                      ││     y  copy                                  │
+   [ ] tabs            ││                                                                                      ││ space  then c: save an account or code       │
+                       ││                                                                                      ││     y  copy                                  │
                        ││                                                                                      ││     x  remove                                │
-                       ││                                                                                      ││                                              │
                        ││                                                                                      ││                                              │
                        ││                                                                                      ││                                              │
                        ││                                                                                      ││                                              │

@@ -1664,18 +1664,61 @@ pub async fn contact(ctx: &Ctx, cmd: ContactCmd) -> Result<()> {
             )?;
             done(ctx, "contact edit", &c, &format!("updated {}", c.name))
         }
+        ContactCmd::Save { name, value } => {
+            let plan = s.plan_contact_save(&name, &value)?;
+            if plan.unchanged {
+                return done(ctx, "contact save", &plan, &format!("{} already has that {}", plan.contact, plan.value.describe()));
+            }
+            if !plan.warnings.is_empty() {
+                if !ctx.out.json() {
+                    for w in &plan.warnings {
+                        println!("{} {w}", ctx.out.yellow("!"));
+                    }
+                }
+                prompt::confirm(&format!("Save it to {}?", plan.contact), "yes", ctx.global.yes)?;
+            }
+            let (c, plan) = s.save_to_contact(&name, &value)?;
+            done(ctx, "contact save", &plan, &format!("saved {} to {}", plan.value.describe(), c.name))
+        }
+        ContactCmd::Forget { name, account } => {
+            let c = s.forget_contact_account(&name, &account)?;
+            done(ctx, "contact forget", &c, &format!("{} no longer has {}", c.name, wallet_core::session::short_address(&account)))
+        }
         ContactCmd::List => {
             let contacts = s.app.contacts()?;
+            let accounts = |c: &wallet_core::appdb::Contact| -> Vec<String> {
+                let mut all: Vec<String> = c.address.iter().cloned().collect();
+                for a in s.app.contact_addresses(c.id).unwrap_or_default() {
+                    if !all.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
+                        all.push(a);
+                    }
+                }
+                all
+            };
             if ctx.out.json() {
-                ctx.out.emit("contact list", &contacts);
+                let rows: Vec<serde_json::Value> = contacts
+                    .iter()
+                    .map(|c| {
+                        let mut v = serde_json::to_value(c).unwrap_or_default();
+                        v["accounts"] = json!(accounts(c));
+                        v
+                    })
+                    .collect();
+                ctx.out.emit("contact list", &rows);
                 return Ok(());
             }
             let rows = contacts
                 .iter()
                 .map(|c| {
+                    let all = accounts(c);
+                    let shown = match all.split_first() {
+                        Some((first, rest)) if !rest.is_empty() => format!("{first} (+{} more)", rest.len()),
+                        Some((first, _)) => first.clone(),
+                        None => String::new(),
+                    };
                     vec![
                         c.name.clone(),
-                        c.address.clone().unwrap_or_default(),
+                        shown,
                         c.payment_code.as_deref().map(wallet_core::session::short_code).unwrap_or_default(),
                         c.note.clone(),
                     ]

@@ -4,8 +4,8 @@
   1  Home            • │┌ ▸ channels · people ───┐┌ #general · reading… ───────────────────────────────────────────────────────────────────────────────────────┐
                        ││ # public channels      ││                                                                                                            │
   3  Trade             ││   #general             ││                                                                                                            │
-                       ││ ◉ old · read-only      ││                                                                                                            │
-  4  NFTs            ◧ ││ ◉ bob                  ││                                                                                                            │
+                       ││                        ││                                                                                                            │
+  4  NFTs            ◧ ││                        ││                                                                                                            │
                        ││                        ││                                                                                                            │
 ▌ 5  People            ││                        ││                                                                                                            │
                        ││                        ││                                                                                                            │

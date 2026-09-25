@@ -353,11 +353,6 @@ impl BoardView {
     pub fn reading_channel(&self) -> bool {
         self.posts.iter().any(|(_, r)| r.loading())
     }
-
-    /// Whether a conversation read is in flight (one at a time).
-    pub fn reading_dm(&self) -> bool {
-        self.dms.iter().any(|(_, r)| r.loading())
-    }
 }
 
 impl Default for MarketsView {
@@ -394,8 +389,6 @@ pub struct BoardView {
     /// Messages per channel, newest first as the reader returns them. One channel is read at a
     /// time.
     pub posts: Keyed<String, Vec<wallet_core::messages::Post>>,
-    /// Sealed conversations by peer payment code, opened by the wallet worker; one at a time.
-    pub dms: Keyed<String, Vec<wallet_core::ops::SealedLine>>,
     /// Channels seen on the board, followed or not.
     pub known: Resource<Vec<wallet_core::messages::ChannelSummary>>,
     /// Typed filter over the list; `Some("")` means the filter is open and empty.
@@ -405,7 +398,8 @@ pub struct BoardView {
     pub seen: HashMap<String, u64>,
     /// How many unread each channel had when it was last announced, so a toast says a thing once.
     pub announced: HashMap<String, u32>,
-    /// Chats that notify (`#channel` / `dm:<code>`), and the one docked beside every screen.
+    /// Channels that notify (`#channel`), and the chat docked beside every screen (a channel,
+    /// or `msg:<address>`).
     pub subs: Vec<String>,
     pub pin: Option<String>,
     pub chat_loaded: bool,
@@ -432,10 +426,7 @@ pub enum BoardRow {
     Channel(String),
     /// A channel seen on the board that this wallet does not follow, and how many messages it has.
     Unfollowed(String, u32),
-    /// An old (v1/v2) payment-code conversation, read-only: code, and the contact name.
-    Peer(String, Option<String>),
-    /// The messaging account: which account messages go from, its balance and keys, and the
-    /// list to choose it from.
+    /// Private messages: the account they go from (the one that acts), its balance and keys.
     Messaging,
     /// A private conversation: messaging address, and the contact name.
     Chat(String, Option<String>),

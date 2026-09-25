@@ -33,11 +33,10 @@ impl App {
     pub(crate) fn forget_private(&mut self) {
         self.private_epoch += 1;
         let board = &mut self.eco.board;
-        board.dms.clear();
         board.msg.clear();
         board.msg_lines.clear();
         board.msg_offered = false;
-        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("dm:") || p.starts_with("msg:")) {
+        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("msg:")) {
             self.dock.draft.clear();
         }
     }
@@ -493,7 +492,6 @@ impl App {
                 self.modal = Modal::Secret { text, title: "Anyone with these words controls your funds".into() };
             }
             // Asked before a lock or a switch: whatever it says is no longer this screen's to show.
-            Ev::Conversation { epoch, .. } if self.lock.locked || epoch != self.private_epoch => {}
             Ev::Messaging { epoch, .. } if self.lock.locked || epoch != self.private_epoch => {}
             Ev::Messaging { view, open, note, .. } => {
                 use wallet_core::messaging::service::KeyNeed;
@@ -523,10 +521,6 @@ impl App {
                 if offer {
                     self.toast("this week's messaging key is not published yet: Board › K", false);
                 }
-            }
-            Ev::Conversation { peer, result, .. } => {
-                // A failed read keeps the conversation on screen (`Resource::shown`).
-                self.eco.board.dms.settle(peer, result);
             }
             // An arrival already said by name (`arrive`) is not said again in the worker's words.
             Ev::Notify { title, .. }

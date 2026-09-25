@@ -9,6 +9,7 @@ pub mod chat;
 pub mod cockpit;
 mod commitments;
 pub mod config;
+pub mod contacts;
 pub mod contracts;
 pub mod curve;
 pub mod custody;
