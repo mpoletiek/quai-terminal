@@ -32,7 +32,7 @@ fn a_bold_label_is_not_mistaken_for_a_badge() {
     for asset in ["quai", "qi"] {
         let url = wallet_core::media::native_icon(asset).unwrap();
         let wallet_core::media::Source::Inline(bytes) = wallet_core::media::resolve(url).unwrap() else { panic!("inline") };
-        let r = std::sync::Arc::new(wallet_core::media::make_rendition(&bytes, wallet_core::media::ICON).unwrap());
+        let r = std::sync::Arc::new(wallet_core::media::trusted_rendition(&bytes, wallet_core::media::ICON).unwrap());
         app.eco
             .images
             .insert((url.to_string(), wallet_core::media::ICON), super::super::eco::ImageSlot::Ready(r, std::time::Instant::now()));
@@ -828,7 +828,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             observed_at: 1,
         });
         let rendition = |w: u32, h: u32| {
-            Arc::new(wallet_core::media::make_rendition(&wallet_core::media::fixture_png(w, h, (200, 40, 90)), w.max(h)).unwrap())
+            Arc::new(wallet_core::media::trusted_rendition(&wallet_core::media::fixture_png(w, h, (200, 40, 90)), w.max(h)).unwrap())
         };
         app.eco.images.insert(
             (icon.to_string(), wallet_core::media::ICON),
@@ -1307,7 +1307,7 @@ fn every_screen_renders_at_every_size() {
     for asset in ["quai", "qi"] {
         let url = wallet_core::media::native_icon(asset).unwrap();
         let wallet_core::media::Source::Inline(bytes) = wallet_core::media::resolve(url).unwrap() else { panic!("inline") };
-        let r = std::sync::Arc::new(wallet_core::media::make_rendition(&bytes, wallet_core::media::ICON).unwrap());
+        let r = std::sync::Arc::new(wallet_core::media::trusted_rendition(&bytes, wallet_core::media::ICON).unwrap());
         app.eco
             .images
             .insert((url.to_string(), wallet_core::media::ICON), super::super::eco::ImageSlot::Ready(r, std::time::Instant::now()));

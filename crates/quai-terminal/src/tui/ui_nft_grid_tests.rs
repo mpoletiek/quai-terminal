@@ -34,7 +34,7 @@ fn every_collected_tile_gets_its_picture() {
             let px: Vec<u8> = (0..64 * 64).flat_map(|_| [color.0, color.1, color.2, 255]).collect();
             enc.write_header().unwrap().write_image_data(&px).unwrap();
         }
-        let r = std::sync::Arc::new(wallet_core::media::make_rendition(&png, wallet_core::media::THUMB).unwrap());
+        let r = std::sync::Arc::new(wallet_core::media::trusted_rendition(&png, wallet_core::media::THUMB).unwrap());
         app.eco.images.insert((url.clone(), wallet_core::media::THUMB), super::super::eco::ImageSlot::Ready(r, std::time::Instant::now()));
         let item = NftItem {
             contract: format!("0x00{i}"),

@@ -121,7 +121,9 @@ fn hash_bytes(bytes: &[u8]) -> String {
 }
 
 /// Decode source bytes into RGBA at most `MAX_DIMENSION` on a side.
-fn decode(bytes: &[u8], render_edge: u32) -> Result<image::RgbaImage> {
+///
+/// Untrusted bytes reach this only inside the decoding helper process ([`crate::media_helper`]).
+pub(crate) fn decode_raw(bytes: &[u8], render_edge: u32) -> Result<image::RgbaImage> {
     let format = sniff(bytes).ok_or_else(|| CoreError::Invalid("not a supported image (PNG, JPEG, GIF, WebP, SVG)".into()))?;
     match format {
         Format::Svg => render_svg(bytes, render_edge),
@@ -204,23 +206,27 @@ pub fn dominant_color(img: &image::RgbaImage) -> (u8, u8, u8) {
     buckets.values().max_by_key(|e| e.0).map(|&(_, n, r, g, b)| ((r / n) as u8, (g / n) as u8, (b / n) as u8)).unwrap_or((128, 128, 128))
 }
 
-/// Fit an image inside `edge × edge` and produce a rendition.
-pub fn make_rendition(bytes: &[u8], edge: u32) -> Result<Rendition> {
-    let hash = hash_bytes(bytes);
-    let img = decode(bytes, edge)?;
-    let (w, h) = img.dimensions();
-    if w == 0 || h == 0 {
-        return Err(CoreError::Invalid("empty image".into()));
-    }
-    let scale = (edge as f64 / w.max(h) as f64).min(1.0);
-    let (tw, th) = (((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1));
-    let resized = if (tw, th) == (w, h) { img } else { image::imageops::resize(&img, tw, th, image::imageops::FilterType::Triangle) };
-    let dominant = dominant_color(&resized);
+/// A rendition from pixels the decoding helper produced (already checked against their edge):
+/// the dominant color and the PNG are made here, from raw pixels, so nothing the helper wrote is
+/// decoded again in this process.
+pub fn rendition_from_pixels(hash: String, pixels: crate::media_helper::Pixels) -> Result<Rendition> {
+    let crate::media_helper::Pixels { width, height, rgba } = pixels;
+    let img = image::RgbaImage::from_raw(width, height, rgba).ok_or_else(|| CoreError::Invalid("image pixels do not match their size".into()))?;
+    let dominant = dominant_color(&img);
     let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(resized.clone())
+    image::DynamicImage::ImageRgba8(img.clone())
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|e| CoreError::Invalid(format!("png encode: {e}")))?;
-    Ok(Rendition { hash, width: tw, height: th, png, rgba: resized.into_raw(), dominant })
+    Ok(Rendition { hash, width, height, png, rgba: img.into_raw(), dominant })
+}
+
+/// Fit an image inside `edge × edge` and produce a rendition, decoding **in this process**.
+///
+/// For bytes the wallet made itself (test fixtures, bundled logos) only. Anything a token, an NFT
+/// or a feed supplied goes through [`load`], which decodes in the helper process.
+pub fn trusted_rendition(bytes: &[u8], edge: u32) -> Result<Rendition> {
+    let pixels = crate::media_helper::decode_one(bytes, edge).map_err(CoreError::Invalid)?;
+    rendition_from_pixels(hash_bytes(bytes), pixels)
 }
 
 /// Resolve a media reference to something fetchable. `data:` URIs decode locally; `ipfs://`
@@ -382,15 +388,15 @@ pub async fn load(app: &AppDb, url: &str, edge: u32) -> Result<Option<Rendition>
         app.media_put(url, None, "the IPFS gateway returned content that does not match its CID")?;
         return Ok(None);
     }
-    let bytes_for_decode = bytes.clone();
-    let decoded = tokio::task::spawn_blocking(move || {
-        let thumb = make_rendition(&bytes_for_decode, THUMB);
-        let icon = make_rendition(&bytes_for_decode, ICON);
-        (thumb, icon)
-    })
-    .await
-    .map_err(|e| CoreError::Storage(format!("image worker: {e}")))?;
-    match decoded {
+    // Decoded in the helper process; a helper that could not start is a passing failure.
+    let hash = hash_bytes(&bytes);
+    let mut decoded = crate::media_helper::decode(bytes, &[THUMB, ICON]).await?.into_iter();
+    let mut next = || -> Result<Rendition> {
+        let pixels = decoded.next().ok_or_else(|| CoreError::Invalid("image decoder answered short".into()))?.map_err(CoreError::Invalid)?;
+        rendition_from_pixels(hash.clone(), pixels)
+    };
+    let (thumb, icon) = (next(), next());
+    match (thumb, icon) {
         (Ok(thumb), Ok(icon)) => {
             for r in [&thumb, &icon] {
                 let dom = (u32::from(r.dominant.0) << 16) | (u32::from(r.dominant.1) << 8) | u32::from(r.dominant.2);
@@ -474,16 +480,16 @@ mod tests {
     #[test]
     fn raster_renditions_fit_and_find_color() {
         let png = fixture_png(640, 320, (200, 30, 40));
-        let r = make_rendition(&png, THUMB).unwrap();
+        let r = trusted_rendition(&png, THUMB).unwrap();
         assert_eq!((r.width, r.height), (256, 128));
         assert_eq!(r.rgba.len(), (256 * 128 * 4) as usize);
         let (red, green, _) = r.dominant;
         assert!(red > 150 && green < 80, "{:?}", r.dominant);
-        let icon = make_rendition(&png, ICON).unwrap();
+        let icon = trusted_rendition(&png, ICON).unwrap();
         assert_eq!(icon.width, 32);
         assert_eq!(&icon.png[1..4], b"PNG");
         // Small images are not upscaled.
-        assert_eq!(make_rendition(&fixture_png(10, 10, (0, 0, 255)), THUMB).unwrap().width, 10);
+        assert_eq!(trusted_rendition(&fixture_png(10, 10, (0, 0, 255)), THUMB).unwrap().width, 10);
     }
 
     #[test]
@@ -493,21 +499,21 @@ mod tests {
             <image href="/etc/passwd" width="10" height="10"/>
             <image xlink:href="https://evil.example/track.png" width="10" height="10"/>
             <script>alert(1)</script></svg>"##;
-        let r = make_rendition(svg, ICON).unwrap();
+        let r = trusted_rendition(svg, ICON).unwrap();
         assert_eq!((r.width, r.height), (32, 32));
         assert!(r.dominant.0 > 200 && r.dominant.1 < 90, "{:?}", r.dominant);
         let entity = br#"<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"/>"#;
-        assert!(make_rendition(entity, ICON).is_err());
+        assert!(trusted_rendition(entity, ICON).is_err());
     }
 
     #[test]
     fn decode_bombs_and_garbage_are_refused() {
-        assert!(make_rendition(b"not an image", ICON).is_err());
+        assert!(trusted_rendition(b"not an image", ICON).is_err());
         // A PNG header claiming 100000×100000 pixels.
         let mut png = fixture_png(1, 1, (0, 0, 0));
         png[16..20].copy_from_slice(&100_000u32.to_be_bytes());
         png[20..24].copy_from_slice(&100_000u32.to_be_bytes());
-        assert!(make_rendition(&png, ICON).is_err());
+        assert!(trusted_rendition(&png, ICON).is_err());
     }
 
     /// With a gateway configured, every way metadata names IPFS content goes to it — `ipfs://`,

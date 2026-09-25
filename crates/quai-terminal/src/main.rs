@@ -188,11 +188,17 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
 }
 
 fn main() {
+    // The picture-decoding helper is this binary started with one argument; it never returns.
+    wallet_core::media_helper::helper_entry();
     // The origin every `startup.*` mark is measured from: taken before argument parsing, so a
     // launch measurement includes everything the user waited through.
     wallet_core::diag::started();
     // Before anything reads a password: nothing else running as this user may read our memory.
     daemon::protect_memory();
+    // Untrusted pictures are decoded in a helper process, never in this one (it may hold keys).
+    if let Ok(exe) = std::env::current_exe() {
+        wallet_core::media_helper::use_isolated_decoder(exe);
+    }
     // `quai-terminal ... | head` closes stdout early; exit quietly instead of panicking.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -639,6 +639,8 @@ async fn bazarr_listing_rechecks_and_fill_simulates() {
 #[tokio::test]
 #[ignore = "network"]
 async fn portfolio_and_images_from_the_explorer() {
+    // No wallet binary to re-execute here, and this process holds no keys.
+    wallet_core::media_helper::use_in_process_decoder_for_tests();
     use wallet_core::portfolio::{Known, Trust, build};
     use wallet_core::sdk::{BlockTag, QuaiAddress};
     let ctx = mainnet();
@@ -1638,6 +1640,8 @@ async fn network_statistics_read_from_the_explorer() {
 #[tokio::test]
 #[ignore = "network"]
 async fn launch_logos_resolve_through_the_media_proxy() {
+    // No wallet binary to re-execute here, and this process holds no keys.
+    wallet_core::media_helper::use_in_process_decoder_for_tests();
     let ctx = mainnet();
     let launches = wallet_core::launches::launches(&ctx, 50).await.unwrap();
     let logos = wallet_core::launches::logos(&ctx, &launches).await;

@@ -31,6 +31,7 @@ pub mod liquidity;
 pub mod market;
 pub mod markets;
 pub mod media;
+pub mod media_helper;
 pub mod messages;
 pub mod messaging;
 pub mod multicall;

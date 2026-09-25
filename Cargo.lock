@@ -3269,6 +3269,7 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "futures",
+ "image",
  "nucleo-matcher",
  "png",
  "qrcode",
@@ -4018,6 +4019,15 @@ dependencies = [
  "pkcs8 0.10.2",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -5086,10 +5096,13 @@ dependencies = [
  "hmac 0.12.1",
  "hpke",
  "image",
+ "libc",
  "quai-sdk",
  "reqwest",
  "resvg",
  "rusqlite",
+ "rustix",
+ "seccompiler",
  "serde",
  "serde_json",
  "sha2 0.10.9",
