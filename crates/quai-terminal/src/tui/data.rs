@@ -319,7 +319,7 @@ impl DataWorker {
     ) -> std::io::Result<DataWorker> {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DataCmd>();
         let (ev_tx, ev_rx) = std::sync::mpsc::channel::<DataEv>();
-        std::thread::Builder::new().name("wallet-data".into()).spawn(move || {
+        super::worker::lane_thread("wallet-data").spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
             runtime.block_on(run(Stores { wallet: app_db, shared: shared_db }, network, policy, cmd_rx, ev_tx));
         })?;

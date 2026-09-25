@@ -723,8 +723,8 @@ impl App {
             // holds the wallet unlocked. Whatever it cannot read, this window does.
             let id = self.meta.as_ref().map(|m| m.id.clone()).unwrap_or_default();
             match crate::daemon::state(&self.paths) {
-                None => self.send(Cmd::ChatNews { dms_only: false }),
-                Some(d) if !d.unlocked(&id) => self.send(Cmd::ChatNews { dms_only: true }),
+                None => self.send(Cmd::ChatNews { dms_only: false, epoch: self.private_epoch }),
+                Some(d) if !d.unlocked(&id) => self.send(Cmd::ChatNews { dms_only: true, epoch: self.private_epoch }),
                 Some(_) => {}
             }
         }

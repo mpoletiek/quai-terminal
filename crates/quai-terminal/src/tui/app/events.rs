@@ -526,7 +526,9 @@ impl App {
                     self.on_event(Ev::Dashboard(Box::new(next)), size);
                 }
             }
-            Ev::ChatNews(news) => {
+            // News for a wallet since locked or switched away is not this screen's to say.
+            Ev::ChatNews { epoch, .. } if self.locked || epoch != self.private_epoch => {}
+            Ev::ChatNews { news, .. } => {
                 // A chat already on screen (open on the Board, or pinned) is being read; the rest also
                 // goes to the desktop. Notice titles are the chat's label (`#general`, `Alice · sealed`).
                 let open = (self.screen == Screen::Board).then(|| self.board_row().map(|r| App::chat_target(&r).0)).flatten();

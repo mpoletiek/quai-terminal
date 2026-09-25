@@ -402,6 +402,8 @@ pub enum Cmd {
     /// only the sealed ones when a daemon reads the channels.
     ChatNews {
         dms_only: bool,
+        /// [`App::private_epoch`] when asked; news for a wallet since switched away is dropped.
+        epoch: u64,
     },
     /// Private messages; `epoch` is [`App::private_epoch`] when asked, carried back.
     Messaging {
@@ -534,7 +536,10 @@ pub enum Ev {
         note: Option<String>,
     },
     /// Subscribed chats with news, as (title, body); each is already a notification.
-    ChatNews(Vec<(String, String)>),
+    ChatNews {
+        epoch: u64,
+        news: Vec<(String, String)>,
+    },
     /// Private messages: the whole view, `open`'s messages when one was asked for, and what to
     /// say. Stale when `epoch` is not the app's any more.
     Messaging {
@@ -583,7 +588,7 @@ impl Worker {
         let sign = SignLane::spawn(registry.clone(), config.clone(), meta.id.clone(), network_id.clone(), ev_tx.clone(), cmd_tx.clone());
         let pending =
             PendingLane::spawn(registry.clone(), config.clone(), meta.id.clone(), network_id.clone(), ev_tx.clone(), cmd_tx.clone());
-        std::thread::Builder::new().name("wallet-worker".into()).spawn(move || {
+        lane_thread("wallet-worker").spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(rt) => rt,
                 Err(e) => {
@@ -593,7 +598,8 @@ impl Worker {
                 }
             };
             let lane = QiLane::spawn(registry.clone(), config.clone(), lane_tx);
-            runtime.block_on(run(registry, config, meta, network_id, Inbox::new(cmd_rx), ev_tx, wake, lane));
+            let messages = MsgLane::spawn(registry.clone(), config.clone(), ev_tx.clone());
+            runtime.block_on(run(registry, config, meta, network_id, Inbox::new(cmd_rx), ev_tx, wake, lane, messages));
         })?;
         Ok(Worker { tx: cmd_tx, rx: ev_rx, sign, pending })
     }
@@ -721,7 +727,7 @@ impl PendingLane {
         worker: tokio::sync::mpsc::UnboundedSender<Cmd>,
     ) -> std::sync::mpsc::Sender<PendingJob> {
         let (jobs, rx) = std::sync::mpsc::channel::<PendingJob>();
-        let _ = std::thread::Builder::new().name("wallet-pending".into()).spawn(move || {
+        let _ = lane_thread("wallet-pending").spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
             let open = |wallet: &str, network: &str| -> Option<Session> {
                 let meta = registry.resolve(Some(wallet), None).ok()?;
@@ -781,6 +787,13 @@ impl PendingLane {
 
 /// A lane's own session of a wallet on a network. It reads from the monitoring node when that
 /// checks out, like the worker's; whatever it broadcasts goes to the RPC endpoint regardless.
+/// A worker thread. Each runs a whole async state machine on its own stack, and in a debug
+/// build those are large: the default 2 MiB overflowed intermittently in the data worker on a cold
+/// start. 16 MiB is address space reserved, not memory used.
+pub(crate) fn lane_thread(name: &str) -> std::thread::Builder {
+    std::thread::Builder::new().name(name.into()).stack_size(16 << 20)
+}
+
 fn lane_session(
     runtime: &tokio::runtime::Runtime,
     registry: &Registry,
@@ -840,7 +853,7 @@ impl SignLane {
         worker: tokio::sync::mpsc::UnboundedSender<Cmd>,
     ) -> std::sync::mpsc::Sender<SignJob> {
         let (jobs, rx) = std::sync::mpsc::channel::<SignJob>();
-        let _ = std::thread::Builder::new().name("wallet-sign".into()).spawn(move || {
+        let _ = lane_thread("wallet-sign").spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
             let send = |ev: Ev| {
                 let _ = events.send(ev);
@@ -1011,7 +1024,7 @@ pub struct QiLane {
 impl QiLane {
     fn spawn(registry: Registry, config: AppConfig, done: tokio::sync::mpsc::UnboundedSender<Cmd>) -> QiLane {
         let (jobs, rx) = std::sync::mpsc::channel::<QiJob>();
-        let _ = std::thread::Builder::new().name("wallet-qi".into()).spawn(move || {
+        let _ = lane_thread("wallet-qi").spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
             // One session per wallet and network, reopened when either changes.
             let mut open: Option<(QiKey, Session)> = None;
@@ -1073,6 +1086,100 @@ impl QiLane {
         }
         let deep = full || session.qi_summary().map(|s| s.checkpoint_height.is_none()).unwrap_or(true);
         self.ask(session, if deep { QiWork::Scan(None) } else { QiWork::Refresh }, false);
+    }
+}
+
+/// What the messaging lane does.
+enum MsgWork {
+    Op(MsgOp),
+    /// Subscribed chats and private conversations with news (see `Session::chat_news_where`).
+    News {
+        dms_only: bool,
+    },
+}
+
+struct MsgJob {
+    key: QiKey,
+    meta: WalletMeta,
+    /// A copy of the wallet's keys for this job only: the lane locks its session when the job is
+    /// done, so it never holds keys between jobs, nor after the wallet locks or changes.
+    keys: wallet_core::identity::Unlocked,
+    work: MsgWork,
+    epoch: u64,
+}
+
+/// Private messages, on their own thread with their own session. Reading the chain for messages
+/// is a page of logs per 10,000 blocks (about 2.7 s each on the public RPC), and a first look-up
+/// of someone's key can read weeks of them; inside the wallet worker that held up a wallet switch
+/// for minutes. Answers carry the epoch they were asked in, so the screen drops any from before a
+/// lock or a switch.
+pub struct MsgLane {
+    jobs: std::sync::mpsc::Sender<MsgJob>,
+}
+
+impl MsgLane {
+    fn spawn(registry: Registry, config: AppConfig, events: Sender<Ev>) -> MsgLane {
+        let (jobs, rx) = std::sync::mpsc::channel::<MsgJob>();
+        let _ = lane_thread("wallet-messages").spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+            let mut open: Option<(QiKey, Session)> = None;
+            while let Ok(job) = rx.recv() {
+                if open.as_ref().is_none_or(|(k, _)| *k != job.key) {
+                    open = lane_session(&runtime, &registry, &config, job.meta.clone(), &job.key.network).map(|s| (job.key.clone(), s));
+                }
+                let Some((_, session)) = open.as_mut() else {
+                    let _ = events.send(Ev::Messaging {
+                        epoch: job.epoch,
+                        view: Err("could not open the wallet".into()),
+                        open: None,
+                        note: None,
+                    });
+                    super::term::wake();
+                    continue;
+                };
+                session.meta = job.meta;
+                recheck_monitor(&runtime, session);
+                session.use_keys(job.keys);
+                let started = std::time::Instant::now();
+                let event = runtime.block_on(async {
+                    match job.work {
+                        MsgWork::Op(op) => {
+                            let (open, sync, note) = messaging_op(session, op).await;
+                            let view = messaging_view(session, sync).await;
+                            let open = match (&view, open) {
+                                (Ok(_), Some(peer)) => {
+                                    let lines = session.messaging_read(&peer, true).map_err(|e| e.to_string());
+                                    Some((peer, lines))
+                                }
+                                _ => None,
+                            };
+                            Some(Ev::Messaging { epoch: job.epoch, view, open, note })
+                        }
+                        MsgWork::News { dms_only } => match session.chat_news_where(dms_only).await {
+                            Ok(news) if !news.is_empty() => {
+                                Some(Ev::ChatNews { epoch: job.epoch, news: news.into_iter().map(|n| (n.title, n.body)).collect() })
+                            }
+                            _ => None,
+                        },
+                    }
+                });
+                // No keys between jobs.
+                session.lock();
+                wallet_core::diag::timing("messaging.lane", started);
+                if let Some(event) = event {
+                    if events.send(event).is_err() {
+                        return;
+                    }
+                    super::term::wake();
+                }
+            }
+        });
+        MsgLane { jobs }
+    }
+
+    fn ask(&self, session: &Session, keys: wallet_core::identity::Unlocked, work: MsgWork, epoch: u64) {
+        let key = QiKey { wallet: session.meta.id.clone(), network: session.network.id.clone() };
+        let _ = self.jobs.send(MsgJob { key, meta: session.meta.clone(), keys, work, epoch });
     }
 }
 
@@ -1438,6 +1545,7 @@ async fn run(
     events: Sender<Ev>,
     wake: impl Fn() + Send + 'static,
     mut lane: QiLane,
+    messages: MsgLane,
 ) {
     let send = |ev: Ev| {
         let _ = events.send(ev);
@@ -1856,17 +1964,22 @@ async fn run(
             Cmd::MarkRead => {
                 let _ = session.app.mark_notifications_read();
             }
+            // Private messages run on their own lane: a first key lookup can read weeks of logs,
+            // and the wallet worker must stay free to switch wallets and refresh. A new account is
+            // made here first, so this worker's wallet file knows it.
             Cmd::Messaging { op, epoch } => {
-                let (open, sync, note) = messaging_op(&mut session, op).await;
-                let view = messaging_view(&session, sync).await;
-                let open = match (&view, open) {
-                    (Ok(_), Some(peer)) => {
-                        let lines = session.messaging_read(&peer, true).map_err(|e| e.to_string());
-                        Some((peer, lines))
-                    }
-                    _ => None,
+                let op = match op {
+                    MsgOp::Setup { account: None, new_identity } => match session.add_account(Some("messaging")) {
+                        Ok(a) => Ok(MsgOp::Setup { account: Some(a.address), new_identity }),
+                        Err(e) => Err(e.to_string()),
+                    },
+                    op => Ok(op),
                 };
-                send(Ev::Messaging { epoch, view, open, note });
+                match (op, session.duplicate_keys()) {
+                    (Ok(op), Some(keys)) => messages.ask(&session, keys, MsgWork::Op(op), epoch),
+                    (Err(e), _) => send(Ev::Messaging { epoch, view: Err(e), open: None, note: None }),
+                    (Ok(_), None) => send(Ev::Messaging { epoch, view: Err("the wallet is locked".into()), open: None, note: None }),
+                }
             }
             Cmd::Chat(op) => {
                 let note = match op {
@@ -1884,13 +1997,18 @@ async fn run(
                 };
                 send(Ev::Chat { subs: session.chat_subscriptions(), pin: session.chat_pin(), note });
             }
-            Cmd::ChatNews { dms_only } => {
-                if let Ok(news) = session.chat_news_where(dms_only).await
-                    && !news.is_empty()
-                {
-                    send(Ev::ChatNews(news.into_iter().map(|n| (n.title, n.body)).collect()));
+            // Unlocked, private conversations are read too, which is slow work for the lane;
+            // locked, only public channels are, which is quick.
+            Cmd::ChatNews { dms_only, epoch } => match session.duplicate_keys() {
+                Some(keys) => messages.ask(&session, keys, MsgWork::News { dms_only }, epoch),
+                None => {
+                    if let Ok(news) = session.chat_news_where(dms_only).await
+                        && !news.is_empty()
+                    {
+                        send(Ev::ChatNews { epoch, news: news.into_iter().map(|n| (n.title, n.body)).collect() });
+                    }
                 }
-            }
+            },
             Cmd::ExportPhrase(password) => match session.export_mnemonic(&password) {
                 Ok((phrase, _)) => send(Ev::Secret(phrase)),
                 Err(e) => send(Ev::Error(e.to_string())),
