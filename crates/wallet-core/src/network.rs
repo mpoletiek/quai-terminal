@@ -315,6 +315,9 @@ pub struct Ecosystem {
     pub wquai_code_hash: Option<String>,
     /// The on-chain message board (`contracts/Messages.sol`), when one is deployed.
     pub messages: Option<PinnedContract>,
+    /// No private-message key announcement (v3) exists on this network before this block, so a
+    /// first look-up of someone's key never reads further back.
+    pub messages_v3_from: Option<u64>,
     /// Bazarr listings indexer base URL.
     pub bazarr_indexer: Option<String>,
     /// Bazarr marketplace web base URL (for "view on Bazarr").
@@ -408,6 +411,8 @@ impl Ecosystem {
                 "0x0077AD436f63F35D0DeD89055402659750a28D0a",
                 "0x44f85316cf5be37e598a0d08e3ca01572d0e762b57505f07d65acb0ee290d9c1",
             )),
+            // v3 private messages did not exist before 2026-09-24; this block is hours earlier.
+            messages_v3_from: Some(10_270_000),
             // Read from chain 9 on 2026-09-21; the runtime hashes are unchanged from the
             // 2026-09-16 survey in docs/DEX_EXPANSION_PLAN.md. The router's `factory()` is the
             // factory below and its `WETH()` is the same WQUAI the wallet already pins, so

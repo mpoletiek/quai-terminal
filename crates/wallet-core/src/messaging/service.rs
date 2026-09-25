@@ -318,6 +318,12 @@ impl Session {
         Ok(out)
     }
 
+    /// How far back a key is searched for from `from`: four weeks, and never before v3 existed on
+    /// this network.
+    fn key_floor(&self, from: u64) -> u64 {
+        from.saturating_sub(KEY_LOOKBACK).max(self.network.ecosystem.messages_v3_from.unwrap_or(0)).min(from)
+    }
+
     /// Read a peer's announcements into their record: backwards from `head` until one turns up
     /// the first time, forwards from where it stopped afterwards. The first identity seen is
     /// pinned; a different one later is held for the user as an identity change.
@@ -331,7 +337,7 @@ impl Session {
     ) -> Result<()> {
         let mut found = Vec::new();
         if peer.keys_to == 0 {
-            let floor = head.saturating_sub(KEY_LOOKBACK);
+            let floor = self.key_floor(head);
             let mut end = head;
             loop {
                 let start = floor.max(end.saturating_sub(LOG_PAGE - 1));
@@ -362,7 +368,7 @@ impl Session {
         if let Some(k) = peer.key_for(weekly) {
             return Ok(Some(k.clone()));
         }
-        let floor = before.saturating_sub(KEY_LOOKBACK);
+        let floor = self.key_floor(before);
         let mut end = before;
         loop {
             let start = floor.max(end.saturating_sub(LOG_PAGE - 1));
@@ -422,6 +428,7 @@ impl Session {
         // Nothing can have been sealed to keys that did not exist: reading starts here.
         let store = self.open_store(&file)?;
         store.set_scanned(head.number, &head.hash.to_string().to_lowercase())?;
+        store.set_origin(head.number)?;
         self.messaging_status().await
     }
 
@@ -455,7 +462,7 @@ impl Session {
         }
         let (ctx, contract) = self.messaging_context().await?;
         let head = self.head_header().await?.number;
-        let mut own = store.peer(&file.account)?.unwrap_or_else(|| PeerRecord::new(&file.account, now()));
+        let mut own = own_record(store, file, head)?;
         let mut times = HashMap::new();
         self.refresh_keys(&ctx, contract, &mut own, head, &mut times).await?;
         store.put_peer(&own)?;
@@ -720,7 +727,7 @@ impl Session {
         let me_bytes = wire::address_bytes(&me).ok_or_else(|| CoreError::Invalid("messaging account".into()))?;
 
         // Our own announcements: the newest on chain supersedes the ones before it.
-        let mut own = store.peer(&me)?.unwrap_or_else(|| PeerRecord::new(&me, now()));
+        let mut own = own_record(&store, &opened.file, head.number)?;
         self.refresh_keys(&ctx, contract, &mut own, head.number, &mut times).await?;
         store.put_peer(&own)?;
         let on_chain: Vec<[u8; 32]> = own.keys.iter().map(|k| k.weekly).collect();
@@ -963,6 +970,24 @@ impl Session {
     }
 }
 
+/// This identity's own record. Its announcements cannot be older than its setup, so the first read
+/// starts there instead of searching back weeks for a key that may not be published yet (which
+/// took minutes on the public RPC). A store from before `origin` was kept estimates it from the
+/// key file's age, with an hour to spare.
+fn own_record(store: &Store, file: &KeyFile, head: u64) -> Result<PeerRecord> {
+    if let Some(p) = store.peer(&file.account)? {
+        return Ok(p);
+    }
+    let mut own = PeerRecord::new(&file.account, now());
+    let origin = match store.origin()? {
+        Some(block) => block,
+        None => head.saturating_sub(now().saturating_sub(file.created) / BLOCK_SECS + 720),
+    };
+    // `keys_to` is where reading resumes from, so a fresh record reads forward from the origin.
+    own.keys_to = origin.saturating_sub(1).max(1);
+    Ok(own)
+}
+
 /// Add announcements to a peer's record, oldest first, without repeats, and pin or flag the
 /// identity they carry.
 fn merge_keys(peer: &mut PeerRecord, found: Vec<KnownKey>) {
@@ -1008,6 +1033,24 @@ mod tests {
         assert_eq!((p.identity, p.changed_identity), (Some([1; 32]), Some([9; 32])), "pinned stays, change waits");
         assert_eq!(p.current_key().map(|k| k.weekly), Some([2; 32]), "sending uses the pinned identity's newest key");
         assert_eq!(p.key_for(&[3; 32]).map(|k| k.identity), Some([9; 32]));
+    }
+
+    /// This identity's own announcements are read forward from its setup, never searched for
+    /// weeks back: before any key is published that search found nothing, slowly.
+    #[test]
+    fn own_keys_are_read_from_the_setup_block() {
+        let store = Store::memory([1; 32]).unwrap();
+        let file = KeyFile::new("0x00a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", now().saturating_sub(3600)).unwrap();
+        // Without an origin, the key file's age says roughly where (an hour, plus an hour spare).
+        let estimated = own_record(&store, &file, 10_000_000).unwrap();
+        assert!(estimated.keys_to > 0, "never the backward search");
+        assert!((10_000_000 - 720 - 720 - 2..=10_000_000 - 720 - 720).contains(&estimated.keys_to), "{}", estimated.keys_to);
+        store.set_origin(9_999_000).unwrap();
+        assert_eq!(own_record(&store, &file, 10_000_000).unwrap().keys_to, 9_998_999, "the setup block itself is read");
+        let mut kept = PeerRecord::new(&file.account, 0);
+        kept.keys_to = 10_000_500;
+        store.put_peer(&kept).unwrap();
+        assert_eq!(own_record(&store, &file, 10_001_000).unwrap().keys_to, 10_000_500, "a record already read resumes where it stopped");
     }
 
     #[test]

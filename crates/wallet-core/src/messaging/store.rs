@@ -303,6 +303,17 @@ impl Store {
         }))
     }
 
+    /// The block messaging was set up at: nothing of this identity's can be older.
+    pub fn origin(&self) -> Result<Option<u64>> {
+        let v: Option<String> = self.conn.query_row("SELECT value FROM progress WHERE name='origin'", [], |r| r.get(0)).optional()?;
+        Ok(v.and_then(|v| v.parse().ok()))
+    }
+
+    pub fn set_origin(&self, block: u64) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO progress(name,value) VALUES('origin',?1)", [block.to_string()])?;
+        Ok(())
+    }
+
     pub fn set_scanned(&self, block: u64, hash: &str) -> Result<()> {
         self.conn.execute("INSERT OR REPLACE INTO progress(name,value) VALUES('dm',?1)", [format!("{block}:{hash}")])?;
         Ok(())
