@@ -3,6 +3,31 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
+## What's new in 0.1.0-alpha.11
+
+- **Private messages go from the account you are using.** There is no messaging account to set up
+  or fund any more: messages and board posts go from the account chosen with `@` (or `account use`),
+  which pays their fees. Each account is its own messaging identity with its own conversations, so
+  switching accounts switches inbox. Keys you already had move to the account you chose for them;
+  choose that account with `@` to keep your conversations. Messaging is still off by default, and
+  this change has been tested by the wallet's own tests, not yet end to end on a chain.
+- **Older private messages are gone.** Conversations from before 0.1.0-alpha.9's messaging (the
+  read-only ones between payment codes) are no longer shown, and `board inbox` is removed.
+- **Contacts keep every account a person uses.** A contact holds one payment code and any number
+  of Quai accounts; payments by name go to the first. Save an account or a code to someone already
+  saved (`contact save`, or `space` then `c` on Contacts, or `c` on a Board message). Replacing a
+  code, or taking one from another contact, asks first. `contact forget` drops an account.
+- **Telling someone your payment code works again.** Since 0.1.0-alpha.9 the payment-code
+  announcement (`payment notify`) was refused before it could be signed, and the refusal could leave
+  a gap that then stopped QUAI → Qi conversions from that account (`tx fill-gap` clears one). The
+  Send Qi form now offers the announcement after a payment to someone who has not been told your
+  code, since their wallet cannot find the payment until it knows it. The announcement has not yet
+  been sent on mainnet with this version.
+- **Picking a trade in Markets' flow charts that trade's pair.** With the pairs list sorted, or a
+  pair watched, it charted a different one.
+
+Everything else is 0.1.0-alpha.10, below.
+
 ## What's new in 0.1.0-alpha.10
 
 - **The terminal no longer loses its connection to the daemon under load.** In 0.1.0-alpha.9 it
@@ -12,7 +37,7 @@ in it" below before doing anything with real money.
   terminal locked and reconnected. Each end now reads the other's messages whole, whatever else
   it is doing.
 
-Everything else is 0.1.0-alpha.9, below.
+0.1.0-alpha.9 is below.
 
 ## What's new in 0.1.0-alpha.9
 
@@ -36,8 +61,8 @@ This release rebuilds how the wallet is put together. Most of it is underneath; 
   swap) is one plan, walked the same way from the terminal and the command line. Rejecting a review
   brings back the form as you typed it.
 - **Pictures are decoded in a separate, sandboxed process** that holds no keys.
-- **Private messages, off by default.** Messages encrypted to one person with weekly keys, sent from
-  a messaging account of their own. They stay off until you turn them on, and their cryptography has
+- **Private messages, off by default.** Messages encrypted to one person with weekly keys (sent,
+  since 0.1.0-alpha.11, from the account in use). They stay off until you turn them on, and their cryptography has
   not yet had an independent review.
 - **People** puts contacts and the payment channels to them on one screen; with messaging on, `5`
   opens the inbox.
