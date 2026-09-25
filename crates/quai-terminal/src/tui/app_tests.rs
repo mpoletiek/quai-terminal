@@ -514,6 +514,56 @@ fn submitted(id: &str) -> Ev {
     })
 }
 
+/// A Qi send to someone not told this wallet's payment code offers the announcement on its form;
+/// asked for, it is prepared once the Qi is sent, not before (a rejected send announces nothing).
+/// Declined on the form, or to someone already told, nothing follows.
+#[test]
+fn a_qi_send_announces_the_payment_code_when_asked() {
+    use crate::tui::app::{FormKind, ReviewState};
+    use quai_engine::worker::Prepare;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let (worker, prepares) = Worker::capture_prepares();
+    app.use_worker(worker);
+    app.config.hold_to_sign = false;
+    let wait = || prepares.recv_timeout(std::time::Duration::from_secs(2)).ok();
+    let send_qi = |app: &mut App, announce: &str, warned: bool| {
+        app.open_form(FormKind::SendQi);
+        let Modal::Form(mut form) = std::mem::replace(&mut app.modal, Modal::None) else { panic!("no form") };
+        for (i, v) in ["alice", "2", "", announce].iter().enumerate() {
+            form.fields[i].value = v.to_string();
+        }
+        app.submit_form(&form);
+        let Ev::Review(review) = review("q", "send_qi") else { unreachable!() };
+        let mut review = *review;
+        if warned {
+            review.warnings.push(wallet_core::ops::UNANNOUNCED.into());
+        }
+        app.modal = Modal::Review(ReviewState {
+            review,
+            scroll: 0,
+            content_lines: 1,
+            viewport: 10,
+            approve_focused: true,
+            opened: Instant::now() - std::time::Duration::from_secs(2),
+            typed: String::new(),
+        });
+    };
+    send_qi(&mut app, "yes", true);
+    assert!(matches!(wait(), Some(Prepare::SendQi { to, .. }) if to == "alice"));
+    press(&mut app, KeyCode::Enter);
+    assert!(prepares.try_recv().is_err(), "nothing is announced before the Qi is sent");
+    app.on_event(submitted("q"), (160, 48));
+    assert!(matches!(wait(), Some(Prepare::Notify { from: None, peer }) if peer == "alice"), "then the announcement");
+
+    for (announce, warned) in [("no", true), ("yes", false)] {
+        send_qi(&mut app, announce, warned);
+        assert!(matches!(wait(), Some(Prepare::SendQi { .. })));
+        press(&mut app, KeyCode::Enter);
+        app.on_event(submitted("q"), (160, 48));
+        assert!(prepares.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "{announce}, warned {warned}: nothing follows");
+    }
+}
+
 /// A review armed and read, then hidden by a window shrunk below the minimum, cannot be approved:
 /// nothing is drawn there, so Enter is held back. Esc still rejects, because backing out is safe.
 #[test]

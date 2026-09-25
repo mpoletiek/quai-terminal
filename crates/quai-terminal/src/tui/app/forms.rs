@@ -84,8 +84,14 @@ impl App {
                     Field::new("To", "payment code, contact or single-output Qi address"),
                     Field::new("Amount", "").amount("QI"),
                     Field::new("Max fee", "Qi · leave empty for the estimate").optional(),
+                    Field::new("Announce", "←/→ to choose").choice(vec![
+                        ("yes".into(), "yes: tell them my payment code, if they have not been told".into()),
+                        ("no".into(), "no".into()),
+                    ]),
                 ],
-                Some("Payment codes derive a fresh address for every output."),
+                Some(
+                    "Payment codes derive a fresh address for every output. Their wallet finds the payment once it knows your code: announcing it is a small QUAI transaction from the account in use, and public.",
+                ),
             ),
             FormKind::SendToken => (
                 "Send token",
@@ -604,7 +610,10 @@ impl App {
         }
         let cmd = match &form.kind {
             FormKind::SendQuai => Cmd::Prepare(Prepare::SendQuai { from: opt(0), to: v(1), amount: v(2), max_fee: opt(3) }),
-            FormKind::SendQi => Cmd::Prepare(Prepare::SendQi { to: v(0), amount: v(1), max_fee: opt(2) }),
+            FormKind::SendQi => {
+                self.status.announce_asked = (v(3) == "yes").then(|| v(0));
+                Cmd::Prepare(Prepare::SendQi { to: v(0), amount: v(1), max_fee: opt(2) })
+            }
             FormKind::SendToken => Cmd::Prepare(Prepare::SendToken { from: opt(0), token: v(1), to: v(2), amount: v(3) }),
             FormKind::Approve => Cmd::Prepare(Prepare::Approve {
                 token: v(0),

@@ -290,6 +290,11 @@ pub fn denomination_count(amount: U256) -> usize {
     count
 }
 
+/// A Qi review's warning when the recipient's wallet has not been told this wallet's payment
+/// code: until it is, their wallet cannot find the payment. Announcing it (`payment notify`, or
+/// the option on a Qi send) is a separate Quai transaction.
+pub const UNANNOUNCED: &str = "the recipient has not been told your payment code, so their wallet cannot find this payment yet: announce it (a separate Quai transaction), or they add your code themselves";
+
 impl Session {
     fn quai_contract(&self, value: &Option<String>, name: &str) -> Result<QuaiAddress> {
         value
@@ -1145,7 +1150,7 @@ impl Session {
             match notified {
                 Some(true) => fields.push(field("Mailbox", "recipient already notified")),
                 Some(false) => {
-                    warnings.push("the recipient has not been notified of this payment code; run `payment notify` (a separate Quai transaction) so Pelagus wallets can find the funds".into());
+                    warnings.push(UNANNOUNCED.into());
                     detail = serde_json::json!({"needs_notify": true}).into();
                 }
                 None => {}
@@ -1613,7 +1618,7 @@ impl Session {
             counterparty: peer.to_base58(),
             fields: vec![field("Mailbox", mailbox_address.to_string()), field("Recipient code", peer.to_base58())],
             warnings,
-            detail: serde_json::json!({"peer": peer.to_base58()}).into(),
+            detail: serde_json::json!({"peer": peer.to_base58(), "sender": ours.to_base58()}).into(),
             max_gas: 600_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })

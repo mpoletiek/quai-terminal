@@ -432,7 +432,9 @@ pub enum SendCmd {
         amount: String,
         #[command(flatten)]
         fee: FeeArgs,
-        /// Also prepare the mailbox notification if the recipient was not notified.
+        /// Then announce your payment code to the recipient, if they have not been told it (a
+        /// separate Quai transaction). Without it, their wallet cannot find the payment until they
+        /// add your code themselves.
         #[arg(long)]
         notify: bool,
     },

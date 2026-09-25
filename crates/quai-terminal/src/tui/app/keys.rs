@@ -187,6 +187,13 @@ impl App {
                     if r.approve_focused && r.can_approve() {
                         self.input.hold = None;
                         self.status.committing_kind = Some(r.review.kind.clone());
+                        // A Qi send to someone not told this wallet's payment code: the
+                        // announcement follows it, when the form asked for one.
+                        let unannounced = r.review.warnings.iter().any(|w| w == wallet_core::ops::UNANNOUNCED);
+                        self.status.announce_after = match r.review.kind {
+                            wallet_core::journal::OpKind::SendQi if unannounced => self.status.announce_asked.take(),
+                            _ => None,
+                        };
                         match &r.review.confirm {
                             Some(_) => self.send(Cmd::CommitConfirmed { op_id: r.review.op_id.clone(), words: r.typed.trim().to_string() }),
                             None => self.send(Cmd::Commit(r.review.op_id.clone())),

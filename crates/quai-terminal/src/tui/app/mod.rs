@@ -1138,6 +1138,11 @@ pub struct Status {
     pub notices_out: Vec<(String, String)>,
     /// Kind of the review being committed (follow-ups after submission).
     pub committing_kind: Option<wallet_core::journal::OpKind>,
+    /// Who a Qi send asked to be told this wallet's payment code, from the form.
+    pub announce_asked: Option<String>,
+    /// Who to announce to once the Qi send being committed is sent: set at approval, when its
+    /// review says they have not been told.
+    pub announce_after: Option<String>,
 }
 
 /// The lock screen: locked or not, the password being typed, the unlock in flight and what it said.
@@ -1427,6 +1432,8 @@ impl App {
                 log: std::collections::VecDeque::new(),
                 notices_out: Vec::new(),
                 committing_kind: None,
+                announce_asked: None,
+                announce_after: None,
             },
             lock: Lock {
                 pending: None,

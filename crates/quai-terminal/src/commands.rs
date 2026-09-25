@@ -843,7 +843,7 @@ pub async fn send(ctx: &Ctx, cmd: SendCmd) -> Result<()> {
         SendCmd::Batch { file, from, dry_run } => return send_batch(ctx, &mut s, &file, from.as_deref(), dry_run).await,
         SendCmd::Qi { to, amount, fee, notify } => {
             let review = s.review_send_qi(&to, &amount, fee.max_fee.as_deref()).await?;
-            let needs_notify = review.warnings.iter().any(|w| w.contains("not been notified"));
+            let needs_notify = review.warnings.iter().any(|w| w == wallet_core::ops::UNANNOUNCED);
             let submitted = ctx.authorize(&mut s, review).await?;
             ctx.print_submitted("send qi", &submitted);
             if notify && needs_notify {
