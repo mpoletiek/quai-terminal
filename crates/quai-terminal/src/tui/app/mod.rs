@@ -660,13 +660,21 @@ pub struct ReviewState {
     pub viewport: u16,
     pub approve_focused: bool,
     pub opened: Instant,
+    /// What has been typed toward a risky review's confirmation words.
+    pub typed: String,
 }
 
 impl ReviewState {
-    /// Approval enables only once the whole review has been scrolled into view and shortly after opening.
+    /// Approval enables only once the whole review has been scrolled into view, shortly after
+    /// opening, and — for a risky review — once its confirmation words have been typed exactly.
     pub fn can_approve(&self) -> bool {
         let seen_all = self.scroll + self.viewport >= self.content_lines;
-        seen_all && self.opened.elapsed().as_millis() > 400
+        seen_all && self.opened.elapsed().as_millis() > 400 && self.words_typed()
+    }
+
+    /// Whether the review asks for no words, or they have been typed exactly.
+    pub fn words_typed(&self) -> bool {
+        self.review.confirm.as_deref().is_none_or(|phrase| self.typed.trim() == phrase)
     }
     /// Fraction of the review that has been in view.
     pub fn read_ratio(&self) -> f64 {

@@ -337,6 +337,11 @@ pub enum Cmd {
     },
     Prepare(Prepare),
     Commit(String),
+    /// Commit a risky review with the words its review asked to be typed.
+    CommitConfirmed {
+        op_id: String,
+        words: String,
+    },
     Discard(String),
     Quote {
         direction: String,
@@ -429,7 +434,7 @@ impl Cmd {
             Cmd::UseKeys { .. } => "use_keys",
             Cmd::Lock => "lock",
             Cmd::Prepare(_) => "prepare",
-            Cmd::Commit(_) => "commit",
+            Cmd::Commit(_) | Cmd::CommitConfirmed { .. } => "commit",
             Cmd::Discard(_) => "discard",
             Cmd::Quote { .. } => "quote",
             Cmd::QiMax { .. } => "max_quote",
@@ -613,7 +618,10 @@ impl Worker {
                 let _ = self.sign.send(SignJob::Prepare(req));
             }
             Cmd::Commit(id) => {
-                let _ = self.sign.send(SignJob::Commit(id));
+                let _ = self.sign.send(SignJob::Commit(id, None));
+            }
+            Cmd::CommitConfirmed { op_id, words } => {
+                let _ = self.sign.send(SignJob::Commit(op_id, Some(words)));
             }
             Cmd::Discard(id) => {
                 let _ = self.sign.send(SignJob::Discard(id));
@@ -665,6 +673,25 @@ impl Worker {
         let (sign, _) = std::sync::mpsc::channel::<SignJob>();
         let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
         (Worker { tx, rx, sign, pending }, rx_cmd)
+    }
+
+    /// A worker whose commits land in the returned receiver as (review, typed words).
+    pub(crate) fn capture_commits() -> (Worker, std::sync::mpsc::Receiver<(String, Option<String>)>) {
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
+        let (_ev, rx) = std::sync::mpsc::channel::<Ev>();
+        let (sign, jobs) = std::sync::mpsc::channel::<SignJob>();
+        let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
+        let (commits, out) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for job in jobs {
+                if let SignJob::Commit(id, words) = job
+                    && commits.send((id, words)).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        (Worker { tx, rx, sign, pending }, out)
     }
 
     /// A worker whose preparations land in the returned receiver; everything else goes nowhere.
@@ -827,7 +854,8 @@ fn recheck_monitor(runtime: &tokio::runtime::Runtime, session: &mut Session) {
 /// Work for the signing lane.
 enum SignJob {
     Prepare(Prepare),
-    Commit(String),
+    /// Commit a review, with the typed words when the review is risky.
+    Commit(String, Option<String>),
     Discard(String),
     Keys { wallet: String, keys: Box<wallet_core::identity::Unlocked> },
     Lock,
@@ -942,10 +970,10 @@ impl SignLane {
                             Err(e) => send(Ev::PrepareError(e.to_string())),
                         }
                     }
-                    SignJob::Commit(id) => {
+                    SignJob::Commit(id, words) => {
                         let Some(s) = session.as_mut() else { continue };
                         send(Ev::SignBusy(Some("signing and broadcasting…".into())));
-                        let result = runtime.block_on(s.commit(&id));
+                        let result = runtime.block_on(s.commit_with(&id, words.as_deref()));
                         send(Ev::SignBusy(None));
                         match result {
                             Ok(sub) => send(Ev::Submitted(sub)),
@@ -1713,7 +1741,7 @@ async fn run(
             }
             // The signing lane's: the UI routes these to it, so a transaction is prepared beside
             // whatever this worker is doing rather than after it.
-            Cmd::Prepare(_) | Cmd::Commit(_) | Cmd::Discard(_) => {}
+            Cmd::Prepare(_) | Cmd::Commit(_) | Cmd::CommitConfirmed { .. } | Cmd::Discard(_) => {}
             Cmd::Quote { direction, amount } => match session.conversion_quote(&direction, &amount).await {
                 Ok(q) => send(Ev::Quote(Box::new(q))),
                 Err(e) => send(Ev::Error(e.to_string())),
@@ -2521,7 +2549,7 @@ mod tests {
             .try_iter()
             .map(|j| match j {
                 SignJob::Prepare(_) => "prepare",
-                SignJob::Commit(_) => "commit",
+                SignJob::Commit(..) => "commit",
                 SignJob::Discard(_) => "discard",
                 _ => "other",
             })

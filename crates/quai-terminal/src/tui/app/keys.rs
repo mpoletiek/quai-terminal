@@ -157,6 +157,17 @@ impl App {
             }
             Modal::Form(form) => self.form_key(form, key),
             Modal::Review(mut r) => match key.code {
+                // A risky review: with Approve focused, the keyboard types its confirmation words.
+                KeyCode::Char(c) if r.review.confirm.is_some() && r.approve_focused && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if r.typed.chars().count() < 64 {
+                        r.typed.push(c);
+                    }
+                    Modal::Review(r)
+                }
+                KeyCode::Backspace if r.review.confirm.is_some() && r.approve_focused => {
+                    r.typed.pop();
+                    Modal::Review(r)
+                }
                 // The same send as a shell command; copying signs nothing and keeps the review open.
                 KeyCode::Char('y') => {
                     match review_cli(&r.review) {
@@ -201,8 +212,15 @@ impl App {
                     if r.approve_focused && r.can_approve() {
                         self.hold = None;
                         self.committing_kind = Some(r.review.kind.clone());
-                        self.send(Cmd::Commit(r.review.op_id.clone()));
+                        match &r.review.confirm {
+                            Some(_) => self.send(Cmd::CommitConfirmed { op_id: r.review.op_id.clone(), words: r.typed.trim().to_string() }),
+                            None => self.send(Cmd::Commit(r.review.op_id.clone())),
+                        }
                         Modal::None
+                    } else if r.approve_focused && !r.words_typed() {
+                        let phrase = r.review.confirm.clone().unwrap_or_default();
+                        self.toast(format!("type `{phrase}` to sign this review"), true);
+                        Modal::Review(r)
                     } else if r.approve_focused {
                         self.toast("read to the end of the review first (space pages down)", true);
                         Modal::Review(r)

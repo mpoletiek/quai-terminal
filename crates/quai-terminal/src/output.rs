@@ -100,7 +100,7 @@ impl Out {
             clean(&mut coin.address);
             clean(&mut coin.role);
         }
-        for warning in &mut safe.warnings {
+        for warning in safe.warnings.iter_mut().chain(safe.risks.iter_mut()) {
             clean(warning);
         }
         let r = &safe;
@@ -153,6 +153,12 @@ impl Out {
         }
         for warning in &r.warnings {
             let _ = writeln!(w, "│ {} {}", self.yellow("!"), self.yellow(warning));
+        }
+        for risk in &r.risks {
+            let _ = writeln!(w, "│ {} {}", self.red("!!"), self.red(&format!("this {risk}")));
+        }
+        if let Some(phrase) = &r.confirm {
+            let _ = writeln!(w, "│ {} {}", self.bold("to sign, type"), self.bold(phrase));
         }
         let _ = writeln!(w, "└ operation {}", self.dim(&r.op_id));
     }

@@ -134,6 +134,8 @@ fn review_requires_scroll() {
         visuals: vec![],
         fee_over_policy: false,
         changes: vec![],
+        risks: vec![],
+        confirm: None,
     };
     let mut r = ReviewState {
         review,
@@ -142,11 +144,70 @@ fn review_requires_scroll() {
         viewport: 10,
         approve_focused: true,
         opened: Instant::now() - std::time::Duration::from_secs(2),
+        typed: String::new(),
     };
     assert!(!r.can_approve());
     r.scroll = 30;
     assert!(r.can_approve());
     assert!((r.read_ratio() - 1.0).abs() < f64::EPSILON);
+}
+
+/// A risky review signs only after its words are typed, with Approve focused; the letters are
+/// typing, not their usual actions; and the words travel with the commit, where the session
+/// checks them again (`Session::commit_with`).
+#[test]
+fn a_risky_review_signs_only_with_its_words() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let (worker, commits) = Worker::capture_commits();
+    app.worker = Some(worker);
+    let review = Review {
+        op_id: "r1".into(),
+        kind: OpKind::ContractCall,
+        title: "Call a contract".into(),
+        network: "n".into(),
+        from: "a".into(),
+        to: "0x00dd000000000000000000000000000000000004".into(),
+        asset: "QUAI".into(),
+        amount: "0".into(),
+        amount_base: "0".into(),
+        max_fee: "1".into(),
+        fee_bps: None,
+        fields: vec![],
+        coins: vec![],
+        warnings: vec![],
+        visuals: vec![],
+        fee_over_policy: false,
+        changes: vec![],
+        risks: vec!["calls a contract the wallet does not know; what it does was not decoded".into()],
+        confirm: Some("call 0004".into()),
+    };
+    app.modal = Modal::Review(ReviewState {
+        review,
+        scroll: 0,
+        content_lines: 5,
+        viewport: 10,
+        approve_focused: true,
+        opened: Instant::now() - std::time::Duration::from_secs(2),
+        typed: String::new(),
+    });
+    let words = |app: &App| match &app.modal {
+        Modal::Review(r) => (r.typed.clone(), r.can_approve()),
+        _ => panic!("the review closed"),
+    };
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.modal, Modal::Review(_)), "Enter alone does not sign a risky review");
+    assert!(commits.try_recv().is_err());
+    // `y` would copy the command and `j` scroll: here they are letters of the words.
+    for c in "call 0004x".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(words(&app), ("call 0004x".into(), false), "one letter too many is not the words");
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(words(&app), ("call 0004".into(), true));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.modal, Modal::None));
+    let (op, typed) = commits.recv_timeout(std::time::Duration::from_secs(2)).expect("a commit");
+    assert_eq!((op.as_str(), typed.as_deref()), ("r1", Some("call 0004")));
 }
 
 fn test_app(kind: WalletKind) -> (tempfile::TempDir, App) {
@@ -427,6 +488,8 @@ fn review(id: &str, kind: &str) -> Ev {
         visuals: vec![],
         fee_over_policy: false,
         changes: vec![],
+        risks: vec![],
+        confirm: None,
     }))
 }
 
@@ -2092,6 +2155,8 @@ fn a_send_review_copies_as_a_command() {
         visuals: vec![],
         fee_over_policy: false,
         changes: vec![],
+        risks: vec![],
+        confirm: None,
     };
     assert_eq!(
         review_cli(&review("send_quai", "0x00bb", "1,250.5 QUAI", vec![])).as_deref(),

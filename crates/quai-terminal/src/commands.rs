@@ -124,7 +124,7 @@ impl Ctx {
             self.out.review(&review);
             eprintln!("  reads: {} · broadcast: {}", network::rpc_origin(read_url), network::rpc_origin(&session.network.rpc_url));
         }
-        let validation = (|| -> Result<()> {
+        let validation = (|| -> Result<Option<String>> {
             self.config.require_execution_transport(&session.network)?;
             if let Some(path) = &self.global.authorization_policy {
                 let mut bytes = Vec::new();
@@ -135,13 +135,44 @@ impl Ctx {
                 let policy: AuthorizationPolicy = serde_json::from_slice(&bytes)?;
                 policy.check(&session.meta.id, &session.network, &op, &review, now())?;
             }
-            prompt::confirm("Sign and broadcast?", "yes", self.global.yes)
+            match &review.confirm {
+                // A risky review: the words replace the plain "yes".
+                Some(phrase) => {
+                    // The words given on the command line are the typed confirmation, checked by
+                    // the commit like any other.
+                    if let Some(words) = &self.global.confirm_words {
+                        return Ok(Some(words.clone()));
+                    }
+                    if !self.global.yes {
+                        eprintln!("  this review {}", review.risks.join("; "));
+                        return Ok(Some(prompt::line(&format!("Type `{phrase}` to sign (anything else cancels)"))?));
+                    }
+                    // `--yes` alone never signs a risky review: the script must also say it accepts
+                    // the risk, or hold an authorization policy naming this exact digest.
+                    if self.global.accept_risk || self.global.authorization_policy.is_some() {
+                        return Ok(Some(phrase.clone()));
+                    }
+                    Err(CoreError::Rejected(format!(
+                        "this review needs its typed confirmation: add --confirm \"{phrase}\" (or --accept-risk) to --yes"
+                    )))
+                }
+                None => prompt::confirm("Sign and broadcast?", "yes", self.global.yes).map(|()| None),
+            }
         })();
-        if let Err(e) = validation {
-            let _ = session.discard(&review.op_id);
-            return Err(e);
+        let typed = match validation {
+            Ok(typed) => typed,
+            Err(e) => {
+                let _ = session.discard(&review.op_id);
+                return Err(e);
+            }
+        };
+        match session.commit_with(&review.op_id, typed.as_deref()).await {
+            Err(e @ CoreError::Rejected(_)) if review.confirm.is_some() => {
+                let _ = session.discard(&review.op_id);
+                Err(e)
+            }
+            other => other,
         }
-        session.commit(&review.op_id).await
     }
 
     pub fn print_submitted(&self, command: &str, s: &Submitted) {
@@ -2415,6 +2446,8 @@ mod tests {
             visuals: vec![],
             fee_over_policy: false,
             changes: vec![],
+            risks: vec![],
+            confirm: None,
         };
         let policy: AuthorizationPolicy = serde_json::from_value(json!({
             "version": 1, "wallet_id": "wallet", "network_id": network.id, "chain_id": network.chain_id,

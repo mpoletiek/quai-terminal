@@ -162,6 +162,8 @@ pub struct Session {
     pub(crate) unlocked: Option<Unlocked>,
     pub(crate) pending: HashMap<String, crate::tx::Pending>,
     pub(crate) preparing_plan: Option<String>,
+    /// Reviews that need a typed confirmation, by operation id: the words to type.
+    pub(crate) confirmations: HashMap<String, String>,
     unlocked_at: u64,
 }
 
@@ -219,6 +221,7 @@ impl Session {
             unlocked: None,
             pending: HashMap::new(),
             preparing_plan: None,
+            confirmations: HashMap::new(),
             unlocked_at: 0,
         };
         session.sync_metadata()?;

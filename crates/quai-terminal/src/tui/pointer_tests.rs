@@ -156,6 +156,7 @@ fn a_click_can_never_sign() {
                 viewport: 0,
                 approve_focused: false,
                 opened: Instant::now() - Duration::from_secs(60),
+                typed: String::new(),
             });
         };
         open(&mut app);
@@ -273,6 +274,7 @@ fn the_pointer_cannot_press_a_signing_key() {
         viewport: 0,
         approve_focused: true,
         opened: Instant::now() - Duration::from_secs(60),
+        typed: String::new(),
     });
     app.move_selection(10_000);
     frame(&mut app, &mut term);
@@ -444,6 +446,7 @@ fn the_pointer_takes_the_shape_of_what_is_under_it() {
         viewport: 10,
         approve_focused: false,
         opened: Instant::now() - Duration::from_secs(age),
+        typed: String::new(),
     };
     app.pointer.hover = Some(Target::Review(ReviewPart::Approve));
     app.modal = Modal::Review(state(0, 60));

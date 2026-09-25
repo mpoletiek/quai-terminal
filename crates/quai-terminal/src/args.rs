@@ -41,6 +41,14 @@ pub struct Global {
     /// Optional JSON allowlist of exact signing digests and bounded automation scopes.
     #[arg(long, global = true)]
     pub authorization_policy: Option<PathBuf>,
+    /// The typed confirmation a risky review asks for (an unknown contract, an unlimited
+    /// approval, a first payment, half or more of the account), for use with `--yes`.
+    #[arg(long = "confirm", global = true, value_name = "WORDS")]
+    pub confirm_words: Option<String>,
+    /// With `--yes`: sign risky reviews without their typed confirmation. For scripts that have
+    /// already decided; the review still names each risk.
+    #[arg(long, global = true)]
+    pub accept_risk: bool,
     /// Skip every third-party lookup (explorer, prices, images, marketplace) for this command.
     #[arg(long, global = true)]
     pub offline_data: bool,

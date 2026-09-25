@@ -337,6 +337,7 @@ impl App {
                         viewport: 1,
                         approve_focused: false,
                         opened: Instant::now(),
+                        typed: String::new(),
                     });
                 }
             }
@@ -355,6 +356,7 @@ impl App {
                     viewport: 1,
                     approve_focused: false,
                     opened: Instant::now(),
+                    typed: String::new(),
                 });
             }
             Ev::Submitted(s) => {

@@ -49,6 +49,7 @@ pub mod qi_market;
 pub mod recipient;
 mod recovery;
 pub mod registry;
+pub mod review_decoder;
 pub mod routes;
 pub mod ser;
 pub mod session;

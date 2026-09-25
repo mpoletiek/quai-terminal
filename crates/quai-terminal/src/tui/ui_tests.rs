@@ -599,11 +599,14 @@ pub(crate) fn modals(app: &App) -> Vec<Modal> {
                     (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
                     &wallet_core::journal::Detail::new(),
                 ),
+                risks: vec![],
+                confirm: None,
             },
             scroll: 0,
             content_lines: 1,
             viewport: 1,
             approve_focused: false,
+            typed: String::new(),
             opened: std::time::Instant::now(),
         }),
         Modal::Review(ReviewState {
@@ -638,11 +641,14 @@ pub(crate) fn modals(app: &App) -> Vec<Modal> {
                     (U256::from(10u64).pow(U256::from(17u8)), "QUAI", 18),
                     &wallet_core::journal::Detail::from(serde_json::json!({"name": "Quai Pepe #212", "token_id": "212"})),
                 ),
+                risks: vec![],
+                confirm: None,
             },
             scroll: 0,
             content_lines: 1,
             viewport: 1,
             approve_focused: false,
+            typed: String::new(),
             opened: std::time::Instant::now(),
         }),
     ]
@@ -2847,4 +2853,47 @@ fn the_messaging_account_is_chosen_and_funded_from_the_board() {
     app.modal = Modal::None;
     press(&mut app, KeyCode::Char('F'));
     assert!(matches!(&app.modal, Modal::Form(f) if f.kind == FormKind::MessagingFund), "F funds it from the Board");
+}
+
+/// A risky review draws its risk as a pill above the balance changes, and the line above the
+/// buttons asks for the words, echoing what has been typed.
+#[test]
+fn a_risky_review_draws_its_risk_and_the_words_to_type() {
+    use super::super::app::ReviewState;
+    let (_dir, mut app) = drawable_app();
+    let review = wallet_core::tx::Review {
+        op_id: "r".into(),
+        kind: OpKind::ContractCall,
+        title: "Call a contract".into(),
+        network: "Local dev".into(),
+        from: "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a (Account 1)".into(),
+        to: "0x00F41a2B3c4D5e6F7a8B9c0D1e2F3a4B5c6D804B".into(),
+        asset: "QUAI".into(),
+        amount: "0 QUAI".into(),
+        amount_base: "0".into(),
+        max_fee: "0.1 QUAI".into(),
+        fee_bps: None,
+        fields: vec![],
+        coins: vec![],
+        warnings: vec![],
+        visuals: vec![],
+        fee_over_policy: false,
+        changes: vec![],
+        risks: vec!["calls a contract the wallet does not know; what it does was not decoded".into()],
+        confirm: Some("call 804b".into()),
+    };
+    app.modal = Modal::Review(ReviewState {
+        review,
+        scroll: 0,
+        content_lines: 5,
+        viewport: 10,
+        approve_focused: true,
+        opened: std::time::Instant::now() - std::time::Duration::from_secs(2),
+        typed: "call 8".into(),
+    });
+    let text = screen_text(&mut app, 120, 40).join("\n");
+    assert!(text.contains("this calls a contract the wallet does not know"), "{text}");
+    assert!(text.contains("to sign, type call 804b"), "{text}");
+    assert!(text.contains("› call 8"), "{text}");
+    assert!(text.contains("type to enable"), "Approve says what it waits for: {text}");
 }

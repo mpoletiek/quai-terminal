@@ -78,6 +78,13 @@ pub struct Review {
     /// the fee. The one place a review says it in a single glance.
     #[serde(default)]
     pub changes: Vec<BalanceChange>,
+    /// Why this review needs a typed confirmation (`review_decoder::Risk`), in words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risks: Vec<String>,
+    /// The words to type before this review can be signed, when it is risky. The commit refuses
+    /// without them ([`Session::commit_with`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
 }
 
 /// One asset's movement in a review.
@@ -559,11 +566,40 @@ impl Session {
             return Err(error);
         }
         req.detail.set_commitments(serde_json::to_value(commitments)?);
-        let result = self.finish_account_review(id, prepared, req);
+        let large = self.large_share(&req.from.address, prepared.transaction().value).await;
+        let result = self.finish_account_review(id, prepared, req).map(|review| self.with_large_share(review, large));
         if result.is_err() {
             self.quai_store.release_unsigned(id)?;
         }
         result
+    }
+
+    /// Whether `value` is half or more of the account's QUAI (a typed-confirmation risk). A read
+    /// that fails is not a risk found: the review goes on without it.
+    async fn large_share(&self, owner: &str, value: U256) -> bool {
+        if value.is_zero() {
+            return false;
+        }
+        let Ok(address) = owner.parse::<quai_sdk::QuaiAddress>() else { return false };
+        match self.provider().balance(address, quai_sdk::BlockTag::Latest).await {
+            Ok(balance) => !balance.is_zero() && value.saturating_mul(U256::from(2)) >= balance,
+            Err(_) => false,
+        }
+    }
+
+    /// Add the large-share risk to a review, and the confirmation it needs.
+    fn with_large_share(&mut self, mut review: Review, large: bool) -> Review {
+        if !large {
+            return review;
+        }
+        review.risks.push(crate::review_decoder::Risk::LargeShare.describe().to_string());
+        if review.confirm.is_none() {
+            review.confirm = crate::review_decoder::confirm_phrase(&[crate::review_decoder::Risk::LargeShare], &review.to);
+        }
+        if let Some(phrase) = &review.confirm {
+            self.confirmations.insert(review.op_id.clone(), phrase.clone());
+        }
+        review
     }
 
     /// Prepare a Quai→Qi conversion from an account.
@@ -626,7 +662,8 @@ impl Session {
             return Err(error);
         }
         req.detail.set_commitments(serde_json::to_value(commitments)?);
-        let result = self.finish_account_review(id, prepared, req);
+        let large = self.large_share(&req.from.address, prepared.transaction().value).await;
+        let result = self.finish_account_review(id, prepared, req).map(|review| self.with_large_share(review, large));
         if result.is_err() {
             self.quai_store.release_unsigned(id)?;
         }
@@ -641,6 +678,22 @@ impl Session {
     ) -> Result<Review> {
         let tx: &QuaiTransaction = prepared.transaction();
         let max_fee = prepared.maximum_fee();
+        // Independently of the builder: decode the exact bytes to be signed and hold them to what
+        // this review declares. Nothing is journaled or shown when they disagree.
+        let decoded = crate::review_decoder::decode(tx.to.map(|a| a.to_string()).as_deref(), tx.value, &tx.data)
+            .map_err(|why| CoreError::Rejected(format!("the transaction's bytes do not decode: {why}")))?;
+        let decoded_lines = crate::review_decoder::check(
+            &decoded,
+            &crate::review_decoder::Declared {
+                kind: &req.kind,
+                owner: &req.from.address,
+                counterparty: &req.counterparty,
+                amount: req.amount,
+                detail: &req.detail,
+                wquai: self.network.wquai.as_deref(),
+            },
+        )
+        .map_err(|mismatch| CoreError::Rejected(mismatch.to_string()))?;
         let mut fields = req.fields;
         fields.extend([
             field("Nonce", tx.nonce.to_string()),
@@ -653,6 +706,9 @@ impl Session {
         }
         if !tx.access_list.is_empty() {
             fields.push(field("Access list", tx.access_list.iter().map(|a| a.address.to_string()).collect::<Vec<_>>().join(", ")));
+        }
+        for line in decoded_lines {
+            fields.push(field("Decoded", line));
         }
         fields.push(field("Signing digest", prepared.signing_digest().to_string()));
         let fee_bps = if req.asset == "QUAI" { amount::bps(max_fee, req.amount) } else { None };
@@ -669,6 +725,17 @@ impl Session {
             warnings.push(format!("maximum fee is {}.{:02}% of the amount", bps / 100, bps % 100));
         }
         let to = tx.to.map(|a| a.to_string()).unwrap_or_else(|| "(contract creation)".into());
+        let mut risks = Vec::new();
+        if matches!(decoded.call, crate::review_decoder::Call::Unknown { .. }) {
+            risks.push(crate::review_decoder::Risk::UnknownContract);
+        }
+        if matches!(decoded.call, crate::review_decoder::Call::Approve { amount, .. } if amount == U256::MAX) {
+            risks.push(crate::review_decoder::Risk::UnlimitedApproval);
+        }
+        if warnings.iter().any(|w| w.starts_with("first time sending")) {
+            risks.push(crate::review_decoder::Risk::FirstPayment);
+        }
+        let confirm = crate::review_decoder::confirm_phrase(&risks, &to);
         let visuals = review_visuals(&req.kind, &req.asset, &req.detail);
         let changes = balance_changes(
             &req.kind,
@@ -702,6 +769,8 @@ impl Session {
             visuals,
             fee_over_policy: fee_note.is_some(),
             changes,
+            risks: risks.iter().map(|r| r.describe().to_string()).collect(),
+            confirm,
         };
         for warning in canonical_identity_warnings(&self.network, &op.asset, &op.detail) {
             if !review.warnings.contains(&warning) {
@@ -711,6 +780,9 @@ impl Session {
         op.detail.set_review_version(serde_json::json!(1));
         op.detail.set_review(serde_json::to_value(journaled_review(&review, &op.detail))?);
         self.journal(op.clone())?;
+        if let Some(phrase) = &review.confirm {
+            self.confirmations.insert(review.op_id.clone(), phrase.clone());
+        }
         self.pending.insert(review.op_id.clone(), Pending::Account { prepared, from: req.from, op });
         Ok(review)
     }
@@ -785,6 +857,8 @@ impl Session {
                 (fee, "Qi", amount::QI_DECIMALS),
                 &op.detail,
             ),
+            risks: vec![],
+            confirm: None,
         })
     }
 
@@ -795,6 +869,17 @@ impl Session {
 
     /// Authorize: sign, persist and broadcast a reviewed operation.
     pub async fn commit(&mut self, op_id: &str) -> Result<Submitted> {
+        self.commit_with(op_id, None).await
+    }
+
+    /// [`Session::commit`], with the typed confirmation a risky review asked for
+    /// ([`Review::confirm`]). A risky review is refused without the exact words.
+    pub async fn commit_with(&mut self, op_id: &str, typed: Option<&str>) -> Result<Submitted> {
+        if let Some(phrase) = self.confirmations.get(op_id)
+            && typed.map(str::trim) != Some(phrase.as_str())
+        {
+            return Err(CoreError::Rejected(format!("this review needs its typed confirmation: type `{phrase}` to sign it")));
+        }
         self.keys()?;
         self.require_execution_source()?;
         let pending_ref = self.pending.get(op_id).ok_or_else(|| CoreError::NotFound(format!("no pending review {op_id}")))?;
@@ -845,6 +930,7 @@ impl Session {
         };
         let _operation_guard = self.operation_lock(reservation)?;
         // Signed and sent through the RPC endpoint, never the monitoring node: it has no hashrate.
+        self.confirmations.remove(op_id);
         let pending = self.pending.remove(op_id).ok_or_else(|| CoreError::NotFound(format!("no pending review {op_id}")))?;
         match pending {
             Pending::Account { prepared, from, op } => {
@@ -1104,6 +1190,7 @@ impl Session {
     /// hands its change addresses back as well: they never reached a signed payload, so keeping
     /// them burned would push later change past the gap a seed-only restore scans.
     pub fn discard(&mut self, op_id: &str) -> Result<()> {
+        self.confirmations.remove(op_id);
         let pending = self.pending.remove(op_id).ok_or_else(|| CoreError::NotFound(format!("no pending review {op_id}")))?;
         let (store_is_qi, id, journal_id) = match &pending {
             Pending::Account { prepared, op, .. } => (false, Some(prepared.reservation_id()), op.id.clone()),
@@ -1317,6 +1404,8 @@ impl Session {
                 (tx.gas_price.saturating_mul(U256::from(tx.gas_limit)), "QUAI", amount::QUAI_DECIMALS),
                 &Detail::new(),
             ),
+            risks: vec![],
+            confirm: None,
         };
         self.pending.insert(review.op_id.clone(), Pending::Replacement { prepared, from, op_id: op.id });
         Ok(review)
@@ -1524,6 +1613,8 @@ impl Session {
                 (new_fee.checked_sub(parent_fee).unwrap_or(U256::ZERO), "Qi", amount::QI_DECIMALS),
                 &op.detail,
             ),
+            risks: vec![],
+            confirm: None,
         };
         self.pending.insert(review.op_id.clone(), Pending::QiReplacement { prepared, op_id: op.id });
         Ok(review)

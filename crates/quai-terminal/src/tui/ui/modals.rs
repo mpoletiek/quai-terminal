@@ -293,7 +293,11 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                 };
                 lines.push(Line::from(line));
             }
-            if !rv.warnings.is_empty() {
+            // Risks come with the words to type (review_decoder::Risk): they stay a filled pill.
+            for risk in &rv.risks {
+                lines.push(Line::from(super::super::widgets::pill(t, &format!("{} this {risk}", t.icon(Icon::Warning)), t.danger)));
+            }
+            if !rv.warnings.is_empty() || !rv.risks.is_empty() {
                 lines.push(Line::from(""));
             }
             // The outcome first, in one glance: what leaves, what arrives, what the fee can be.
@@ -444,6 +448,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             );
             // Not yet signable: the button says what it waits for.
             let approve = match (can, r.approve_focused) {
+                (false, _) if !r.words_typed() => button(t, "Approve & sign", "type to enable", t.ok, ButtonState::Waiting),
                 (false, _) => button(t, "Approve & sign", "read to enable", t.ok, ButtonState::Waiting),
                 (true, true) if app.config.hold_to_sign => button(t, "Approve & sign", "hold enter", t.ok, ButtonState::Focused),
                 (true, true) => button(t, "Approve & sign", "enter", t.ok, ButtonState::Focused),
@@ -498,7 +503,26 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                     _ => None,
                 });
             }
-            f.render_widget(Paragraph::new(vec![Line::from(""), line]).style(Style::default().bg(t.raised)), buttons);
+            // A risky review's words are typed on the line above the buttons, with Approve focused.
+            let words = match &rv.confirm {
+                Some(phrase) => {
+                    let done = r.words_typed();
+                    let mut spans = vec![
+                        Span::styled("to sign, type ", t.dim_style()),
+                        Span::styled(phrase.clone(), t.strong_style().fg(t.danger)),
+                        Span::styled("  › ", t.dim_style()),
+                        Span::styled(r.typed.clone(), if done { t.strong_style().fg(t.ok) } else { t.strong_style() }),
+                    ];
+                    if r.approve_focused && !done {
+                        spans.push(Span::styled("▏", Style::default().fg(t.focus)));
+                    } else if !r.approve_focused {
+                        spans.push(Span::styled("  (tab to Approve first)", t.dim_style()));
+                    }
+                    Line::from(spans)
+                }
+                None => Line::from(""),
+            };
+            f.render_widget(Paragraph::new(vec![words, line]).style(Style::default().bg(t.raised)), buttons);
             if let Some(strip) = strip {
                 draw_review_pictures(f, app, t, strip, &visuals);
             }
