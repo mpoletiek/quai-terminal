@@ -3391,6 +3391,56 @@ fn the_flow_cursor_stays_on_its_trade_as_new_trades_arrive() {
     assert_eq!(app.flow_rows()[app.eco.markets_view.flow_selected].tx, "0xe", "a parked cursor follows its trade too");
 }
 
+/// Picking a trade in the flow charts that trade's pair, whatever order the pairs list is in.
+/// The pair used to be found by its place in the directory, while the chart reads a row of the
+/// sorted list: with any sort or a watched pair on top, it opened some other pair.
+#[test]
+fn a_flow_trade_charts_its_own_pair_in_a_sorted_list() {
+    use crate::tui::eco::MarketSort;
+    use wallet_core::markets::DexSwap;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    let directory: Vec<wallet_core::markets::Pool> = match app.eco.markets_view.pools.shown() {
+        Some(Ok((pools, _))) => pools.clone(),
+        _ => unreachable!(),
+    };
+    let trades: Vec<DexSwap> = directory
+        .iter()
+        .enumerate()
+        .map(|(i, p)| DexSwap {
+            at: 1_790_026_405 + i as u64,
+            timed: true,
+            block: 100 + i as u64,
+            tx: format!("0x{i}"),
+            index: 0,
+            pool: p.address.clone(),
+            token_in: p.token0.clone(),
+            token_out: p.token1.clone(),
+            amount_in: 1.0,
+            amount_out: 1.0,
+            trader: "0x0051".into(),
+        })
+        .collect();
+    app.eco.markets_view.flow.set(trades);
+    app.eco.markets_view.flow_min_usd = 0.0;
+    app.switch(Screen::Markets);
+    // Reversed, with the last pair of the directory watched to the top: no row is where the
+    // directory has it.
+    app.eco.markets_view.sort = MarketSort::TvlAsc;
+    app.eco.alerts.watchlist = vec![directory.last().unwrap().address.clone()];
+    let shown: Vec<String> = app.market_rows().iter().map(|p| p.address.clone()).collect();
+    assert_ne!(shown, directory.iter().map(|p| p.address.clone()).collect::<Vec<_>>(), "the list is not in directory order");
+    app.nav.pane = 1;
+    for i in 0..app.flow_rows().len() {
+        let pool = app.flow_rows()[i].pool.clone();
+        let Some(row) = app.market_row_of(&pool) else { continue };
+        app.nav.selected = i;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.eco.markets_view.pair_selected, row);
+        assert_eq!(app.market_rows()[app.markets_pair()].address, pool, "trade {i} charts its own pair");
+    }
+}
+
 /// A pair's logs always reach a day back, whatever the chart's timeframe: the header's 24h volume,
 /// trades, high and low are counted from them. At 15m the chart alone asked for 16 hours.
 #[test]
