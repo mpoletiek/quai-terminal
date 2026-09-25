@@ -104,6 +104,10 @@ pub struct WalletMeta {
     pub qi_imported: Vec<QiImported>,
     /// Watch-only addresses (both ledgers).
     pub watch: Vec<WatchAddress>,
+    /// The account that acts when none is named (its address): what `@` chooses in the TUI and
+    /// `account use` on the command line. Unset, or archived, means the first active account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_account: Option<String>,
 }
 
 impl WalletMeta {
@@ -151,7 +155,12 @@ impl WalletMeta {
 
     /// Default (first active) Quai account.
     pub fn default_quai_account(&self) -> Result<&QuaiAccount> {
-        self.quai_accounts.iter().find(|a| !a.archived).ok_or_else(|| CoreError::NotFound("wallet has no Quai accounts".into()))
+        let active = self.active_account.as_deref();
+        self.quai_accounts
+            .iter()
+            .find(|a| !a.archived && active.is_some_and(|x| a.address.eq_ignore_ascii_case(x)))
+            .or_else(|| self.quai_accounts.iter().find(|a| !a.archived))
+            .ok_or_else(|| CoreError::NotFound("wallet has no Quai accounts".into()))
     }
 }
 
@@ -505,6 +514,7 @@ impl Registry {
             }],
             qi_imported: vec![],
             watch: vec![],
+            active_account: None,
         };
         let secrets = Secrets { mnemonic: Some(secret), imported: vec![] };
         self.write_new(&meta, &secrets, password)?;
@@ -534,6 +544,7 @@ impl Registry {
             quai_accounts: vec![],
             qi_imported: vec![],
             watch: vec![],
+            active_account: None,
         };
         add_public_record(&mut meta, &key, record.ledger, "Imported 1")?;
         let secrets = Secrets { mnemonic: None, imported: vec![record] };
@@ -569,6 +580,7 @@ impl Registry {
             quai_accounts: vec![],
             qi_imported: vec![],
             watch,
+            active_account: None,
         };
         if self.paths.wallet_dir(&meta.id).exists() {
             return Err(CoreError::Storage("wallet directory already exists".into()));
@@ -830,6 +842,49 @@ pub fn parse_any_address(text: &str) -> Result<Address> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_account_that_acts_follows_the_choice_and_falls_back_to_the_first() {
+        let account = |address: &str, archived: bool| QuaiAccount {
+            address: address.into(),
+            hd_index: None,
+            public_key: None,
+            label: address.into(),
+            archived,
+        };
+        let mut meta = WalletMeta {
+            version: META_VERSION,
+            generation: 0,
+            custody_generation: 0,
+            id: "w".into(),
+            name: "w".into(),
+            created_at: 0,
+            kind: WalletKind::Hd,
+            quai_xpub: None,
+            qi_xpub: None,
+            payment_code: None,
+            word_count: None,
+            has_passphrase: false,
+            backed_up: true,
+            quai_accounts: vec![account("0xA", false), account("0xB", false), account("0xC", true)],
+            qi_imported: vec![],
+            watch: vec![],
+            active_account: None,
+        };
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xA", "nothing chosen: the first");
+        meta.active_account = Some("0xb".into());
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xB", "the choice, whatever its case");
+        meta.active_account = Some("0xC".into());
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xA", "an archived choice does not act");
+        meta.active_account = Some("0xgone".into());
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xA", "an unknown choice does not act");
+        // Older builds ignore the field; this one reads metadata written without it.
+        let old = serde_json::to_value(&meta).unwrap();
+        let mut stripped = old.clone();
+        stripped.as_object_mut().unwrap().remove("active_account");
+        let read: WalletMeta = serde_json::from_value(stripped).unwrap();
+        assert_eq!(read.active_account, None);
+    }
+
     use super::*;
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";

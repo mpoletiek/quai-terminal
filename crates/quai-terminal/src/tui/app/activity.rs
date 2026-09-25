@@ -13,6 +13,7 @@ impl App {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (filter as u8).hash(&mut h);
+            self.activity_only().hash(&mut h);
             for o in &self.dash.ops {
                 (o.id.as_str(), o.status.as_str(), o.created, o.kind.as_str()).hash(&mut h);
             }
@@ -31,13 +32,30 @@ impl App {
         rows
     }
 
+    /// The account Activity is narrowed to, when it is (`.`), lowercase.
+    fn activity_only(&self) -> Option<String> {
+        (self.activity_account_only && self.screen == Screen::Activity)
+            .then(|| self.dash.active_account().map(|a| a.address.to_lowercase()))
+            .flatten()
+    }
+
+    /// `.` on Activity: only the account that acts, or every account again.
+    pub fn toggle_activity_account(&mut self) {
+        self.activity_account_only = !self.activity_account_only;
+        self.selected = 0;
+        let label = self.dash.active_account().map(|a| a.label.clone()).unwrap_or_default();
+        self.toast(if self.activity_account_only { format!("activity: {label} only") } else { "activity: every account".into() }, false);
+    }
+
     pub(crate) fn build_activity_rows(&self, filter: ActivityFilter) -> Vec<(u64, bool, usize)> {
+        let only = self.activity_only();
+        let mine = |address: &str| only.as_deref().is_none_or(|a| address.eq_ignore_ascii_case(a));
         let mut rows: Vec<(u64, bool, usize)> = self
             .dash
             .ops
             .iter()
             .enumerate()
-            .filter(|(_, o)| o.status != OpStatus::Cancelled)
+            .filter(|(_, o)| o.status != OpStatus::Cancelled && mine(&o.account))
             .filter(|(_, o)| match filter {
                 ActivityFilter::All => true,
                 ActivityFilter::Sends => o.kind.is_send() || o.kind == OpKind::NftTransfer,
@@ -52,6 +70,7 @@ impl App {
                 .activity
                 .iter()
                 .enumerate()
+                .filter(|(_, a)| mine(&a.address))
                 .filter(|(_, a)| {
                     let nft = a.detail.standard().as_str().is_some_and(|s| s != "ERC-20");
                     match filter {

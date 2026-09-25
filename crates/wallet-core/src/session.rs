@@ -541,6 +541,37 @@ impl Session {
         futures::future::try_join_all(reads).await
     }
 
+    /// Make an account the one that acts when none is named (label, address or 1-based index).
+    /// Public metadata only: keys, reviews and other sessions' unlocks are untouched.
+    pub fn set_active_account(&mut self, selector: &str) -> Result<QuaiAccount> {
+        // A watch-only wallet's addresses act too (for what they can do: quotes, views).
+        let watched = || {
+            self.meta.watch.iter().find(|w| w.address.eq_ignore_ascii_case(selector) || w.label.eq_ignore_ascii_case(selector)).map(|w| QuaiAccount {
+                address: w.address.clone(),
+                label: w.label.clone(),
+                hd_index: None,
+                archived: false,
+                public_key: None,
+            })
+        };
+        let account = match self.meta.find_quai_account(selector) {
+            Ok(a) => a.clone(),
+            Err(e) => watched().ok_or(e)?,
+        };
+        if account.archived {
+            return Err(CoreError::Invalid(format!("{} is archived; unarchive it first", account.label)));
+        }
+        let address = account.address.clone();
+        let mut meta = self.meta.clone();
+        self.registry.update_meta(&mut meta, |m| {
+            m.active_account = Some(address);
+            Ok(())
+        })?;
+        self.meta = meta;
+        self.sync_metadata()?;
+        Ok(account)
+    }
+
     /// Add the next HD Quai account.
     pub fn add_account(&mut self, label: Option<&str>) -> Result<QuaiAccount> {
         let mut meta = self.meta.clone();

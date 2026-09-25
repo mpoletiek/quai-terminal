@@ -379,7 +379,7 @@ impl App {
 
     /// Start the market route for the amount on the Convert card.
     pub fn start_qi_route(&mut self, direction: wallet_core::qi_market::Direction, amount: String, slippage: u16) {
-        let Some(account) = self.dash.accounts.first().map(|a| a.address.clone()) else {
+        let Some(account) = self.dash.active_account().map(|a| a.address.clone()) else {
             self.toast("select a signing account", true);
             return;
         };
@@ -412,7 +412,7 @@ impl App {
         slippage: Option<u16>,
         account: Option<String>,
     ) {
-        let Some(account) = account.or_else(|| self.dash.accounts.first().map(|a| a.address.clone())) else {
+        let Some(account) = account.or_else(|| self.dash.active_account().map(|a| a.address.clone())) else {
             self.toast("select a signing account", true);
             return;
         };
@@ -636,7 +636,7 @@ impl App {
             }
             OpKind::Approve | OpKind::NftBuy | OpKind::NftTransfer => {
                 if let Some(Detail::Nft(c, id)) = self.detail.last().cloned() {
-                    let buyer = self.dash.accounts.first().map(|a| a.address.clone());
+                    let buyer = self.dash.active_account().map(|a| a.address.clone());
                     self.send_data(DataCmd::CheckAsk { contract: c, token_id: id, buyer });
                 }
                 // Holdings reload when the operation confirms (see `after_confirm`): reloading

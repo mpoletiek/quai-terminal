@@ -133,6 +133,7 @@ impl App {
             "lock_gallery" => self.modal = Modal::Effects(Gallery::new(&self.config.lock_effect)),
             "refresh" => self.send(Cmd::Refresh { full: true }),
             "lock" => self.lock_now(None),
+            "switch_account" => self.open_account_picker(),
             "export_phrase" => self.open_form(FormKind::ExportPhrase),
             "backup" => self.open_form(FormKind::Backup),
             "network" => self.switch(Screen::Network),

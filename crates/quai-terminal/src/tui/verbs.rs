@@ -352,9 +352,13 @@ const BOARD: ViewKeys = ViewKeys {
 };
 
 const ACTIVITY: ViewKeys = ViewKeys {
-    overrides: &[ov(Open, "detail", Act(App::screen_enter_pub))],
+    overrides: &[ov(Open, "detail", Act(App::screen_enter_pub)), ov(ViewMode, "this account / all", Act(App::toggle_activity_account))],
     footer: &[Open, Copy, CopyLink, Sheet],
-    sheet: &[it('u', "speed up", Run("speedup")), it('p', "resume the trade", Act(App::resume_trade_plan))],
+    sheet: &[
+        it('u', "speed up", Run("speedup")),
+        it('p', "resume the trade", Act(App::resume_trade_plan)),
+        it('o', "only the account that acts, or all (.)", Act(App::toggle_activity_account)),
+    ],
 };
 
 const ORDERS: ViewKeys = ViewKeys {
@@ -600,6 +604,7 @@ impl App {
                 self.send(super::Cmd::MarkRead);
             }
             Wallets => self.open_wallet_switcher(),
+            Account => self.open_account_picker(),
             Privacy => {
                 self.config.balance_in_bar = !self.config.balance_in_bar;
                 self.save_config();

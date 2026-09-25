@@ -54,6 +54,15 @@ pub struct Dashboard {
     pub networks: Vec<(String, String)>,
 }
 
+impl Dashboard {
+    /// The account that acts when none is named: the wallet's chosen one (`@`, `account use`),
+    /// else the first. Every card, sequence and form starts from it.
+    pub fn active_account(&self) -> Option<&AccountBalance> {
+        let chosen = self.meta.as_ref().and_then(|m| m.active_account.clone().or_else(|| m.default_quai_account().ok().map(|a| a.address.clone())));
+        chosen.and_then(|address| self.accounts.iter().find(|a| a.address.eq_ignore_ascii_case(&address))).or(self.accounts.first())
+    }
+}
+
 /// What a form asks the worker to prepare.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Prepare {
@@ -363,6 +372,8 @@ pub enum Cmd {
         account: String,
         label: String,
     },
+    /// Make this account (its address) the one that acts.
+    UseAccount(String),
     NewQiAddress(Option<String>),
     ScanQi {
         deep: Option<u32>,
@@ -445,6 +456,7 @@ impl Cmd {
             Cmd::ImportKey { .. } => "import_key",
             Cmd::WatchAddress { .. } => "watch_address",
             Cmd::RenameAccount { .. } => "rename_account",
+            Cmd::UseAccount(_) => "use_account",
             Cmd::NewQiAddress(_) => "new_qi_address",
             Cmd::ScanQi { .. } => "scan_qi",
             Cmd::QiSynced(_) => "qi_synced",
@@ -1652,6 +1664,7 @@ async fn run(
                 | Cmd::ImportKey { .. }
                 | Cmd::WatchAddress { .. }
                 | Cmd::RenameAccount { .. }
+                | Cmd::UseAccount(_)
                 | Cmd::NewQiAddress(_)
                 | Cmd::ScanQi { .. }
                 | Cmd::DiscoverMailbox
@@ -1787,6 +1800,7 @@ async fn run(
                 simple(&send, session.add_watch_address(&address, label.as_deref()).map(|a| format!("watching {a}")))
             }
             Cmd::RenameAccount { account, label } => simple(&send, session.rename_account(&account, &label).map(|_| "renamed".into())),
+            Cmd::UseAccount(address) => simple(&send, session.set_active_account(&address).map(|a| format!("{} acts now", a.label))),
             Cmd::NewQiAddress(label) => simple(&send, session.new_qi_address(label.as_deref()).map(|a| format!("new Qi address {a}"))),
             Cmd::ScanQi { deep } => {
                 // In the Qi lane, so the wallet stays usable for the 10–15 s a scan takes.

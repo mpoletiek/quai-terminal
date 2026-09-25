@@ -128,7 +128,8 @@ const RATCHETS: &[(&str, &[&str], &[&str], usize)] = &[
         &["kind == \"", "kind != \"", "kind.as_str() ==", "OpKind::parse(\""],
         0,
     ),
-    ("the TUI acting from the first account (phase 3)", &["crates/quai-terminal/src/tui"], &["accounts.first()"], 27),
+    // Phase 3: every card, form and sequence acts from `Dashboard::active_account()`.
+    ("the TUI acting from the first account", &["crates/quai-terminal/src/tui"], &["dash.accounts.first()"], 0),
 ];
 
 #[test]

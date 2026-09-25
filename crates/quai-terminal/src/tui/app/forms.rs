@@ -739,7 +739,7 @@ impl App {
             let (have, decimals, unit) = match asset {
                 "QUAI" => {
                     let a =
-                        account.as_ref().and_then(|v| self.dash.accounts.iter().find(|a| a.address == *v)).or(self.dash.accounts.first());
+                        account.as_ref().and_then(|v| self.dash.accounts.iter().find(|a| a.address == *v)).or(self.dash.active_account());
                     match a {
                         Some(a) => (a.balance, 18, "QUAI"),
                         None => continue,

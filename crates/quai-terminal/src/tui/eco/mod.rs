@@ -1232,7 +1232,7 @@ impl App {
                     // One item the user opened. It may be theirs, so it is not public.
                     self.send_data(DataCmd::Nft { contract: c.clone(), token_id: id.clone(), public: false });
                 }
-                let buyer = self.dash.accounts.first().map(|a| a.address.clone());
+                let buyer = self.dash.active_account().map(|a| a.address.clone());
                 self.send_data(DataCmd::CheckAsk { contract: c.clone(), token_id: id.clone(), buyer });
             }
             Detail::Collection(c) => {
@@ -1495,7 +1495,7 @@ impl App {
     }
 
     fn receive_address(&self, qi: bool) -> Option<String> {
-        if qi { self.meta.as_ref().and_then(|m| m.payment_code.clone()) } else { self.dash.accounts.first().map(|a| a.address.clone()) }
+        if qi { self.meta.as_ref().and_then(|m| m.payment_code.clone()) } else { self.dash.active_account().map(|a| a.address.clone()) }
     }
 
     /// Link for `o` on the focused item.

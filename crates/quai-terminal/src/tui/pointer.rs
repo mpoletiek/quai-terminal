@@ -294,6 +294,7 @@ impl App {
                 }
             }
             Target::Header(HeaderPart::Wallet) => self.open_wallet_switcher(),
+            Target::Header(HeaderPart::Account) => self.open_account_picker(),
             Target::Header(HeaderPart::Network) => self.switch(super::app::Screen::Network),
             Target::Header(HeaderPart::Unread) => self.press(KeyCode::Char('N'), size),
             Target::Toast => self.toasts.clear(),
@@ -448,6 +449,11 @@ impl App {
                     *selected = index;
                 }
             }
+            ListId::Accounts => {
+                if let Modal::Accounts { selected } = &mut self.modal {
+                    *selected = index;
+                }
+            }
             ListId::Sheet => {
                 // One click is enough: the sheet's items are actions, like buttons.
                 if let Modal::Sheet { items, .. } = &self.modal
@@ -465,7 +471,7 @@ impl App {
         let enter_opens = match list {
             // Screen lists open a detail (or run the row's action); the modal lists choose.
             ListId::Screen(..) | ListId::Detail | ListId::DetailListings => matches!(self.modal, Modal::None),
-            ListId::Palette | ListId::TokenPicker | ListId::Themes | ListId::Gallery | ListId::Wallets => true,
+            ListId::Palette | ListId::TokenPicker | ListId::Themes | ListId::Gallery | ListId::Wallets | ListId::Accounts => true,
             ListId::Glossary | ListId::Sheet => false,
         };
         if enter_opens {

@@ -835,7 +835,7 @@ impl App {
         let debounced = card.edited.is_none_or(|t| t.elapsed() > Duration::from_millis(450));
         let refresh = card.quoted_at.is_some_and(|t| t.elapsed() > Duration::from_secs(if card.approving { 6 } else { 20 }));
         if debounced && (card.requested_key == 0 || Some(input) != card.requested_input || refresh) {
-            let owner = self.dash.accounts.first().map(|a| a.address.clone());
+            let owner = self.dash.active_account().map(|a| a.address.clone());
             let from = card.from.clone();
             let slippage = card.slippage_bps;
             let key = self.eco.swap.request_sequence.wrapping_add(1).max(1);

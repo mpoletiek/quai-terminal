@@ -29,6 +29,8 @@ pub enum ListId {
     Glossary,
     /// The wallet switcher.
     Wallets,
+    /// The account picker.
+    Accounts,
     /// The action sheet.
     Sheet,
 }
@@ -45,6 +47,8 @@ pub enum ReviewPart {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderPart {
     Wallet,
+    /// The account that acts, beside the wallet's name.
+    Account,
     Network,
     Unread,
 }

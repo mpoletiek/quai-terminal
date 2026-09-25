@@ -508,6 +508,7 @@ fn modal_code(m: &Modal) -> u8 {
         Modal::Sheet { .. } => 17,
         Modal::GoTo => 18,
         Modal::Wallets { .. } => 19,
+        Modal::Accounts { .. } => 20,
     }
 }
 
@@ -832,6 +833,16 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
             ],
         )
     });
+    // With more than one account, which one acts rides beside the name (`@` changes it).
+    if d.accounts.len() > 1
+        && let Some(active) = d.active_account()
+    {
+        segs.push(Seg {
+            joined: Some(0),
+            targets: vec![(1, Target::Header(HeaderPart::Account))],
+            ..seg(3, vec![Span::styled(" · ", t.dim_style()), Span::styled(truncate(&active.label, 18), t.strong_style())])
+        });
+    }
     // The balance rides beside the name, rounded: this is the glance figure, not the ledger.
     // `$` hides it, for a room with other people in it. It is the first thing to go.
     if app.config.balance_in_bar && !app.locked && !d.accounts.is_empty() {

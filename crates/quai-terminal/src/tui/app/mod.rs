@@ -312,6 +312,7 @@ pub fn context_hints(app: &App) -> Vec<(String, String)> {
         Modal::Sheet { .. } => return vec![pair("letter", "do it"), pair("↑↓ enter", "choose"), pair("esc", "close")],
         Modal::GoTo => return vec![pair("letter", "go"), pair("g", "first row"), pair("esc", "stay")],
         Modal::Wallets { .. } => return vec![pair("enter", "switch"), pair("m", "manage"), pair("esc", "close")],
+        Modal::Accounts { .. } => return vec![pair("enter or 1-9", "act from it"), pair("esc", "close")],
         Modal::Confirm { .. } => return vec![pair("n enter", "no"), pair("y", "yes")],
         Modal::Palette { .. } => {
             return vec![pair("type", "search"), pair("↑↓ enter", "run"), pair("ctrl-y", "copy command"), pair("esc", "close")];
@@ -862,6 +863,10 @@ pub enum Modal {
     Wallets {
         selected: usize,
     },
+    /// The account that acts (`@`, or a click on the account in the header).
+    Accounts {
+        selected: usize,
+    },
     Form(Form),
     Review(ReviewState),
     Help,
@@ -1017,6 +1022,7 @@ macro_rules! action {
 }
 
 pub const ACTIONS: &[Action] = &[
+    action!("Switch account (the one that acts)", "quai-terminal account use N", "switch_account"),
     action!("Send QUAI", "quai-terminal send quai --to ADDR --amount N", "send_quai"),
     action!("Send Qi", "quai-terminal send qi --to CODE --amount N", "send_qi"),
     action!("Send token", "quai-terminal send token SYMBOL --to ADDR --amount N", "send_token"),
@@ -1294,6 +1300,8 @@ pub struct App {
     pub palette_recent: Vec<String>,
     /// Activity filter tab.
     pub activity_filter: ActivityFilter,
+    /// Activity shows only the account that acts (`.` on Activity).
+    pub activity_account_only: bool,
     /// Detail stack (Enter pushes, Esc pops).
     pub detail: Vec<Detail>,
     /// Selection inside the top detail view (collection items, listings).
@@ -1426,6 +1434,7 @@ impl App {
             mouse_released: false,
             terminal_background: None,
             activity_cache: std::cell::RefCell::new(None),
+            activity_account_only: false,
             net_cache: std::cell::RefCell::new(None),
             content: None,
             spun: false,
@@ -1511,6 +1520,26 @@ impl App {
     /// is one lit panel. (Input reads `pane`; drawing reads this.)
     pub fn lit_pane(&self) -> Option<usize> {
         (!self.dock_focus).then_some(self.pane)
+    }
+
+    /// The account picker, on the account that acts now.
+    pub fn open_account_picker(&mut self) {
+        let active = self.dash.active_account().map(|a| a.address.clone());
+        let here = active.and_then(|a| self.dash.accounts.iter().position(|x| x.address == a)).unwrap_or(0);
+        self.modal = Modal::Accounts { selected: here };
+    }
+
+    /// Make the `index`th account the one that acts. Shown at once; the worker saves it to the
+    /// wallet's metadata, where the command line (`account use`) and the daemon read it too.
+    pub fn use_account(&mut self, index: usize) {
+        let Some(account) = self.dash.accounts.get(index).cloned() else { return };
+        for meta in [self.dash.meta.as_mut(), self.meta.as_mut()].into_iter().flatten() {
+            meta.active_account = Some(account.address.clone());
+        }
+        self.send(Cmd::UseAccount(account.address.clone()));
+        self.toast(format!("{} acts now", account.label), false);
+        // Cards quote for their owner, so they are asked again for this one.
+        self.on_view_opened();
     }
 
     /// The wallet switcher, on the open wallet.
@@ -2256,6 +2285,7 @@ pub(crate) fn modal_name(m: &Modal) -> &'static str {
         Modal::TokenPicker { .. } => "token picker",
         Modal::Sheet { .. } => "sheet",
         Modal::Wallets { .. } => "wallets",
+        Modal::Accounts { .. } => "accounts",
         Modal::GoTo => "go to",
     }
 }

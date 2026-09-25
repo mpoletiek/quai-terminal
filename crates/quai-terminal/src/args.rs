@@ -348,6 +348,9 @@ pub enum AccountCmd {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Make an account the one that acts when none is named (selector: label, address or number).
+    /// The TUI's `@` does the same.
+    Use { account: String },
     /// Rename an account (selector: label, address or number).
     Rename { account: String, label: String },
     /// Hide an account from lists.

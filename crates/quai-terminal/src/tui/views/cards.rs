@@ -193,6 +193,9 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         (None, None) => Span::styled("—", t.dim_style()),
     };
     let mut c = Card::new();
+    if let Some(line) = acting_line(app, t, "from") {
+        c.line(line);
+    }
     c.line(Line::from(Span::styled("you pay", t.dim_style())));
     c.field(t, 0, card.field, "token", asset_chip(app, t, Some(&card.from)));
     c.field(
@@ -469,6 +472,20 @@ pub(crate) fn draw_swap_chart(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
 /// output locked for weeks) and the market route through Quainance (wrap, swap, unwrap: several
 /// transactions and LP costs, spendable in minutes). Both are quoted for the amount on the card
 /// and either can be started here.
+/// With more than one account, the card says which one it acts from (and that `@` changes it).
+fn acting_line(app: &App, t: &Theme, verb: &str) -> Option<Line<'static>> {
+    if app.dash.accounts.len() < 2 {
+        return None;
+    }
+    let a = app.dash.active_account()?;
+    Some(Line::from(vec![
+        Span::styled(format!("{verb} "), t.dim_style()),
+        Span::styled(a.label.clone(), t.strong_style()),
+        Span::styled(format!(" · {}", wallet_core::session::short_address(&a.address)), t.dim_style()),
+        Span::styled("   @ changes it", t.dim_style()),
+    ]))
+}
+
 pub fn draw_convert_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let card = &app.eco.convert;
     let [left, right] = if area.width < 100 {
@@ -480,7 +497,7 @@ pub fn draw_convert_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let avail = if card.qi_to_quai {
         app.dash.qi.as_ref().map(|q| format!("{} Qi", num::qi(q.balance.spendable)))
     } else {
-        app.dash.accounts.first().map(|a| format!("{} QUAI", num::short(a.balance, 18, 4)))
+        app.dash.active_account().map(|a| format!("{} QUAI", num::short(a.balance, 18, 4)))
     };
     // Zero means the user has not chosen and no quote has landed yet; the quote's suggestion takes
     // over as soon as one does (see the Ev::Quote arm).
@@ -495,6 +512,9 @@ pub fn draw_convert_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     };
     let route_name = if card.market { "market route (wrap · swap · unwrap)" } else { "protocol conversion" };
     let mut c = Card::new();
+    if let Some(line) = acting_line(app, t, if card.qi_to_quai { "to" } else { "from" }) {
+        c.line(line);
+    }
     c.field(
         t,
         0,
@@ -1159,6 +1179,9 @@ pub fn draw_wrap_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     };
     let (label, unit, story) = WRAP_MODES[card.mode];
     let mut c = Card::new();
+    if let Some(line) = acting_line(app, t, "account") {
+        c.line(line);
+    }
     c.field(t, 0, card.field, "pair", cycler(t, label.to_string(), card.field == 0));
     if card.mode != 1 {
         c.field(
@@ -1182,7 +1205,7 @@ pub fn draw_wrap_card(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             }
         }),
         2 => w.and_then(|w| w.wqi_qi.clone()).map(|v| format!("{v} WQI (redeem whole Qi)")),
-        3 => app.dash.accounts.first().map(|a| format!("{} QUAI", num::short(a.balance, 18, 4))),
+        3 => app.dash.active_account().map(|a| format!("{} QUAI", num::short(a.balance, 18, 4))),
         _ => parse(w.and_then(|w| w.wquai_atoms.as_ref())).map(|v| format!("{} WQUAI", num::short(v, 18, 4))),
     };
     if let Some(text) = available {

@@ -61,7 +61,7 @@ impl App {
         let want_quote = (!card.market).then(|| (card.qi_to_quai, card.amount.clone()));
         let quote_wanted = want_quote.as_ref().is_some_and(|w| card.quoted_for.as_ref() != Some(w)) || stale;
         if debounced && (key != card.requested_key || stale) {
-            let owner = self.dash.accounts.first().map(|a| a.address.clone());
+            let owner = self.dash.active_account().map(|a| a.address.clone());
             self.eco.convert.requested_key = key;
             self.eco.convert.quoted_at = Some(Instant::now());
             self.send_data(DataCmd::QiRoutes { key, direction, amount: atoms.to_string(), owner, slippage });
@@ -404,7 +404,7 @@ impl App {
             self.send(Cmd::QiMax {
                 key,
                 wrapping: self.screen == Screen::Wrap,
-                account: self.dash.accounts.first().map(|a| a.address.clone()),
+                account: self.dash.active_account().map(|a| a.address.clone()),
                 slippage: self.eco.convert.slippage_bps,
             });
             self.info("quoting a spendable Qi amount with current fees…");
@@ -713,7 +713,7 @@ impl App {
                 self.eco.split_request = Some((key, identity));
                 self.send(Cmd::SplitQuote {
                     key,
-                    account: self.dash.accounts.first().map(|a| a.address.clone()),
+                    account: self.dash.active_account().map(|a| a.address.clone()),
                     from: asset(&self.eco.swap.from),
                     to: asset(to),
                     amount: self.eco.swap.amount.clone(),
@@ -1129,7 +1129,7 @@ impl App {
                 } else if !self.can_sign() {
                     self.toast("this wallet is watch-only", true);
                 } else {
-                    let account = self.dash.accounts.first().map(|a| a.address.clone());
+                    let account = self.dash.active_account().map(|a| a.address.clone());
                     let direction =
                         if qi_to_quai { wallet_core::qi_market::Direction::QiToQuai } else { wallet_core::qi_market::Direction::QuaiToQi };
                     self.start_protocol_conversion(direction, amount, slippage, account);
@@ -1183,7 +1183,7 @@ impl App {
                     self.toast("enter an amount", true);
                     return true;
                 }
-                let account = self.dash.accounts.first().map(|a| a.address.clone());
+                let account = self.dash.active_account().map(|a| a.address.clone());
                 if mode == 1 {
                     self.claim_now(account);
                     return true;
@@ -1267,7 +1267,7 @@ impl App {
             &card.slippage_bps.to_string(),
             &card.deadline_minutes.to_string(),
             &self.network_id,
-            &self.dash.accounts.first().map(|a| a.address.clone()).unwrap_or_default(),
+            &self.dash.active_account().map(|a| a.address.clone()).unwrap_or_default(),
         ]))
     }
 
@@ -1281,7 +1281,7 @@ impl App {
         format!("{:?}", self.screen).hash(&mut h);
         self.meta.as_ref().map(|m| &m.id).hash(&mut h);
         self.network_id.hash(&mut h);
-        self.dash.accounts.first().map(|a| &a.address).hash(&mut h);
+        self.dash.active_account().map(|a| &a.address).hash(&mut h);
         self.eco.convert.amount.hash(&mut h);
         self.eco.convert.qi_to_quai.hash(&mut h);
         self.eco.convert.slippage_bps.hash(&mut h);
@@ -1376,7 +1376,7 @@ impl App {
         if self.swap_quote_current()
             && let Some(offer) = self.swap_uses_curve()
         {
-            let account = self.dash.accounts.first().map(|a| a.address.clone());
+            let account = self.dash.active_account().map(|a| a.address.clone());
             let (amount, slippage, deadline) = (card.amount.clone(), card.slippage_bps, Some(card.deadline_minutes));
             let (token, symbol, curve) = (offer.token.clone(), offer.symbol.clone(), offer.curve.clone());
             if offer.sell {
@@ -1418,7 +1418,7 @@ impl App {
             let needed = amount::parse_amount(&card.amount, 18).unwrap_or(U256::ZERO);
             let missing = needed.saturating_sub(U256::from(self.wrapped_atoms(false)));
             // The swap is signed by the first account, so only its QUAI can be wrapped.
-            let quai = self.dash.accounts.first().map_or(U256::ZERO, |a| a.balance);
+            let quai = self.dash.active_account().map_or(U256::ZERO, |a| a.balance);
             if quai > missing {
                 prewrap = Some(amount::format_amount(missing, 18));
             }
@@ -1435,7 +1435,7 @@ impl App {
             );
             return;
         }
-        let account = self.dash.accounts.first().map(|a| a.address.clone());
+        let account = self.dash.active_account().map(|a| a.address.clone());
         // A swap that pays out WQUAI offers to redeem it for QUAI afterwards.
         let redeem = !wquai.is_empty() && to_id.eq_ignore_ascii_case(&wquai);
         // Across both exchanges: swap to the hub first; the second swap is sized once it confirms.

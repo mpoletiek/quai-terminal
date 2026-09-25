@@ -1484,6 +1484,55 @@ fn pool_actions_follow_the_position() {
     assert_eq!(card.name, "WQI/WQUAI");
 }
 
+/// `@` then a digit makes that account the one that acts: the header, the picker and the next
+/// transaction all follow it, and Activity can narrow to it.
+#[test]
+fn the_account_that_acts_is_chosen_with_at_and_followed_everywhere() {
+    use wallet_core::liquidity::LpPosition;
+    use wallet_core::markets::PoolToken;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let (worker, prepared) = Worker::capture_prepares();
+    app.worker = Some(worker);
+    app.dash.unlocked = true;
+    let account = |label: &str, address: &str| wallet_core::session::AccountBalance {
+        address: address.into(),
+        label: label.into(),
+        hd_index: None,
+        balance: U256::from(1u64),
+        locked: U256::ZERO,
+        nonce: 0,
+    };
+    let (one, two) = ("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a", "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5");
+    app.dash.accounts = vec![account("Main", one), account("Trading", two)];
+    app.dash.meta = app.meta.clone();
+    assert_eq!(app.dash.active_account().map(|a| a.address.as_str()), Some(one), "the first acts until one is chosen");
+    press(&mut app, KeyCode::Char('@'));
+    assert!(matches!(app.modal, Modal::Accounts { selected: 0 }), "@ opens the picker on the account that acts");
+    press(&mut app, KeyCode::Char('2'));
+    assert!(matches!(app.modal, Modal::None));
+    assert_eq!(app.dash.active_account().map(|a| a.label.as_str()), Some("Trading"));
+    // The next transaction comes from it.
+    app.switch(Screen::Pools);
+    let tok = |s: &str| PoolToken { address: format!("0x00{s}"), symbol: s.into(), decimals: 18 };
+    app.eco.pools_view.positions =
+        Some(Ok(vec![LpPosition { pair: "0x00pair".into(), token0: tok("A"), token1: tok("B"), lp_staked: U256::from(5u64), pid: Some(0), ..LpPosition::default() }]));
+    press(&mut app, KeyCode::Char('h'));
+    let got = prepared.recv_timeout(std::time::Duration::from_secs(5)).expect("a harvest");
+    assert!(matches!(&got, Prepare::Harvest { account: Some(a), .. } if a == two), "prepared from account 2: {got:?}");
+    // Activity narrows to it, and back.
+    app.dash.ops = vec![op("a1", "send_quai", wallet_core::appdb::OpStatus::Confirmed), op("a2", "send_quai", wallet_core::appdb::OpStatus::Confirmed)];
+    app.dash.ops[0].account = one.into();
+    app.dash.ops[1].account = two.into();
+    app.switch(Screen::Activity);
+    assert_eq!(app.activity_rows().len(), 2);
+    app.toggle_activity_account();
+    let rows = app.activity_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(app.dash.ops[rows[0].2].id, "a2");
+    app.toggle_activity_account();
+    assert_eq!(app.activity_rows().len(), 2);
+}
+
 /// h, s and e are also the app's left, send and edit; on Pools they must still act on the
 /// position straight from the list, not only from the action sheet.
 #[test]

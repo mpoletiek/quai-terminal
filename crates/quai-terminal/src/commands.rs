@@ -644,8 +644,18 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
     match cmd {
         AccountCmd::List { all } => {
             let meta = ctx.meta()?;
+            let active = meta.default_quai_account().ok().map(|a| a.address.clone());
+            let is_active = |a: &wallet_core::registry::QuaiAccount| active.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(&a.address));
             let rows: Vec<_> = meta.quai_accounts.iter().filter(|a| all || !a.archived).collect();
             if ctx.out.json() {
+                let rows: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|a| {
+                        let mut v = serde_json::to_value(a).unwrap_or_default();
+                        v["active"] = json!(is_active(a));
+                        v
+                    })
+                    .collect();
                 ctx.out.emit("account list", &rows);
                 return Ok(());
             }
@@ -654,7 +664,7 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
                 .enumerate()
                 .map(|(i, a)| {
                     vec![
-                        (i + 1).to_string(),
+                        if is_active(a) { format!("{}*", i + 1) } else { (i + 1).to_string() },
                         a.label.clone(),
                         a.address.clone(),
                         a.hd_index.map_or("imported".into(), |i| format!("m/44'/994'/0'/0/{i}")),
@@ -674,6 +684,11 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
             let mut s = ctx.session().await?;
             let address = s.add_watch_address(&address, label.as_deref())?;
             done(ctx, "account watch", json!({"address": address}), &format!("watching {address}"))
+        }
+        AccountCmd::Use { account } => {
+            let mut s = ctx.session().await?;
+            let chosen = s.set_active_account(&account)?;
+            done(ctx, "account use", json!({"active": chosen.address, "label": chosen.label}), &format!("{} acts from now on", chosen.label))
         }
         AccountCmd::Rename { account, label } => {
             let mut s = ctx.session().await?;

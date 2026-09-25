@@ -66,7 +66,7 @@ impl App {
         };
         if self.eco.curves_at.get(&l.token).is_none_or(|t| t.elapsed() >= self.feed_pace()) {
             self.eco.curves_at.insert(l.token.clone(), Instant::now());
-            let owners = self.dash.accounts.first().map(|a| vec![a.address.clone()]).unwrap_or_default();
+            let owners = self.dash.active_account().map(|a| vec![a.address.clone()]).unwrap_or_default();
             self.send_data(DataCmd::CurveMarket { token: l.token, curve, owners });
         }
     }
@@ -167,7 +167,7 @@ impl App {
                         self.info("Hartii pays QUAI directly; no separate claim is needed");
                     }
                     'c' => {
-                        let account = self.dash.accounts.first().map(|a| a.address.clone());
+                        let account = self.dash.active_account().map(|a| a.address.clone());
                         self.send(Cmd::Prepare(Prepare::CurveClaim { account, token, symbol, curve }));
                     }
                     _ if l.phase != wallet_core::launches::Phase::Bonding

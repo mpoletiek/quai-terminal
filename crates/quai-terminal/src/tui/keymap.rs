@@ -45,6 +45,8 @@ pub enum Verb {
     Help,
     Notifications,
     Wallets,
+    /// The account that acts (`@`).
+    Account,
     Privacy,
     Lock,
     Quit,
@@ -176,6 +178,7 @@ pub const GLOBAL: &[Binding] = &[
     bind!(App, [C(' ')], Verb::Sheet, "actions for this"),
     bind!(App, [C('N')], Verb::Notifications, "notifications"),
     bind!(App, [C('W')], Verb::Wallets, "wallets"),
+    bind!(App, [C('@')], Verb::Account, "the account that acts"),
     bind!(App, [C('$')], Verb::Privacy, "hide or show the balance"),
     bind!(App, [C('`')], Verb::Dock, "the pinned chat"),
     bind!(App, [Ctrl('l')], Verb::Lock, "lock"),

@@ -55,7 +55,7 @@ impl App {
             side1: false,
             amount: String::new(),
             slippage_bps: self.config.swap_slippage_bps,
-            account: self.dash.accounts.first().map(|a| a.address.clone()),
+            account: self.dash.active_account().map(|a| a.address.clone()),
             field: 1,
             quote: None,
             quote_key: 0,
@@ -256,7 +256,7 @@ impl App {
             self.toast(format!("you have no liquidity in {name} yet — press a to add some"), true);
             return;
         };
-        let account = self.dash.accounts.first().map(|a| a.address.clone());
+        let account = self.dash.active_account().map(|a| a.address.clone());
         let lp = |v: U256| amount::format_amount(v, 18);
         let staked = position.pid.is_some();
         let gauge = position.gauge_address.clone();

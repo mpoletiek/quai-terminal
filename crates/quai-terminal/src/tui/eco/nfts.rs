@@ -131,7 +131,7 @@ impl App {
             }
             _ => {}
         }
-        let account = self.dash.accounts.first().map(|a| a.address.clone());
+        let account = self.dash.active_account().map(|a| a.address.clone());
         match self.eco.asks.get(&(c.clone(), id.clone())) {
             None => self.info("checking the listing on-chain…"),
             Some(Err(e)) => {
@@ -164,7 +164,7 @@ impl App {
             ));
             return;
         }
-        let account = self.dash.accounts.first().map(|a| a.address.clone());
+        let account = self.dash.active_account().map(|a| a.address.clone());
         let name = l.name.clone().unwrap_or_else(|| format!("#{}", l.token_id));
         self.start_flow(FlowKind::NftBuy {
             account,

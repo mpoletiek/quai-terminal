@@ -180,7 +180,7 @@ impl App {
                 match result {
                     Ok(result) => match result.plan {
                         Some(plan) => {
-                            let Some(account) = self.dash.accounts.first().map(|a| a.address.clone()) else {
+                            let Some(account) = self.dash.active_account().map(|a| a.address.clone()) else {
                                 return;
                             };
                             let intent = wallet_core::execution::TradingIntent {

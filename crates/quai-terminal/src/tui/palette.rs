@@ -478,6 +478,7 @@ pub fn keys_for(id: &str) -> String {
         "convert_quai_qi" => Some(Verb::Convert),
         "lock" => Some(Verb::Lock),
         "notifications" => Some(Verb::Notifications),
+        "switch_account" => Some(Verb::Account),
         "help" => Some(Verb::Help),
         "quit" => Some(Verb::Quit),
         "refresh" => Some(Verb::RefreshAll),

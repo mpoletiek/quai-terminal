@@ -168,7 +168,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                         let a = account_value
                             .as_ref()
                             .and_then(|v| dash.accounts.iter().find(|a| a.address == *v))
-                            .or(dash.accounts.first())?;
+                            .or(dash.active_account())?;
                         Some(format!("{} QUAI", q(a.balance)))
                     }
                     "QI" => dash.qi.as_ref().map(|s| format!("{} Qi", qi(s.balance.spendable))),
@@ -1161,6 +1161,41 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("enter switches (this wallet locks first) · m manage · esc close", t.dim_style())));
+            drop(hits);
+            f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
+        }
+        Modal::Accounts { selected } => {
+            let selected = *selected;
+            let active = dash.active_account().map(|a| a.address.clone());
+            let rows = dash.accounts.len().max(1) as u16;
+            let rect = centered(area, 72, rows + 6);
+            let inner = modal_frame(f, rect, t, "the account that acts");
+            let mut hits = app.hits.borrow_mut();
+            hits.add(rect, Target::Swallow);
+            let list = Rect { height: inner.height.saturating_sub(2), ..inner };
+            hits.rows(super::super::hit::ListId::Accounts, list, 0, dash.accounts.len(), |i| dash.accounts.get(i).map(|a| a.address.clone()));
+            let mut lines: Vec<Line> = dash
+                .accounts
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let current = active.as_deref() == Some(a.address.as_str());
+                    let style = if i == selected { t.selected() } else { t.text_style() };
+                    Line::from(vec![
+                        Span::styled(if current { "▸ " } else { "  " }, Style::default().fg(t.focus)),
+                        Span::styled(format!("{} ", i + 1), t.dim_style()),
+                        Span::styled(format!("{:<18}", truncate(&a.label, 18)), style.add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("{:<15}", wallet_core::session::short_address(&a.address)), t.dim_style()),
+                        Span::styled(format!("{:>18} QUAI", q(a.balance)), Style::default().fg(t.quai)),
+                        Span::styled(if current { "  acts" } else { "" }, t.dim_style()),
+                    ])
+                })
+                .collect();
+            if lines.is_empty() {
+                lines.push(Line::from(Span::styled("No accounts yet: add one under System › Wallets.", t.dim_style())));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("enter or 1–9: new cards, sends and trades act from it · esc close", t.dim_style())));
             drop(hits);
             f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
         }

@@ -441,6 +441,29 @@ impl App {
                 self.modal = Modal::Wallets { selected };
                 return;
             }
+            Modal::Accounts { mut selected } => {
+                let n = self.dash.accounts.len();
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down if n > 0 => selected = (selected + 1) % n,
+                    KeyCode::Char('k') | KeyCode::Up if n > 0 => selected = (selected + n - 1) % n,
+                    // `@` then a digit: that account, at once.
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let index = c as usize - '1' as usize;
+                        if index < n {
+                            self.use_account(index);
+                        }
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        self.use_account(selected);
+                        return;
+                    }
+                    KeyCode::Esc | KeyCode::Char('@') => return,
+                    _ => {}
+                }
+                self.modal = Modal::Accounts { selected };
+                return;
+            }
             Modal::GoTo => {
                 self.modal = Modal::None;
                 match key.code {
