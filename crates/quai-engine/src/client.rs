@@ -380,7 +380,8 @@ async fn relay(
     say: &impl Fn(Ev),
     answer: &impl Fn(DataEv),
 ) -> Gone {
-    let (mut read, mut write) = stream.into_split();
+    let (read, mut write) = stream.into_split();
+    let (mut frames, _reader) = protocol::reader::<HostMsg, _>(read, HOST_FRAME_LIMIT);
     for msg in data.replay() {
         if let Err(e) = protocol::write_msg(&mut write, &msg).await {
             return Gone::Engine(e.to_string());
@@ -409,12 +410,13 @@ async fn relay(
                     return Gone::Engine(e.to_string());
                 }
             }
-            incoming = protocol::read_msg::<HostMsg>(&mut read, HOST_FRAME_LIMIT) => match incoming {
-                Ok(HostMsg::Ev(ev)) => say(ev),
-                Ok(HostMsg::Data(ev)) => answer(ev),
-                Ok(HostMsg::Refused(why)) => return Gone::Engine(why),
-                Ok(HostMsg::Welcome { .. }) => return Gone::Engine("the daemon repeated its welcome".into()),
-                Err(e) => return Gone::Engine(e.to_string()),
+            incoming = frames.recv() => match incoming {
+                Some(Ok(HostMsg::Ev(ev))) => say(ev),
+                Some(Ok(HostMsg::Data(ev))) => answer(ev),
+                Some(Ok(HostMsg::Refused(why))) => return Gone::Engine(why),
+                Some(Ok(HostMsg::Welcome { .. })) => return Gone::Engine("the daemon repeated its welcome".into()),
+                Some(Err(e)) => return Gone::Engine(e.to_string()),
+                None => return Gone::Engine("the engine connection ended".into()),
             },
         }
     }
@@ -469,5 +471,101 @@ mod tests {
         let sent = names(&data.replay());
         assert_eq!(sent.len(), DATA_HELD);
         assert_eq!(sent.first().map(String::as_str), Some("token 10"));
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use crate::protocol::{CLIENT_FRAME_LIMIT, write_msg};
+
+    /// The daemon sends large frames (pictures) while the terminal keeps sending requests: every
+    /// frame arrives whole and in order, and the engine is never reported lost. In 0.1.0-alpha.9
+    /// the relay read frames inside its `select!`, and a request going out mid-frame cut the read
+    /// short: "engine stopped (a frame of … bytes is over the limit)".
+    #[test]
+    fn a_busy_connection_loses_no_frames() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = dir.path().join("engine.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        const N: usize = 30;
+        // The daemon: handshake, then pictures while it reads whatever the terminal sends.
+        let host = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async move {
+                listener.set_nonblocking(true).unwrap();
+                let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _hello: ClientMsg = protocol::read_msg(&mut stream, CLIENT_FRAME_LIMIT).await.unwrap();
+                write_msg(&mut stream, &HostMsg::Welcome { protocol: PROTOCOL, build: protocol::build() }).await.unwrap();
+                let _attach: ClientMsg = protocol::read_msg(&mut stream, CLIENT_FRAME_LIMIT).await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let (mut frames, _reader) = protocol::reader::<ClientMsg, _>(read, CLIENT_FRAME_LIMIT);
+                let drain = tokio::spawn(async move {
+                    let mut n = 0usize;
+                    while let Some(Ok(_)) = frames.recv().await {
+                        n += 1;
+                    }
+                    n
+                });
+                for i in 0..N {
+                    let picture = HostMsg::Data(DataEv::Image {
+                        url: format!("ipfs://{i}"),
+                        edge: 256,
+                        rendition: Some(std::sync::Arc::new(wallet_core::media::Rendition {
+                            hash: "h".into(),
+                            width: 256,
+                            height: 256,
+                            png: vec![7; 4096],
+                            rgba: vec![(i % 251) as u8; 256 * 256 * 4],
+                            dominant: (1, 2, 3),
+                        })),
+                        transient: false,
+                    });
+                    write_msg(&mut write, &picture).await.unwrap();
+                    tokio::task::yield_now().await;
+                }
+                // Keep the connection until the terminal has read everything.
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                drop(write);
+                drain.abort();
+            });
+        });
+        let pid = std::process::id();
+        let dialer = Dialer {
+            socket: socket.clone(),
+            daemon_pid: Box::new(move || Some(pid)),
+            ensure_daemon: Box::new(|| Err("not in this test".into())),
+        };
+        let remote = Remote::connect(dialer, "w".into(), "n".into(), || {}).unwrap();
+        let data = remote.data_worker().unwrap();
+        let engine = Engine::Remote(remote);
+        let started = Instant::now();
+        let mut got = 0;
+        let mut sent = 0u64;
+        while got < N {
+            assert!(started.elapsed() < Duration::from_secs(20), "{got} of {N} frames arrived");
+            // Requests going out all the while: each one races a frame coming in.
+            for _ in 0..20 {
+                data.tx.send(DataCmd::Focus(vec![format!("job{sent}")]));
+                sent += 1;
+            }
+            while let Ok(ev) = data.rx.try_recv() {
+                let DataEv::Image { url, .. } = ev else { panic!("not a picture") };
+                assert_eq!(url, format!("ipfs://{got}"), "in order");
+                got += 1;
+            }
+            while let Some(ev) = engine.try_recv() {
+                if let Ev::EngineLost(why) = ev {
+                    panic!("the engine was reported lost: {why}");
+                }
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        drop(engine);
+        drop(host);
     }
 }
