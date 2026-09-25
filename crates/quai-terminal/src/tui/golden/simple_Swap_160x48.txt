@@ -27,8 +27,8 @@
                        ││                                                                         ││                                                           │
                        ││                                                                         ││                                                           │
                        ││                                                                         ││                                                           │
-                       ││                         ◌  Reading the market…                          ││                                                           │
-                       ││                                                                         ││                                                           │
+                       ││ ·  No pool trades this pair directly; the router finds a path through   ││                                                           │
+                       ││ WQUAI.                                                                  ││                                                           │
                        ││                                                                         ││                                                           │
                        ││                                                                         ││                                                           │
                        ││                                                                         ││                                                           │

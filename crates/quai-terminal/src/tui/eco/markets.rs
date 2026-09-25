@@ -621,7 +621,9 @@ impl App {
     /// reaches the network, so this paces the screen rather than the network.
     pub(crate) fn tick_markets(&mut self) {
         self.unstick_markets();
-        if self.eco.markets_view.pools.take_due(fresh::MARKET_DIRECTORY, &self.eco.clock) {
+        // Without a data worker nothing would answer, and the directory would say it is loading
+        // for as long as the screen is open.
+        if self.data.is_some() && self.eco.markets_view.pools.take_due(fresh::MARKET_DIRECTORY, &self.eco.clock) {
             self.send_data(DataCmd::MarketPools);
             return;
         }
