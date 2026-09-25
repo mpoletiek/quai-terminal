@@ -3176,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "quai-engine"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "ciborium",
  "futures",
@@ -3191,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "quai-feeds"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -3234,12 +3234,10 @@ dependencies = [
 
 [[package]]
 name = "quai-messaging"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
- "chacha20poly1305",
  "ed25519-dalek",
  "hex",
- "hkdf 0.12.4",
  "hpke",
  "quai-model",
  "quai-sdk",
@@ -3251,7 +3249,7 @@ dependencies = [
 
 [[package]]
 name = "quai-model"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "quai-sdk",
  "rusqlite",
@@ -3366,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "quai-terminal-cli"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3399,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "quai-venues"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "serde",
 ]
@@ -5197,7 +5195,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-core"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -5231,7 +5229,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-vault"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "argon2",
  "base64 0.22.1",

@@ -1,25 +1,27 @@
 //! Chat subscriptions and the pinned chat.
 //!
-//! A subscription asks to be told when someone else says something in a board channel or a sealed
-//! conversation. A channel's notification carries who said what, since the channel is public
-//! anyway; a sealed conversation's says only who wrote and how many times, because notifications
-//! are stored in plain text and reach the desktop. The pin is
-//! the one chat the TUI docks beside every screen. Both belong to this wallet (a conversation is
-//! with its payment code), so they live in its database, per network.
+//! A subscription asks to be told when someone else says something in a board channel. A
+//! channel's notification carries who said what, since the channel is public anyway. Private
+//! conversations need no subscription, and theirs say only who wrote and how many times, because
+//! notifications are stored in plain text and reach the desktop. The pin is the one chat the TUI
+//! docks beside every screen. Both belong to this wallet, so they live in its database, per
+//! network.
 //!
-//! Channels are public reads, so a locked daemon watches them too. A sealed conversation opens
-//! only with this wallet's payment key, so it is checked only while unlocked.
+//! Channels are public reads, so a locked daemon watches them too. Private messages open only
+//! with keys sealed under the wallet's, so they are checked only while unlocked.
 
 use crate::error::Result;
 use crate::session::Session;
 
-/// A chat by name: `#channel` or `dm:<payment code>`.
+/// A chat by name: `#channel`, or `msg:<address>` for a private conversation.
 pub fn channel_target(name: &str) -> String {
     format!("#{name}")
 }
 
-pub fn dm_target(code: &str) -> String {
-    format!("dm:{code}")
+/// What an older version subscribed to or pinned for a payment-code conversation, a format no
+/// longer read: such entries are ignored.
+fn legacy_target(target: &str) -> bool {
+    target.starts_with("dm:")
 }
 
 fn subs_key(network: &str) -> String {
@@ -37,10 +39,10 @@ fn seen_key(network: &str, target: &str) -> String {
 /// Most messages one chat puts in a single notification; the rest are counted.
 const PER_NOTICE: usize = 3;
 
-/// What replaced the text of sealed messages that older versions stored in notifications.
+/// What replaced the text of private messages that older versions stored in notifications.
 pub const REDACTED_NOTICE: &str = "(message text removed)";
 
-/// A sealed conversation's notification: how many arrived, never what they said.
+/// A private conversation's notification: how many arrived, never what they said.
 pub fn private_summary(count: usize) -> Option<String> {
     match count {
         0 => None,
@@ -55,7 +57,7 @@ pub struct ChatLine {
     /// Unix seconds.
     pub at: u64,
     /// Which message it is, the same for every wallet that reads it (`tx:index` for a channel
-    /// post; empty for a sealed line, which only this wallet can read).
+    /// post).
     pub id: String,
     /// Sender address, lowercase.
     pub from: String,
@@ -67,9 +69,9 @@ pub struct ChatLine {
 /// What one subscribed chat said since this wallet last looked.
 #[derive(Clone, Debug)]
 pub struct ChatNews {
-    /// `#channel` or `dm:<code>`.
+    /// `#channel` or `msg:<address>`.
     pub target: String,
-    /// `#channel`, or `<name> · sealed`.
+    /// `#channel`, or `<name> · private`.
     pub title: String,
     pub body: String,
     /// The messages behind `body`, oldest first.
@@ -90,7 +92,9 @@ impl Session {
     /// its own: anyone can post to it for the price of a transaction, and a subscription puts
     /// what they write on the desktop under this app's name.
     pub fn chat_subscriptions(&self) -> Vec<String> {
-        self.app.kv(&subs_key(&self.network.id)).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let subs: Vec<String> =
+            self.app.kv(&subs_key(&self.network.id)).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        subs.into_iter().filter(|t| !legacy_target(t)).collect()
     }
 
     /// Subscribe to a chat, or stop; returns whether it is subscribed now.
@@ -109,7 +113,7 @@ impl Session {
 
     /// The pinned chat, if any.
     pub fn chat_pin(&self) -> Option<String> {
-        self.app.kv(&pin_key(&self.network.id)).ok().flatten().filter(|s| !s.is_empty())
+        self.app.kv(&pin_key(&self.network.id)).ok().flatten().filter(|s| !s.is_empty() && !legacy_target(s))
     }
 
     /// Pin a chat (`None` unpins).
@@ -119,18 +123,18 @@ impl Session {
 
     /// Read every subscribed chat for messages from someone else since the last look, add a
     /// notification per chat that has any, and return them as (title, body). A chat's first look
-    /// only marks where it stands. Sealed conversations are skipped while locked.
+    /// only marks where it stands. Private conversations are skipped while locked.
     pub async fn chat_news(&self) -> Result<Vec<ChatNews>> {
         self.chat_news_where(false).await
     }
 
-    /// [`Session::chat_news`], sealed conversations only when `dms_only` — for a window whose
+    /// [`Session::chat_news`], private conversations only when `dms_only` — for a window whose
     /// daemon already reads the channels but cannot open this wallet's conversations.
     pub async fn chat_news_where(&self, dms_only: bool) -> Result<Vec<ChatNews>> {
-        let subs: Vec<String> = self.chat_subscriptions().into_iter().filter(|t| !dms_only || t.starts_with("dm:")).collect();
+        let subs: Vec<String> = if dms_only { Vec::new() } else { self.chat_subscriptions() };
         // Private conversations are read even with no subscription, so only a network without a
         // board has nothing to say.
-        if self.network.ecosystem.messages.is_none() || (subs.is_empty() && self.messaging_account().is_none()) {
+        if self.network.ecosystem.messages.is_none() || (subs.is_empty() && !self.has_messaging_keys()) {
             return Ok(Vec::new());
         }
         let ctx = self.data_ctx()?;
@@ -166,27 +170,10 @@ impl Session {
                         id: format!("{}:{}", p.tx, p.index),
                         from: p.from.to_lowercase(),
                         who: who(&p.from),
-                        text: p.text().unwrap_or_else(|| "<sealed>".into()),
+                        text: p.text().unwrap_or_else(|| "<not text>".into()),
                     })
                     .collect();
                 (target.clone(), lines)
-            } else if let Some(code) = target.strip_prefix("dm:") {
-                if !self.is_unlocked() {
-                    continue;
-                }
-                let Ok(read) = self.read_conversation(code, crate::messages::BOARD_BLOCKS).await else { continue };
-                let name = contacts
-                    .iter()
-                    .find(|c| c.payment_code.as_deref() == Some(code))
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| crate::session::short_code(code));
-                // Counted, never quoted: the text stays in the conversation.
-                let lines = read
-                    .iter()
-                    .filter(|l| !l.mine)
-                    .map(|l| ChatLine { at: l.at, id: String::new(), from: l.from.to_lowercase(), who: who(&l.from), text: String::new() })
-                    .collect();
-                (format!("{name} · sealed"), lines)
             } else {
                 continue;
             };
@@ -213,7 +200,7 @@ impl Session {
             }
         }
         // Private conversations notify without a subscription: who wrote and how many times.
-        if self.is_unlocked() && self.messaging_account().is_some() {
+        if self.is_unlocked() && self.has_messaging_keys() {
             match self.messaging_news().await {
                 Ok(fresh) => {
                     for (peer, n) in fresh {
@@ -262,7 +249,7 @@ mod tests {
         assert_eq!(summarize(&many).as_deref(), Some("p3: m3 · p4: m4 · p5: m5 (+2 more)"), "newest kept, rest counted");
     }
 
-    /// A sealed conversation's notice counts; it never quotes.
+    /// A private conversation's notice counts; it never quotes.
     #[test]
     fn a_private_summary_counts_and_never_quotes() {
         assert_eq!(private_summary(0), None);
@@ -285,5 +272,10 @@ mod tests {
         assert!(s.chat_subscriptions().is_empty());
         assert!(s.toggle_chat_subscription("#general").unwrap());
         assert_eq!(s.chat_subscriptions(), ["#general"]);
+        // What an older version saved for a payment-code conversation is no longer read.
+        s.app.set_kv(&subs_key(&s.network.id), r##"["#general","dm:PM8Tx"]"##).unwrap();
+        assert_eq!(s.chat_subscriptions(), ["#general"]);
+        s.set_chat_pin(Some("dm:PM8Tx")).unwrap();
+        assert_eq!(s.chat_pin(), None);
     }
 }

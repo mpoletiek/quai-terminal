@@ -89,6 +89,12 @@ impl App {
         order.as_ref().map(|(_, o)| o.iter().filter_map(|i| pools.get(*i)).collect()).unwrap_or_default()
     }
 
+    /// Where a pool sits in the pairs list as shown (sorted, watched first, thin copies left
+    /// out): the index the cursor and the chart go by, not its place in the directory.
+    pub fn market_row_of(&self, address: &str) -> Option<usize> {
+        self.market_rows().iter().position(|p| p.address.eq_ignore_ascii_case(address))
+    }
+
     pub(crate) fn sort_markets_order(&self, pools: &[wallet_core::markets::Pool]) -> Vec<usize> {
         let mv = &self.eco.markets_view;
         // A few dollars seeded beside a token's real market lists as a second pair nobody trades.
@@ -474,16 +480,22 @@ impl App {
             }
             KeyCode::Char('t') | KeyCode::Enter if self.nav.pane == 1 => {
                 // A swap in the flow names its pair: take the chart there.
+                // The pairs list is sorted and filtered, so the chart goes by the pair's row there,
+                // never by its place in the directory.
                 let Some(pool) = self.flow_rows().get(self.nav.selected).map(|s| s.pool.clone()) else { return true };
-                if let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() {
-                    match pools.iter().position(|p| p.address == pool) {
-                        Some(i) => {
-                            self.eco.markets_view.pair_selected = i;
-                            let name = pools.get(i).map(|p| self.pair_name(p)).unwrap_or_default();
-                            self.info(format!("chart: {name}"));
-                        }
-                        None => self.toast("that pool is not in the directory", true),
+                match self.market_row_of(&pool) {
+                    Some(i) => {
+                        self.eco.markets_view.pair_selected = i;
+                        let name = self.market_rows().get(i).map(|p| self.pair_name(p)).unwrap_or_default();
+                        self.info(format!("chart: {name}"));
                     }
+                    None if self.eco.markets_view.pools.shown().is_some_and(|r| {
+                        r.as_ref().is_ok_and(|(pools, _)| pools.iter().any(|p| p.address.eq_ignore_ascii_case(&pool)))
+                    }) =>
+                    {
+                        self.toast("that pool is a thin copy of a bigger market, so the pairs list leaves it out", true)
+                    }
+                    None => self.toast("that pool is not in the directory", true),
                 }
                 true
             }

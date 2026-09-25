@@ -1,9 +1,6 @@
-//! People: the message board, sealed conversations and the pinned chat.
+//! People: the message board, private conversations and the pinned chat.
 
 use super::*;
-
-/// What `p` says on an old payment-code conversation.
-const LEGACY_READ_ONLY: &str = "old sealed conversations are read-only: write to their messaging address instead";
 
 impl App {
     /// The board's left column: the channels this wallet follows, the people it can write to in
@@ -12,29 +9,16 @@ impl App {
     pub fn board_rows(&self) -> Vec<BoardRow> {
         let followed = &self.config.board_channels;
         let mut rows: Vec<BoardRow> = followed.iter().cloned().map(BoardRow::Channel).collect();
-        // Private messages: the messaging account first, then conversations newest first, then
-        // who is waiting.
+        // Private messages: the account they go from first, then its conversations newest first,
+        // then who is waiting.
         if let Some(Ok(view)) = self.eco.board.msg.shown() {
             use wallet_core::messaging::service::KeyNeed;
             if self.can_sign() {
                 rows.push(BoardRow::Messaging);
             }
-            if !matches!(view.status.need, KeyNeed::NotSetUp | KeyNeed::NoKeys) {
+            if view.status.need != KeyNeed::NoKeys {
                 rows.extend(view.conversations.iter().map(|c| BoardRow::Chat(c.peer.clone(), c.name.clone())));
                 rows.extend(view.requests.iter().map(|c| BoardRow::Request(c.peer.clone())));
-            }
-        }
-        // Old sealed conversations, read-only: established payment channels, plus any contact
-        // who has a payment code.
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for p in &self.dash.peers {
-            if seen.insert(p.code.clone()) {
-                rows.push(BoardRow::Peer(p.code.clone(), p.contact.clone()));
-            }
-        }
-        for c in &self.dash.contacts {
-            if let Some(code) = c.payment_code.as_ref().filter(|code| seen.insert((*code).clone())) {
-                rows.push(BoardRow::Peer(code.clone(), Some(c.name.clone())));
             }
         }
         rows.extend(
@@ -51,7 +35,7 @@ impl App {
         rows.retain(|r| match r {
             BoardRow::Channel(name) | BoardRow::Unfollowed(name, _) => name.to_lowercase().contains(&filter),
             // People match on the name you gave them, or on their code or address.
-            BoardRow::Peer(id, contact) | BoardRow::Chat(id, contact) => {
+            BoardRow::Chat(id, contact) => {
                 contact.as_ref().is_some_and(|c| c.to_lowercase().contains(&filter)) || id.to_lowercase().contains(&filter)
             }
             BoardRow::Request(address) => address.contains(&filter),
@@ -73,18 +57,15 @@ impl App {
         self.dash.contact_addresses.iter().find(|(addr, _)| *addr == a).map(|(_, name)| name.clone())
     }
 
-    /// A board row as a chat target (`#channel` / `dm:<code>`) and how it reads.
+    /// A board row as a chat target (`#channel` / `msg:<address>`) and how it reads.
     pub fn chat_target(row: &BoardRow) -> (String, String) {
         match row {
             BoardRow::Channel(c) | BoardRow::Unfollowed(c, _) => (wallet_core::chat::channel_target(c), format!("#{c}")),
-            BoardRow::Peer(code, name) => {
-                (wallet_core::chat::dm_target(code), name.clone().unwrap_or_else(|| wallet_core::session::short_code(code)))
-            }
             BoardRow::Chat(address, name) => {
                 (format!("msg:{address}"), name.clone().unwrap_or_else(|| wallet_core::session::short_address(address)))
             }
             BoardRow::Request(address) => (format!("msg:{address}"), wallet_core::session::short_address(address)),
-            BoardRow::Messaging => (String::new(), "messaging account".into()),
+            BoardRow::Messaging => (String::new(), "private messages".into()),
         }
     }
 
@@ -97,16 +78,7 @@ impl App {
                 .or_else(|| self.contact_name_for(address))
                 .unwrap_or_else(|| wallet_core::session::short_address(address));
         }
-        match target.strip_prefix("dm:") {
-            Some(code) => self
-                .dash
-                .contacts
-                .iter()
-                .find(|c| c.payment_code.as_deref() == Some(code))
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| wallet_core::session::short_code(code)),
-            None => target.to_string(),
-        }
+        target.to_string()
     }
 
     /// Post what is in the pinned chat's box: the same form and review as `p` on the Board, with
@@ -141,10 +113,7 @@ impl App {
             let name = self.contact_name_for(address);
             return self.write_private(address.to_string(), name);
         }
-        match pin.strip_prefix("dm:") {
-            Some(_) => self.toast(LEGACY_READ_ONLY, true),
-            None => self.open_form(FormKind::BoardPost { channel: pin.trim_start_matches('#').to_string() }),
-        }
+        self.open_form(FormKind::BoardPost { channel: pin.trim_start_matches('#').to_string() })
     }
 
     /// The row under the cursor.
@@ -171,22 +140,12 @@ impl App {
         }
     }
 
-    /// The open conversation's messages, oldest first.
-    pub fn board_dm_lines(&self) -> Vec<&wallet_core::ops::SealedLine> {
-        let Some(BoardRow::Peer(code, _)) = self.board_row() else { return Vec::new() };
-        match self.eco.board.dms.get(&code).and_then(|r| r.shown()) {
-            Some(Ok(lines)) => lines.iter().collect(),
-            _ => Vec::new(),
-        }
-    }
-
     /// The address that wrote the selected message, when the messages pane has the cursor.
     pub fn board_sender(&self) -> Option<String> {
         if self.nav.pane != 1 {
             return None;
         }
         match self.board_row() {
-            Some(BoardRow::Peer(..)) => self.board_dm_lines().get(self.nav.selected).map(|l| l.from.clone()),
             Some(BoardRow::Chat(address, _) | BoardRow::Request(address)) => Some(address),
             Some(BoardRow::Messaging) => None,
             _ => self.board_posts().get(self.nav.selected).map(|p| p.from.clone()),
@@ -240,66 +199,12 @@ impl App {
             return self.toast("this wallet is watch-only", true);
         }
         match self.messaging().map(|v| v.status.need) {
-            Some(KeyNeed::Publish) => self.publish_messaging_key(),
-            Some(KeyNeed::NotSetUp | KeyNeed::NoKeys) => self.open_messaging_account(),
+            Some(KeyNeed::Publish | KeyNeed::NoKeys) => self.publish_messaging_key(),
             _ => {
                 if self.private_conversation(&address).is_some_and(|c| c.identity_changed) {
                     return self.toast("their identity key changed: compare fingerprints (v), then accept it (T)", true);
                 }
                 self.open_form(FormKind::Message { peer: address, name })
-            }
-        }
-    }
-
-    /// The accounts messaging can go from: every one but the main one, then a new one. Each is
-    /// (address, `None` for a new account) and how it reads.
-    pub fn messaging_choices(&self) -> Vec<(Option<String>, String)> {
-        let mut out: Vec<(Option<String>, String)> = self
-            .dash
-            .accounts
-            .iter()
-            .skip(1)
-            .map(|a| {
-                let balance = wallet_core::amount::group_thousands(&wallet_core::amount::format_amount_short(a.balance, 18, 4));
-                (Some(a.address.clone()), format!("{} · {} · {balance} QUAI", a.label, wallet_core::session::short_address(&a.address)))
-            })
-            .collect();
-        out.push((None, "a new account, just for messaging".into()));
-        out
-    }
-
-    /// Put the cursor on the messaging account's row, with the choice beside it.
-    pub(crate) fn open_messaging_account(&mut self) {
-        let Some(i) = self.board_rows().iter().position(|r| *r == BoardRow::Messaging) else {
-            return self.toast("unlock to set up private messages", true);
-        };
-        self.nav.pane = 0;
-        self.nav.selected = i;
-        self.toast("choose the account messages go from: enter, then pick one", false);
-    }
-
-    /// Messages go from the `i`th choice. The first choice sets messaging up; a different one
-    /// later moves it, which starts a new identity, so that asks first.
-    pub(crate) fn choose_messaging_account(&mut self, i: usize) {
-        use wallet_core::messaging::service::KeyNeed;
-        let Some((account, label)) = self.messaging_choices().get(i).cloned() else { return };
-        let status = self.messaging().map(|v| v.status.clone());
-        let current = status.as_ref().and_then(|s| s.account.clone());
-        let same = matches!((&account, &current), (Some(a), Some(c)) if a.eq_ignore_ascii_case(c));
-        match status.map(|s| s.need) {
-            None => {}
-            Some(KeyNeed::NotSetUp) => self.messaging_op(super::super::worker::MsgOp::Setup { account, new_identity: false }),
-            Some(KeyNeed::NoKeys) if same => self.messaging_op(super::super::worker::MsgOp::Setup { account, new_identity: true }),
-            Some(_) if same => self.info("messages already go from this account"),
-            Some(_) => {
-                self.modal = super::super::app::Modal::Confirm {
-                    title: "New messaging identity".into(),
-                    body: format!(
-                        "Move messaging to {label}? This starts a new identity: the keys and history on this computer are \
-                         deleted, and people you talk to will see it change and should compare fingerprints with you again."
-                    ),
-                    action: super::super::app::ConfirmAction::MoveMessaging(account),
-                };
             }
         }
     }
@@ -313,9 +218,8 @@ impl App {
     /// Rows in whichever the cursor has open, for the message pane's own cursor.
     pub fn board_message_count(&self) -> usize {
         match self.board_row() {
-            Some(BoardRow::Peer(..)) => self.board_dm_lines().len(),
             Some(BoardRow::Chat(..) | BoardRow::Request(..)) => self.board_private_lines().len(),
-            Some(BoardRow::Messaging) => self.messaging_choices().len(),
+            Some(BoardRow::Messaging) => 0,
             _ => self.board_posts().len(),
         }
     }
@@ -333,17 +237,6 @@ impl App {
                     return;
                 }
                 self.send_data(DataCmd::Board { channel, blocks });
-            }
-            Some(BoardRow::Peer(code, _)) => {
-                if self.lock.locked {
-                    return;
-                }
-                let clock = self.eco.clock;
-                let board = &mut self.eco.board;
-                if board.reading_dm() || !board.dms.take_due(code.clone(), fresh::BOARD, &clock) {
-                    return;
-                }
-                self.send(Cmd::ReadConversation { peer: code, blocks, epoch: self.private_epoch });
             }
             // Private messages: every 10 s while one is open, reading the chain each time.
             Some(BoardRow::Chat(address, _) | BoardRow::Request(address)) => {
@@ -489,18 +382,8 @@ impl App {
             }
             KeyCode::Char('p') => {
                 match self.board_row() {
-                    Some(BoardRow::Messaging) if self.nav.pane == 1 => self.choose_messaging_account(self.nav.selected),
-                    // The choice is the pane beside: go there, onto the account in use.
-                    Some(BoardRow::Messaging) => {
-                        self.eco.board.channel_selected = self.nav.selected;
-                        self.nav.pane = 1;
-                        let current = self.messaging().and_then(|v| v.status.account.clone());
-                        self.nav.selected = self
-                            .messaging_choices()
-                            .iter()
-                            .position(|(a, _)| a.as_deref().is_some_and(|a| current.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(a))))
-                            .unwrap_or(0);
-                    }
+                    Some(BoardRow::Messaging) if self.can_sign() => self.open_form(FormKind::MessageNew),
+                    Some(BoardRow::Messaging) => self.toast("this wallet is watch-only", true),
                     Some(BoardRow::Chat(address, name)) => self.write_private(address, name),
                     Some(BoardRow::Request(_)) => self.toast("accept them first (a), or block them (B)", true),
                     Some(BoardRow::Channel(channel)) => self.open_form(FormKind::BoardPost { channel }),
@@ -509,7 +392,6 @@ impl App {
                         self.follow_channel(&channel);
                         self.open_form(FormKind::BoardPost { channel });
                     }
-                    Some(BoardRow::Peer(..)) => self.toast(LEGACY_READ_ONLY, true),
                     None => self.toast("add a channel first (a)", true),
                 }
                 true
@@ -566,7 +448,6 @@ impl App {
             KeyCode::Char('R') => {
                 let board = &mut self.eco.board;
                 board.posts.invalidate_all();
-                board.dms.invalidate_all();
                 board.known.invalidate();
                 board.msg.invalidate();
                 self.tick_board();
@@ -581,10 +462,6 @@ impl App {
             }
             KeyCode::Char('K') => {
                 self.publish_messaging_key();
-                true
-            }
-            KeyCode::Char('F') => {
-                self.open_form(FormKind::MessagingFund);
                 true
             }
             KeyCode::Char('B') => {
@@ -632,25 +509,12 @@ impl App {
                 }
                 true
             }
-            // Whoever wrote the selected message, into the address book. In a sealed
-            // conversation the payment code is known too — that is the identity, and the
-            // address is merely the account this message came from.
+            // Whoever wrote the selected message, into the address book: to someone already saved
+            // (another account of theirs), or a new contact.
             KeyCode::Char('c') if self.nav.pane == 1 => {
-                let sender = self.board_sender();
-                match (self.board_row(), sender) {
-                    (Some(BoardRow::Peer(code, _)), address) => {
-                        let mine = self.owner_addresses();
-                        let address = address.filter(|a| !mine.iter().any(|m| m.eq_ignore_ascii_case(a)));
-                        self.open_form(FormKind::ContactFromPeer { code, address });
-                    }
-                    (_, Some(address)) => {
-                        self.open_form(FormKind::Contact(None));
-                        if let Modal::Form(f) = &mut self.modal {
-                            f.fields[1].value = address;
-                            f.focus = 0;
-                        }
-                    }
-                    (_, None) => self.toast("select a message first (tab)", true),
+                match self.board_sender() {
+                    Some(address) => self.open_form(FormKind::SaveToContact { value: Some(address), contact: None }),
+                    None => self.toast("select a message first (tab)", true),
                 }
                 true
             }
@@ -682,20 +546,13 @@ impl App {
             && self.nav.screen != Screen::Board
         {
             let blocks = wallet_core::messages::BOARD_BLOCKS;
-            match (pin.strip_prefix("msg:"), pin.strip_prefix("dm:")) {
-                (Some(address), _) => {
+            match pin.strip_prefix("msg:") {
+                Some(address) => {
                     if self.eco.board.msg.due(fresh::MESSAGES_PINNED, &self.eco.clock) {
                         self.refresh_messaging(Some(address.to_string()), true);
                     }
                 }
-                (None, Some(code)) => {
-                    let clock = self.eco.clock;
-                    let b = &mut self.eco.board;
-                    if !b.reading_dm() && b.dms.take_due(code.to_string(), fresh::BOARD, &clock) {
-                        self.send(Cmd::ReadConversation { peer: code.to_string(), blocks, epoch: self.private_epoch });
-                    }
-                }
-                (None, None) => {
+                None => {
                     let channel = pin.trim_start_matches('#').to_string();
                     let clock = self.eco.clock;
                     let b = &mut self.eco.board;
@@ -706,9 +563,7 @@ impl App {
             }
         }
         // Private conversations always notify, subscribed or not.
-        let private = self.messaging().is_some_and(|v| {
-            !matches!(v.status.need, wallet_core::messaging::service::KeyNeed::NotSetUp | wallet_core::messaging::service::KeyNeed::NoKeys)
-        });
+        let private = self.messaging().is_some_and(|v| v.status.need != wallet_core::messaging::service::KeyNeed::NoKeys);
         if (!self.eco.board.subs.is_empty() || private) && self.eco.board.news.due(fresh::CHAT_NEWS, &self.eco.clock) {
             // A daemon reads the channels; it reads this wallet's sealed chats too only if it
             // holds the wallet unlocked. Whatever it cannot read, this window does.

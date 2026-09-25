@@ -33,11 +33,10 @@ impl App {
     pub(crate) fn forget_private(&mut self) {
         self.private_epoch += 1;
         let board = &mut self.eco.board;
-        board.dms.clear();
         board.msg.clear();
         board.msg_lines.clear();
         board.msg_offered = false;
-        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("dm:") || p.starts_with("msg:")) {
+        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("msg:")) {
             self.dock.draft.clear();
         }
     }
@@ -369,6 +368,15 @@ impl App {
                 if let Some(kind) = &kind {
                     self.after_submit(kind);
                 }
+                // The Qi is on its way; the announcement's own review comes next, from the account
+                // in use.
+                if let Some(peer) = self.status.announce_after.take()
+                    && !self.lock.locked
+                {
+                    self.toast("Qi sent · next, announce your payment code so their wallet finds it", false);
+                    self.send(Cmd::Prepare(super::super::worker::Prepare::Notify { from: None, peer }));
+                    return;
+                }
                 // A step in a sequence continues on its own; only the last step shows the result.
                 if !self.flow_on_submitted(&s.op_id, &kind.unwrap_or(OpKind::Other(String::new()))) && !self.lock.locked {
                     self.modal = Modal::Result(s);
@@ -404,6 +412,7 @@ impl App {
             Ev::CommitError { op_id, message, ambiguous } => {
                 // A plan's step: the engine says where the plan stands (`Ev::Plan`).
                 self.status.committing_kind = None;
+                self.status.announce_after = None;
                 self.send(Cmd::Journal);
                 // Where the money is comes first. A toast is too small for this, and gone too soon.
                 let activity = Screen::Activity.place();
@@ -493,7 +502,6 @@ impl App {
                 self.modal = Modal::Secret { text, title: "Anyone with these words controls your funds".into() };
             }
             // Asked before a lock or a switch: whatever it says is no longer this screen's to show.
-            Ev::Conversation { epoch, .. } if self.lock.locked || epoch != self.private_epoch => {}
             Ev::Messaging { epoch, .. } if self.lock.locked || epoch != self.private_epoch => {}
             Ev::Messaging { view, open, note, .. } => {
                 use wallet_core::messaging::service::KeyNeed;
@@ -523,10 +531,6 @@ impl App {
                 if offer {
                     self.toast("this week's messaging key is not published yet: Board › K", false);
                 }
-            }
-            Ev::Conversation { peer, result, .. } => {
-                // A failed read keeps the conversation on screen (`Resource::shown`).
-                self.eco.board.dms.settle(peer, result);
             }
             // An arrival already said by name (`arrive`) is not said again in the worker's words.
             Ev::Notify { title, .. }

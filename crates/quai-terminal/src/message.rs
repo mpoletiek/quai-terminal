@@ -1,32 +1,17 @@
-//! `message`: private messages (v3). Everything here needs the wallet unlocked: the keys and the
-//! local history are sealed under the messaging account's own key.
+//! `message`: private messages (v3), from the account in use (`account use`). Everything here
+//! needs the wallet unlocked: an account's keys and local history are sealed under its own key.
 
 use crate::args::MessageCmd;
 use crate::commands::Ctx;
 use serde_json::json;
+use wallet_core::Result;
 use wallet_core::messaging::service::{KeyNeed, SyncReport};
 use wallet_core::registry::now;
 use wallet_core::session::{Session, short_address};
 use wallet_core::track::human_duration;
-use wallet_core::{CoreError, Result};
 
 pub async fn run(ctx: &Ctx, cmd: MessageCmd) -> Result<()> {
     match cmd {
-        MessageCmd::Setup { account, new_identity } => {
-            let mut s = ctx.unlocked().await?;
-            let status = s.messaging_setup(&account, new_identity).await?;
-            if ctx.out.json() {
-                ctx.out.emit("message setup", &status);
-                return Ok(());
-            }
-            println!("{} messaging account {}", ctx.out.green("✓"), status.account.as_deref().unwrap_or("?"));
-            if let Some(f) = &status.fingerprint {
-                println!("  your fingerprint  {f}");
-            }
-            println!("  keys are never backed up: a restore starts a new messaging identity");
-            println!("  next: fund it (`message fund <amount>`), then publish this week's key (`message keys`)");
-            Ok(())
-        }
         MessageCmd::Status => {
             let s = ctx.unlocked().await?;
             let status = s.messaging_status().await?;
@@ -35,7 +20,7 @@ pub async fn run(ctx: &Ctx, cmd: MessageCmd) -> Result<()> {
                 return Ok(());
             }
             let Some(account) = &status.account else {
-                println!("no messaging account · quai-terminal message setup <account>");
+                println!("this wallet has no Quai account to message from");
                 return Ok(());
             };
             let balance = s
@@ -44,13 +29,14 @@ pub async fn run(ctx: &Ctx, cmd: MessageCmd) -> Result<()> {
                 .ok()
                 .and_then(|b| b.into_iter().find(|b| b.address.eq_ignore_ascii_case(account)))
                 .map(|b| format!("{} QUAI", wallet_core::amount::quai(b.balance)));
-            println!("account      {account}{}", balance.map(|b| format!(" · {b}")).unwrap_or_default());
+            let label = s.meta.find_quai_account(account).map(|a| format!("{} · ", a.label)).unwrap_or_default();
+            println!("account      {label}{account}{}", balance.map(|b| format!(" · {b}")).unwrap_or_default());
+            println!("{}", ctx.out.dim("             messages go from the account in use: `account use` changes it"));
             if let Some(f) = &status.fingerprint {
                 println!("fingerprint  {f}");
             }
             let need = match status.need {
-                KeyNeed::NotSetUp => "not set up".to_string(),
-                KeyNeed::NoKeys => "no keys on this computer: `message setup --new-identity`".to_string(),
+                KeyNeed::NoKeys => "none on this computer yet: `message keys` publishes this week's".to_string(),
                 KeyNeed::Publish => "this week's key is not published: `message keys`".to_string(),
                 KeyNeed::Publishing => "this week's key is on its way".to_string(),
                 KeyNeed::Ready => "ready".to_string(),
@@ -64,13 +50,6 @@ pub async fn run(ctx: &Ctx, cmd: MessageCmd) -> Result<()> {
             }
             Ok(())
         }
-        MessageCmd::Fund { amount, from, fee } => {
-            let mut s = ctx.unlocked().await?;
-            let review = s.review_messaging_fund(from.as_deref(), &amount, fee.max_fee.as_deref()).await?;
-            let submitted = ctx.authorize(&mut s, review).await?;
-            ctx.print_submitted("message fund", &submitted);
-            Ok(())
-        }
         MessageCmd::Keys { fee } => {
             let mut s = ctx.unlocked().await?;
             publish(ctx, &mut s, fee.max_fee.as_deref()).await
@@ -80,21 +59,14 @@ pub async fn run(ctx: &Ctx, cmd: MessageCmd) -> Result<()> {
             let mut s = ctx.unlocked().await?;
             match s.messaging_status().await?.need {
                 KeyNeed::Ready | KeyNeed::Publishing => {}
-                KeyNeed::Publish => {
-                    // Weekly keys are published as they are used: this week's goes first, and the
-                    // message follows it (the account's nonce keeps them in that order).
+                KeyNeed::Publish | KeyNeed::NoKeys => {
+                    // Weekly keys are published as they are used: this week's goes first (the
+                    // first one makes the account's identity), and the message follows it (the
+                    // account's nonce keeps them in that order).
                     if !ctx.out.json() {
                         println!("this week's messaging key goes first");
                     }
                     publish(ctx, &mut s, fee.max_fee.as_deref()).await?;
-                }
-                KeyNeed::NoKeys => {
-                    return Err(CoreError::NotFound(
-                        "this computer holds no messaging keys for the account: `message setup --new-identity`".into(),
-                    ));
-                }
-                KeyNeed::NotSetUp => {
-                    s.require_messaging_account()?;
                 }
             }
             let review = s.review_message(&peer, &text, fee.max_fee.as_deref()).await?;

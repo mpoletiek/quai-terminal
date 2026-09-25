@@ -526,8 +526,6 @@ pub enum FormKind {
     },
     /// A private message to someone not in the list yet: address or contact, and the text.
     MessageNew,
-    /// QUAI to the messaging account for its fees.
-    MessagingFund,
     /// Follow another channel.
     FollowChannel,
     /// Call a function on a contract, chosen from the ABI the contract publishes itself.
@@ -549,11 +547,11 @@ pub enum FormKind {
     NewQiAddress,
     /// Add (None) or edit (Some(original name)) a contact.
     Contact(Option<String>),
-    /// Name the person behind a conversation: their payment code is known, and so is the account
-    /// that wrote the message you were reading.
-    ContactFromPeer {
-        code: String,
-        address: Option<String>,
+    /// Save a Quai account or a payment code to a contact: one already saved (the choice), or a
+    /// new one. `value` fills its field; `contact` is chosen first when given.
+    SaveToContact {
+        value: Option<String>,
+        contact: Option<String>,
     },
     ImportToken,
     DeepScan,
@@ -823,6 +821,8 @@ pub type IpfsCheck = (wallet_core::ipfs::Content, wallet_core::ipfs::Gateway, Re
 pub enum ConfirmAction {
     Quit,
     RemoveContact(String),
+    /// Save to a contact what replaces or moves something saved: (contact, value).
+    SaveToContact(String, String),
     SwitchNetwork(String),
     /// Register an announced sender's channel.
     AcceptOffer(String),
@@ -836,8 +836,6 @@ pub enum ConfirmAction {
     TrustPeer(String),
     /// Record that a peer's fingerprint matched.
     VerifyPeer(String),
-    /// Move messaging to another account (`None`: a new one), starting a new identity.
-    MoveMessaging(Option<String>),
 }
 
 pub enum Modal {
@@ -1140,6 +1138,11 @@ pub struct Status {
     pub notices_out: Vec<(String, String)>,
     /// Kind of the review being committed (follow-ups after submission).
     pub committing_kind: Option<wallet_core::journal::OpKind>,
+    /// Who a Qi send asked to be told this wallet's payment code, from the form.
+    pub announce_asked: Option<String>,
+    /// Who to announce to once the Qi send being committed is sent: set at approval, when its
+    /// review says they have not been told.
+    pub announce_after: Option<String>,
 }
 
 /// The lock screen: locked or not, the password being typed, the unlock in flight and what it said.
@@ -1429,6 +1432,8 @@ impl App {
                 log: std::collections::VecDeque::new(),
                 notices_out: Vec::new(),
                 committing_kind: None,
+                announce_asked: None,
+                announce_after: None,
             },
             lock: Lock {
                 pending: None,
@@ -1586,6 +1591,10 @@ impl App {
     /// wallet's metadata, where the command line (`account use`) and the daemon read it too.
     pub fn use_account(&mut self, index: usize) {
         let Some(account) = self.dash.accounts.get(index).cloned() else { return };
+        // Each account messages as itself: another one's conversations are not this one's.
+        if self.dash.active_account().is_some_and(|a| !a.address.eq_ignore_ascii_case(&account.address)) {
+            self.forget_private();
+        }
         for meta in [self.dash.meta.as_mut(), self.meta.as_mut()].into_iter().flatten() {
             meta.active_account = Some(account.address.clone());
         }
@@ -1950,7 +1959,7 @@ impl App {
         self.open_tab(target);
     }
 
-    /// The inbox: the board, on the newest private conversation (or on the messaging account
+    /// The inbox: the board, on the newest private conversation (or on private messages' own row
     /// until there is one). Messaging off, there is no inbox and this is Contacts.
     pub fn open_inbox(&mut self) {
         if !Screen::Board.enabled(&self.shown()) {

@@ -1,4 +1,4 @@
-//! People › Board: channels, sealed conversations and the pinned chat.
+//! People › Board: channels, private conversations and the pinned chat.
 
 use super::*;
 use crate::tui::ui::hint_line;
@@ -68,14 +68,12 @@ pub fn draw_board(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             BoardRow::Channel(_) => 0u8,
             BoardRow::Messaging | BoardRow::Chat(..) => 1,
             BoardRow::Request(_) => 2,
-            BoardRow::Peer(..) => 3,
-            BoardRow::Unfollowed(..) => 4,
+            BoardRow::Unfollowed(..) => 3,
         };
         let heading = |g: u8| match g {
             0 => "public channels",
             1 => "private",
             2 => "requests",
-            3 => "old · read-only",
             _ => "not followed",
         };
         // Display lines: `None` is a heading, `Some(i)` the row at that index in `rows`. A short
@@ -141,20 +139,13 @@ pub fn draw_board(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     }
                     // Dimmed and counted: somewhere to look, not somewhere you keep.
                     BoardRow::Unfollowed(name, messages) => (format!("#{}", truncate(name, 15)), messages.to_string(), false),
-                    BoardRow::Peer(code, name) => {
-                        let n = match app.eco.board.dms.get(code).and_then(|r| r.shown()) {
-                            Some(Ok(l)) => l.len().to_string(),
-                            Some(Err(_)) => t.icon(Icon::Danger).into(),
-                            None => String::new(),
-                        };
-                        (truncate(name.as_deref().unwrap_or(&wallet_core::session::short_code(code)), 15), n, true)
-                    }
                     BoardRow::Messaging => {
                         use wallet_core::messaging::service::KeyNeed;
+                        // Named for the account that acts: that is who the messages are from.
+                        let who = app.dash.active_account().map_or_else(|| "private".to_string(), |a| format!("@{}", a.label));
                         match app.messaging().map(|v| v.status.need) {
-                            Some(KeyNeed::NotSetUp) => ("set up messages".to_string(), String::new(), true),
-                            Some(KeyNeed::Publish | KeyNeed::NoKeys) => ("your account".to_string(), t.icon(Icon::Danger).into(), true),
-                            _ => ("your account".to_string(), String::new(), true),
+                            Some(KeyNeed::Publish | KeyNeed::NoKeys) => (truncate(&who, 15), t.icon(Icon::Danger).into(), true),
+                            _ => (truncate(&who, 15), String::new(), true),
                         }
                     }
                     BoardRow::Chat(address, name) => {
@@ -197,7 +188,6 @@ pub fn draw_board(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     };
     match open {
         BoardRow::Channel(channel) | BoardRow::Unfollowed(channel, _) => draw_board_channel(f, app, t, main, &channel),
-        BoardRow::Peer(code, name) => draw_board_conversation(f, app, t, main, &code, name.as_deref()),
         BoardRow::Messaging => draw_messaging_account(f, app, t, main),
         BoardRow::Chat(address, _) => draw_private_conversation(f, app, t, main, &address, false),
         BoardRow::Request(address) => draw_private_conversation(f, app, t, main, &address, true),
@@ -215,100 +205,59 @@ fn private_count(app: &App, t: &Theme, address: &str) -> String {
     }
 }
 
-/// The messaging account: where messages go from, its balance, fingerprint and this week's key,
-/// and the accounts to choose it from (never the main one).
+/// Private messages: the account they go from (the one that acts, `@` changes it), its balance,
+/// fingerprint and this week's key.
 pub(crate) fn draw_messaging_account(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::messaging::service::KeyNeed;
-    let block = panel(t, "messaging account", app.lit_pane() == Some(1));
+    let block = panel(t, "private messages", app.lit_pane() == Some(1));
     let inner = block.inner(area);
     f.render_widget(block, area);
     if app.lock.locked {
-        return empty(f, inner, t, Icon::Lock, "Unlock to set up private messages.", &[]);
+        return empty(f, inner, t, Icon::Lock, "Unlock to read and send private messages.", &[]);
     }
     let Some(view) = app.messaging() else {
         return empty_state(f, inner, t, spinner(), "Reading…", &[]);
     };
     let status = &view.status;
-    let current = status.account.clone().filter(|_| status.need != KeyNeed::NotSetUp);
     let mut lines: Vec<Line> = Vec::new();
     let label = |k: &str| Span::styled(format!("{k:<13}"), t.dim_style());
-    match &current {
-        None => {
-            lines.push(Line::from(Span::styled(
-                format!("{}  Choose the account your messages go from", t.icon(Icon::Chat)),
-                t.strong_style(),
-            )));
-            lines.push(Line::from(""));
-            for p in [
-                "It is never your main account: whatever an account posts is tied to what it holds. You fund it, and that transfer is public.",
-                "Each message is encrypted to one person. On chain, anyone sees that this account sent something, when and roughly how big, not who it was for.",
-                "Its keys stay on this computer and are never backed up: a restore starts a new identity with no history.",
-            ] {
-                // Wrapped here, so the list below starts exactly where the text ends.
-                for (i, part) in crate::tui::ui::textwrap(p, inner.width.saturating_sub(4) as usize).into_iter().enumerate() {
-                    lines.push(Line::from(Span::styled(format!("{}{part}", if i == 0 { "•  " } else { "   " }), t.dim_style())));
-                }
-            }
-        }
-        Some(account) => {
-            let entry = app.dash.accounts.iter().find(|a| a.address.eq_ignore_ascii_case(account));
-            let name = entry.map_or_else(|| short_address(account), |a| format!("{} · {}", a.label, short_address(&a.address)));
-            lines.push(Line::from(vec![label("account"), Span::styled(name, t.strong_style())]));
-            let balance = entry.map(|a| {
-                format!("{} QUAI", wallet_core::amount::group_thousands(&wallet_core::amount::format_amount_short(a.balance, 18, 4)))
-            });
-            let empty_account = entry.is_some_and(|a| a.balance.is_zero());
-            lines.push(Line::from(vec![
-                label("balance"),
-                Span::styled(
-                    balance.unwrap_or_else(|| "—".into()),
-                    if empty_account { Style::default().fg(t.danger) } else { t.text_style() },
-                ),
-                Span::styled(if empty_account { "   it pays for every message: F funds it" } else { "" }, t.dim_style()),
-            ]));
-            if let Some(fp) = &status.fingerprint {
-                lines.push(Line::from(vec![label("fingerprint"), Span::styled(fp.clone(), t.text_style())]));
-            }
-            let key = match status.need {
-                KeyNeed::Ready => Span::styled("published", t.text_style()),
-                KeyNeed::Publishing => Span::styled("on its way", t.text_style()),
-                KeyNeed::Publish => Span::styled("not published yet: K", Style::default().fg(t.danger)),
-                KeyNeed::NoKeys => {
-                    Span::styled("none on this computer: pick an account below to start again", Style::default().fg(t.danger))
-                }
-                KeyNeed::NotSetUp => Span::raw(""),
-            };
-            lines.push(Line::from(vec![label("this week"), key]));
-        }
+    let entry = status.account.as_deref().and_then(|c| app.dash.accounts.iter().find(|a| a.address.eq_ignore_ascii_case(c)));
+    let name = entry.map_or_else(
+        || status.account.as_deref().map_or_else(|| "—".into(), short_address),
+        |a| format!("{} · {}", a.label, short_address(&a.address)),
+    );
+    lines.push(Line::from(vec![label("from"), Span::styled(name, t.strong_style()), Span::styled("   @ changes it", t.dim_style())]));
+    let balance = entry
+        .map(|a| format!("{} QUAI", wallet_core::amount::group_thousands(&wallet_core::amount::format_amount_short(a.balance, 18, 4))));
+    let empty_account = entry.is_some_and(|a| a.balance.is_zero());
+    lines.push(Line::from(vec![
+        label("balance"),
+        Span::styled(balance.unwrap_or_else(|| "—".into()), if empty_account { Style::default().fg(t.danger) } else { t.text_style() }),
+        Span::styled(if empty_account { "   it pays for every message" } else { "" }, t.dim_style()),
+    ]));
+    if let Some(fp) = &status.fingerprint {
+        lines.push(Line::from(vec![label("fingerprint"), Span::styled(fp.clone(), t.text_style())]));
     }
+    let key = match status.need {
+        KeyNeed::Ready => Span::styled("published", t.text_style()),
+        KeyNeed::Publishing => Span::styled("on its way", t.text_style()),
+        KeyNeed::Publish => Span::styled("not published yet: K", Style::default().fg(t.danger)),
+        KeyNeed::NoKeys => Span::styled("not started on this computer: K publishes its first key", Style::default().fg(t.danger)),
+    };
+    lines.push(Line::from(vec![label("this week"), key]));
     lines.push(Line::from(""));
-    if current.is_some() {
-        lines.push(hint_line(t, &[("F", "fund it"), ("K", "publish this week's key"), ("m", "new message")]));
-        lines.push(Line::from(""));
+    lines.push(hint_line(t, &[("K", "publish this week's key"), ("m", "new message"), ("@", "another account")]));
+    lines.push(Line::from(""));
+    for p in [
+        "Each account is its own messaging identity, with its own conversations: choosing another account with @ shows its own.",
+        "Each message is encrypted to one person. On chain, anyone sees that this account sent something, when and roughly how big, not who it was for.",
+        "Keys stay on this computer and are never backed up: a restore starts a new identity with no history.",
+    ] {
+        for (i, part) in crate::tui::ui::textwrap(p, inner.width.saturating_sub(4) as usize).into_iter().enumerate() {
+            lines.push(Line::from(Span::styled(format!("{}{part}", if i == 0 { "•  " } else { "   " }), t.dim_style())));
+        }
     }
-    lines.push(Line::from(Span::styled(if current.is_some() { "move messaging to" } else { "messages go from" }, t.dim_style())));
-    let head = lines.len() as u16;
-    let [top, list] = Layout::vertical([Constraint::Length(head), Constraint::Min(1)]).areas(inner);
-    f.render_widget(Paragraph::new(lines), top);
-    let cursor = (app.lit_pane() == Some(1)).then_some(app.nav.selected);
-    let rows: Vec<Line> = app
-        .messaging_choices()
-        .iter()
-        .enumerate()
-        .map(|(i, (address, text))| {
-            let in_use = current.as_deref().is_some_and(|c| address.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(c)));
-            let line = Line::from(vec![
-                Span::styled(if in_use { format!(" {} ", t.icon(Icon::Ok)) } else { "   ".into() }, Style::default().fg(t.ok)),
-                Span::styled(text.clone(), if in_use { t.strong_style() } else { t.text_style() }),
-            ]);
-            if cursor == Some(i) { line.style(t.selected()) } else { line }
-        })
-        .collect();
-    f.render_widget(Paragraph::new(rows), list);
-    if cursor.is_none() {
-        let hint = Rect { y: list.y + list.height.saturating_sub(1), height: 1, ..list };
-        f.render_widget(Paragraph::new(hint_line(t, &[("enter", "choose from this list")])), hint);
-    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// One private conversation, or a request: what they said, oldest first, under whatever needs
@@ -394,8 +343,8 @@ pub fn draw_chat_dock(f: &mut Frame, app: &App, t: &Theme, area: Rect, pin: &str
     f.render_widget(Paragraph::new(composer_line).style(Style::default().bg(t.raised)), composer);
     // (time, mine, who, text), oldest first.
     let private = pin.strip_prefix("msg:");
-    let lines: Vec<(u64, bool, String, String)> = match (private, pin.strip_prefix("dm:")) {
-        (Some(address), _) => {
+    let lines: Vec<(u64, bool, String, String)> = match private {
+        Some(address) => {
             if app.lock.locked {
                 return empty(f, inner, t, Icon::Lock, "Unlock to read.", &[]);
             }
@@ -405,23 +354,7 @@ pub fn draw_chat_dock(f: &mut Frame, app: &App, t: &Theme, area: Rect, pin: &str
                 None => return empty_state(f, inner, t, spinner(), "Opening…", &[]),
             }
         }
-        (None, Some(code)) => {
-            if app.lock.locked {
-                return empty(f, inner, t, Icon::Lock, "Unlock to read.", &[]);
-            }
-            match app.eco.board.dms.get(code).and_then(|r| r.shown()) {
-                Some(Ok(l)) => l
-                    .iter()
-                    .map(|l| {
-                        let who = app.contact_name_for(&l.from).unwrap_or_else(|| short_address(&l.from));
-                        (l.at, l.mine, who, l.text.clone().unwrap_or_else(|| "<cannot read>".into()))
-                    })
-                    .collect(),
-                Some(Err(e)) => return empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[]),
-                None => return empty_state(f, inner, t, spinner(), "Opening…", &[]),
-            }
-        }
-        (None, None) => {
+        None => {
             let mine: Vec<String> = app.dash.accounts.iter().map(|a| a.address.to_lowercase()).collect();
             match app.eco.board.posts.get(pin.trim_start_matches('#')).and_then(|r| r.shown()) {
                 Some(Ok(posts)) => posts
@@ -567,51 +500,6 @@ pub(crate) fn draw_board_channel(f: &mut Frame, app: &App, t: &Theme, area: Rect
         })
         .collect();
     draw_message_rows(f, app, t, inner, &lines);
-}
-
-/// One sealed conversation. Reading it needs the wallet unlocked, because the key is derived
-/// from its payment account.
-pub(crate) fn draw_board_conversation(f: &mut Frame, app: &App, t: &Theme, area: Rect, code: &str, name: Option<&str>) {
-    // The code is in the title even when the peer has a name: a conversation is with a payment
-    // code, not with a contact, and a name over the wrong code is exactly how two people end up
-    // in two different conversations, each seeing only what they sent.
-    let short = wallet_core::session::short_code(code);
-    let who = match name {
-        Some(name) => format!("{name} · {short}"),
-        None => short,
-    };
-    let loading = app.eco.board.dms.get(code).is_some_and(|r| r.loading());
-    let title = format!("{who} · sealed{}", if loading { " · reading…" } else { "" });
-    let block = panel(t, &title, app.lit_pane() == Some(1));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    if app.lock.locked {
-        return empty(f, inner, t, Icon::Lock, "Unlock to read this conversation.", &[]);
-    }
-    match app.eco.board.dms.get(code).and_then(|r| r.shown()) {
-        Some(Err(e)) => return empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]),
-        None if loading => return empty_state(f, inner, t, spinner(), "Opening the conversation…", &[]),
-        None => return empty(f, inner, t, Icon::Chat, "Nothing read yet.", &[("R", "read")]),
-        Some(Ok(_)) => {}
-    }
-    let lines = app.board_dm_lines();
-    if lines.is_empty() {
-        return empty(f, inner, t, Icon::Chat, "Nothing between you yet.", &[("enter", "write the first"), ("space c", "name them")]);
-    }
-    let rows: Vec<(u64, bool, String, Option<String>)> = lines
-        .iter()
-        .map(|l| {
-            let who = app.contact_name_for(&l.from).unwrap_or_else(|| short_address(&l.from));
-            // Posted from an account not on record for this contact. The body opening does not prove
-            // who posted it, so it is pointed out; `c` records the account if the user knows it.
-            let text = match (&l.text, l.new_address) {
-                (Some(text), true) => Some(format!("{text}   · from an unrecorded address {}", short_address(&l.from))),
-                _ => l.text.clone(),
-            };
-            (l.at, l.mine, who, text)
-        })
-        .collect();
-    draw_message_rows(f, app, t, inner, &rows);
 }
 
 /// Messages as a conversation: newest at the bottom, your own marked, and a body that would not

@@ -715,6 +715,18 @@ pub(crate) fn draw_qi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(panel(t, "receive & mining addresses", false)), addr_area);
 }
 
+/// Every account a contact is known by: its own address first (where payments go), then the
+/// others saved or seen for them.
+fn contact_accounts(app: &App, c: &wallet_core::appdb::Contact) -> Vec<String> {
+    let mut all: Vec<String> = c.address.iter().cloned().collect();
+    for (a, _) in app.dash.contact_addresses.iter().filter(|(_, n)| *n == c.name) {
+        if !all.iter().any(|x| x.eq_ignore_ascii_case(a)) {
+            all.push(a.clone());
+        }
+    }
+    all
+}
+
 /// Contacts, and under them the payment channels with them: two lists, one with the keys, and
 /// the details of what it has selected beside them.
 pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
@@ -773,13 +785,16 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     .as_deref()
                     .and_then(|a| wallet_core::registry::parse_any_address(a).ok())
                     .map(|a| if a.ledger() == wallet_core::sdk::Ledger::Qi { ("Qi", t.qi) } else { ("QUAI", t.quai) });
+                let more = contact_accounts(app, c).len().saturating_sub(1);
                 let row = Row::new(vec![
                     Cell::from(Span::styled(app::jump_label(i - offset).to_string(), jump_style(app, t))),
                     Cell::from(Span::styled(c.name.clone(), t.strong_style())),
                     Cell::from(match (&c.address, ledger) {
-                        (Some(a), Some((label, color))) => {
-                            Line::from(vec![Span::styled(format!("{label:<4} "), Style::default().fg(color)), Span::raw(short_address(a))])
-                        }
+                        (Some(a), Some((label, color))) => Line::from(vec![
+                            Span::styled(format!("{label:<4} "), Style::default().fg(color)),
+                            Span::raw(short_address(a)),
+                            Span::styled(if more > 0 { format!(" +{more}") } else { String::new() }, t.dim_style()),
+                        ]),
                         _ => Line::from(Span::styled("—", t.dim_style())),
                     }),
                     Cell::from(match &c.payment_code {
@@ -813,9 +828,12 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         if let Some(c) = &selected_contact {
             lines.push(Line::from(Span::styled(c.name.clone(), t.strong_style())));
             lines.push(Line::from(""));
-            if let Some(a) = &c.address {
-                lines.push(label("address"));
-                lines.push(Line::from(Span::styled(a.clone(), Style::default().fg(t.link))));
+            let accounts = contact_accounts(app, c);
+            if !accounts.is_empty() {
+                lines.push(label(if accounts.len() > 1 { "accounts · payments go to the first" } else { "address" }));
+                for a in &accounts {
+                    lines.push(Line::from(Span::styled(a.clone(), Style::default().fg(t.link))));
+                }
             }
             if let Some(code) = &c.payment_code {
                 lines.push(label("payment code"));
@@ -862,7 +880,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             if c.payment_code.is_some() {
                 hints.push(("n", "notify"));
             }
-            hints.extend([("e", "edit"), ("y", "copy"), ("x", "remove")]);
+            hints.extend([("e", "edit"), ("space", "then c: save an account or code"), ("y", "copy"), ("x", "remove")]);
             for (k, v) in hints {
                 lines.push(Line::from(vec![Span::styled(format!("{k:>5}  "), t.strong_style().fg(t.focus)), Span::raw(v)]));
             }

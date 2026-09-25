@@ -65,6 +65,8 @@ const DECLARATIONS: &[&str] = &[
     "function setApprovalForModule(address module, bool approved)",
     // The message board
     "function post(bytes32 tag, uint8 kind, bytes body)",
+    // The Pelagus payment mailbox
+    "function notify(string senderPaymentCode, string receiverPaymentCode)",
 ];
 
 fn interface() -> &'static quai_sdk::abi::AbiInterface {
@@ -197,6 +199,11 @@ pub enum Call {
     },
     BoardPost {
         body_len: usize,
+    },
+    /// A payment-code announcement to the mailbox.
+    PaymentNotify {
+        sender: String,
+        receiver: String,
     },
     /// A selector none of the declarations match.
     Unknown {
@@ -370,6 +377,11 @@ fn decode_call(to: Option<&str>, data: &[u8]) -> Result<Call, String> {
         ("setAskPrice", 4) => Call::ZoraSetPrice { contract: ad(0)?, token_id: u(1)?, price: u(2)?, currency: ad(3)? },
         ("cancelAsk", 2) => Call::ZoraCancel { contract: ad(0)?, token_id: u(1)? },
         ("post", 3) => Call::BoardPost { body_len: arg(2)?.as_str().map_or(0, |s| s.trim_start_matches("0x").len() / 2) },
+        ("notify", 2) => {
+            let code =
+                |i: usize| arg(i).and_then(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("argument {i} is not a string")));
+            Call::PaymentNotify { sender: code(0)?, receiver: code(1)? }
+        }
         _ => return Err(format!("{sig} has no decoding rule")),
     })
 }
@@ -763,6 +775,20 @@ pub fn check(decoded: &Decoded, declared: &Declared<'_>) -> Result<Vec<String>, 
             }
             said.push(format!("post a {body_len}-byte message to {target}"));
         }
+        Call::PaymentNotify { sender, receiver } => {
+            // Payment codes are case-sensitive base58: compared exactly.
+            let code = |v: &serde_json::Value| v.as_str().map(str::to_string);
+            if *kind != OpKind::Notify {
+                return bad(format!("a payment-code announcement inside a {kind}"));
+            }
+            if code(d.peer()).as_deref() != Some(receiver.as_str()) {
+                return bad("it announces to a payment code other than the reviewed one".into());
+            }
+            if code(d.sender()).as_deref() != Some(sender.as_str()) {
+                return bad("it announces a payment code other than this wallet's".into());
+            }
+            said.push(format!("announce this wallet's payment code to {receiver} on {target}"));
+        }
         Call::Unknown { selector } => {
             if *kind != OpKind::ContractCall {
                 return bad(format!("selector 0x{} is not a call a {kind} makes", hex::encode(selector)));
@@ -917,6 +943,26 @@ mod tests {
         assert!(run(ROUTER, "101", TOKEN).is_err(), "more than reviewed");
         assert!(run(ROUTER, &U256::MAX.to_string(), TOKEN).is_err(), "unlimited when the review said exact");
         assert!(run(ROUTER, "100", EVIL).is_err(), "on another token");
+    }
+
+    /// A payment-code announcement (`payment notify`) passes when it announces this wallet's
+    /// code to the reviewed peer, with no value, and is refused otherwise.
+    #[test]
+    fn a_payment_code_announcement_names_both_reviewed_codes() {
+        const NOTIFY: &str = "function notify(string senderPaymentCode, string receiverPaymentCode)";
+        let (ours, peer) = ("PM8TJours", "PM8TJpeer");
+        let detail = Detail::from(json!({"peer": peer, "sender": ours}));
+        let run = |sender: &str, receiver: &str, value: u64, kind: &'static OpKind| {
+            let decoded = decode(Some(OUT), U256::from(value), &encode(NOTIFY, &[json!(sender), json!(receiver)])).unwrap();
+            check(&decoded, &Declared { kind, owner: OWNER, counterparty: peer, amount: U256::ZERO, detail: &detail, wquai: None })
+        };
+        assert_eq!(encode(NOTIFY, &[json!(ours), json!(peer)])[..4], [0xb3, 0x5c, 0x63, 0x20], "the mailbox's selector");
+        assert!(run(ours, peer, 0, &OpKind::Notify).is_ok());
+        assert!(run(ours, "PM8TJevil", 0, &OpKind::Notify).is_err(), "another receiver");
+        assert!(run("PM8TJevil", peer, 0, &OpKind::Notify).is_err(), "another sender");
+        assert!(run(ours, &peer.to_lowercase(), 0, &OpKind::Notify).is_err(), "codes are compared exactly");
+        assert!(run(ours, peer, 1, &OpKind::Notify).is_err(), "with value");
+        assert!(run(ours, peer, 0, &OpKind::SendQuai).is_err(), "inside another kind");
     }
 
     #[test]

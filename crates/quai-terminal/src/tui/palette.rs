@@ -385,9 +385,7 @@ impl App {
             Run::Go(screen) => self.switch(screen),
             Run::Market(address) => {
                 self.switch(Screen::Markets);
-                if let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown()
-                    && let Some(i) = pools.iter().position(|p| p.address == address)
-                {
+                if let Some(i) = self.market_row_of(&address) {
                     self.nav.pane = 0;
                     self.nav.selected = i;
                     self.eco.markets_view.pair_selected = i;

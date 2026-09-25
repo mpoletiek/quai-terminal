@@ -1,5 +1,5 @@
-//! On-chain messages: what the wallet reads and writes on the board. The format, sealing and
-//! decoding live in [`quai_messaging::board`]; this is where they meet the node and the cache.
+//! On-chain messages: what the wallet reads and writes on the board. The format and decoding
+//! live in [`quai_messaging::board`]; this is where they meet the node and the cache.
 
 pub use quai_messaging::board::*;
 
@@ -11,12 +11,6 @@ use crate::registry::now;
 /// against the node; block times come from the headers of the blocks that carried a post.
 pub async fn channel(ctx: &DataCtx, tag: &[u8; 32], blocks: u64) -> Result<Vec<Post>> {
     posts(ctx, &hex::encode(tag), blocks, |_, _| vec![*tag]).await
-}
-
-/// A sealed conversation's posts over the last `blocks` blocks, under every tag the range can
-/// hold (see [`Conversation::tags_between`]), newest first.
-pub async fn conversation_posts(ctx: &DataCtx, c: &Conversation, blocks: u64) -> Result<Vec<Post>> {
-    posts(ctx, &hex::encode(c.id()), blocks, |from, to| c.tags_between(from, to)).await
 }
 
 /// Posts under the tags `tags(from, to)` names for the block range being read, cached under
@@ -78,8 +72,8 @@ async fn posts(ctx: &DataCtx, cache_key: &str, blocks: u64, tags: impl Fn(u64, u
 }
 
 /// Every public channel with a message in the last `blocks` blocks, busiest first. One
-/// `quai_getLogs` for text messages across all tags: sealed conversations are filed under tags
-/// that are not names, so they are neither counted nor shown.
+/// `quai_getLogs` for text messages across all tags: private messages are filed under tags that
+/// are not names, so they are neither counted nor shown.
 pub async fn channels(ctx: &DataCtx, blocks: u64) -> Result<Vec<ChannelSummary>> {
     use quai_sdk::provider::{LogFilter, LogRange, TopicMatch};
     let contract = ctx
@@ -105,7 +99,7 @@ pub async fn channels(ctx: &DataCtx, blocks: u64) -> Result<Vec<ChannelSummary>>
     let mut seen: std::collections::HashMap<String, (u32, u64, Vec<u64>)> = std::collections::HashMap::new();
     for log in logs.iter().filter(|l| !l.removed) {
         let Some(tag) = log.topics.get(2).map(|t| t.to_string()) else { continue };
-        // A tag that is not a readable name is a sealed conversation, not a channel.
+        // A tag that is not a readable name is not a channel.
         let Some(name) = tag_name(&tag) else { continue };
         let block = log.inclusion.block_number;
         // Heights order them; the newest is dated from the head rather than reading every block.
@@ -132,8 +126,8 @@ impl crate::session::Session {
     /// recording where the board stands as it goes. The first look at a channel announces
     /// nothing: starting the daemon is not news, what comes after it is.
     ///
-    /// Only public channels. Reading a sealed conversation needs this wallet's payment key, and
-    /// this path deliberately holds none, so the daemon can run without ever unlocking.
+    /// Only public channels. Reading private messages needs this wallet's keys, and this path
+    /// deliberately holds none, so the daemon can run without ever unlocking.
     pub async fn track_board(&self, follows: &[String]) -> Result<Vec<(String, u32)>> {
         if follows.is_empty() || self.network.ecosystem.messages.is_none() {
             return Ok(Vec::new());

@@ -231,11 +231,6 @@ pub enum Prepare {
     },
     /// This week's messaging key.
     MessagingKeys,
-    /// QUAI to the messaging account.
-    MessagingFund {
-        from: Option<String>,
-        amount: String,
-    },
     Consolidate {
         aggregate: bool,
     },
@@ -287,7 +282,8 @@ pub enum ChatOp {
     Pin { target: Option<String>, label: String },
 }
 
-/// Private messages (v3), on the wallet worker: its keys are sealed under the messaging account's.
+/// Private messages (v3) from the account the user chose, on the wallet worker: its keys are
+/// sealed under that account's.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MsgOp {
     /// Where messaging stands, conversations and requests, and `open`'s messages (marked read).
@@ -295,12 +291,6 @@ pub enum MsgOp {
     Refresh {
         open: Option<String>,
         sync: bool,
-    },
-    /// Choose the messaging account; `None` derives a new one first. `new_identity` moves an
-    /// existing identity (its keys and history are deleted).
-    Setup {
-        account: Option<String>,
-        new_identity: bool,
     },
     Accept(String),
     Block(String),
@@ -391,6 +381,12 @@ pub enum Cmd {
         code: Option<String>,
         note: String,
     },
+    /// Save a Quai account or a payment code to an existing contact (what it replaces was
+    /// confirmed first).
+    SaveToContact {
+        contact: String,
+        value: String,
+    },
     /// Rescan one payment channel now.
     ScanPeer(String),
     /// Accept an announced sender's channel offer: register it and scan it.
@@ -404,13 +400,6 @@ pub enum Cmd {
     SwitchNetwork(String),
     /// Open a different wallet. Its keys are its own, so the session starts locked.
     SwitchWallet(String),
-    /// Read the sealed conversation with a peer (needs this wallet's payment key).
-    ReadConversation {
-        peer: String,
-        blocks: u64,
-        /// [`App::private_epoch`] when asked; the answer carries it back.
-        epoch: u64,
-    },
     MarkRead,
     /// The signing lane broadcast a transaction: refresh now so it shows.
     #[serde(skip)]
@@ -470,6 +459,7 @@ impl Cmd {
             Cmd::QiSynced(_) => "qi_synced",
             Cmd::DiscoverMailbox => "discover_mailbox",
             Cmd::SaveContact { .. } => "save_contact",
+            Cmd::SaveToContact { .. } => "save_to_contact",
             Cmd::ScanPeer(_) => "scan_peer",
             Cmd::AcceptOffer(_) => "accept_offer",
             Cmd::DeclineOffer(_) => "decline_offer",
@@ -478,7 +468,6 @@ impl Cmd {
             Cmd::DiscoverTokens => "discover_tokens",
             Cmd::SwitchNetwork(_) => "switch_network",
             Cmd::SwitchWallet(_) => "switch_wallet",
-            Cmd::ReadConversation { .. } => "read_conversation",
             Cmd::Chat(_) => "chat",
             Cmd::ChatNews { .. } => "chat_news",
             Cmd::Messaging { .. } => "messaging",
@@ -590,13 +579,6 @@ pub enum Ev {
         network: String,
         ops: Vec<Operation>,
         at: u64,
-    },
-    /// A sealed conversation, opened with this wallet's key.
-    Conversation {
-        peer: String,
-        result: Result<Vec<wallet_core::ops::SealedLine>, String>,
-        /// The generation the read was asked in; a lock or a switch since makes it stale.
-        epoch: u64,
     },
 }
 
@@ -1447,7 +1429,7 @@ impl MsgLane {
 /// repeats on its own is background: refreshing, and the Board re-reading an open conversation
 /// every few seconds — which, urgent, would cut every refresh short before it could finish.
 fn urgent(cmd: &Cmd) -> bool {
-    !matches!(cmd, Cmd::Refresh { .. } | Cmd::ReadConversation { .. } | Cmd::QiSynced(_) | Cmd::ChatNews { .. } | Cmd::Messaging { .. })
+    !matches!(cmd, Cmd::Refresh { .. } | Cmd::QiSynced(_) | Cmd::ChatNews { .. } | Cmd::Messaging { .. })
 }
 
 /// Prepare the review a request asks for (the signing lane's work).
@@ -1556,7 +1538,6 @@ async fn prepare(session: &mut Session, req: Prepare) -> wallet_core::Result<wal
         Prepare::BoardPost { channel, text } => session.review_post(&channel, &text, None).await,
         Prepare::Message { peer, text } => session.review_message(&peer, &text, None).await,
         Prepare::MessagingKeys => session.review_messaging_keys(None).await,
-        Prepare::MessagingFund { from, amount } => session.review_messaging_fund(from.as_deref(), &amount, None).await,
         Prepare::Consolidate { aggregate } => session.review_consolidate(aggregate, None).await,
         Prepare::SpeedUp { op } => session.prepare_speed_up(&op, 20).await,
         Prepare::FillGap { from } => session.review_fill_gap(from.as_deref()).await,
@@ -1857,7 +1838,6 @@ async fn run(
         let mutates = matches!(
             cmd,
             Cmd::AddAccount(_)
-                | Cmd::Messaging { op: MsgOp::Setup { .. }, .. }
                 | Cmd::ImportKey { .. }
                 | Cmd::WatchAddress { .. }
                 | Cmd::RenameAccount { .. }
@@ -1866,6 +1846,7 @@ async fn run(
                 | Cmd::ScanQi { .. }
                 | Cmd::DiscoverMailbox
                 | Cmd::SaveContact { .. }
+                | Cmd::SaveToContact { .. }
                 | Cmd::ScanPeer(_)
                 | Cmd::AcceptOffer(_)
                 | Cmd::DeclineOffer(_)
@@ -2049,6 +2030,25 @@ async fn run(
                     Err(e) => send(Ev::Error(e.to_string())),
                 }
             }
+            Cmd::SaveToContact { contact, value } => match session.save_to_contact(&contact, &value) {
+                Ok((contact, save)) => {
+                    send(Ev::Ack(format!("saved {} to {}", save.value.describe(), contact.name)));
+                    refresh_local(&mut session, &mut dash);
+                    send(Ev::Dashboard(Box::new(dash.clone())));
+                    // A new code: look for payments already sent on its channel.
+                    if let wallet_core::contacts::ContactValue::PaymentCode(code) = save.value
+                        && session.is_unlocked()
+                    {
+                        send(Ev::Busy(Some(format!("scanning {}'s payment channel…", contact.name))));
+                        if let Err(e) = session.scan_peer(&code, None).await {
+                            send(Ev::Info(format!("channel scan: {e}")));
+                        }
+                        lane.ask(&session, QiWork::Refresh, false);
+                        send(Ev::Busy(None));
+                    }
+                }
+                Err(e) => send(Ev::Error(e.to_string())),
+            },
             Cmd::ScanPeer(code) => {
                 send(Ev::Busy(Some("scanning payment channel…".into())));
                 let r = session.scan_peer(&code, None).await.map(|(_, n)| format!("channel scanned ({n} new address(es))"));
@@ -2192,30 +2192,15 @@ async fn run(
                     }
                 }
             }
-            Cmd::ReadConversation { peer, blocks, epoch } => {
-                let result = session.read_conversation(&peer, blocks).await.map_err(|e| e.to_string());
-                send(Ev::Conversation { peer, result, epoch });
-            }
             Cmd::MarkRead => {
                 let _ = session.app.mark_notifications_read();
             }
             // Private messages run on their own lane: a first key lookup can read weeks of logs,
-            // and the wallet worker must stay free to switch wallets and refresh. A new account is
-            // made here first, so this worker's wallet file knows it.
-            Cmd::Messaging { op, epoch } => {
-                let op = match op {
-                    MsgOp::Setup { account: None, new_identity } => match session.add_account(Some("messaging")) {
-                        Ok(a) => Ok(MsgOp::Setup { account: Some(a.address), new_identity }),
-                        Err(e) => Err(e.to_string()),
-                    },
-                    op => Ok(op),
-                };
-                match (op, session.is_unlocked()) {
-                    (Ok(op), true) => messages.ask(&session, MsgWork::Op(op), epoch),
-                    (Err(e), _) => send(Ev::Messaging { epoch, view: Err(e), open: None, note: None }),
-                    (Ok(_), false) => send(Ev::Messaging { epoch, view: Err("the wallet is locked".into()), open: None, note: None }),
-                }
-            }
+            // and the wallet worker must stay free to switch wallets and refresh.
+            Cmd::Messaging { op, epoch } => match session.is_unlocked() {
+                true => messages.ask(&session, MsgWork::Op(op), epoch),
+                false => send(Ev::Messaging { epoch, view: Err("the wallet is locked".into()), open: None, note: None }),
+            },
             Cmd::Chat(op) => {
                 let note = match op {
                     ChatOp::Load => None,
@@ -2646,23 +2631,6 @@ async fn messaging_op(session: &mut Session, op: MsgOp) -> (Option<String>, bool
     let said = |r: wallet_core::Result<String>| Some(r.unwrap_or_else(|e| e.to_string()));
     match op {
         MsgOp::Refresh { open, sync } => (open, sync, None),
-        MsgOp::Setup { account, new_identity } => {
-            let account = match account {
-                Some(a) => Ok(a),
-                None => session.add_account(Some("messaging")).map(|a| a.address),
-            };
-            let note = match account {
-                Ok(a) => said(session.messaging_setup(&a, new_identity).await.map(|s| {
-                    format!(
-                        "private messages from {} · fingerprint {} · fund it (F), then publish this week's key (K)",
-                        wallet_core::session::short_address(s.account.as_deref().unwrap_or(&a)),
-                        s.fingerprint.unwrap_or_default()
-                    )
-                })),
-                Err(e) => Some(e.to_string()),
-            };
-            (None, false, note)
-        }
         MsgOp::Accept(peer) => (Some(peer.clone()), false, said(session.messaging_accept(&peer, None).map(|_| "accepted".into()))),
         MsgOp::Block(peer) => {
             (None, false, said(session.messaging_block(&peer, true).map(|_| "blocked: their messages are dropped unread".into())))
@@ -2681,7 +2649,7 @@ async fn messaging_op(session: &mut Session, op: MsgOp) -> (Option<String>, bool
 /// Where private messages stand, reading the chain first when asked.
 async fn messaging_view(session: &Session, sync: bool) -> Result<crate::messaging::MessagingView, String> {
     let status = session.messaging_status().await.map_err(|e| e.to_string())?;
-    if !matches!(status.need, wallet_core::messaging::service::KeyNeed::NotSetUp | wallet_core::messaging::service::KeyNeed::NoKeys) {
+    if status.need != wallet_core::messaging::service::KeyNeed::NoKeys {
         if sync && let Err(e) = session.messaging_sync().await {
             return Err(e.to_string());
         }
@@ -2780,12 +2748,12 @@ mod tests {
         assert!(matches!(inbox.next(wait).await, Ok(None)), "nothing queued");
         tx.send(Cmd::Refresh { full: false }).unwrap();
         tx.send(Cmd::Refresh { full: true }).unwrap();
-        tx.send(Cmd::ReadConversation { peer: "code".into(), blocks: 1, epoch: 0 }).unwrap();
+        tx.send(Cmd::ChatNews { dms_only: false, epoch: 0 }).unwrap();
         // A Qi pass finishing is background too: it must never cut a refresh short, or every
         // 30 s the lane would restart the worker's sync.
         let key = QiKey { wallet: "w".into(), network: "mainnet".into() };
         tx.send(Cmd::QiSynced(QiDone { key, announce: false, result: Ok(1) })).unwrap();
-        assert!(!inbox.urgent(), "refreshing, polling a conversation and a finished Qi pass are background work");
+        assert!(!inbox.urgent(), "refreshing, polling chats and a finished Qi pass are background work");
         tx.send(Cmd::Commit("op".into())).unwrap();
         tx.send(Cmd::RemoveContact("ann".into())).unwrap();
         assert!(inbox.urgent(), "a refresh checks this between steps");
@@ -2794,7 +2762,7 @@ mod tests {
         assert!(matches!(inbox.next(wait).await, Ok(Some(Cmd::Commit(id))) if id == "op"));
         assert!(matches!(inbox.next(wait).await, Ok(Some(Cmd::RemoveContact(name))) if name == "ann"));
         assert!(matches!(inbox.next(wait).await, Ok(Some(Cmd::Refresh { full: true }))), "queued refreshes run once");
-        assert!(matches!(inbox.next(wait).await, Ok(Some(Cmd::ReadConversation { .. }))));
+        assert!(matches!(inbox.next(wait).await, Ok(Some(Cmd::ChatNews { .. }))));
         assert!(matches!(inbox.next(wait).await, Ok(Some(Cmd::QiSynced(_)))));
         assert!(matches!(inbox.next(wait).await, Ok(None)));
         drop(tx);

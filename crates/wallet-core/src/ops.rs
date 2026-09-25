@@ -111,8 +111,6 @@ pub struct PeerView {
     pub send_addresses: usize,
 }
 
-pub use quai_messaging::board::SealedLine;
-
 /// Conversion quote with settlement-risk scenarios.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConversionQuote {
@@ -291,6 +289,11 @@ pub fn denomination_count(amount: U256) -> usize {
     }
     count
 }
+
+/// A Qi review's warning when the recipient's wallet has not been told this wallet's payment
+/// code: until it is, their wallet cannot find the payment. Announcing it (`payment notify`, or
+/// the option on a Qi send) is a separate Quai transaction.
+pub const UNANNOUNCED: &str = "the recipient has not been told your payment code, so their wallet cannot find this payment yet: announce it (a separate Quai transaction), or they add your code themselves";
 
 impl Session {
     fn quai_contract(&self, value: &Option<String>, name: &str) -> Result<QuaiAddress> {
@@ -941,7 +944,7 @@ impl Session {
             .unwrap_or(0))
     }
 
-    fn ensure_channel(&mut self, peer: &PaymentCode) -> Result<()> {
+    pub(crate) fn ensure_channel(&mut self, peer: &PaymentCode) -> Result<()> {
         let held = self.held();
         let payment = held
             .as_deref()
@@ -1147,7 +1150,7 @@ impl Session {
             match notified {
                 Some(true) => fields.push(field("Mailbox", "recipient already notified")),
                 Some(false) => {
-                    warnings.push("the recipient has not been notified of this payment code; run `payment notify` (a separate Quai transaction) so Pelagus wallets can find the funds".into());
+                    warnings.push(UNANNOUNCED.into());
                     detail = serde_json::json!({"needs_notify": true}).into();
                 }
                 None => {}
@@ -1615,7 +1618,7 @@ impl Session {
             counterparty: peer.to_base58(),
             fields: vec![field("Mailbox", mailbox_address.to_string()), field("Recipient code", peer.to_base58())],
             warnings,
-            detail: serde_json::json!({"peer": peer.to_base58()}).into(),
+            detail: serde_json::json!({"peer": peer.to_base58(), "sender": ours.to_base58()}).into(),
             max_gas: 600_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1624,10 +1627,11 @@ impl Session {
 
     /// Review posting a message to the on-chain board. Every message is public and permanent:
     /// the review says so, because nothing can take one back once it is mined.
-    /// Review a public post. It goes from the messaging account, never the main one: a post is
-    /// signed by the account it comes from, and ties everything that account holds to what it says.
+    /// It goes from the account the user chose, and ties everything that account holds to what
+    /// it says: the review names it.
     pub async fn review_post(&mut self, channel: &str, text: &str, max_fee: Option<&str>) -> Result<Review> {
         let account = self.require_messaging_account()?;
+        let label = self.meta.find_quai_account(&account).map(|a| a.label.clone()).unwrap_or_default();
         let tag = crate::messages::channel_tag(channel)?;
         let body = text.as_bytes().to_vec();
         self.review_board(
@@ -1639,7 +1643,10 @@ impl Session {
             vec![field("Channel", format!("#{channel}")), field("Message", text.to_string())],
             vec![
                 "messages are public and permanent: anyone can read this, and nothing can take it back".into(),
-                "it is posted from your messaging account, which links the message to that address".into(),
+                format!(
+                    "it is posted from {label} ({}), which links the message to that address and what it holds",
+                    crate::session::short_address(&account)
+                ),
             ],
             serde_json::json!({"channel": channel}),
             max_fee,
@@ -1647,50 +1654,7 @@ impl Session {
         .await
     }
 
-    /// The sealed conversation with a peer: their payment code (or a contact holding one) against
-    /// this wallet's payment account. Both sides derive the same one, so it needs no setup and no
-    /// message from them first.
-    pub fn conversation_with(&self, peer: &str) -> Result<crate::messages::Conversation> {
-        let peer = match self.resolve_recipient(peer)? {
-            Recipient::PaymentCode(c) => c,
-            _ => return Err(CoreError::Invalid("a sealed message needs a payment code, or a contact who has one".into())),
-        };
-        let keys = self.keys()?;
-        let payment = keys.payment.as_ref().ok_or_else(no_payment)?;
-        crate::messages::conversation(payment, &peer)
-    }
-
-    /// The sealed conversation with a peer, oldest first, already opened. Reading needs this
-    /// wallet's payment key, so it is unlocked work — the key never leaves the session.
-    pub async fn read_conversation(&self, peer: &str, blocks: u64) -> Result<Vec<SealedLine>> {
-        let conversation = self.conversation_with(peer)?;
-        let ctx = self.data_ctx()?;
-        let mut posts = crate::messages::conversation_posts(&ctx, &conversation, blocks).await?;
-        posts.reverse();
-        let mine: Vec<String> = self.meta.quai_owner_addresses().iter().map(|a| a.to_lowercase()).collect();
-        // The accounts this contact is known by, to point out a post from any other one.
-        let known: Vec<String> = self
-            .contact_for_code(peer)
-            .map(|c| {
-                let mut all: Vec<String> = c.address.iter().cloned().collect();
-                all.extend(self.app.contact_addresses(c.id).unwrap_or_default());
-                all.into_iter().map(|a| a.to_lowercase()).collect()
-            })
-            .unwrap_or_default();
-        Ok(crate::messages::sealed_lines(&conversation, &posts, &mine, &known))
-    }
-
-    /// The contact holding a payment code, given the code or a contact's name.
-    fn contact_for_code(&self, peer: &str) -> Option<crate::appdb::Contact> {
-        let contacts = self.app.contacts().ok()?;
-        let code = match self.resolve_recipient(peer) {
-            Ok(Recipient::PaymentCode(c)) => c.to_base58(),
-            _ => return None,
-        };
-        contacts.into_iter().find(|c| c.payment_code.as_deref() == Some(code.as_str()))
-    }
-
-    /// Post one body to the board. Shared by public channels and sealed conversations, so both
+    /// Post one body to the board. Shared by public channels and private messages, so both
     /// go through the same review and the same checks the contract makes.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn review_board(

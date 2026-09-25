@@ -443,6 +443,7 @@ keys! {
     scan_next, set_scan_next, take_scan_next;
     sealed, set_sealed, take_sealed;
     seller, set_seller, take_seller;
+    sender, set_sender, take_sender;
     sequence, set_sequence, take_sequence;
     slippage_bps, set_slippage_bps, take_slippage_bps;
     source, set_source, take_source;

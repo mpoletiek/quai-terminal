@@ -89,7 +89,7 @@ pub mod fresh {
     pub const ALERTS: Freshness = secs(60);
     /// A transaction's cost, once per transaction.
     pub const TX_COST: Freshness = Manual;
-    /// The board: channels and sealed conversations move with the chain.
+    /// The board: channels move with the chain.
     pub const BOARD: Freshness = Block;
     /// Which channels are on the board: every 5 s while the Board is open, else every 45 s.
     pub const BOARD_SCAN_OPEN: Freshness = secs(5);
