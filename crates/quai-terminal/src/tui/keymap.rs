@@ -13,7 +13,7 @@
 //! these tables, so what the screen says a key does is what it does. A test fails when two
 //! bindings in one layer share a key.
 
-use super::app::Screen;
+use super::app::{Card, Screen};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A reserved verb: the same meaning on every screen that uses it.
@@ -230,41 +230,111 @@ pub fn key_of(verb: Verb) -> String {
     binding(verb).and_then(|b| b.keys.first()).map(|k| k.label()).unwrap_or_default()
 }
 
-/// `g` then a letter: straight to a screen. One table, so every hint that names a place is
-/// computed from it and can't point somewhere else.
-pub const ROUTES: &[(char, Screen)] = &[
-    ('h', Screen::Home),
-    ('q', Screen::Qi),
-    ('A', Screen::Accounts),
-    ('m', Screen::Markets),
-    ('x', Screen::Swap),
-    ('c', Screen::Convert),
-    ('w', Screen::Wrap),
-    ('o', Screen::Orders),
-    ('p', Screen::Pools),
-    ('l', Screen::Launches),
-    ('$', Screen::Pnl),
-    ('n', Screen::Collected),
-    ('e', Screen::Explore),
-    ('i', Screen::Listings),
-    ('f', Screen::Contacts),
-    ('C', Screen::Channels),
-    ('b', Screen::Board),
-    ('a', Screen::Activity),
-    ('W', Screen::Wallets),
-    ('N', Screen::Network),
-    ('s', Screen::Settings),
-    ('d', Screen::DataSources),
-];
-
-/// The chord that goes to a screen: "g m".
-pub fn chord(screen: Screen) -> String {
-    ROUTES.iter().find(|(_, s)| *s == screen).map(|(c, _)| format!("g {c}")).unwrap_or_default()
+/// Where a go-to letter, a hint or the palette leads: a screen, or one of the exchange's cards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Place {
+    Screen(Screen),
+    Card(Card),
+    /// A screen's pane that has a name of its own: the payment channels under Contacts.
+    Pane(Screen, usize),
 }
 
-/// The screen a go-to letter names.
-pub fn route(c: char) -> Option<Screen> {
-    ROUTES.iter().find(|(k, _)| *k == c).map(|(_, s)| *s)
+impl From<Screen> for Place {
+    fn from(s: Screen) -> Self {
+        Place::Screen(s)
+    }
+}
+
+impl From<Card> for Place {
+    fn from(c: Card) -> Self {
+        Place::Card(c)
+    }
+}
+
+impl Place {
+    /// Every place: each screen, and the exchange as each of its cards.
+    pub fn all() -> Vec<Place> {
+        Screen::ALL
+            .iter()
+            .flat_map(|s| match s {
+                Screen::Exchange => Card::ALL.iter().map(|c| Place::Card(*c)).collect::<Vec<_>>(),
+                Screen::Contacts => vec![Place::Screen(*s), Place::Pane(*s, 1)],
+                s => vec![Place::Screen(*s)],
+            })
+            .collect()
+    }
+
+    /// How lists name it: the screen's title, or the card's.
+    pub fn title(self) -> &'static str {
+        match self {
+            Place::Screen(s) => s.title(),
+            Place::Card(c) => c.title(),
+            Place::Pane(Screen::Contacts, _) => "Channels",
+            Place::Pane(s, _) => s.title(),
+        }
+    }
+
+    /// Whether it is there with these features on: the swap card is part of trading.
+    pub fn enabled(self, shown: &super::app::Shown) -> bool {
+        match self {
+            Place::Card(Card::Swap) => shown.features.on(wallet_core::config::Feature::Trading),
+            p => p.screen().enabled(shown),
+        }
+    }
+
+    pub fn section(self) -> super::app::Section {
+        self.screen().section()
+    }
+
+    /// The screen it is on.
+    pub fn screen(self) -> Screen {
+        match self {
+            Place::Screen(s) | Place::Pane(s, _) => s,
+            Place::Card(_) => Screen::Exchange,
+        }
+    }
+}
+
+/// `g` then a letter: straight to a place. One table, so every hint that names a place is
+/// computed from it and can't point somewhere else.
+pub const ROUTES: &[(char, Place)] = &[
+    ('h', Place::Screen(Screen::Home)),
+    ('q', Place::Screen(Screen::Qi)),
+    ('A', Place::Screen(Screen::Accounts)),
+    ('m', Place::Screen(Screen::Markets)),
+    ('x', Place::Card(Card::Swap)),
+    ('c', Place::Card(Card::Convert)),
+    ('w', Place::Card(Card::Wrap)),
+    ('o', Place::Screen(Screen::Orders)),
+    ('p', Place::Screen(Screen::Pools)),
+    ('l', Place::Screen(Screen::Launches)),
+    ('$', Place::Screen(Screen::Pnl)),
+    ('n', Place::Screen(Screen::Collected)),
+    ('e', Place::Screen(Screen::Explore)),
+    ('i', Place::Screen(Screen::Listings)),
+    ('f', Place::Screen(Screen::Contacts)),
+    ('C', Place::Pane(Screen::Contacts, 1)),
+    ('b', Place::Screen(Screen::Board)),
+    ('a', Place::Screen(Screen::Activity)),
+    ('W', Place::Screen(Screen::Wallets)),
+    ('N', Place::Screen(Screen::Network)),
+    ('s', Place::Screen(Screen::Settings)),
+    ('d', Place::Screen(Screen::DataSources)),
+];
+
+/// The chord that goes to a screen: "g m". The exchange's is its swap card's.
+pub fn chord(screen: Screen) -> String {
+    ROUTES.iter().find(|(_, p)| p.screen() == screen).map(|(c, _)| format!("g {c}")).unwrap_or_default()
+}
+
+/// The chord that goes to exactly this place: "g w" for the wrap card.
+pub fn chord_to(place: Place) -> String {
+    ROUTES.iter().find(|(_, p)| *p == place).map(|(c, _)| format!("g {c}")).unwrap_or_default()
+}
+
+/// The place a go-to letter names.
+pub fn route(c: char) -> Option<Place> {
+    ROUTES.iter().find(|(k, _)| *k == c).map(|(_, p)| *p)
 }
 
 #[cfg(test)]

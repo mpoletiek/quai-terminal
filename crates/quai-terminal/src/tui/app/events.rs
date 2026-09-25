@@ -54,9 +54,12 @@ impl App {
         if let Modal::Review(r) = &self.modal {
             self.lock.dropped_review = Some(r.review.title.clone());
         }
-        // Keep a half-filled, non-secret form; everything else is dropped with the keys. A
-        // private message is dropped too: it is exactly what a lock is meant to hide.
-        if let Modal::Form(form) = std::mem::replace(&mut self.modal, Modal::None)
+        // Keep a half-filled, non-secret form, on top or under the review it asked for;
+        // everything else is dropped with the keys. A private message is dropped too: it is
+        // exactly what a lock is meant to hide.
+        let top = std::mem::replace(&mut self.modal, Modal::None);
+        let layers = std::mem::take(&mut self.beneath);
+        if let Some(Modal::Form(form)) = std::iter::once(top).chain(layers.into_iter().rev()).find(|m| matches!(m, Modal::Form(_)))
             && !form.fields.iter().any(|f| f.is_secret())
             && !form.kind.is_private()
         {
@@ -169,7 +172,7 @@ impl App {
         match ev {
             Ev::Head(height) => self.on_block(height),
             Ev::SplitQuote { key, result } => {
-                if self.nav.screen != Screen::Swap || self.eco.requests.split != self.swap_input_key().map(|identity| (key, identity)) {
+                if !self.on_card(Card::Swap) || self.eco.requests.split != self.swap_input_key().map(|identity| (key, identity)) {
                     return;
                 }
                 self.eco.requests.split = None;
@@ -206,11 +209,11 @@ impl App {
                 self.eco.requests.max = None;
                 match result {
                     Ok(q) => {
-                        if self.nav.screen == Screen::Convert {
+                        if self.on_card(Card::Convert) {
                             self.eco.convert.amount = q.amount;
                             self.eco.convert.edited = Some(Instant::now());
                             self.eco.convert.quote = None;
-                        } else if self.nav.screen == Screen::Wrap {
+                        } else if self.on_card(Card::Wrap) {
                             self.eco.wrap.amount = q.amount;
                         }
                         self.toast(
@@ -236,7 +239,8 @@ impl App {
             Ev::Dashboard(mut d) => {
                 // Channels is chosen by payment code: keep the cursor on the same one when offers
                 // arrive, leave or move, so a key never lands on a different sender.
-                let anchor = (self.nav.screen == Screen::Channels)
+                let anchor = self
+                    .on_channels()
                     .then(|| self.channel_offer().map(|o| o.code.clone()).or_else(|| self.channel_peer().map(|p| p.code.clone())))
                     .flatten();
                 // The pending lane may have read the journal after this refresh did: keep its read.
@@ -275,7 +279,7 @@ impl App {
                 }
                 // Balances changed (a swap output, a claimed WQI, a transfer): rebuild the portfolio
                 // on the views that show it, without waiting for the view to be reopened.
-                if matches!(self.nav.screen, Screen::Home | Screen::Swap) || self.eco.feeds.portfolio.value().is_none() {
+                if self.nav.screen == Screen::Home || self.on_card(Card::Swap) || self.eco.feeds.portfolio.value().is_none() {
                     self.maybe_refresh_portfolio(false);
                 }
                 self.preload();
@@ -342,6 +346,14 @@ impl App {
                     return;
                 }
                 wallet_core::diag::end("ux.review");
+                // The form that asked for this review waits under it: rejecting the review brings it
+                // back as it was typed.
+                if matches!(&self.modal, Modal::Form(f) if f.pending)
+                    && let Modal::Form(mut form) = std::mem::replace(&mut self.modal, Modal::None)
+                {
+                    form.pending = false;
+                    self.beneath.push(Modal::Form(form));
+                }
                 self.modal = Modal::Review(ReviewState {
                     review: *r,
                     scroll: 0,
@@ -362,7 +374,7 @@ impl App {
                     self.modal = Modal::Result(s);
                 }
             }
-            Ev::Quote(q) if self.nav.screen == Screen::Convert => {
+            Ev::Quote(q) if self.on_card(Card::Convert) => {
                 let card = &self.eco.convert;
                 let direction = if card.qi_to_quai { "qi_to_quai" } else { "quai_to_qi" };
                 let decimals = if card.qi_to_quai { wallet_core::amount::QI_DECIMALS } else { 18 };

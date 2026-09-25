@@ -736,9 +736,11 @@ impl App {
         }
         match self.nav.screen {
             // Exchange cards: from their last field (an unfocused card takes Tab to enter).
-            Screen::Swap => self.eco.swap.field == 4,
-            Screen::Convert => self.eco.convert.field == 3,
-            Screen::Wrap => self.eco.wrap.field == 1,
+            Screen::Exchange => match self.nav.card {
+                Card::Swap => self.eco.swap.field == 4,
+                Card::Convert => self.eco.convert.field == 3,
+                Card::Wrap => self.eco.wrap.field == 1,
+            },
             Screen::Pools if self.eco.pools_view.add.is_some() => self.eco.pools_view.add.as_ref().is_some_and(|a| a.field == 3),
             // A typed filter keeps its Tab.
             Screen::Board if self.eco.board.filter.is_some() => false,

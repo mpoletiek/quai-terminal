@@ -606,7 +606,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             }
             lines.push(Line::from(""));
             lines.push(row("review".into(), "read to the end · tab to Approve · enter signs · esc rejects · y copies it as a command"));
-            let terms = super::super::glossary::for_screen(app.nav.screen);
+            let terms = super::super::glossary::for_screen(app.place());
             if !terms.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled("words here", t.strong_style())));
@@ -1082,8 +1082,8 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         }
         Modal::GoTo => {
             // Every destination, grouped by section, one letter each: `g` then the letter.
-            let features = app.config.features;
-            let mut groups: Vec<(app::Section, Vec<(char, Screen)>)> = Vec::new();
+            let features = app.shown();
+            let mut groups: Vec<(app::Section, Vec<(char, super::super::keymap::Place)>)> = Vec::new();
             for (c, s) in super::super::keymap::ROUTES.iter().copied() {
                 if !s.enabled(&features) {
                     continue;

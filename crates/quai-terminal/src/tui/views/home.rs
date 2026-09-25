@@ -250,7 +250,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     {
         items.push(Line::from(vec![
             Span::styled(t.lead(Icon::Attention), Style::default().fg(t.attention)),
-            Span::raw(format!("{} Qi wrapped, ready to claim as WQI ({})", num::qi(qits), Screen::Wrap.place())),
+            Span::raw(format!("{} Qi wrapped, ready to claim as WQI ({})", num::qi(qits), app::Card::Wrap.place())),
         ]));
     }
     if let Some(plan) = &app.eco.plan {
@@ -432,7 +432,7 @@ pub fn draw_holdings(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: b
                     Span::raw(format!("{} Qi wrapped and waiting to be claimed as WQI · ", num::qi(qits))),
                 ]
                 .into_iter()
-                .chain(place_spans(t, Screen::Wrap))
+                .chain(place_spans(t, app::Card::Wrap))
                 .collect::<Vec<_>>(),
             )),
             Rect { height: 1, ..inner },

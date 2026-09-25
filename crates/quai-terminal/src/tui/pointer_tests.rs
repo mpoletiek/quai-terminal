@@ -1,6 +1,6 @@
 //! The mouse against the real screens: what a click does, what it may never do.
 
-use super::super::app::{App, ConfirmAction, Modal, Screen, Section};
+use super::super::app::{App, Card, ConfirmAction, Modal, Screen, Section};
 use super::super::hit::{ListId, Target};
 use super::super::ui::draw;
 use super::super::ui::tests::populated_app;
@@ -59,7 +59,7 @@ fn chrome_clicks_do_what_their_keys_do() {
     let r = find(&app, |t| *t == Target::Tab(2)).expect("a third tab");
     let (x, y) = centre(r);
     click(&mut app, x, y);
-    assert_eq!(app.nav.screen, Section::Markets.screens(&app.config.features)[2], "the third tab, by click");
+    assert_eq!(app.nav.screen, Section::Markets.screens(&app.shown())[2], "the third tab, by click");
     // `?` in the footer opens the keys, as the key does.
     app.switch(Screen::Home);
     frame(&mut app, &mut term);
@@ -342,13 +342,18 @@ fn hit_maps_match_their_golden_files() {
             drift.push(file.display().to_string());
         }
     };
-    for screen in Screen::ALL {
-        if screen == Screen::DataSources {
+    for place in super::super::keymap::Place::all() {
+        if place == super::super::keymap::Place::Screen(Screen::DataSources) {
             continue;
         }
-        app.switch(screen);
+        // Named as before the exchange's cards were one screen, so the files still compare.
+        let name = match place {
+            super::super::keymap::Place::Screen(s) => format!("{s:?}"),
+            p => p.title().to_string(),
+        };
+        app.go(place);
         frame(&mut app, &mut term);
-        check(format!("{screen:?}_{w}x{h}"), picture(&app));
+        check(format!("{name}_{w}x{h}"), picture(&app));
     }
     for (i, m) in super::super::ui::tests::modals(&app).into_iter().filter(|m| !matches!(m, Modal::None)).enumerate() {
         app.switch(Screen::Home);
@@ -409,11 +414,11 @@ fn right_click_opens_the_rows_actions() {
 fn card_fields_take_a_click() {
     let (_dir, mut app, mut term) = setup();
     for (screen, field, get) in [
-        (Screen::Swap, 3usize, (|a: &App| a.eco.swap.field) as fn(&App) -> usize),
-        (Screen::Convert, 2, |a: &App| a.eco.convert.field),
-        (Screen::Wrap, 0, |a: &App| a.eco.wrap.field),
+        (Card::Swap, 3usize, (|a: &App| a.eco.swap.field) as fn(&App) -> usize),
+        (Card::Convert, 2, |a: &App| a.eco.convert.field),
+        (Card::Wrap, 0, |a: &App| a.eco.wrap.field),
     ] {
-        app.switch(screen);
+        app.show_card(screen);
         frame(&mut app, &mut term);
         let r = find(&app, |t| *t == Target::CardField(field)).unwrap_or_else(|| panic!("{screen:?} field {field} is clickable"));
         let (x, y) = centre(r);

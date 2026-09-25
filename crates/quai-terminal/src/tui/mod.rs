@@ -21,6 +21,7 @@ pub mod palette;
 pub mod persist;
 pub mod placeholders;
 pub mod pointer;
+pub mod screen;
 pub mod term;
 pub mod terminal;
 pub mod theme;
@@ -318,7 +319,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             let minute = wallet_core::registry::now() / 60;
             let ages_moved = match app.nav.screen {
                 app::Screen::Home => std::mem::replace(&mut ages_minute, minute) != minute,
-                app::Screen::Swap => app.eco.swap.quote_read.settled(),
+                app::Screen::Exchange if app.nav.card == app::Card::Swap => app.eco.swap.quote_read.settled(),
                 _ => false,
             };
             if app.term.focused && ages_moved || app.eco.test.running {

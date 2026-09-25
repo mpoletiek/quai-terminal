@@ -3,18 +3,38 @@
 //! The `?` overlay lists the terms on the screen in front; the palette finds any of them ("what is
 //! slippage"); the glossary modal holds them all.
 
-use super::app::Screen;
+use super::app::{Card, Screen};
+use super::keymap::Place;
 
 /// A term, what it means in a sentence or two, and the screens that use it.
 pub struct Term {
     pub word: &'static str,
     pub meaning: &'static str,
-    pub screens: &'static [Screen],
+    pub screens: &'static [Place],
+}
+
+/// A screen by name, or one of the exchange's cards.
+macro_rules! place {
+    (Swap) => {
+        Place::Card(Card::Swap)
+    };
+    (Convert) => {
+        Place::Card(Card::Convert)
+    };
+    (Wrap) => {
+        Place::Card(Card::Wrap)
+    };
+    (Channels) => {
+        Place::Pane(Screen::Contacts, 1)
+    };
+    ($s:ident) => {
+        Place::Screen(Screen::$s)
+    };
 }
 
 macro_rules! term {
     ($word:literal, $meaning:literal, [$($s:ident),*]) => {
-        Term { word: $word, meaning: $meaning, screens: &[$(Screen::$s),*] }
+        Term { word: $word, meaning: $meaning, screens: &[$(place!($s)),*] }
     };
 }
 
@@ -134,9 +154,9 @@ pub const TERMS: &[Term] = &[
     ),
 ];
 
-/// The terms a screen uses, in glossary order.
-pub fn for_screen(screen: Screen) -> Vec<&'static Term> {
-    TERMS.iter().filter(|t| t.screens.contains(&screen)).collect()
+/// The terms a place uses, in glossary order.
+pub fn for_screen(place: Place) -> Vec<&'static Term> {
+    TERMS.iter().filter(|t| t.screens.contains(&place)).collect()
 }
 
 #[cfg(test)]
@@ -151,6 +171,6 @@ mod tests {
             assert!(t.meaning.len() <= 170, "{}: keep it to a line or two", t.word);
             assert!(t.meaning.ends_with('.'), "{}", t.word);
         }
-        assert!(!for_screen(Screen::Swap).is_empty());
+        assert!(!for_screen(Place::Card(Card::Swap)).is_empty());
     }
 }

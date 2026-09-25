@@ -1,3 +1,4 @@
+use super::super::keymap::Place;
 use super::super::worker::Worker;
 use super::*;
 use wallet_core::journal::OpKind;
@@ -65,7 +66,7 @@ fn palette_reads_a_swap() {
     let first = app.palette_entries("swap 10 smol to quai").into_iter().next().unwrap();
     assert_eq!(first.label, "Swap 10 SMOL → QUAI");
     app.run_palette(first);
-    assert_eq!(app.nav.screen, Screen::Swap);
+    assert_eq!(app.place(), Place::Card(Card::Swap));
     assert_eq!(app.eco.swap.amount, "10");
     assert_eq!(app.eco.swap.from.symbol(), "SMOL");
     assert_eq!(app.eco.swap.to, Some(SwapAsset::Quai));
@@ -221,8 +222,13 @@ fn test_app(kind: WalletKind) -> (tempfile::TempDir, App) {
     let mut meta = registry.create_watch("t", &[("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(), "Main".into())]).unwrap();
     meta.kind = kind;
     let caps = super::super::terminal::detect(wallet_core::config::GraphicsMode::Cells);
-    // Every feature on, so each test reaches the screen it is about; the switches have their own.
-    let config = AppConfig { features: wallet_core::config::Features { messaging: true, trading: true, nfts: true }, ..Default::default() };
+    // Every feature on and Pro, so each test reaches the screen it is about; the switches and
+    // Simple have their own.
+    let config = AppConfig {
+        features: wallet_core::config::Features { messaging: true, trading: true, nfts: true },
+        mode: wallet_core::config::Mode::Pro,
+        ..Default::default()
+    };
     let mut app = App::new(paths, "local".into(), config, Theme::terminal(false), caps, Some(meta));
     app.lock.locked = false;
     app.onboarding = None;
@@ -876,9 +882,9 @@ fn channels_tab_saves_a_channel_as_contact() {
     app.switch(Screen::Contacts);
     app.dash.unlocked = true;
     app.dash.peers = vec![wallet_core::ops::PeerView { code: "PM8Tpeer".into(), contact: None, receive_addresses: 1, send_addresses: 0 }];
-    // `]` moves from Contacts to Channels within People.
-    press(&mut app, KeyCode::Char(']'));
-    assert_eq!(app.nav.screen, Screen::Channels);
+    // Tab moves from the contacts to the payment channels beneath them.
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.place(), Place::Pane(Screen::Contacts, 1));
     press(&mut app, KeyCode::Char('a'));
     match &app.modal {
         Modal::Form(f) => {
@@ -1006,7 +1012,7 @@ fn max_reserves_gas_for_quai_and_not_for_tokens() {
         ],
         ..Default::default()
     });
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     // Without a gas price the wallet says so rather than guessing a reserve.
     app.eco.swap.from = SwapAsset::Quai;
     sheet(&mut app, 'm');
@@ -1035,7 +1041,7 @@ fn percent_steps_through_shares_of_max() {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", &whole, true)],
         ..Default::default()
     });
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     app.eco.swap.from = SwapAsset::Token { address: "0x00a1".into(), symbol: "SMOL".into(), decimals: 18 };
     for (want, share) in [("100", 25), ("200", 50), ("300", 75), ("400", 100), ("100", 25)] {
         sheet(&mut app, 'p');
@@ -1056,7 +1062,7 @@ fn max_refuses_an_inexact_balance() {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", "999", false)],
         ..Default::default()
     });
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     app.eco.swap.from = SwapAsset::Token { address: "0x00a1".into(), symbol: "SMOL".into(), decimals: 18 };
     sheet(&mut app, 'm');
     assert!(app.eco.swap.amount.is_empty(), "nothing is filled from a rounded balance");
@@ -1067,7 +1073,7 @@ fn max_refuses_an_inexact_balance() {
 #[test]
 fn qi_max_uses_a_correlated_fee_quote_and_preserves_edits() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.switch(Screen::Convert);
+    app.show_card(Card::Convert);
     app.eco.convert.qi_to_quai = true;
     let result = || wallet_core::ops::QiSpecialMax {
         amount: "8".into(),
@@ -1715,14 +1721,14 @@ fn sections_tabs_and_detail_stack() {
     assert_eq!(app.nav.screen.section(), Section::Trade);
     // Exchange, Orders and PnL: Swap, Convert and Wrap share the Exchange tab, which returns to
     // whichever of them was last open.
-    assert_eq!(app.nav.screen, Screen::Swap);
-    assert_eq!(Section::Trade.tab_labels(&app.config.features), vec!["Exchange", "Orders", "PnL"]);
-    app.switch(Screen::Wrap);
+    assert_eq!(app.place(), Place::Card(Card::Swap));
+    assert_eq!(Section::Trade.tab_labels(&app.shown()), vec!["Exchange", "Orders", "PnL"]);
+    app.show_card(Card::Wrap);
     assert_eq!(app.breadcrumb(), vec!["Trade".to_string(), "Exchange".to_string()]);
     press(&mut app, KeyCode::Char(']'));
     assert_eq!(app.nav.screen, Screen::Orders);
     press(&mut app, KeyCode::Char('['));
-    assert_eq!(app.nav.screen, Screen::Wrap, "the Exchange tab returns to the view last open");
+    assert_eq!(app.place(), Place::Card(Card::Wrap), "the Exchange tab returns to the view last open");
     // Tab moves pane focus, it no longer switches screens.
     app.switch(Screen::Home);
     press(&mut app, KeyCode::Tab);
@@ -1758,20 +1764,20 @@ fn sections_tabs_and_detail_stack() {
     assert!(app.nav.detail.is_empty());
     // `t` opens Swap with the focused token as the pay side and the amount focused.
     press(&mut app, KeyCode::Char('t'));
-    assert_eq!(app.nav.screen, Screen::Swap);
+    assert_eq!(app.place(), Place::Card(Card::Swap));
     assert_eq!(app.eco.swap.from, wallet_core::swap::SwapAsset::Quai);
     press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Char('.'));
     press(&mut app, KeyCode::Char('5'));
     assert_eq!(app.eco.swap.amount, "1.5");
-    assert_eq!(app.nav.screen, Screen::Swap);
+    assert_eq!(app.place(), Place::Card(Card::Swap));
     // Esc unfocuses the input; number keys navigate again.
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Char('6'));
     assert_eq!(app.nav.screen, Screen::Activity);
     // Arriving by section key leaves the card unfocused.
     press(&mut app, KeyCode::Char('3'));
-    assert_eq!(app.nav.screen, Screen::Swap);
+    assert_eq!(app.place(), Place::Card(Card::Swap));
     press(&mut app, KeyCode::Char('1'));
     assert_eq!(app.nav.screen, Screen::Home);
 }
@@ -2254,7 +2260,7 @@ fn tab_into_the_pinned_chat_and_post() {
     press(&mut app, KeyCode::Tab);
     assert!(!app.dock.focus && app.nav.pane == 0, "and back to the pairs");
     // The swap card: from its last field, not while it is being entered.
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     draw(&mut app);
     press(&mut app, KeyCode::Tab);
     assert!(!app.dock.focus && app.eco.swap.field == 1, "Tab first enters the card");
@@ -2281,7 +2287,7 @@ fn channel_offers_are_accepted_only_after_asking() {
     };
     app.dash.offers = vec![offer("PM8Toffered", 2_500), offer("PM8Tdust", 3)];
     app.dash.peers = vec![wallet_core::ops::PeerView { code: "PM8Tpeer".into(), contact: None, receive_addresses: 1, send_addresses: 0 }];
-    app.switch(Screen::Channels);
+    app.go(Place::Pane(Screen::Contacts, 1));
     while sent.try_recv().is_ok() {}
     app.nav.selected = 0;
     assert_eq!(app.channel_offer().map(|o| o.code.as_str()), Some("PM8Toffered"));
@@ -2321,7 +2327,7 @@ fn the_channels_cursor_follows_the_sender_across_a_refresh() {
         notified: true,
     };
     app.dash.offers = vec![offer("PM8Talice", 1), offer("PM8Tspam", 2)];
-    app.switch(Screen::Channels);
+    app.go(Place::Pane(Screen::Contacts, 1));
     while sent.try_recv().is_ok() {}
     app.nav.selected = 0;
     // A new offer arrives ahead of the one under the cursor.
@@ -2348,13 +2354,15 @@ fn a_feature_turned_off_is_hidden_everywhere_and_settings_brings_it_back() {
         term.backend().buffer().content().iter().map(|c| c.symbol()).collect::<String>()
     };
     assert!(!app.sections().contains(&Section::Nfts), "a section with nothing left is not in the sidebar");
-    assert_eq!(Section::Trade.screens(&app.config.features), vec![Screen::Convert], "the exchange stays, for converting and wrapping");
+    assert_eq!(Section::Trade.screens(&app.shown()), vec![Screen::Exchange], "the exchange stays, for converting and wrapping");
     assert!(!app.sections().contains(&Section::Markets), "Markets is all trading");
-    assert_eq!(Section::People.screens(&app.config.features), vec![Screen::Contacts, Screen::Channels]);
-    for shut in [Screen::Board, Screen::Swap, Screen::Markets, Screen::Launches, Screen::Collected, Screen::Listings] {
+    assert_eq!(Section::People.screens(&app.shown()), vec![Screen::Contacts]);
+    for shut in [Screen::Board, Screen::Markets, Screen::Launches, Screen::Collected, Screen::Listings] {
         app.switch(shut);
         assert_eq!(app.nav.screen, Screen::Home, "{shut:?} stays shut");
     }
+    app.show_card(Card::Swap);
+    assert_eq!(app.nav.screen, Screen::Home, "the swap card stays shut");
     press(&mut app, KeyCode::Char('4'));
     assert_eq!(app.nav.screen, Screen::Home, "4 (NFTs) has nothing to open");
     press(&mut app, KeyCode::Char('2'));
@@ -2363,9 +2371,9 @@ fn a_feature_turned_off_is_hidden_everywhere_and_settings_brings_it_back() {
     assert_eq!(app.nav.screen, Screen::Home, "t does not open the swap card");
     assert!(!context_hints(&app).iter().any(|(_, what)| what == "swap" || what == "trade"), "and is not offered");
     press(&mut app, KeyCode::Char('3'));
-    assert_eq!(app.nav.screen, Screen::Convert, "Trade opens on what is left");
-    app.switch(Screen::Wrap);
-    assert_eq!(app.nav.screen, Screen::Wrap, "wrapping stays too, behind the same tab");
+    assert_eq!(app.place(), Place::Card(Card::Convert), "Trade opens on what is left");
+    app.show_card(Card::Wrap);
+    assert_eq!(app.place(), Place::Card(Card::Wrap), "wrapping stays too, behind the same tab");
     for query in ["swap", "board", "nft", "listings", "markets"] {
         let offered: Vec<String> = app
             .palette_entries(query)
@@ -2522,7 +2530,7 @@ fn an_asset_page_can_buy_and_sell_it() {
     app.switch(Screen::Home);
     app.push_detail(Detail::Asset(smol.into()));
     press(&mut app, KeyCode::Char('b'));
-    assert_eq!(app.nav.screen, Screen::Swap);
+    assert_eq!(app.place(), Place::Card(Card::Swap));
     assert!(matches!(app.eco.swap.from, SwapAsset::Quai), "buying pays QUAI");
     assert!(matches!(&app.eco.swap.to, Some(SwapAsset::Token { address, .. }) if address == smol));
     assert!(app.nav.detail.is_empty(), "the card is the screen now, not a page over it");
@@ -3000,7 +3008,7 @@ fn switching_wallets_reloads_the_screen_you_are_on() {
 #[test]
 fn a_conversion_quote_sets_the_slippage_the_card_could_not_guess() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.nav.screen = Screen::Convert;
+    (app.nav.screen, app.nav.card) = (Screen::Exchange, Card::Convert);
     app.eco.convert.amount = "250".into();
     assert_eq!(app.eco.convert.slippage_bps, 0, "nothing chosen and nothing quoted yet");
     let quote = |bps: u16| {
@@ -3081,7 +3089,7 @@ fn the_convert_screen_shows_what_the_conversion_costs_now() {
         notes: vec![],
         explorer_steps: None,
     };
-    app.switch(Screen::Convert);
+    app.show_card(Card::Convert);
     app.eco.convert.amount = "250".into();
     app.eco.convert.quote = Some(quote(296, false));
     let normal = draw(&mut app);
@@ -3347,7 +3355,7 @@ fn the_swap_card_trades_on_the_curve_when_it_pays_more() {
     use wallet_core::swap::{SwapAsset, SwapQuote};
     let (_dir, mut app) = test_app(WalletKind::Hd);
     let qaxe = SwapAsset::Token { address: "0x0035187a7660f595d93cd53a4d16c635d6cffc8f".into(), symbol: "QAXE".into(), decimals: 18 };
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     app.eco.swap.from = SwapAsset::Quai;
     app.eco.swap.to = Some(qaxe.clone());
     app.eco.swap.amount = "100".into();
@@ -3507,7 +3515,7 @@ fn review_probe_lock_during_commit_must_keep_submission() {
 #[test]
 fn review_probe_typing_conversion_must_not_choose_slippage() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.nav.screen = Screen::Convert;
+    (app.nav.screen, app.nav.card) = (Screen::Exchange, Card::Convert);
     app.eco.convert.field = 1;
     assert_eq!(app.eco.convert.slippage_bps, 0);
     press(&mut app, KeyCode::Char('2'));
@@ -3518,7 +3526,7 @@ fn review_probe_typing_conversion_must_not_choose_slippage() {
 #[test]
 fn review_probe_amount_edit_must_invalidate_swap_quote_immediately() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
-    app.nav.screen = Screen::Swap;
+    (app.nav.screen, app.nav.card) = (Screen::Exchange, Card::Swap);
     app.eco.swap.field = 1;
     app.eco.swap.amount = "1".into();
     app.eco.swap.quote_key = 42;
@@ -3759,17 +3767,17 @@ fn esc_leaves_a_conversion_for_the_swap_it_came_from() {
         symbol: "USDT".into(),
         decimals: 18,
     });
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     app.pick_exchange(false, usdt.clone());
     app.pick_exchange(false, ExAsset::Qi);
-    assert_eq!(app.nav.screen, Screen::Convert);
+    assert_eq!(app.place(), Place::Card(Card::Convert));
     assert!(app.input_focused(), "the conversion opens on its amount");
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.nav.screen, Screen::Convert, "the first Esc leaves the field");
+    assert_eq!(app.place(), Place::Card(Card::Convert), "the first Esc leaves the field");
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.nav.screen, Screen::Swap, "the second goes back to the swap");
+    assert_eq!(app.place(), Place::Card(Card::Swap), "the second goes back to the swap");
     assert_eq!(app.exchange_pair(), (ExAsset::Swap(SwapAsset::Quai), Some(usdt)), "on the pair it had");
-    assert_eq!(app.nav.last_exchange, Screen::Swap, "and the Exchange tab opens on it from now on");
+    assert_eq!(app.nav.card, Card::Swap, "and the Exchange tab opens on it from now on");
 }
 
 /// One exchange: whatever pair is chosen, the view that can carry it takes over. QUAI and Qi
@@ -3787,31 +3795,31 @@ fn the_exchange_routes_every_pair_to_the_view_that_carries_it() {
     };
     let (wqi, wquai) = (token(&net.wqi, "WQI"), token(&net.wquai, "WQUAI"));
     let usdt = token(&net.ecosystem.usdt.as_ref().map(|u| u.address.clone()), "USDT");
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     app.pick_exchange(false, usdt.clone());
     app.eco.swap.amount = "5".into();
     assert_eq!(app.exchange_pair(), (ExAsset::Swap(SwapAsset::Quai), Some(usdt.clone())));
     // QUAI → Qi: a conversion, the 5 QUAI typed carried over.
     app.pick_exchange(false, ExAsset::Qi);
-    assert_eq!(app.nav.screen, Screen::Convert);
+    assert_eq!(app.place(), Place::Card(Card::Convert));
     assert!(!app.eco.convert.qi_to_quai);
     assert_eq!(app.eco.convert.amount, "5", "the amount follows while QUAI is still paid");
     // Paying Qi instead turns the pair around.
     app.pick_exchange(true, ExAsset::Qi);
-    assert_eq!(app.nav.screen, Screen::Convert);
+    assert_eq!(app.place(), Place::Card(Card::Convert));
     assert!(app.eco.convert.qi_to_quai, "Qi → QUAI");
     assert!(app.eco.convert.amount.is_empty(), "an amount typed in QUAI is not an amount of Qi");
     // Qi → WQI wraps; WQI → Qi redeems.
     app.pick_exchange(false, wqi.clone());
-    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 0));
+    assert_eq!((app.place(), app.eco.wrap.mode), (Place::Card(Card::Wrap), 0));
     app.pick_exchange(true, wqi.clone());
-    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 2), "choosing the other side's asset turns the pair around");
+    assert_eq!((app.place(), app.eco.wrap.mode), (Place::Card(Card::Wrap), 2), "choosing the other side's asset turns the pair around");
     // QUAI ↔ WQUAI.
     app.pick_exchange(true, ExAsset::Swap(SwapAsset::Quai));
     app.pick_exchange(false, wquai.clone());
-    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 3));
+    assert_eq!((app.place(), app.eco.wrap.mode), (Place::Card(Card::Wrap), 3));
     app.pick_exchange(true, wquai.clone());
-    assert_eq!((app.nav.screen, app.eco.wrap.mode), (Screen::Wrap, 4));
+    assert_eq!((app.place(), app.eco.wrap.mode), (Place::Card(Card::Wrap), 4));
     // Qi with a token it has no route to: refused, and the pair stays as it was.
     app.pick_exchange(true, ExAsset::Qi);
     app.status.toasts.clear();
@@ -3820,17 +3828,17 @@ fn the_exchange_routes_every_pair_to_the_view_that_carries_it() {
     // Anything else swaps.
     app.pick_exchange(true, wquai.clone());
     app.pick_exchange(false, usdt.clone());
-    assert_eq!(app.nav.screen, Screen::Swap);
+    assert_eq!(app.place(), Place::Card(Card::Swap));
     assert_eq!(app.exchange_pair(), (wquai, Some(usdt)));
     // Choosing Qi always works: opposite a token it cannot pair with, the other side becomes
     // QUAI, and the app says so.
     app.status.toasts.clear();
     app.pick_exchange(true, ExAsset::Qi);
-    assert_eq!(app.nav.screen, Screen::Convert);
+    assert_eq!(app.place(), Place::Card(Card::Convert));
     assert!(app.eco.convert.qi_to_quai);
     assert!(app.status.toasts.iter().any(|t| t.text.contains("USDT became QUAI")), "{:?}", app.status.toasts);
     // The Exchange tab keeps whichever of them was last open.
-    assert_eq!(app.nav.last_exchange, Screen::Convert);
+    assert_eq!(app.nav.card, Card::Convert);
 }
 
 /// Settings step both ways with ← and →, and a watch-only wallet is not offered what it has no
@@ -4230,7 +4238,7 @@ fn a_limit_order_opens_from_the_quoted_swap_and_explains_itself() {
     use wallet_core::swap::{SwapAsset, SwapQuote};
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.config.features.trading = true;
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     app.eco.swap.field = 5;
     let usdt = SwapAsset::Token { address: "0x0000000000000000000000000000000000000002".into(), symbol: "USDT".into(), decimals: 6 };
     app.eco.swap.from = SwapAsset::Quai;
@@ -4913,4 +4921,223 @@ fn account(address: &str) -> wallet_core::session::AccountBalance {
         locked: U256::ZERO,
         nonce: 0,
     }
+}
+
+/// `5` is the inbox: the board, on the newest private conversation. Without messaging there is
+/// no inbox, and `5` is Contacts.
+#[test]
+fn five_opens_the_inbox_on_the_newest_conversation() {
+    use super::super::eco::{BoardRow, MessagingView};
+    use wallet_core::messaging::service::{Conversation, KeyNeed, Status};
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let size = (120, 40);
+    let status =
+        Status { account: Some("0xabc".into()), need: KeyNeed::Ready, fingerprint: None, key: None, keys_held: 1, scanned_to: None };
+    let chat = |peer: &str| Conversation {
+        peer: peer.into(),
+        name: None,
+        state: wallet_core::messaging::store::PeerState::Accepted,
+        fingerprint: None,
+        verified: false,
+        identity_changed: false,
+        messages: 1,
+        unread: 1,
+        last_at: 1,
+    };
+    let view = MessagingView { status, conversations: vec![chat("0xb0b"), chat("0xca7")], requests: vec![] };
+    app.on_event(Ev::Messaging { epoch: app.private_epoch, view: Ok(view), open: None, note: None }, size);
+    app.switch(Screen::Contacts);
+    press(&mut app, KeyCode::Char('5'));
+    assert_eq!(app.nav.screen, Screen::Board, "5 lands on the inbox");
+    assert!(
+        matches!(app.board_rows().get(app.nav.selected), Some(BoardRow::Chat(peer, _)) if peer == "0xb0b"),
+        "on the newest conversation"
+    );
+    app.config.features.messaging = false;
+    app.switch(Screen::Home);
+    press(&mut app, KeyCode::Char('5'));
+    assert_eq!(app.nav.screen, Screen::Contacts, "no messaging, no inbox: Contacts");
+}
+
+/// `@` changes the account that acts from every place, a card's amount field included; a search
+/// or filter being typed into keeps it as a character.
+#[test]
+fn the_account_key_works_everywhere_but_free_text() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    for place in Place::all() {
+        app.modal = Modal::None;
+        app.go(place);
+        assert_eq!(app.place(), place, "{place:?} opens");
+        press(&mut app, KeyCode::Char('@'));
+        assert!(matches!(app.modal, Modal::Accounts { .. }), "{place:?}: @ opens the account picker");
+    }
+    for card in Card::ALL {
+        app.modal = Modal::None;
+        app.show_card(card);
+        app.eco.swap.field = 1;
+        app.eco.convert.field = 1;
+        app.eco.wrap.field = 1;
+        assert!(app.input_focused(), "{card:?}: the amount field has the keys");
+        press(&mut app, KeyCode::Char('@'));
+        assert!(matches!(app.modal, Modal::Accounts { .. }), "{card:?}: @ reaches the picker past the amount field");
+    }
+    app.modal = Modal::None;
+    app.switch(Screen::Explore);
+    press(&mut app, KeyCode::Char('/'));
+    assert!(app.text_field_focused(), "the search has the keys");
+    press(&mut app, KeyCode::Char('@'));
+    assert!(matches!(app.modal, Modal::None), "a search takes @ as a character");
+    assert_eq!(app.eco.nft.search.as_deref(), Some("@"));
+}
+
+/// Simple shows the everyday screens; Pro adds the rest. A Pro screen asked for in Simple says
+/// how to get it, and Pro is one toggle away (the palette's `pro`, or the Settings row).
+#[test]
+fn simple_hides_pro_screens_and_pro_is_one_toggle_away() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.config.mode = wallet_core::config::Mode::Simple;
+    let visible: Vec<Screen> = app.sections().iter().flat_map(|s| s.screens(&app.shown())).collect();
+    assert_eq!(
+        visible,
+        vec![
+            Screen::Home,
+            Screen::Accounts,
+            Screen::Exchange,
+            Screen::Collected,
+            Screen::Contacts,
+            Screen::Board,
+            Screen::Activity,
+            Screen::Wallets,
+            Screen::Settings,
+        ]
+    );
+    assert!(!app.sections().contains(&Section::Markets), "Markets is all Pro");
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.nav.screen, Screen::Home, "2 has nothing to open in Simple");
+    app.switch(Screen::Pools);
+    assert_eq!(app.nav.screen, Screen::Home, "a Pro screen stays shut");
+    assert!(app.status.toasts.iter().any(|t| t.text.contains("part of Pro")), "and says how to open it");
+    for query in ["pools", "markets", "orders"] {
+        let go: Vec<String> = app
+            .palette_entries(query)
+            .into_iter()
+            .filter(|e| matches!(e.run, super::super::palette::Run::Go(_)))
+            .map(|e| e.label)
+            .collect();
+        assert!(go.is_empty(), "the palette does not offer {query} in Simple: {go:?}");
+    }
+    app.show_card(Card::Convert);
+    assert!(!app.trader, "no markets beside the exchange in Simple");
+    // One toggle: the palette's `pro`.
+    app.run_action("pro");
+    assert_eq!(app.config.mode, wallet_core::config::Mode::Pro);
+    assert!(app.sections().contains(&Section::Markets));
+    app.switch(Screen::Pools);
+    assert_eq!(app.nav.screen, Screen::Pools);
+    // And back, from a Pro screen: it gives way to Home.
+    app.run_action("simple");
+    assert_eq!(app.nav.screen, Screen::Home);
+    // The Settings row toggles it too.
+    app.switch(Screen::Settings);
+    app.nav.selected = app.settings_rows().iter().position(|(id, _)| *id == "mode").expect("a Mode row");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.config.mode, wallet_core::config::Mode::Pro, "Enter on Mode switches it");
+}
+
+/// A form waiting on its review, with what was typed into it.
+fn pending_send(app: &mut App) {
+    app.run_action("send_quai");
+    let Modal::Form(f) = &mut app.modal else { panic!("the send form opens") };
+    for field in f.fields.iter_mut() {
+        field.value = match field.label.as_str() {
+            "To" => "0x002360Bc8E2A359bE7335B06De43F1c7F040f15a".into(),
+            "Amount" => "1.25".into(),
+            _ => field.value.clone(),
+        };
+    }
+    f.pending = true;
+}
+
+/// The modal stack: a review opens over the form that asked for it. Rejecting it brings the form
+/// back as typed, ready to change and send again.
+#[test]
+fn a_rejected_review_brings_back_its_form() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    pending_send(&mut app);
+    app.on_event(review("op1", "send"), (100, 30));
+    assert!(matches!(app.modal, Modal::Review(_)), "the review is on top");
+    assert!(matches!(app.beneath.as_slice(), [Modal::Form(_)]), "the form waits beneath it");
+    press(&mut app, KeyCode::Esc);
+    let Modal::Form(f) = &app.modal else { panic!("rejecting the review shows the form again, not {:?}", super::modal_name(&app.modal)) };
+    assert!(!f.pending, "and it can be sent again");
+    assert!(f.fields.iter().any(|x| x.value == "1.25"), "with what was typed");
+    assert!(app.beneath.is_empty());
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.modal, Modal::None), "and Esc closes it as before");
+}
+
+/// Approving a review is the end of its form: nothing comes back after the signature.
+#[test]
+fn an_approved_review_leaves_no_form_behind() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.config.hold_to_sign = false;
+    pending_send(&mut app);
+    app.on_event(review("op1", "send"), (100, 30));
+    if let Modal::Review(r) = &mut app.modal {
+        r.opened = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        r.approve_focused = true;
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.modal, Modal::None), "signed: no layer left, not {}", super::modal_name(&app.modal));
+    assert!(app.beneath.is_empty());
+}
+
+/// A lock with a review over its form parks the form, as it parks a form on top, and drops the
+/// rest with the keys.
+#[test]
+fn a_lock_parks_the_form_under_a_review() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.dash.unlocked = true;
+    pending_send(&mut app);
+    app.on_event(review("op1", "send"), (100, 30));
+    app.enter_lock(Some((100, 30)));
+    assert!(matches!(app.modal, Modal::None) && app.beneath.is_empty(), "every layer goes at the lock");
+    assert!(app.parked.as_ref().is_some_and(|f| f.fields.iter().any(|x| x.value == "1.25")), "the form is kept for after the unlock");
+}
+
+/// The glossary opened from the key overlay goes back to it.
+#[test]
+fn the_glossary_returns_to_the_key_overlay() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    app.modal = Modal::Help;
+    press(&mut app, KeyCode::Char('g'));
+    assert!(matches!(app.modal, Modal::Glossary { .. }));
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.modal, Modal::Help), "Esc from the glossary is the key overlay again");
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.modal, Modal::None));
+}
+
+/// Simple speaks of QUAI and Qi: the picker leaves out WQUAI and WQI, which a route wraps and
+/// unwraps on its own, unless they are held. Pro offers them as they are.
+#[test]
+fn simple_leaves_unheld_wrappers_out_of_the_picker() {
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    with_pools(&mut app);
+    let symbols = |app: &App| -> Vec<String> {
+        app.picker_entries("", false).into_iter().filter(|e| !e.qi).map(|e| e.asset.symbol().to_string()).collect()
+    };
+    assert!(symbols(&app).iter().any(|s| s == "WQUAI"), "Pro offers the wrapper");
+    app.config.mode = wallet_core::config::Mode::Simple;
+    let simple = symbols(&app);
+    assert!(!simple.iter().any(|s| s == "WQUAI" || s == "WQI"), "Simple does not: {simple:?}");
+    assert!(simple.iter().any(|s| s == "QUAI") && simple.iter().any(|s| s == "LAPTOP"), "the rest stays: {simple:?}");
+    assert!(app.picker_entries("", false).iter().any(|e| e.qi), "and Qi, by name");
+    // Held, a wrapper is the holder's to trade.
+    let wquai = wallet_core::sdk::wrappers::WQUAI_MAINNET_ADDRESS.to_lowercase();
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
+        rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token(wquai), "WQUAI", "2", true)],
+        ..Default::default()
+    });
+    assert!(symbols(&app).iter().any(|s| s == "WQUAI"), "held, it is offered");
 }

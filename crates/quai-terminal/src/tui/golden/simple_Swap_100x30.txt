@@ -1,0 +1,30 @@
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                       ┌ ▸ exchange · swap on Quainance ───────────────────────────────────────────┐
+                       │ you pay                                                                   │
+  1  Home           • ││   token       WQ [WQI ✓▾]                                                 │
+                      ││   amount      50   available 171.4                                        │
+▌ 3  Trade            ││                25%   50%   75%   max    % · f ↕                           │
+                      ││ you receive                                                               │
+  4  NFTs           ◧ ││   token       US [USDT ✓▾]                                                │
+                      ││   amount      ◌ quoting…                                                  │
+  5  People           ││                                                                           │
+                      ││   slippage    0.50% ‹›                                                    │
+  6  Activity         ││   deadline    10 min ‹›                                                   │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+                      │┌ quote ────────────────────────────────────────────────────────────────────┐
+  0  System           ││ Type an amount; the quote updates as you type.                            │
+                      ││                                                                           │
+   [ ] tabs           ││ Quotes read the Quainance router and pools on-chain.                      │
+                      ││ Token inputs need an exact approval first; each step is its own review.   │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter edit · review  / pick token  f flip  space actions  : palette  ? more

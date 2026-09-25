@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                                                                               ● 1 unread N
+                         System ·  Wallets   Settings   [ ]
+                        ──────────━━━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1  Home            • │┌ ▸ wallets on this computer ────────────────────────────────────────────────────────┐┌ wallet · preview · open ───────────────────────┐
+                       ││   wallet           keys         value        QUAI           Qi                     ││ keys          none here · watch-only, it       │
+  3  Trade             ││ ▸ preview          watch-only              —              —          —             ││               cannot sign                      │
+                       │└────────────────────────────────────────────────────────────────────────────────────┘│ holds         1 address watched                │
+  4  NFTs            ◧ │                                                                                      │ created       1m ago                           │
+                       │                                                                                      │ stored        <data>/wallets/<id>              │
+  5  People            │                                                                                      └────────────────────────────────────────────────┘
+                       │
+  6  Activity          │
+                       │
+                       │
+▌ 0  System            │
+                       │
+   [ ] tabs            │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+                       │
+ N notifications  enter actions  a new wallet  e rename  space actions  : palette  ? more

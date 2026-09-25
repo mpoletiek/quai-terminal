@@ -194,7 +194,7 @@ impl App {
             self.eco.plan = None;
             return false;
         }
-        if *kind == OpKind::Approve && self.nav.screen == Screen::Swap {
+        if *kind == OpKind::Approve && self.on_card(Card::Swap) {
             self.eco.swap.approving = true;
         }
         let step = step_name(kind);
@@ -301,7 +301,7 @@ impl App {
     /// Re-check asks and holdings after an NFT operation is submitted.
     pub fn after_submit(&mut self, kind: &OpKind) {
         match kind {
-            OpKind::Approve if self.nav.screen == Screen::Swap => {
+            OpKind::Approve if self.on_card(Card::Swap) => {
                 self.eco.swap.approving = true;
                 // The next quote comes at the approving pace, counted from now.
                 self.eco.swap.quote_read.rest();

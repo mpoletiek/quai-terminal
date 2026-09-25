@@ -1,5 +1,5 @@
  ◆  PREVIEW │ 1 2 3 4 5 People 6 0 │ ● Local dev │ watch-only     ● 1 unread N
- People ·  Contacts   Channels   Board   [ ]
+ People ·  Contacts   Board   [ ]
 ┌ ▸ channels · people ─────────────────────────────────────────────────────────┐
 │   #general                                                                   │
 │ ◉ bob                                                                        │

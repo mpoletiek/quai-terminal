@@ -146,9 +146,9 @@ pub fn draw_tabs(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let active = if section == Section::Activity {
         app::ActivityFilter::ALL.iter().position(|x| *x == app.nav.activity_filter).unwrap_or(0)
     } else {
-        section.screens(&app.config.features).iter().position(|s| *s == app.nav.screen.tab_of(&app.config.features)).unwrap_or(0)
+        section.screens(&app.shown()).iter().position(|s| *s == app.nav.screen).unwrap_or(0)
     };
-    let labels = section.tab_labels(&app.config.features);
+    let labels = section.tab_labels(&app.shown());
     let mut spans = vec![Span::styled(format!(" {} ", section.title()), t.dim_style()), Span::styled("· ", t.dim_style())];
     // Where the open tab sits along the row, for the lit stretch of the rule.
     let mut lit = (0usize, 0usize);

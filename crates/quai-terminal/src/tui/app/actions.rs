@@ -81,7 +81,7 @@ impl App {
             "add_contact" => self.open_form(FormKind::Contact(None)),
             "contacts" => self.switch(Screen::Contacts),
             "trade" => self.open_trade(),
-            "swap" => self.switch(Screen::Swap),
+            "swap" => self.show_card(Card::Swap),
             "portfolio" => self.switch(Screen::Home),
             "home" => self.switch(Screen::Home),
             "nfts" => self.switch(Screen::Collected),
@@ -108,6 +108,8 @@ impl App {
             }
             "fill_gap" => self.send(Cmd::Prepare(Prepare::FillGap { from: None })),
             "themes" => self.modal = Modal::Themes(Picker::new(self)),
+            "pro" => self.set_mode(wallet_core::config::Mode::Pro),
+            "simple" => self.set_mode(wallet_core::config::Mode::Simple),
             // The terminal's own selection back, until the mouse is taken again (this action
             // again, or the setting). Shift-drag selects in most terminals without this.
             "mouse_release" => {
@@ -247,6 +249,14 @@ impl App {
                 self.config.background =
                     cycle(&[BackgroundMode::Auto, BackgroundMode::Terminal, BackgroundMode::Solid], self.config.background, dir);
                 Some(("Background".into(), format!("{:?}", self.config.background).to_lowercase()))
+            }
+            Some("mode") => {
+                let mode = match self.config.mode {
+                    wallet_core::config::Mode::Simple => wallet_core::config::Mode::Pro,
+                    wallet_core::config::Mode::Pro => wallet_core::config::Mode::Simple,
+                };
+                self.config.mode = mode;
+                Some(("Mode".into(), mode_note(mode).into()))
             }
             Some("layout") => {
                 self.config.layout = cycle(&["auto", "standard", "trader", "focus"], self.config.layout.as_str(), dir).into();
@@ -388,6 +398,16 @@ impl App {
 
     /// Save the preferences: serialized here, written by the persistence lane (two fsyncs are
     /// not a keypress's business).
+    /// Simple or Pro, saved; a screen that is Pro gives way to Home.
+    pub fn set_mode(&mut self, mode: wallet_core::config::Mode) {
+        self.config.mode = mode;
+        self.save_config();
+        if !self.nav.screen.enabled(&self.shown()) {
+            self.switch(Screen::Home);
+        }
+        self.info(format!("{} · {}", mode.key(), mode_note(mode)));
+    }
+
     pub fn save_config(&mut self) {
         match toml::to_string_pretty(&self.config) {
             Ok(text) => self.persist.write(self.paths.config_file(), text),
@@ -524,5 +544,13 @@ impl App {
         let current = self.meta.as_ref().map(|m| m.id.clone());
         let i = self.cockpit.list.iter().position(|w| Some(&w.id) == current.as_ref())?;
         (self.cockpit.list.len() > 1).then(|| self.cockpit.list[(i + 1) % self.cockpit.list.len()].id.clone())
+    }
+}
+
+/// What a mode shows, in a line.
+pub(crate) fn mode_note(mode: wallet_core::config::Mode) -> &'static str {
+    match mode {
+        wallet_core::config::Mode::Simple => "home, send and receive, one exchange, activity, NFTs, contacts",
+        wallet_core::config::Mode::Pro => "adds markets, pools, launches, orders, PnL, the marketplace, Qi coins, the board, network",
     }
 }

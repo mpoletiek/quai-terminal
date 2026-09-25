@@ -105,7 +105,7 @@ impl App {
             self.eco.swap.from = asset;
             self.eco.swap.quote = None;
         }
-        self.switch(Screen::Swap);
+        self.show_card(Card::Swap);
         self.eco.swap.field = 1;
     }
 
@@ -146,7 +146,7 @@ impl App {
         };
         let (from, to) = if buy { (counter, asset) } else { (asset, counter) };
         self.nav.detail.clear();
-        self.switch(Screen::Swap);
+        self.show_card(Card::Swap);
         let card = &mut self.eco.swap;
         card.from = from;
         card.to = Some(to);
@@ -265,8 +265,14 @@ impl App {
                 }
             }
         }
+        // Simple speaks of QUAI and Qi: the wrapped forms are steps a route takes, offered here
+        // only to someone who holds them (and so may want to trade them).
+        let simple = self.config.mode == wallet_core::config::Mode::Simple;
+        let wrapper = |address: &str| {
+            simple && network.as_ref().is_some_and(|n| [&n.wqi, &n.wquai].into_iter().flatten().any(|w| w.eq_ignore_ascii_case(address)))
+        };
         for m in &self.eco.feeds.markets {
-            if seen.insert(m.address.clone()) {
+            if !wrapper(&m.address) && seen.insert(m.address.clone()) {
                 let usdt =
                     network.as_ref().and_then(|n| n.ecosystem.usdt.as_ref()).is_some_and(|u| u.address.eq_ignore_ascii_case(&m.address));
                 let decimals = match self.eco.feeds.token_info.get(&m.address) {
@@ -293,7 +299,7 @@ impl App {
         // and a token with a pool is by definition swappable, so it belongs in the picker.
         if let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() {
             for token in pools.iter().flat_map(|p| [&p.token0, &p.token1]) {
-                if !token.address.is_empty() && seen.insert(token.address.clone()) {
+                if !token.address.is_empty() && !wrapper(&token.address) && seen.insert(token.address.clone()) {
                     out.push(row(
                         SwapAsset::Token { address: token.address.clone(), symbol: token.symbol.clone(), decimals: token.decimals },
                         "in a pool".into(),
@@ -395,15 +401,13 @@ impl App {
     }
 
     pub fn fill_max(&mut self) {
-        if (self.nav.screen == Screen::Convert && self.eco.convert.qi_to_quai)
-            || (self.nav.screen == Screen::Wrap && self.eco.wrap.mode == 0)
-        {
+        if (self.on_card(Card::Convert) && self.eco.convert.qi_to_quai) || (self.on_card(Card::Wrap) && self.eco.wrap.mode == 0) {
             self.eco.requests.max_sequence = self.eco.requests.max_sequence.wrapping_add(1);
             let key = self.eco.requests.max_sequence;
             self.eco.requests.max = Some((key, self.max_identity()));
             self.send(Cmd::QiMax {
                 key,
-                wrapping: self.nav.screen == Screen::Wrap,
+                wrapping: self.on_card(Card::Wrap),
                 account: self.dash.active_account().map(|a| a.address.clone()),
                 slippage: self.eco.convert.slippage_bps,
             });
@@ -416,13 +420,16 @@ impl App {
             Asset(SwapAsset),
             Qi { whole: bool },
         }
-        let pay = match self.nav.screen {
-            Screen::Swap => Pay::Asset(self.eco.swap.from.clone()),
+        if self.nav.screen != Screen::Exchange {
+            return;
+        }
+        let pay = match self.nav.card {
+            Card::Swap => Pay::Asset(self.eco.swap.from.clone()),
             // Qi → QUAI spends Qi coins. The protocol conversion takes fractional Qi
             // (`review_convert_qi_to_quai` parses 3 decimals), so MAX must not round down.
-            Screen::Convert if self.eco.convert.qi_to_quai => Pay::Qi { whole: false },
-            Screen::Convert => Pay::Asset(SwapAsset::Quai),
-            Screen::Wrap => match self.eco.wrap.mode {
+            Card::Convert if self.eco.convert.qi_to_quai => Pay::Qi { whole: false },
+            Card::Convert => Pay::Asset(SwapAsset::Quai),
+            Card::Wrap => match self.eco.wrap.mode {
                 // Wrapping takes fractional Qi too; only redemption (mode 2) is whole-Qi, and that
                 // side spends WQI, handled as a token below.
                 0 => Pay::Qi { whole: false },
@@ -439,7 +446,6 @@ impl App {
                     None => return,
                 },
             },
-            _ => return,
         };
         let (text, note) = match pay {
             Pay::Qi { whole } => {
@@ -482,7 +488,7 @@ impl App {
                         let mut m = token_max(balance, decimals);
                         // Redeeming WQI pays out whole Qi, so offering a fractional MAX would
                         // only be rounded away by the contract.
-                        if self.nav.screen == Screen::Wrap && self.eco.wrap.mode == 2 {
+                        if self.on_card(Card::Wrap) && self.eco.wrap.mode == 2 {
                             let unit = U256::from(10u64).pow(U256::from(decimals));
                             m.amount -= m.amount % unit;
                             if m.amount.is_zero() {
@@ -495,24 +501,26 @@ impl App {
                 }
             }
         };
-        match self.nav.screen {
-            Screen::Swap => {
+        if self.nav.screen != Screen::Exchange {
+            return;
+        }
+        match self.nav.card {
+            Card::Swap => {
                 self.eco.swap.amount = text;
                 self.eco.swap.field = 1;
                 self.eco.swap.edited = Some(Instant::now());
                 self.eco.swap.requested_key = 0;
                 self.eco.swap.approving = false;
             }
-            Screen::Convert => {
+            Card::Convert => {
                 self.eco.convert.amount = text;
                 self.eco.convert.field = 1;
                 self.eco.convert.edited = Some(Instant::now());
             }
-            Screen::Wrap => {
+            Card::Wrap => {
                 self.eco.wrap.amount = text;
                 self.eco.wrap.field = 1;
             }
-            _ => return,
         }
         if let Some(note) = note {
             self.toast(&note, false);
@@ -524,129 +532,145 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
-        match self.nav.screen {
-            Screen::Markets => self.markets_key(key),
-            Screen::Board => self.board_key(key),
-            Screen::Pools => self.pools_key(key),
-            Screen::Launches => self.launches_key(key),
-            Screen::Pnl => self.pnl_key(key),
-            Screen::Swap => self.swap_key(key),
-            Screen::Convert => self.convert_key(key),
-            Screen::Wrap => self.wrap_key(key),
-            Screen::Explore => self.explore_key(key),
-            Screen::Collected => match key.code {
-                KeyCode::Char('h') | KeyCode::Left => {
-                    self.move_selection(-1);
-                    true
-                }
-                KeyCode::Char('l') | KeyCode::Right if self.eco.nft_len() > 0 => {
-                    self.move_selection(1);
-                    true
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let cols = (*self.eco.nft.grid_columns.borrow()).max(1);
-                    let len = self.eco.nft_len();
-                    if len > 0 {
-                        self.nav.selected = (self.nav.selected + cols).min(len - 1);
-                    }
-                    true
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    let cols = (*self.eco.nft.grid_columns.borrow()).max(1);
-                    self.nav.selected = self.nav.selected.saturating_sub(cols);
-                    true
-                }
-                KeyCode::Char('R') => {
-                    self.load_nfts(true);
-                    true
-                }
-                KeyCode::Char('T') => {
-                    self.transfer_selected_nft();
-                    true
-                }
-                KeyCode::Char('L') => {
-                    if let Some((c, id)) = self.selected_nft() {
-                        self.open_nft_list(&c, &id);
-                    }
-                    true
-                }
-                KeyCode::Char('X') => {
-                    if let Some((c, id)) = self.selected_nft() {
-                        self.cancel_nft_listing(&c, &id);
-                    }
-                    true
-                }
-                _ => false,
-            },
-            Screen::Listings => match key.code {
-                KeyCode::Char('m') => {
-                    self.eco.nft.listings_mine = !self.eco.nft.listings_mine;
-                    self.nav.selected = 0;
-                    if self.eco.nft.listings_mine {
-                        self.load_my_listings();
-                    }
-                    self.toast(if self.eco.nft.listings_mine { "listings: yours" } else { "listings: everyone's" }, false);
-                    true
-                }
-                KeyCode::Char('S') => {
-                    self.eco.nft.listing_sort = self.eco.nft.listing_sort.next();
-                    self.nav.selected = 0;
-                    let label = self.eco.nft.listing_sort.label();
-                    self.info(format!("listings: {label}"));
-                    true
-                }
-                KeyCode::Char(c @ ('f' | 'F')) => {
-                    let collections = match self.eco.nft.listings.get(&None).and_then(|r| r.latest()) {
-                        Some(Ok(all)) => wallet_core::market::listing_collections(all),
-                        _ => Vec::new(),
-                    };
-                    if collections.is_empty() {
-                        return true;
-                    }
-                    // Positions: 0 = all collections, then each collection by listing count.
-                    let len = collections.len() + 1;
-                    let current = self
-                        .eco
-                        .nft
-                        .listing_filter
-                        .as_ref()
-                        .and_then(|f| collections.iter().position(|(a, _)| a == f).map(|p| p + 1))
-                        .unwrap_or(0);
-                    let next = if c == 'f' { (current + 1) % len } else { (current + len - 1) % len };
-                    self.eco.nft.listing_filter = (next > 0).then(|| collections[next - 1].0.clone());
-                    self.nav.selected = 0;
-                    let text = match &self.eco.nft.listing_filter {
-                        Some(a) => format!("listings: {} ({} listed)", self.eco.collection_name(a), collections[next - 1].1),
-                        None => "listings: all collections".into(),
-                    };
-                    self.toast(text, false);
-                    true
-                }
-                KeyCode::Char('R') => {
-                    self.eco.nft.listings.entry(None).begin(&self.eco.clock);
-                    self.send_data(DataCmd::Listings { collection: None });
-                    true
-                }
-                KeyCode::Char('b') => {
-                    if let Some(l) = self.eco.visible_listings().get(self.nav.selected).cloned() {
-                        self.push_detail(Detail::Nft(l.contract.clone(), l.token_id.clone()));
-                        self.buy_listing(&l);
-                    }
-                    true
-                }
-                _ => false,
-            },
-            Screen::Home if key.code == KeyCode::Char('i') => {
-                self.eco.info_open = !self.eco.info_open;
+        self.nav.screen.view().key(self, key)
+    }
+
+    /// Collected's grid: move by cell and row, reload, and the item's transfer and listing keys.
+    pub(crate) fn collected_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.move_selection(-1);
                 true
             }
-            Screen::Network if key.code == KeyCode::Char('m') => {
-                if let Some((id, _)) = self.dash.networks.get(self.nav.selected).cloned() {
-                    self.open_form(super::super::app::FormKind::Monitor { network: id });
+            KeyCode::Char('l') | KeyCode::Right if self.eco.nft_len() > 0 => {
+                self.move_selection(1);
+                true
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let cols = (*self.eco.nft.grid_columns.borrow()).max(1);
+                let len = self.eco.nft_len();
+                if len > 0 {
+                    self.nav.selected = (self.nav.selected + cols).min(len - 1);
+                }
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let cols = (*self.eco.nft.grid_columns.borrow()).max(1);
+                self.nav.selected = self.nav.selected.saturating_sub(cols);
+                true
+            }
+            KeyCode::Char('R') => {
+                self.load_nfts(true);
+                true
+            }
+            KeyCode::Char('T') => {
+                self.transfer_selected_nft();
+                true
+            }
+            KeyCode::Char('L') => {
+                if let Some((c, id)) = self.selected_nft() {
+                    self.open_nft_list(&c, &id);
+                }
+                true
+            }
+            KeyCode::Char('X') => {
+                if let Some((c, id)) = self.selected_nft() {
+                    self.cancel_nft_listing(&c, &id);
                 }
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Listings: whose, sorted how, from which collection; reload; buy the one selected.
+    pub(crate) fn listings_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('m') => {
+                self.eco.nft.listings_mine = !self.eco.nft.listings_mine;
+                self.nav.selected = 0;
+                if self.eco.nft.listings_mine {
+                    self.load_my_listings();
+                }
+                self.toast(if self.eco.nft.listings_mine { "listings: yours" } else { "listings: everyone's" }, false);
+                true
+            }
+            KeyCode::Char('S') => {
+                self.eco.nft.listing_sort = self.eco.nft.listing_sort.next();
+                self.nav.selected = 0;
+                let label = self.eco.nft.listing_sort.label();
+                self.info(format!("listings: {label}"));
+                true
+            }
+            KeyCode::Char(c @ ('f' | 'F')) => {
+                let collections = match self.eco.nft.listings.get(&None).and_then(|r| r.latest()) {
+                    Some(Ok(all)) => wallet_core::market::listing_collections(all),
+                    _ => Vec::new(),
+                };
+                if collections.is_empty() {
+                    return true;
+                }
+                // Positions: 0 = all collections, then each collection by listing count.
+                let len = collections.len() + 1;
+                let current = self
+                    .eco
+                    .nft
+                    .listing_filter
+                    .as_ref()
+                    .and_then(|f| collections.iter().position(|(a, _)| a == f).map(|p| p + 1))
+                    .unwrap_or(0);
+                let next = if c == 'f' { (current + 1) % len } else { (current + len - 1) % len };
+                self.eco.nft.listing_filter = (next > 0).then(|| collections[next - 1].0.clone());
+                self.nav.selected = 0;
+                let text = match &self.eco.nft.listing_filter {
+                    Some(a) => format!("listings: {} ({} listed)", self.eco.collection_name(a), collections[next - 1].1),
+                    None => "listings: all collections".into(),
+                };
+                self.toast(text, false);
+                true
+            }
+            KeyCode::Char('R') => {
+                self.eco.nft.listings.entry(None).begin(&self.eco.clock);
+                self.send_data(DataCmd::Listings { collection: None });
+                true
+            }
+            KeyCode::Char('b') => {
+                if let Some(l) = self.eco.visible_listings().get(self.nav.selected).cloned() {
+                    self.push_detail(Detail::Nft(l.contract.clone(), l.token_id.clone()));
+                    self.buy_listing(&l);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Home: `i` opens and closes what the totals leave out.
+    pub(crate) fn home_key(&mut self, key: KeyEvent) -> bool {
+        if key.code != KeyCode::Char('i') {
+            return false;
+        }
+        self.eco.info_open = !self.eco.info_open;
+        true
+    }
+
+    /// Network: `m` sets the monitoring node of the network under the cursor.
+    pub(crate) fn network_key(&mut self, key: KeyEvent) -> bool {
+        if key.code != KeyCode::Char('m') {
+            return false;
+        }
+        if let Some((id, _)) = self.dash.networks.get(self.nav.selected).cloned() {
+            self.open_form(super::super::app::FormKind::Monitor { network: id });
+        }
+        true
+    }
+
+    /// The exchange's keys are its card's.
+    pub(crate) fn exchange_key(&mut self, key: KeyEvent) -> bool {
+        match self.nav.card {
+            Card::Swap => self.swap_key(key),
+            Card::Convert => self.convert_key(key),
+            Card::Wrap => self.wrap_key(key),
         }
     }
 
@@ -878,8 +902,8 @@ impl App {
         card.field = 1;
     }
 
-    /// The exchange's pair, read off whichever of its views is showing (or was last): what is
-    /// paid, and what is received (a swap may not have chosen yet).
+    /// The exchange's pair, read off its card (showing, or last shown): what is paid, and what is
+    /// received (a swap may not have chosen yet).
     pub fn exchange_pair(&self) -> (ExAsset, Option<ExAsset>) {
         let net = self.net();
         let token = |address: Option<String>, symbol: &str| {
@@ -892,17 +916,16 @@ impl App {
         let wqi = || token(net.as_ref().and_then(|n| n.wqi.clone()), "WQI");
         let wquai = || token(net.as_ref().and_then(|n| n.wquai.clone()), "WQUAI");
         let quai = ExAsset::Swap(SwapAsset::Quai);
-        let view = if self.nav.screen.is_exchange() { self.nav.screen } else { self.nav.last_exchange };
-        match view {
-            Screen::Convert if self.eco.convert.qi_to_quai => (ExAsset::Qi, Some(quai)),
-            Screen::Convert => (quai, Some(ExAsset::Qi)),
-            Screen::Wrap => match self.eco.wrap.mode {
+        match self.nav.card {
+            Card::Convert if self.eco.convert.qi_to_quai => (ExAsset::Qi, Some(quai)),
+            Card::Convert => (quai, Some(ExAsset::Qi)),
+            Card::Wrap => match self.eco.wrap.mode {
                 0 | 1 => (ExAsset::Qi, Some(wqi())),
                 2 => (wqi(), Some(ExAsset::Qi)),
                 3 => (quai, Some(wquai())),
                 _ => (wquai(), Some(quai)),
             },
-            _ => (ExAsset::Swap(self.eco.swap.from.clone()), self.eco.swap.to.clone().map(ExAsset::Swap)),
+            Card::Swap => (ExAsset::Swap(self.eco.swap.from.clone()), self.eco.swap.to.clone().map(ExAsset::Swap)),
         }
     }
 
@@ -953,16 +976,18 @@ impl App {
         let quai = ExAsset::Swap(SwapAsset::Quai);
         // What was typed follows when the side it was typed for is still the side paid.
         let (was, _) = self.exchange_pair();
-        let typed = match (self.nav.screen, was == from) {
+        // From outside the exchange, what was typed is the swap card's.
+        let card = if self.nav.screen == Screen::Exchange { self.nav.card } else { Card::Swap };
+        let typed = match (card, was == from) {
             (_, false) => String::new(),
-            (Screen::Convert, _) => self.eco.convert.amount.clone(),
-            (Screen::Wrap, _) => self.eco.wrap.amount.clone(),
-            _ => self.eco.swap.amount.clone(),
+            (Card::Convert, _) => self.eco.convert.amount.clone(),
+            (Card::Wrap, _) => self.eco.wrap.amount.clone(),
+            (Card::Swap, _) => self.eco.swap.amount.clone(),
         };
         let wrap = |app: &mut App, mode: usize| {
             app.eco.wrap.mode = mode;
             app.eco.wrap.amount = typed.clone();
-            app.switch(Screen::Wrap);
+            app.show_card(Card::Wrap);
             app.eco.wrap.field = 1;
         };
         match (&from, &to) {
@@ -1001,7 +1026,7 @@ impl App {
                 if !typed.is_empty() {
                     self.eco.swap.amount = typed;
                 }
-                self.switch(Screen::Swap);
+                self.show_card(Card::Swap);
                 self.eco.swap.field = 1;
             }
         }
@@ -1012,7 +1037,7 @@ impl App {
         card.amount = typed;
         card.quote = None;
         card.routes = None;
-        self.switch(Screen::Convert);
+        self.show_card(Card::Convert);
         self.eco.convert.field = 1;
     }
 
@@ -1028,7 +1053,7 @@ impl App {
     pub(crate) fn exchange_back_to_swap(&mut self) {
         // Without trading there is no swap card to go back to, and Esc says nothing.
         if self.config.features.on(wallet_core::config::Feature::Trading) {
-            self.switch(Screen::Swap);
+            self.show_card(Card::Swap);
         }
     }
 

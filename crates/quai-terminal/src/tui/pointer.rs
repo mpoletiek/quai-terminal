@@ -16,7 +16,7 @@
 //! - Clicks, the wheel and drags count as presence for auto-lock; a pointer merely resting on the
 //!   window does not.
 
-use super::app::{App, ConfirmAction, FieldKind, Modal, Screen};
+use super::app::{App, Card, ConfirmAction, FieldKind, Modal, Screen};
 use super::hit::{Button, HeaderPart, ListId, ReviewPart, Scroll, Target};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
@@ -306,9 +306,9 @@ impl App {
                 let can = matches!(&self.modal, Modal::Review(r) if r.can_approve());
                 self.toast(if can { "approve is armed · press enter to sign" } else { "read to the end of the review first" }, !can);
             }
-            Target::Route(screen) => {
+            Target::Route(place) => {
                 self.modal = Modal::None;
-                self.switch(screen);
+                self.go(place);
             }
             Target::Scroll(_) | Target::Swallow => {}
             Target::Confirm(false) => self.press(KeyCode::Char('n'), size),
@@ -331,9 +331,11 @@ impl App {
             // A card's field: focus it, as Tab would have. (Typing, a token pick and review stay
             // with the keys.)
             Target::CardField(n) => match self.nav.screen {
-                Screen::Swap => self.eco.swap.field = n,
-                Screen::Convert => self.eco.convert.field = n,
-                Screen::Wrap => self.eco.wrap.field = n,
+                Screen::Exchange => match self.nav.card {
+                    Card::Swap => self.eco.swap.field = n,
+                    Card::Convert => self.eco.convert.field = n,
+                    Card::Wrap => self.eco.wrap.field = n,
+                },
                 Screen::Pools => {
                     if let Some(add) = self.eco.pools_view.add.as_mut() {
                         add.field = n;
@@ -489,8 +491,8 @@ impl App {
             ListId::Screen(Screen::Home, _) | ListId::Screen(Screen::Activity, _) => activity_key(self, index),
             ListId::Screen(Screen::Accounts, _) => self.dash.accounts.get(index).map(|a| a.address.clone()),
             ListId::Screen(Screen::Qi, _) => self.dash.qi.as_ref().and_then(|q| q.coins.get(index)).map(|c| c.outpoint.clone()),
-            ListId::Screen(Screen::Contacts, _) => self.dash.contacts.get(index).map(|c| c.name.clone()),
-            ListId::Screen(Screen::Channels, _) => {
+            ListId::Screen(Screen::Contacts, 0) => self.dash.contacts.get(index).map(|c| c.name.clone()),
+            ListId::Screen(Screen::Contacts, _) => {
                 let offers = self.dash.offers.len();
                 if index < offers {
                     self.dash.offers.get(index).map(|o| o.code.clone())
@@ -571,7 +573,7 @@ impl App {
             }
             return;
         }
-        if let Some(&screen) = section.screens(&self.config.features).get(i) {
+        if let Some(&screen) = section.screens(&self.shown()).get(i) {
             self.open_tab(screen);
         }
     }

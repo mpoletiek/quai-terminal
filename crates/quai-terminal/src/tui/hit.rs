@@ -99,7 +99,7 @@ pub enum Target {
     },
     Button(Button),
     /// A go-to destination.
-    Route(super::app::Screen),
+    Route(super::keymap::Place),
     /// Inside a modal, nothing clickable: the click is used up.
     Swallow,
     /// Outside the open modal.

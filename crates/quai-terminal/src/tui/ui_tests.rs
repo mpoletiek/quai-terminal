@@ -19,6 +19,8 @@ fn a_bold_label_is_not_mistaken_for_a_badge() {
         images: true,
         token_icons: true,
         features: wallet_core::config::Features { messaging: true, trading: true, nfts: true },
+        // The goldens are Pro's full surface; Simple's have their own.
+        mode: wallet_core::config::Mode::Pro,
         ..Default::default()
     };
     let mut app = App::new(paths, "local".into(), connected, theme, caps, Some(meta));
@@ -67,6 +69,8 @@ fn drawable_app() -> (tempfile::TempDir, App) {
         images: true,
         token_icons: true,
         features: wallet_core::config::Features { messaging: true, trading: true, nfts: true },
+        // The goldens are Pro's full surface; Simple's have their own.
+        mode: wallet_core::config::Mode::Pro,
         ..Default::default()
     };
     let mut app = App::new(paths, "local".into(), connected, theme, caps, Some(meta));
@@ -489,6 +493,8 @@ fn activity_names_contacts() {
         images: true,
         token_icons: true,
         features: wallet_core::config::Features { messaging: true, trading: true, nfts: true },
+        // The goldens are Pro's full surface; Simple's have their own.
+        mode: wallet_core::config::Mode::Pro,
         ..Default::default()
     };
     let mut app = App::new(paths, "local".into(), connected, theme, caps, Some(meta));
@@ -683,6 +689,8 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
         images: true,
         token_icons: true,
         features: wallet_core::config::Features { messaging: true, trading: true, nfts: true },
+        // The goldens are Pro's full surface; Simple's have their own.
+        mode: wallet_core::config::Mode::Pro,
         ..Default::default()
     };
     let mut app = App::new(paths, "local".into(), connected, theme, caps, Some(meta));
@@ -1424,36 +1432,46 @@ fn every_screen_renders_at_every_size() {
         app.term.caps.kitty_keyboard = false;
         for (w, h) in [(160u16, 48u16), (100, 30), (80, 24)] {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-            for screen in Screen::ALL {
-                // Data sources shows this process's live request counts, which other tests move.
-                if screen == Screen::DataSources {
-                    continue;
-                }
-                app.switch(screen);
-                // Each screen as first opened: screens remember their pane and cursor now.
-                app.nav.pane = 0;
-                app.nav.selected = 0;
-                app.eco.swap.field = 5;
-                term.draw(|f| draw(f, &mut app)).unwrap();
-                let buf = term.backend().buffer();
-                let out: String = (0..h)
-                    .map(|y| {
-                        (0..w).map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ")).collect::<String>().trim_end().to_string()
-                            + "\n"
-                    })
-                    .collect();
-                // Spinners turn with the clock and the data dir is a fresh temp path: neither is layout.
-                // Clock times are local and the fixtures are dated from now, so they are masked too.
-                let out = mask_clock(&mask_data_dir(&out.replace(|c| "⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼".contains(c), "⠋"), app.paths.root()));
-                let file = golden.join(format!("{screen:?}_{w}x{h}.txt"));
-                if bless {
-                    std::fs::create_dir_all(&golden).unwrap();
-                    std::fs::write(&file, &out).unwrap();
-                } else if std::fs::read_to_string(&file).ok().as_deref() != Some(out.as_str()) {
-                    std::fs::write(file.with_extension("actual"), &out).unwrap();
-                    drift.push(file.display().to_string());
+            // Pro's full surface, then what Simple shows (`simple_…`).
+            for (prefix, mode) in [("", wallet_core::config::Mode::Pro), ("simple_", wallet_core::config::Mode::Simple)] {
+                app.config.mode = mode;
+                for place in super::super::keymap::Place::all() {
+                    // Data sources shows this process's live request counts, which other tests move.
+                    if place == super::super::keymap::Place::Screen(Screen::DataSources) || !place.enabled(&app.shown()) {
+                        continue;
+                    }
+                    // Named as before the exchange's cards were one screen, so the files still compare.
+                    let screen = match place {
+                        super::super::keymap::Place::Screen(s) => format!("{s:?}"),
+                        p => p.title().to_string(),
+                    };
+                    app.go(place);
+                    // Each screen as first opened: screens remember their pane and cursor now.
+                    app.nav.pane = 0;
+                    app.nav.selected = 0;
+                    app.eco.swap.field = 5;
+                    term.draw(|f| draw(f, &mut app)).unwrap();
+                    let buf = term.backend().buffer();
+                    let out: String = (0..h)
+                        .map(|y| {
+                            (0..w).map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ")).collect::<String>().trim_end().to_string()
+                                + "\n"
+                        })
+                        .collect();
+                    // Spinners turn with the clock and the data dir is a fresh temp path: neither is layout.
+                    // Clock times are local and the fixtures are dated from now, so they are masked too.
+                    let out = mask_clock(&mask_data_dir(&out.replace(|c| "⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼".contains(c), "⠋"), app.paths.root()));
+                    let file = golden.join(format!("{prefix}{screen}_{w}x{h}.txt"));
+                    if bless {
+                        std::fs::create_dir_all(&golden).unwrap();
+                        std::fs::write(&file, &out).unwrap();
+                    } else if std::fs::read_to_string(&file).ok().as_deref() != Some(out.as_str()) {
+                        std::fs::write(file.with_extension("actual"), &out).unwrap();
+                        drift.push(file.display().to_string());
+                    }
                 }
             }
+            app.config.mode = wallet_core::config::Mode::Pro;
             // The review is where money moves: its layout is held to the same standard.
             for (i, m) in modals(&app).into_iter().filter(|m| matches!(m, Modal::Review(_))).enumerate() {
                 app.switch(Screen::Home);
@@ -1528,14 +1546,15 @@ fn every_screen_renders_at_every_size() {
     if let Ok(dir) = std::env::var("QW_DUMP_VIEWS") {
         for (w, h) in [(160u16, 48u16), (100, 30), (80, 24)] {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-            let mut shots: Vec<(String, Screen, Option<super::super::app::Detail>, usize)> =
-                Screen::ALL.iter().map(|s| (format!("{s:?}"), *s, None, 0)).collect();
+            use super::super::keymap::Place;
+            let mut shots: Vec<(String, Place, Option<super::super::app::Detail>, usize)> =
+                Place::all().into_iter().map(|p| (p.title().to_string(), p, None, 0)).collect();
             for (i, d) in details.iter().enumerate() {
-                shots.push((format!("detail{i}"), Screen::Home, Some(d.clone()), 0));
+                shots.push((format!("detail{i}"), Place::Screen(Screen::Home), Some(d.clone()), 0));
             }
-            shots.push(("swap_focused".into(), Screen::Swap, None, 1));
-            for (name, screen, detail, focus) in shots {
-                app.switch(screen);
+            shots.push(("swap_focused".into(), Place::Card(super::super::app::Card::Swap), None, 1));
+            for (name, place, detail, focus) in shots {
+                app.go(place);
                 app.eco.swap.field = if focus == 1 { 1 } else { 5 };
                 if let Some(d) = detail {
                     app.nav.detail = vec![d];
@@ -2152,7 +2171,7 @@ fn layouts_split_and_hide_as_asked() {
     assert!(!app.trader && !narrow.contains("swap on Quainance"), "but not at 160");
     app.config.layout = "trader".into();
     assert!(text(&mut app, 160).contains("swap on Quainance"), "trader splits from 140");
-    app.switch(Screen::Swap);
+    app.show_card(Card::Swap);
     assert!(text(&mut app, 160).contains("markets · Quainance"), "and the Swap screen keeps Markets beside it");
     app.config.layout = "standard".into();
     assert!(!text(&mut app, 220).contains("markets · Quainance"), "standard never splits");
@@ -2180,7 +2199,7 @@ fn channel_offers_render_above_channels_with_their_answer_keys() {
         receive_addresses: 3,
         send_addresses: 1,
     }];
-    app.switch(Screen::Channels);
+    app.go(super::super::keymap::Place::Pane(Screen::Contacts, 1));
     app.nav.selected = 0;
     for (w, h) in [(160, 48), (100, 30), (80, 24)] {
         let text = screen_text(&mut app, w, h).join("\n");

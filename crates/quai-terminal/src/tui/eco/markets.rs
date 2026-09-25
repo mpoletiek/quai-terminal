@@ -560,7 +560,7 @@ impl App {
         self.eco.swap.field = 1;
         let text = format!("buy {} with {} · f flips to sell", self.market_symbol(base), self.market_symbol(quote));
         self.eco.markets_view.pair_selected = self.markets_pair();
-        self.switch(Screen::Swap);
+        self.show_card(Card::Swap);
         self.toast(text, false);
     }
 

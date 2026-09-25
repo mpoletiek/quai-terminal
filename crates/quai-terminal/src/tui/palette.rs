@@ -5,7 +5,7 @@
 //! entry never signs anything: sends open a filled form and swaps a filled card, and the review
 //! still decides.
 
-use super::app::{ACTIONS, Action, App, FormKind, Modal, Screen};
+use super::app::{ACTIONS, Action, App, Card, FormKind, Modal, Screen};
 use wallet_core::config::Feature;
 use wallet_core::swap::SwapAsset;
 
@@ -132,7 +132,7 @@ impl App {
     /// Actions, screens, contacts, holdings and markets.
     fn palette_candidates(&self) -> Vec<Entry> {
         let mut out: Vec<Entry> = ACTIONS.iter().map(action_entry).collect();
-        for s in super::app::Section::ALL.iter().flat_map(|sec| sec.screens(&self.config.features)) {
+        for s in super::app::Section::ALL.iter().flat_map(|sec| sec.screens(&self.shown())) {
             out.push(Entry {
                 tag: "go",
                 label: format!("Go to {} › {}", s.section().title(), s.title()),
@@ -394,7 +394,7 @@ impl App {
                 }
             }
             Run::Swap { from, to, amount } => {
-                self.switch(Screen::Swap);
+                self.show_card(Card::Swap);
                 let card = &mut self.eco.swap;
                 card.from = from;
                 if to.is_some() {
@@ -486,9 +486,9 @@ pub fn keys_for(id: &str) -> String {
     if let Some(v) = verb {
         return keymap::key_of(v);
     }
-    for screen in super::app::Screen::ALL_SCREENS {
-        let keys = view_keys(screen, None);
-        let chord = keymap::chord(screen);
+    for place in keymap::Place::all() {
+        let keys = view_keys(place, None);
+        let chord = keymap::chord_to(place);
         if let Some(o) = keys.overrides.iter().find(|o| matches!(o.how, Do::Run(r) if r == id)) {
             return format!("{chord} {}", keymap::key_of(o.verb));
         }
@@ -507,8 +507,8 @@ pub fn keys_for(id: &str) -> String {
         "contacts" => Some(super::app::Screen::Contacts),
         "data_sources" => Some(super::app::Screen::DataSources),
         "network" => Some(super::app::Screen::Network),
-        "wrap_qi" | "claim_wqi" | "unwrap_wqi" | "wrap_quai" | "unwrap_quai" => Some(super::app::Screen::Wrap),
-        "quote" | "convert_qi_quai" => Some(super::app::Screen::Convert),
+        "wrap_qi" | "claim_wqi" | "unwrap_wqi" | "wrap_quai" | "unwrap_quai" => return keymap::chord_to(keymap::Place::Card(Card::Wrap)),
+        "quote" | "convert_qi_quai" => return keymap::chord_to(keymap::Place::Card(Card::Convert)),
         _ => None,
     };
     screen.map(keymap::chord).unwrap_or_default()

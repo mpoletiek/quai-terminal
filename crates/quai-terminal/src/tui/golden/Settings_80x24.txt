@@ -15,7 +15,7 @@
 │   Lock screen animation          random  ›                                   │
 │   Loop the lock screen animation ● on · one after another                    │
 │   Terminal bell on good news     ○ off                                       │
-│   ↓ 15 more                                                                  │
+│   ↓ 16 more                                                                  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ environment ─────────────────────────────────────────────────────────────────┐
 │ terminal      xterm-256color · block QR codes · 24-bit color                 │

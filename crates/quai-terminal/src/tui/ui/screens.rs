@@ -715,7 +715,10 @@ pub(crate) fn draw_qi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(panel(t, "receive & mining addresses", false)), addr_area);
 }
 
-pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, channels: bool) {
+/// Contacts, and under them the payment channels with them: two lists, one with the keys, and
+/// the details of what it has selected beside them.
+pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let channels = app.nav.pane == 1;
     let code = app.meta.as_ref().and_then(|m| m.payment_code.clone());
     let inner_w = area.width.saturating_sub(4).max(1) as usize;
     let code_rows = code.as_ref().map_or(1, |c| c.chars().count().div_ceil(inner_w));
@@ -739,20 +742,24 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
         Layout::horizontal([Constraint::Min(40), Constraint::Length(0)]).areas(list_row)
     };
     let contacts_focused = !channels;
-    let (contacts_area, channels_area) = if channels { (Rect::default(), list_area) } else { (list_area, Rect::default()) };
+    // Each list takes what it needs up to half, and the other the rest.
+    let wanted = |n: usize| (n.max(2) + 3) as u16;
+    let contacts_rows = wanted(app.dash.contacts.len())
+        .min(list_area.height / 2)
+        .max(list_area.height.saturating_sub(wanted(app.dash.offers.len() + app.dash.peers.len())));
+    let [contacts_area, channels_area] = Layout::vertical([Constraint::Length(contacts_rows), Constraint::Min(4)]).areas(list_area);
+    let contacts_list = super::super::hit::ListId::Screen(Screen::Contacts, 0);
     let block = panel(t, &format!("contacts · {}", app.dash.contacts.len()), contacts_focused);
     let inner = block.inner(contacts_area);
-    if !channels {
-        f.render_widget(block, contacts_area);
-    }
-    if channels {
-    } else if app.dash.contacts.is_empty() {
+    f.render_widget(block, contacts_area);
+    if app.dash.contacts.is_empty() {
         empty(f, inner, t, Icon::People, "No contacts yet. Save people by address, payment code, or both.", &[("a", "add contact")]);
     } else {
         let n = app.dash.contacts.len();
         let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-        let offset = app.list_window(app.main_list(), app.nav.selected, n, body.height as usize);
-        app.input.hits.borrow_mut().rows(app.main_list(), body, offset, n, |i| app.dash.contacts.get(i).map(|c| c.name.clone()));
+        let selected = if contacts_focused { app.nav.selected } else { 0 };
+        let offset = app.list_window(contacts_list, selected, n, body.height as usize);
+        app.input.hits.borrow_mut().rows(contacts_list, body, offset, n, |i| app.dash.contacts.get(i).map(|c| c.name.clone()));
         let rows: Vec<Row> = app
             .dash
             .contacts
@@ -892,10 +899,8 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
-    if !channels {
-        return;
-    }
-    let channels_focused = true;
+    let channels_focused = channels;
+    let channels_list = super::super::hit::ListId::Screen(Screen::Contacts, 1);
     let offered = if app.dash.offers.is_empty() { String::new() } else { format!(" · {} offered", app.dash.offers.len()) };
     let block = panel(t, &format!("payment channels · {}{offered}", app.dash.peers.len()), channels_focused);
     let inner = block.inner(channels_area);
@@ -915,8 +920,9 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
         let offers = app.dash.offers.len();
         let n = offers + app.dash.peers.len();
         let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-        let offset = app.list_window(app.main_list(), app.nav.selected, n, body.height as usize);
-        app.input.hits.borrow_mut().rows(app.main_list(), body, offset, n, |i| app.row_key(app.main_list(), i));
+        let selected = if channels_focused { app.nav.selected } else { 0 };
+        let offset = app.list_window(channels_list, selected, n, body.height as usize);
+        app.input.hits.borrow_mut().rows(channels_list, body, offset, n, |i| app.row_key(channels_list, i));
         let offer_rows = app.dash.offers.iter().enumerate().map(|(i, o)| {
             let row = Row::new(vec![
                 Cell::from(Span::styled(app::jump_label(i.wrapping_sub(offset)).to_string(), jump_style(app, t))),
@@ -1511,6 +1517,7 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     "standard" => "standard".into(),
                     _ => "auto · trader from 200 columns".into(),
                 },
+                "mode" => format!("{}  ›  {}", c.mode.key(), super::super::app::mode_note(c.mode)),
                 "feature:messaging" => feature_value(t, c.features.messaging, "board, sealed DMs, chat dock"),
                 "feature:trading" => feature_value(t, c.features.trading, "markets, swap, pools, launches"),
                 "feature:nfts" => feature_value(t, c.features.nfts, "collected, explore, listings"),

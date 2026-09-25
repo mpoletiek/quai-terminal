@@ -52,31 +52,7 @@ impl App {
 
     /// Rows in the current screen's primary list.
     pub fn list_len(&self) -> usize {
-        match self.nav.screen {
-            Screen::Home if self.nav.pane == 1 => self.activity_rows().len().min(12),
-            Screen::Home => self.eco.feeds.portfolio.value().map_or(0, |p| p.rows.len()) + self.home_positions().len(),
-            Screen::Pools => self.eco.pools_view.positions.value().map_or(0, Vec::len),
-            Screen::Accounts => self.dash.accounts.len(),
-            Screen::Activity => self.activity_rows().len(),
-            Screen::Qi => self.dash.qi.as_ref().map_or(0, |q| q.coins.len()),
-            Screen::Board if self.nav.pane == 1 => self.board_message_count(),
-            Screen::Board => self.board_rows().len(),
-            Screen::Wallets => self.cockpit.list.len(),
-            Screen::Channels => self.dash.offers.len() + self.dash.peers.len(),
-            Screen::Contacts => self.dash.contacts.len(),
-            Screen::Launches => self.launch_rows().len(),
-            Screen::Pnl => self.pnl_positions().len(),
-            Screen::Orders => self.eco.feeds.orders.value().map_or(0, Vec::len),
-            Screen::Network => self.dash.networks.len(),
-            Screen::Settings => self.settings_rows().len(),
-            Screen::DataSources => DATA_SOURCES.len(),
-            Screen::Collected => self.eco.nft_len(),
-            Screen::Explore => self.eco.collections_filtered().len(),
-            Screen::Listings => self.eco.listings_len(),
-            Screen::Markets if self.nav.pane == 1 => self.flow_rows().len(),
-            Screen::Markets => self.market_rows().len(),
-            Screen::Swap | Screen::Convert | Screen::Wrap => 0,
-        }
+        self.nav.screen.view().list_len(self)
     }
 
     pub fn on_key(&mut self, key: KeyEvent, size: (u16, u16)) {
@@ -150,7 +126,7 @@ impl App {
             self.input.hold = None;
         }
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        self.modal = match modal {
+        let next = match modal {
             Modal::None => {
                 self.on_screen_key(key, size);
                 return;
@@ -215,6 +191,8 @@ impl App {
                             Some(_) => self.send(Cmd::CommitConfirmed { op_id: r.review.op_id.clone(), words: r.typed.trim().to_string() }),
                             None => self.send(Cmd::Commit(r.review.op_id.clone())),
                         }
+                        // Signed: the form it came from has done its job.
+                        self.beneath.clear();
                         Modal::None
                     } else if r.approve_focused && !r.words_typed() {
                         let phrase = r.review.confirm.clone().unwrap_or_default();
@@ -467,7 +445,7 @@ impl App {
                 match key.code {
                     KeyCode::Char('g') => self.nav.selected = 0,
                     KeyCode::Char(c) => match super::super::keymap::route(c) {
-                        Some(screen) => self.switch(screen),
+                        Some(place) => self.go(place),
                         None => self.info(format!("g {c} goes nowhere · g then ? lists where it goes")),
                     },
                     _ => {}
@@ -477,6 +455,8 @@ impl App {
             // From the key overlay, g opens the glossary; anything else closes it.
             Modal::Help if key.code == KeyCode::Char('g') => {
                 self.nav.help_moved = false;
+                // Esc from the glossary comes back here.
+                self.beneath.push(Modal::Help);
                 Modal::Glossary { selected: 0 }
             }
             // Keys that carry on the Konami code keep Help open.
@@ -519,6 +499,11 @@ impl App {
                     _ => Modal::None,
                 }
             }
+        };
+        // A layer that closed shows the one beneath it.
+        self.modal = match next {
+            Modal::None => self.beneath.pop().unwrap_or(Modal::None),
+            next => next,
         };
     }
 
@@ -669,14 +654,17 @@ impl App {
         // printable key it has no use for is swallowed rather than read as a command. Space opens
         // the action sheet from a card, since no field here takes it.
         if self.nav.detail.is_empty() && self.input_focused() {
-            if key.code == KeyCode::Char(' ') && matches!(self.nav.screen, Screen::Swap | Screen::Convert | Screen::Wrap) {
+            if key.code == KeyCode::Char(' ') && self.nav.screen == Screen::Exchange {
                 self.open_sheet();
                 return;
             }
-            if self.view_key(key) {
+            // `@` changes the account that acts from anywhere, a card's amount field included; only a
+            // field that takes free text (a search, a filter) keeps it as a character.
+            let account_key = key.code == KeyCode::Char('@') && !self.text_field_focused();
+            if !account_key && self.view_key(key) {
                 return;
             }
-            if matches!(key.code, KeyCode::Char(_)) && !key.modifiers.contains(KeyModifiers::CONTROL) {
+            if !account_key && matches!(key.code, KeyCode::Char(_)) && !key.modifiers.contains(KeyModifiers::CONTROL) {
                 return;
             }
         }
@@ -721,12 +709,23 @@ impl App {
             .map(|i| i.how)
     }
 
+    /// Whether the focused inline field takes free text, where `@` is a character like any other.
+    pub(crate) fn text_field_focused(&self) -> bool {
+        match self.nav.screen {
+            Screen::Explore => self.eco.nft.search.is_some(),
+            Screen::Board => self.eco.board.filter.is_some(),
+            _ => false,
+        }
+    }
+
     /// Whether an inline field on the screen has the keyboard.
     pub(crate) fn input_focused(&self) -> bool {
         match self.nav.screen {
-            Screen::Swap => self.eco.swap.field != 5,
-            Screen::Convert => self.eco.convert.field < 4,
-            Screen::Wrap => self.eco.wrap.field < 2,
+            Screen::Exchange => match self.nav.card {
+                Card::Swap => self.eco.swap.field != 5,
+                Card::Convert => self.eco.convert.field < 4,
+                Card::Wrap => self.eco.wrap.field < 2,
+            },
             Screen::Explore => self.eco.nft.search.is_some(),
             Screen::Board => self.eco.board.filter.is_some(),
             Screen::Pools => self.eco.pools_view.add.is_some(),
@@ -736,6 +735,12 @@ impl App {
 
     /// A modal closed by Esc (the sheet): nothing else to do.
     pub(crate) fn modal_closed(&mut self) {
+        self.modal = self.beneath.pop().unwrap_or(Modal::None);
+    }
+
+    /// Close every layer.
+    pub(crate) fn close_modals(&mut self) {
+        self.beneath.clear();
         self.modal = Modal::None;
     }
 
@@ -748,11 +753,11 @@ impl App {
             self.nav.selected = 0;
             return;
         }
-        let screens = section.screens(&self.config.features);
+        let screens = section.screens(&self.shown());
         if screens.len() < 2 {
             return;
         }
-        let here = self.nav.screen.tab_of(&self.config.features);
+        let here = self.nav.screen;
         let i = screens.iter().position(|s| *s == here).unwrap_or(0) as i32;
         self.open_tab(screens[(i + delta).rem_euclid(screens.len() as i32) as usize]);
     }
@@ -788,7 +793,7 @@ impl App {
             }
             Screen::Settings => self.settings_action(),
             Screen::DataSources => self.data_source_action(),
-            Screen::Channels => {
+            Screen::Contacts if self.nav.pane == 1 => {
                 if let Some(o) = self.channel_offer() {
                     let who = wallet_core::session::short_code(&o.code);
                     let body = format!(
@@ -859,7 +864,9 @@ impl App {
                 None => None,
             },
             Screen::Qi => self.dash.qi.as_ref().and_then(|q| q.coins.get(self.nav.selected)).map(|c| c.address.clone()),
-            Screen::Channels => self.channel_offer().map(|o| o.code.clone()).or_else(|| self.channel_peer().map(|p| p.code.clone())),
+            Screen::Contacts if self.nav.pane == 1 => {
+                self.channel_offer().map(|o| o.code.clone()).or_else(|| self.channel_peer().map(|p| p.code.clone()))
+            }
             Screen::Contacts => match self.dash.contacts.get(self.nav.selected) {
                 Some(c) => c.payment_code.clone().or_else(|| c.address.clone()),
                 None => self.meta.as_ref().and_then(|m| m.payment_code.clone()),

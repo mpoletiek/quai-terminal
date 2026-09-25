@@ -184,6 +184,14 @@ const RATCHETS: &[(&str, &[&str], &[&str], usize)] = &[
         ],
         0,
     ),
+    // Phase 9: what a screen is and does lives in its `tui::screen::ScreenView` impl; code that
+    // still asks which screen is open (Enter's action, what is selected) stays at this count.
+    (
+        "dispatch on which screen is open, outside the screen impls",
+        &["crates/quai-terminal/src/tui"],
+        &["match self.nav.screen", "match app.nav.screen", "match (self.nav.screen", "match (app.nav.screen"],
+        12,
+    ),
     // Phase 7: multi-step trades are walked by the engine's one runner (`quai_engine::plans`);
     // the TUI starts them and follows them, and keeps no trade machine or checkpoint of its own.
     (

@@ -1,6 +1,6 @@
 //! Rendering. Widgets use semantic theme roles only; color never carries meaning alone.
 
-use super::app::{self, ACTIONS, App, FieldKind, Modal, OnboardKind, Onboarding, Picker, Screen};
+use super::app::{self, ACTIONS, App, Card, FieldKind, Modal, OnboardKind, Onboarding, Picker, Screen};
 use super::hit::{HeaderPart, Target};
 use super::icons::Icon;
 use super::terminal::Tier;
@@ -22,7 +22,7 @@ use wallet_core::track::{describe, human_duration};
 pub(crate) mod layout;
 mod lock;
 mod modals;
-mod screens;
+pub(crate) mod screens;
 pub(crate) use layout::{Breakpoint, SHORT_ROWS, with_inspector};
 pub(crate) use lock::*;
 pub use modals::*;
@@ -127,7 +127,7 @@ fn review_story(kind: &OpKind) -> Vec<String> {
             "each output lands on a fresh one-time address".into(),
             "the recipient finds it with their payment code (mailbox or channel scan)".into(),
         ],
-        OpKind::WrapQi => vec![format!("Qi moves into the wrapper; once settled, claim WQI in {}", Screen::Wrap.place())],
+        OpKind::WrapQi => vec![format!("Qi moves into the wrapper; once settled, claim WQI in {}", Card::Wrap.place())],
         OpKind::NftList | OpKind::NftReprice => vec![
             "a Zora ask goes live on-chain; Bazarr shows it within a minute".into(),
             "the item stays in your wallet until someone buys it at this price".into(),
@@ -591,11 +591,13 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     let [header, _rule, body, footer] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(0), Constraint::Min(5), Constraint::Length(1)]).areas(area);
     // Trader: Markets and the swap card side by side, on a terminal wide enough to hold both.
-    app.trader = match app.config.layout.as_str() {
-        "trader" => body.width >= 140,
-        "auto" => body.width >= 200,
-        _ => false,
-    };
+    // Pro's: Markets is not part of Simple.
+    app.trader = app.config.mode == wallet_core::config::Mode::Pro
+        && match app.config.layout.as_str() {
+            "trader" => body.width >= 140,
+            "auto" => body.width >= 200,
+            _ => false,
+        };
     let (nav, content) = if app.term.breakpoint > Breakpoint::Compact && app.config.layout != "focus" {
         // The rail widens on a wide terminal, where the columns are there to spare.
         let rail = if app.term.breakpoint == Breakpoint::Wide { 24 } else { 23 };
@@ -609,7 +611,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_nav(f, app, &t, n);
     }
     let section = app.nav.screen.section();
-    let main = if section.tab_labels(&app.config.features).len() > 1 && content.height > 8 {
+    let main = if section.tab_labels(&app.shown()).len() > 1 && content.height > 8 {
         // Two rows (the labels, and a rule lit under the open one) unless rows are short.
         let rows = if app.term.short { 1 } else { 2 };
         let [tabs, m] = Layout::vertical([Constraint::Length(rows), Constraint::Min(4)]).areas(content);
@@ -642,33 +644,18 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     match app.nav.detail.last() {
         Some(d) => super::views::draw_detail(f, app, &t, main, &d.clone()),
         None => match app.nav.screen {
-            Screen::Home => super::views::draw_home(f, app, &t, main),
-            Screen::Markets | Screen::Swap if app.trader => {
+            // Trader: Markets and the swap card side by side.
+            Screen::Markets if app.trader => {
                 let [left, right] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(main);
                 super::views::draw_markets(f, app, &t, left);
                 super::views::draw_swap(f, app, &t, right);
             }
-            Screen::Markets => super::views::draw_markets(f, app, &t, main),
-            Screen::Accounts => draw_accounts(f, app, &t, main),
-            Screen::Activity => draw_activity(f, app, &t, main),
-            Screen::Qi => draw_qi(f, app, &t, main),
-            Screen::Contacts => draw_payments(f, app, &t, main, false),
-            Screen::Channels => draw_payments(f, app, &t, main, true),
-            Screen::Board => super::views::draw_board(f, app, &t, main),
-            Screen::Wallets => super::views::draw_wallets(f, app, &t, main),
-            Screen::Orders => super::order_ui::draw_screen(f, app, &t, main),
-            Screen::Swap => super::views::draw_swap(f, app, &t, main),
-            Screen::Pools => super::views::draw_pools(f, app, &t, main),
-            Screen::Convert => super::views::draw_convert_card(f, app, &t, main),
-            Screen::Wrap => super::views::draw_wrap_card(f, app, &t, main),
-            Screen::Launches => super::views::draw_launches(f, app, &t, main),
-            Screen::Pnl => super::views::draw_pnl(f, app, &t, main),
-            Screen::Collected => super::views::draw_collected(f, app, &t, main),
-            Screen::Explore => super::views::draw_explore(f, app, &t, main),
-            Screen::Listings => super::views::draw_listings(f, app, &t, main),
-            Screen::Network => draw_node(f, app, &t, main),
-            Screen::Settings => draw_settings(f, app, &t, main),
-            Screen::DataSources => super::views::draw_data_sources(f, app, &t, main),
+            Screen::Exchange if app.trader && app.nav.card == Card::Swap => {
+                let [left, right] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(main);
+                super::views::draw_markets(f, app, &t, left);
+                super::views::draw_swap(f, app, &t, right);
+            }
+            screen => screen.view().draw(f, app, &t, main),
         },
     }
     let modal_open = !matches!(app.modal, Modal::None);
@@ -869,7 +856,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
     }
     // Where you are, beyond what the tab strip below already says (the section and its tab):
     // an open detail, with its trail. Nothing at all on a plain screen.
-    let tabs = app.nav.screen.section().tab_labels(&app.config.features).len();
+    let tabs = app.nav.screen.section().tab_labels(&app.shown()).len();
     let crumbs: Vec<String> = app.breadcrumb().into_iter().skip(if tabs > 1 { 2 } else { 1 }).collect();
     let last = crumbs.len().saturating_sub(1);
     let mut trail = Vec::new();

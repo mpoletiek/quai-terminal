@@ -53,6 +53,8 @@ impl App {
     /// Clear network-bound ecosystem data (after a network switch).
     pub fn reset_eco_for_network(&mut self) {
         self.forget_private();
+        // Whatever was open belongs to the network that is leaving.
+        self.close_modals();
         let swap_prefs = (self.eco.swap.slippage_bps, self.eco.swap.deadline_minutes);
         let images = std::mem::take(&mut self.eco.media.images);
         self.eco = super::super::eco::Eco::default();
@@ -150,39 +152,47 @@ impl App {
     /// Load what a view needs when it opens.
     pub fn on_view_opened(&mut self) {
         // What this screen waits on goes to the front of the data worker's queue.
-        self.send_data(DataCmd::Focus(focus_jobs(self.nav.screen).iter().map(|s| s.to_string()).collect()));
-        match self.nav.screen {
-            Screen::Home => self.maybe_refresh_portfolio(false),
-            Screen::Collected if self.eco.nft.nfts.latest().is_none() && !self.eco.nft.nfts.loading() => {
-                self.load_nfts(false);
-                self.load_my_listings();
-            }
-            Screen::Markets => {
-                if self.eco.feeds.markets.is_empty() {
-                    self.send_data(DataCmd::Markets);
-                }
-                self.tick_markets();
-            }
-            Screen::Board => self.tick_board(),
-            Screen::Launches => self.load_launches(false),
-            Screen::Pnl => self.load_pnl(false),
-            Screen::Orders => self.orders_list(),
-            Screen::Network => self.tick_chain_stats(),
-            Screen::Wallets => self.load_wallets(),
-            Screen::Explore => {
-                if self.eco.nft.collections.latest().is_none() && !self.eco.nft.collections.loading() {
-                    self.eco.nft.collections.begin(&self.eco.clock);
-                    self.send_data(DataCmd::Collections { query: None });
-                }
-                self.load_nft_market(false);
-            }
-            Screen::Listings => {
-                if self.eco.nft.listings.take_due(None, fresh::LISTINGS, &self.eco.clock) {
-                    self.send_data(DataCmd::Listings { collection: None });
-                }
-                self.load_nft_market(false);
-            }
-            Screen::Swap => {
+        self.send_data(DataCmd::Focus(focus_jobs(self.place()).iter().map(|s| s.to_string()).collect()));
+        self.nav.screen.view().on_open(self);
+    }
+
+    /// Collected opened: the wallet's NFTs and listings, the first time.
+    pub(crate) fn open_collected(&mut self) {
+        if self.eco.nft.nfts.latest().is_none() && !self.eco.nft.nfts.loading() {
+            self.load_nfts(false);
+            self.load_my_listings();
+        }
+    }
+
+    /// Markets opened.
+    pub(crate) fn open_markets(&mut self) {
+        if self.eco.feeds.markets.is_empty() {
+            self.send_data(DataCmd::Markets);
+        }
+        self.tick_markets();
+    }
+
+    /// Explore opened: the collections, the first time, and the marketplace's figures.
+    pub(crate) fn open_explore(&mut self) {
+        if self.eco.nft.collections.latest().is_none() && !self.eco.nft.collections.loading() {
+            self.eco.nft.collections.begin(&self.eco.clock);
+            self.send_data(DataCmd::Collections { query: None });
+        }
+        self.load_nft_market(false);
+    }
+
+    /// Listings opened.
+    pub(crate) fn open_listings(&mut self) {
+        if self.eco.nft.listings.take_due(None, fresh::LISTINGS, &self.eco.clock) {
+            self.send_data(DataCmd::Listings { collection: None });
+        }
+        self.load_nft_market(false);
+    }
+
+    /// The exchange opened, on its card.
+    pub(crate) fn open_exchange(&mut self) {
+        match self.nav.card {
+            Card::Swap => {
                 if self.eco.feeds.markets.is_empty() {
                     self.send_data(DataCmd::Markets);
                 }
@@ -192,7 +202,7 @@ impl App {
                 }
             }
             // Settled wrapped Qi waiting for its claim: open the card on Claim WQI.
-            Screen::Wrap
+            Card::Wrap
                 if self.eco.wrap.amount.is_empty()
                     && self
                         .dash
@@ -203,10 +213,14 @@ impl App {
             {
                 self.eco.wrap.mode = 1;
             }
-            Screen::Accounts if self.eco.feeds.lockups.is_none() && !self.dash.accounts.is_empty() => {
-                self.send_data(DataCmd::Lockups(self.dash.accounts.iter().map(|a| a.address.clone()).collect()));
-            }
             _ => {}
+        }
+    }
+
+    /// Accounts opened: the time locks, the first time.
+    pub(crate) fn open_accounts(&mut self) {
+        if self.eco.feeds.lockups.is_none() && !self.dash.accounts.is_empty() {
+            self.send_data(DataCmd::Lockups(self.dash.accounts.iter().map(|a| a.address.clone()).collect()));
         }
     }
 
@@ -297,8 +311,8 @@ impl App {
         // News for the panel in front of you glints its border once: a quote landing where it
         // was asked for, the chart of the pair you picked, a total that actually moved.
         let news = match &ev {
-            DataEv::SwapQuote { .. } => self.nav.screen == Screen::Swap,
-            DataEv::ProtocolQuote { .. } => self.nav.screen == Screen::Convert,
+            DataEv::SwapQuote { .. } => self.on_card(Card::Swap),
+            DataEv::ProtocolQuote { .. } => self.on_card(Card::Convert),
             DataEv::LiquidityQuote { .. } => self.nav.screen == Screen::Pools,
             DataEv::PairCandles { .. } => self.nav.screen == Screen::Markets,
             DataEv::Portfolio(Ok(p)) => {
@@ -567,9 +581,7 @@ impl App {
             DataEv::ProtocolQuote { key, card, result } => {
                 if key == self.eco.convert.protocol_key.get() {
                     match result {
-                        Ok(quote) if card && self.nav.screen == Screen::Convert => {
-                            self.on_event(super::super::worker::Ev::Quote(quote), (0, 0))
-                        }
+                        Ok(quote) if card && self.on_card(Card::Convert) => self.on_event(super::super::worker::Ev::Quote(quote), (0, 0)),
                         Ok(quote) if !card => self.modal = Modal::Quote(quote),
                         Ok(_) => {}
                         Err(error) => self.toast(error, true),
@@ -753,17 +765,17 @@ impl App {
             self.tick_board();
         }
         self.tick_board_watch();
-        if self.nav.screen == Screen::Convert && !self.lock.locked {
+        if self.on_card(Card::Convert) && !self.lock.locked {
             self.tick_qi_routes();
         }
-        if self.nav.screen == Screen::Swap && !self.lock.locked {
+        if self.on_card(Card::Swap) && !self.lock.locked {
             self.tick_swap();
         }
         // Side by side, each half keeps its own data coming.
         if self.trader && !self.lock.locked {
             match self.nav.screen {
                 Screen::Markets => self.tick_swap(),
-                Screen::Swap => self.tick_markets(),
+                Screen::Exchange if self.nav.card == Card::Swap => self.tick_markets(),
                 _ => {}
             }
         }
@@ -786,7 +798,7 @@ impl App {
         if self.nav.screen == Screen::Home && !self.lock.locked && self.config.features.on(wallet_core::config::Feature::Trading) {
             self.tick_pools();
         }
-        if self.nav.screen != Screen::Swap || self.lock.locked {
+        if !self.on_card(Card::Swap) || self.lock.locked {
             return;
         }
         let card = &self.eco.swap;

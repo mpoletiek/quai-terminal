@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::HashMap;
 use std::time::Instant;
 use wallet_core::appdb::OpStatus;
-use wallet_core::config::{AppConfig, Feature, Features, Motion};
+use wallet_core::config::{AppConfig, Feature, Features, Mode, Motion};
 use wallet_core::ops::ConversionQuote;
 use wallet_core::registry::{WalletKind, WalletMeta};
 use wallet_core::tx::{Review, Submitted};
@@ -24,6 +24,13 @@ pub struct ViewState {
     pub selected: usize,
     /// What the cursor was on, so a list that moved meanwhile still finds it.
     pub key: Option<String>,
+}
+
+/// What the terminal shows: the feature switches, and Simple or Pro over them.
+#[derive(Clone, Copy, Debug)]
+pub struct Shown {
+    pub features: Features,
+    pub pro: bool,
 }
 
 /// Top-level sections (number keys).
@@ -74,33 +81,31 @@ impl Section {
         match self {
             Section::Home => &[Screen::Home, Screen::Qi, Screen::Accounts],
             Section::Markets => &[Screen::Markets, Screen::Launches, Screen::Pools],
-            // Swap, Convert and Wrap are one tab, Exchange: the pair decides which one it is.
-            Section::Trade => &[Screen::Swap, Screen::Convert, Screen::Wrap, Screen::Orders, Screen::Pnl],
+            Section::Trade => &[Screen::Exchange, Screen::Orders, Screen::Pnl],
             Section::Nfts => &[Screen::Collected, Screen::Explore, Screen::Listings],
-            Section::People => &[Screen::Contacts, Screen::Channels, Screen::Board],
+            Section::People => &[Screen::Contacts, Screen::Board],
             Section::Activity => &[Screen::Activity],
             Section::System => &[Screen::Wallets, Screen::Network, Screen::Settings, Screen::DataSources],
         }
     }
 
-    /// The sub-tabs shown with these features on, one view each; the exchange's three views
-    /// share one tab. A section whose views are all turned off is hidden altogether.
-    pub fn screens(self, features: &Features) -> Vec<Screen> {
+    /// The sub-tabs shown, one view each. A section whose views are all turned off, or all
+    /// Pro while the terminal is Simple, is hidden altogether.
+    pub fn screens(self, shown: &Shown) -> Vec<Screen> {
         let mut tabs: Vec<Screen> = Vec::new();
-        for s in self.all_screens().iter().copied().filter(|s| s.enabled(features)) {
-            let tab = s.tab_of(features);
-            if !tabs.contains(&tab) {
-                tabs.push(tab);
+        for s in self.all_screens().iter().copied().filter(|s| s.enabled(shown)) {
+            if !tabs.contains(&s) {
+                tabs.push(s);
             }
         }
         tabs
     }
 
     /// Sub-tab labels.
-    pub fn tab_labels(self, features: &Features) -> Vec<&'static str> {
+    pub fn tab_labels(self, shown: &Shown) -> Vec<&'static str> {
         match self {
             Section::Activity => ActivityFilter::ALL.iter().map(|f| f.title()).collect(),
-            _ => self.screens(features).iter().map(|s| s.tab_title()).collect(),
+            _ => self.screens(shown).iter().map(|s| s.tab_title()).collect(),
         }
     }
 }
@@ -141,11 +146,10 @@ pub enum Screen {
     /// Accounts, with the wallet's time locks beneath them.
     Accounts,
     Markets,
-    Swap,
+    /// Swap, convert and wrap: one screen, whose card the pair decides ([`Card`]).
+    Exchange,
     /// Liquidity positions, adding, removing and gauge staking.
     Pools,
-    Convert,
-    Wrap,
     /// Limit orders: watch, review, cancel.
     Orders,
     /// Quainance's launch zone: bonding-curve launches and where they trade now.
@@ -155,8 +159,8 @@ pub enum Screen {
     Collected,
     Explore,
     Listings,
+    /// Contacts, with the payment channels to them in a second pane.
     Contacts,
-    Channels,
     /// The on-chain message board.
     Board,
     /// Wallets on this computer: switch, create, import.
@@ -168,17 +172,13 @@ pub enum Screen {
 }
 
 impl Screen {
-    /// Every screen, for tables that are searched at runtime.
-    pub const ALL_SCREENS: [Screen; 22] = Screen::ALL;
-    pub const ALL: [Screen; 22] = [
+    pub const ALL: [Screen; 19] = [
         Screen::Home,
         Screen::Qi,
         Screen::Accounts,
         Screen::Markets,
-        Screen::Swap,
+        Screen::Exchange,
         Screen::Pools,
-        Screen::Convert,
-        Screen::Wrap,
         Screen::Orders,
         Screen::Launches,
         Screen::Pnl,
@@ -186,7 +186,6 @@ impl Screen {
         Screen::Explore,
         Screen::Listings,
         Screen::Contacts,
-        Screen::Channels,
         Screen::Board,
         Screen::Wallets,
         Screen::Activity,
@@ -195,31 +194,13 @@ impl Screen {
         Screen::DataSources,
     ];
 
+    /// The impl that answers for this screen ([`super::screen`]).
+    pub fn view(self) -> &'static dyn super::screen::ScreenView {
+        super::screen::view(self)
+    }
+
     pub fn title(self) -> &'static str {
-        match self {
-            Screen::Home => "Portfolio",
-            Screen::Qi => "Qi coins",
-            Screen::Accounts => "Accounts",
-            Screen::Markets => "Pairs",
-            Screen::Swap => "Swap",
-            Screen::Pools => "Pools",
-            Screen::Convert => "Convert",
-            Screen::Wrap => "Wrap",
-            Screen::Orders => "Orders",
-            Screen::Launches => "Launches",
-            Screen::Pnl => "PnL",
-            Screen::Collected => "Collected",
-            Screen::Explore => "Explore",
-            Screen::Listings => "Listings",
-            Screen::Contacts => "Contacts",
-            Screen::Channels => "Channels",
-            Screen::Board => "Board",
-            Screen::Wallets => "Wallets",
-            Screen::Activity => "Activity",
-            Screen::Network => "Network",
-            Screen::Settings => "Settings",
-            Screen::DataSources => "Data sources",
-        }
+        self.view().title()
     }
 
     /// Where this view is, in words and keys: "Activity (5)", "Trade › Convert (2)". Computed
@@ -234,58 +215,60 @@ impl Screen {
         }
     }
 
-    /// The tab this view sits under: the exchange's views (Swap, Convert, Wrap) share one, which
-    /// is Swap with trading on and Convert without (then only conversions and wrapping remain).
-    pub fn tab_of(self, features: &Features) -> Screen {
-        match self {
-            Screen::Swap | Screen::Convert | Screen::Wrap => {
-                if features.on(Feature::Trading) {
-                    Screen::Swap
-                } else {
-                    Screen::Convert
-                }
-            }
-            s => s,
-        }
-    }
-
-    /// Whether this is one of the exchange's views.
-    pub fn is_exchange(self) -> bool {
-        matches!(self, Screen::Swap | Screen::Convert | Screen::Wrap)
-    }
-
     /// How the tab strip and the header name this view.
     pub fn tab_title(self) -> &'static str {
-        if self.is_exchange() { "Exchange" } else { self.title() }
+        self.title()
     }
 
     pub fn section(self) -> Section {
         Section::ALL.iter().copied().find(|s| s.all_screens().contains(&self)).unwrap_or(Section::Home)
     }
 
-    /// The optional feature this view belongs to. Convert and Wrap sit under Trade but are wallet
-    /// operations, so they stay when trading is off.
+    /// The optional feature this view belongs to.
     pub fn feature(self) -> Option<Feature> {
-        match self {
-            Screen::Markets | Screen::Swap | Screen::Pools | Screen::Launches | Screen::Pnl | Screen::Orders => Some(Feature::Trading),
-            Screen::Collected | Screen::Explore | Screen::Listings => Some(Feature::Nfts),
-            Screen::Board => Some(Feature::Messaging),
-            _ => None,
-        }
+        self.view().feature()
     }
 
-    pub fn enabled(self, features: &Features) -> bool {
-        self.feature().is_none_or(|f| features.on(f))
+    /// Part of Pro: hidden while the terminal is Simple (U4 in the architecture review).
+    pub fn pro_only(self) -> bool {
+        self.view().pro_only()
+    }
+
+    /// Shown: its feature is on, and it is not Pro in a Simple terminal.
+    pub fn enabled(self, shown: &Shown) -> bool {
+        self.feature().is_none_or(|f| shown.features.on(f)) && (shown.pro || !self.pro_only())
     }
 
     /// Panes that Tab / Shift-Tab move focus between.
     pub fn panes(self) -> usize {
+        self.view().panes()
+    }
+}
+
+/// The exchange's cards: what the pair makes it. QUAI and Qi convert; Qi and WQI, or QUAI and
+/// WQUAI, wrap; anything else swaps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Card {
+    #[default]
+    Swap,
+    Convert,
+    Wrap,
+}
+
+impl Card {
+    pub const ALL: [Card; 3] = [Card::Swap, Card::Convert, Card::Wrap];
+
+    pub fn title(self) -> &'static str {
         match self {
-            Screen::Home | Screen::Markets | Screen::Board | Screen::Pools => 2,
-            Screen::Swap | Screen::Convert | Screen::Wrap => 1,
-            Screen::Explore => 1,
-            _ => 1,
+            Card::Swap => "Swap",
+            Card::Convert => "Convert",
+            Card::Wrap => "Wrap",
         }
+    }
+
+    /// Where this card is, in words and keys: "Trade › Exchange › Wrap (g w)".
+    pub fn place(self) -> String {
+        format!("Trade › Exchange › {} ({})", self.title(), super::keymap::chord_to(super::keymap::Place::Card(self)))
     }
 }
 
@@ -329,8 +312,8 @@ pub fn context_hints(app: &App) -> Vec<(String, String)> {
         ];
     }
     if app.nav.detail.is_empty() && app.input_focused() {
-        return match app.nav.screen {
-            Screen::Swap => match app.eco.swap.field {
+        return match (app.nav.screen, app.nav.card) {
+            (Screen::Exchange, Card::Swap) => match app.eco.swap.field {
                 1 if app.swap_quote_current() && app.eco.swap.quote.as_ref().is_some_and(|q| q.is_ok()) => {
                     vec![pair("enter", "review"), pair("m", "max"), pair("%", "share"), pair("esc", "done")]
                 }
@@ -338,10 +321,10 @@ pub fn context_hints(app: &App) -> Vec<(String, String)> {
                 0 | 2 => vec![pair("enter", "pick token"), pair("f", "flip"), pair("tab", "next"), pair("esc", "done")],
                 _ => vec![pair("←→", "adjust"), pair("tab", "next"), pair("esc", "done")],
             },
-            Screen::Convert | Screen::Wrap => {
+            (Screen::Exchange, _) => {
                 vec![pair("0-9", "amount"), pair("←→", "adjust"), pair("enter", "continue"), pair("esc", "done")]
             }
-            Screen::Pools => vec![pair("0-9", "amount"), pair("tab", "next"), pair("enter", "review"), pair("esc", "cancel")],
+            (Screen::Pools, _) => vec![pair("0-9", "amount"), pair("tab", "next"), pair("enter", "review"), pair("esc", "cancel")],
             _ => vec![pair("type", "search"), pair("enter", "done"), pair("esc", "clear")],
         };
     }
@@ -1063,6 +1046,8 @@ pub const ACTIONS: &[Action] = &[
     action!("Data sources", "quai-terminal data status", "data_sources"),
     action!("Test data connections", "quai-terminal data test", "test_data"),
     action!("Theme showroom", "quai-terminal theme list", "themes"),
+    action!("Pro: every screen (markets, pools, orders, the board…)", "quai-terminal config set mode pro", "pro"),
+    action!("Simple: the everyday screens", "quai-terminal config set mode simple", "simple"),
     action!("Release the mouse (select text with the terminal)", "quai-terminal config set mouse off", "mouse_release"),
     action!("Glossary: what the words mean", "", "glossary"),
     action!("Unlock this wallet in the daemon", "quai-terminal daemon unlock -w NAME", "daemon_unlock"),
@@ -1294,8 +1279,8 @@ pub struct Nav {
     pub history: Vec<Screen>,
     /// A step back through `history` is under way (it is not a new visit).
     pub going_back: bool,
-    /// The exchange view last shown (Swap, Convert or Wrap): the Exchange tab returns to it.
-    pub last_exchange: Screen,
+    /// The exchange's card, shown or last shown: the Exchange tab returns to it.
+    pub card: Card,
     /// Detail stack (Enter pushes, Esc pops).
     pub detail: Vec<Detail>,
     /// Selection inside the top detail view (collection items, listings).
@@ -1320,7 +1305,11 @@ pub struct App {
     /// The engine: in the daemon, or here when standalone ([`quai_engine::client::Engine`]).
     pub worker: Option<quai_engine::client::Engine>,
     pub dash: Dashboard,
+    /// The layer on top: the one drawn and the one keys go to.
     pub modal: Modal,
+    /// The layers under it, oldest first: closing the top one shows the one beneath (a review's
+    /// form, the key overlay under the glossary). Assigning `modal` replaces the top only.
+    pub beneath: Vec<Modal>,
     pub onboarding: Option<Onboarding>,
     /// A wallet switch is waiting for the new wallet's accounts before the open view can ask for
     /// anything. Set when the switch starts, cleared by the first dashboard that has accounts.
@@ -1373,6 +1362,7 @@ pub struct App {
 }
 
 mod actions;
+pub(crate) use actions::mode_note;
 mod activity;
 mod events;
 mod forms;
@@ -1403,6 +1393,7 @@ impl App {
             worker: None,
             dash: Dashboard::default(),
             modal: Modal::None,
+            beneath: Vec::new(),
             quit: false,
             dirty: true,
             last_frame: Instant::now(),
@@ -1515,7 +1506,7 @@ impl App {
                 views: HashMap::new(),
                 history: Vec::new(),
                 going_back: false,
-                last_exchange: Screen::Swap,
+                card: Card::Swap,
                 detail: Vec::new(),
                 detail_selected: 0,
                 help_scroll: 0,
@@ -1611,14 +1602,62 @@ impl App {
         self.modal = Modal::Wallets { selected: here };
     }
 
-    /// Go to a tab: the Exchange tab returns to the exchange view last shown.
+    /// Go to a tab: the Exchange tab returns to the card last shown, or to the conversion card
+    /// when that was the swap and trading is off.
     pub fn open_tab(&mut self, tab: Screen) {
-        let features = self.config.features;
-        if tab.is_exchange() && self.nav.last_exchange.enabled(&features) {
-            self.switch(self.nav.last_exchange);
+        if tab == Screen::Exchange {
+            let trading = self.config.features.on(Feature::Trading);
+            self.show_card(if self.nav.card == Card::Swap && !trading { Card::Convert } else { self.nav.card });
         } else {
             self.switch(tab);
         }
+    }
+
+    /// The exchange, on one of its cards. The swap card is part of trading: without it, this
+    /// says so and stays where it is.
+    pub fn show_card(&mut self, card: Card) {
+        if card == Card::Swap && !self.config.features.on(Feature::Trading) {
+            self.info(format!("{} · System › Settings", Feature::Trading.off_note()));
+            return;
+        }
+        self.nav.card = card;
+        self.switch(Screen::Exchange);
+    }
+
+    /// Whether the exchange is showing this card.
+    pub fn on_card(&self, card: Card) -> bool {
+        self.nav.screen == Screen::Exchange && self.nav.card == card
+    }
+
+    /// Where the user is: the screen, the exchange's card, or the channels under Contacts.
+    pub fn place(&self) -> super::keymap::Place {
+        use super::keymap::Place;
+        match self.nav.screen {
+            Screen::Exchange => Place::Card(self.nav.card),
+            Screen::Contacts if self.nav.pane == 1 => Place::Pane(Screen::Contacts, 1),
+            s => Place::Screen(s),
+        }
+    }
+
+    /// Go to a place.
+    pub fn go(&mut self, place: super::keymap::Place) {
+        use super::keymap::Place;
+        match place {
+            Place::Card(card) => self.show_card(card),
+            Place::Screen(s) => self.open_tab(s),
+            Place::Pane(s, pane) => {
+                self.open_tab(s);
+                if self.nav.screen == s {
+                    self.nav.pane = pane;
+                    self.nav.selected = 0;
+                }
+            }
+        }
+    }
+
+    /// Whether the payment channels (Contacts' second pane) have the keys.
+    pub fn on_channels(&self) -> bool {
+        self.nav.screen == Screen::Contacts && self.nav.pane == 1
     }
 
     /// The glyphs this terminal draws.
@@ -1693,7 +1732,7 @@ impl App {
         if let Cmd::Quote { direction, amount } = cmd {
             let key = self.eco.convert.protocol_key.get().wrapping_add(1).max(1);
             self.eco.convert.protocol_key.set(key);
-            self.send_data(super::data::DataCmd::ProtocolQuote { key, direction, amount, card: self.nav.screen == Screen::Convert });
+            self.send_data(super::data::DataCmd::ProtocolQuote { key, direction, amount, card: self.on_card(Card::Convert) });
             return;
         }
         if matches!(cmd, Cmd::Prepare(_)) {
@@ -1873,22 +1912,65 @@ impl App {
 
     /// The sections in the sidebar: those with at least one view whose feature is on.
     pub fn sections(&self) -> Vec<Section> {
-        Section::ALL.into_iter().filter(|s| !s.screens(&self.config.features).is_empty()).collect()
+        Section::ALL.into_iter().filter(|s| !s.screens(&self.shown()).is_empty()).collect()
+    }
+
+    /// What the terminal shows now.
+    pub fn shown(&self) -> Shown {
+        Shown { features: self.config.features, pro: self.config.mode == Mode::Pro }
+    }
+
+    /// Say why a Pro screen stays shut in a Simple terminal.
+    fn say_pro(&mut self, what: &str) {
+        self.info(format!("{what} is part of Pro · :pro, or System › Settings › Mode"));
     }
 
     /// Switch to a section, restoring its last sub-tab (or its first, if that one is turned off).
     pub fn switch_section(&mut self, section: Section) {
-        let screens = section.screens(&self.config.features);
+        let shown = self.shown();
+        let screens = section.screens(&shown);
         let Some(&first) = screens.first() else {
-            if let Some(feature) = section.all_screens().iter().find_map(|s| s.feature()) {
+            // Shut by Simple when a switch leaves something on in it, else by the switch.
+            let switched_on = section.all_screens().iter().any(|s| s.feature().is_none_or(|f| shown.features.on(f)));
+            if switched_on {
+                self.say_pro(section.title());
+            } else if let Some(feature) = section.all_screens().iter().find_map(|s| s.feature()) {
                 self.info(format!("{} · System › Settings", feature.off_note()));
             }
             return;
         };
+        // `5` is the inbox (U3 in the architecture review).
+        if section == Section::People && screens.contains(&Screen::Board) {
+            self.open_inbox();
+            return;
+        }
         let idx = Section::ALL.iter().position(|s| *s == section).unwrap_or(0);
         let last = section.all_screens().get(self.nav.section_tabs[idx]).copied();
-        let features = self.config.features;
-        self.switch(last.filter(|s| screens.contains(&s.tab_of(&features)) && s.enabled(&features)).unwrap_or(first));
+        let target = last.filter(|s| screens.contains(s) && s.enabled(&shown)).unwrap_or(first);
+        self.open_tab(target);
+    }
+
+    /// The inbox: the board, on the newest private conversation (or on the messaging account
+    /// until there is one). Messaging off, there is no inbox and this is Contacts.
+    pub fn open_inbox(&mut self) {
+        if !Screen::Board.enabled(&self.shown()) {
+            self.open_tab(Screen::Contacts);
+            return;
+        }
+        self.switch(Screen::Board);
+        if self.nav.screen != Screen::Board {
+            return;
+        }
+        use super::eco::BoardRow;
+        let rows = self.board_rows();
+        let at = rows
+            .iter()
+            .position(|r| matches!(r, BoardRow::Chat(..) | BoardRow::Request(_)))
+            .or_else(|| rows.iter().position(|r| matches!(r, BoardRow::Messaging)));
+        if let Some(i) = at {
+            self.nav.pane = 0;
+            self.nav.selected = i;
+        }
     }
 
     /// Breadcrumb for the header: `Home › Portfolio › WQI`.
@@ -1897,7 +1979,7 @@ impl App {
         let mut parts = vec![section.title().to_string()];
         if section == Section::Activity {
             parts.push(self.nav.activity_filter.title().to_string());
-        } else if section.screens(&self.config.features).len() > 1 {
+        } else if section.screens(&self.shown()).len() > 1 {
             parts.push(self.nav.screen.tab_title().to_string());
         }
         for d in &self.nav.detail {
@@ -1922,8 +2004,9 @@ impl App {
             self.info(format!("{} · System › Settings", feature.off_note()));
             return;
         }
-        if screen.is_exchange() {
-            self.nav.last_exchange = screen;
+        if screen.pro_only() && self.config.mode != Mode::Pro {
+            self.say_pro(screen.title());
+            return;
         }
         // Leaving Markets from its pair list: the chart keeps that pair wherever it is drawn next.
         if self.nav.screen == Screen::Markets && self.nav.pane == 0 && screen != Screen::Markets {
@@ -1983,7 +2066,7 @@ impl App {
             return;
         }
         while let Some(prev) = self.nav.history.pop() {
-            if prev != self.nav.screen && prev.enabled(&self.config.features) {
+            if prev != self.nav.screen && prev.enabled(&self.shown()) {
                 self.nav.going_back = true;
                 self.switch(prev);
                 self.nav.going_back = false;
@@ -2232,6 +2315,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("lock_loop", "Loop the lock screen animation"),
     ("sound", "Terminal bell on good news"),
     // Features
+    ("mode", "Mode"),
     ("feature:messaging", "Messaging"),
     ("feature:trading", "Trading"),
     ("feature:nfts", "NFTs"),
@@ -2254,7 +2338,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
 /// The group a setting sits under on the Settings screen.
 pub fn setting_group(id: &str) -> &'static str {
     match id {
-        "feature:messaging" | "feature:trading" | "feature:nfts" | "notifications" => "Features",
+        "mode" | "feature:messaging" | "feature:trading" | "feature:nfts" | "notifications" => "Features",
         "autolock" | "hold_to_sign" | "phrase" | "backup" => "Security",
         "images" | "ipfs" | "abi_ipfs" | "refresh" => "Privacy & data",
         "daemon" | "daemon_unlock" => "Daemon",

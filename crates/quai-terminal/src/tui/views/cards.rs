@@ -54,12 +54,21 @@ pub(crate) fn card_row<'a>(t: &Theme, focused: bool, label: &str, value: Vec<Spa
 }
 
 /// Where something is, said the way the header says it, with the chord that goes there as the
-/// key: `Board g b`.
-pub(crate) fn place_spans(t: &Theme, screen: Screen) -> Vec<Span<'static>> {
+/// key: `Board g b`, `Trade › Exchange › Wrap g w`.
+pub(crate) fn place_spans(t: &Theme, place: impl Into<super::super::keymap::Place>) -> Vec<Span<'static>> {
+    use super::super::keymap::Place;
+    let place = place.into();
+    let screen = place.screen();
     let section = screen.section();
-    let name =
+    let mut name =
         if section.all_screens().len() == 1 { section.title().to_string() } else { format!("{} › {}", section.title(), screen.title()) };
-    vec![Span::styled(format!("{name} "), t.text_style()), Span::styled(super::super::keymap::chord(screen), t.strong_style().fg(t.focus))]
+    if let Place::Card(card) = place {
+        name = format!("{name} › {}", card.title());
+    }
+    vec![
+        Span::styled(format!("{name} "), t.text_style()),
+        Span::styled(super::super::keymap::chord_to(place), t.strong_style().fg(t.focus)),
+    ]
 }
 
 /// A value ←/→ steps through: the value, then `‹›`, lit while its row has focus.
@@ -246,7 +255,7 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     };
     // Beside Markets (the trader layout) the card is lit only while its screen has the keys.
     let block = panel(t, "exchange · swap on Quainance", app.nav.screen != Screen::Markets);
-    if app.nav.screen == Screen::Swap {
+    if app.on_card(app::Card::Swap) {
         c.hits(app, block.inner(form));
     }
     f.render_widget(Paragraph::new(c.lines).block(block), form);
@@ -775,7 +784,7 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 t,
                 Icon::Trade,
                 "No trades yet. Swaps and curve trades made from this wallet show up here, with their cost and gain in QUAI.",
-                &[(super::super::keymap::chord(Screen::Swap).as_str(), "trade")],
+                &[(super::super::keymap::chord(Screen::Exchange).as_str(), "trade")],
             );
         }
         Some(Ok(p)) => p,

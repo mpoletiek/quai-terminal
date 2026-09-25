@@ -44,7 +44,7 @@ impl App {
                 self.eco.swap.amount.clear();
                 self.eco.swap.quote = None;
                 self.eco.swap.field = 1;
-                self.switch(Screen::Swap);
+                self.show_card(Card::Swap);
                 self.info(format!("buy {} with QUAI · f flips to sell", p.symbol));
                 true
             }
@@ -202,7 +202,7 @@ impl App {
                         self.eco.swap.amount.clear();
                         self.eco.swap.quote = None;
                         self.eco.swap.field = 1;
-                        self.switch(Screen::Swap);
+                        self.show_card(Card::Swap);
                         self.info(format!("buy {} with QUAI · f flips to sell", l.symbol));
                     }
                     Phase::Bonding => {

@@ -1,7 +1,7 @@
 //! Ecosystem state and interaction: portfolio, images, exchange cards (swap, convert, wrap),
 //! NFTs, listings and the detail stack. Rendering lives in `views`.
 
-use super::app::{App, Detail, FormKind, Modal, Screen};
+use super::app::{App, Card, Detail, FormKind, Modal, Screen};
 use super::data::{DataCmd, DataEv};
 use super::worker::{Cmd, Prepare};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1247,7 +1247,7 @@ impl App {
             (Detail::Asset(id), KeyCode::Char('S')) if self.config.features.trading => self.quick_swap(&id, false),
             (Detail::Asset(id), KeyCode::Char('c')) if id == "quai" || id == "qi" => {
                 self.eco.convert.qi_to_quai = id == "qi";
-                self.switch(Screen::Convert);
+                self.show_card(Card::Convert);
                 true
             }
             (Detail::Asset(id), KeyCode::Char('w')) => {
@@ -1261,7 +1261,7 @@ impl App {
                     a if Some(a.to_string()) == wquai => 4,
                     _ => return false,
                 };
-                self.switch(Screen::Wrap);
+                self.show_card(Card::Wrap);
                 true
             }
             (Detail::Nft(c, id), KeyCode::Char('T')) => {
@@ -1407,19 +1407,24 @@ impl App {
     }
 }
 
-/// The data jobs a screen waits on, by the names the data worker gives them.
-pub fn focus_jobs(screen: Screen) -> &'static [&'static str] {
+/// The data jobs a place waits on, by the names the data worker gives them.
+pub fn focus_jobs(place: super::keymap::Place) -> &'static [&'static str] {
+    use super::keymap::Place;
+    let screen = match place {
+        Place::Card(Card::Swap) => return &["swap_quote", "markets", "market_pools"],
+        Place::Card(Card::Convert) => return &["qi_routes"],
+        Place::Card(Card::Wrap) => return &[],
+        Place::Screen(s) | Place::Pane(s, _) => s,
+    };
     match screen {
         Screen::Home => &["portfolio", "nfts"],
         Screen::Markets => &["market_pools", "pool_reserves", "markets", "pair_candles", "pool_events", "dex_flow"],
-        Screen::Swap => &["swap_quote", "markets", "market_pools"],
         Screen::Pools => &["lp_positions", "market_pools", "liquidity_quote"],
-        Screen::Convert => &["qi_routes"],
         Screen::Launches => &["launches", "curve_market"],
         Screen::Collected => &["nfts", "my_listings", "nft"],
         Screen::Explore => &["collections", "collection_items"],
         Screen::Listings => &["listings", "nft", "check_ask"],
-        Screen::Board | Screen::Channels => &["board", "board_channels"],
+        Screen::Board => &["board", "board_channels"],
         Screen::Accounts => &["lockups"],
         Screen::Network => &["chain_stats"],
         Screen::Wallets => &["wallet_quai"],
