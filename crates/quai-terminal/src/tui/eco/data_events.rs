@@ -34,7 +34,7 @@ impl App {
         if let Some(network) = self.net() {
             self.send_data(DataCmd::Configure { network: (*network).clone(), policy: self.config.data_policy(), app_db: None });
         }
-        self.eco.portfolio_requested = None;
+        self.eco.portfolio.invalidate();
         self.eco.portfolio_signature = None;
         self.eco.images.retain(|_, s| matches!(s, ImageSlot::Ready(..)));
         self.maybe_refresh_portfolio(true);
@@ -126,12 +126,15 @@ impl App {
         let known = self.known_from_dash();
         let signature =
             format!("{}:{}:{:?}:{:?}", self.dash.network_id, known.quai, known.qi, known.tokens.iter().map(|t| t.4).collect::<Vec<_>>());
-        let stale = self.eco.portfolio_requested.is_none_or(|t| t.elapsed() > Duration::from_secs(60));
-        if force || stale || self.eco.portfolio_signature.as_deref() != Some(signature.as_str()) {
-            self.eco.portfolio_requested = Some(Instant::now());
-            self.eco.portfolio_signature = Some(signature);
-            self.send_data(DataCmd::Portfolio(known));
+        // Balances that changed are a new question; otherwise prices go stale by the clock.
+        let changed = self.eco.portfolio_signature.as_deref() != Some(signature.as_str());
+        if force || changed {
+            self.eco.portfolio.begin(&self.eco.clock);
+        } else if !self.eco.portfolio.take_due(fresh::PORTFOLIO, &self.eco.clock) {
+            return;
         }
+        self.eco.portfolio_signature = Some(signature);
+        self.send_data(DataCmd::Portfolio(known));
     }
 
     /// Load what a view needs when it opens.
@@ -140,7 +143,7 @@ impl App {
         self.send_data(DataCmd::Focus(focus_jobs(self.screen)));
         match self.screen {
             Screen::Home => self.maybe_refresh_portfolio(false),
-            Screen::Collected if self.eco.nfts.is_none() && !self.eco.nfts_loading => {
+            Screen::Collected if self.eco.nfts.latest().is_none() && !self.eco.nfts.loading() => {
                 self.load_nfts(false);
                 self.load_my_listings();
             }
@@ -157,8 +160,8 @@ impl App {
             Screen::Network => self.tick_chain_stats(),
             Screen::Wallets => self.load_wallets(),
             Screen::Explore => {
-                if self.eco.collections.is_none() && !self.eco.collections_loading {
-                    self.eco.collections_loading = true;
+                if self.eco.collections.latest().is_none() && !self.eco.collections.loading() {
+                    self.eco.collections.begin(&self.eco.clock);
                     self.send_data(DataCmd::Collections { query: None });
                 }
                 self.load_nft_market(false);
@@ -211,14 +214,14 @@ impl App {
         // that never comes.
         let features = self.config.features;
         if features.nfts {
-            if self.eco.nfts.is_none() && !self.eco.nfts_loading {
+            if self.eco.nfts.latest().is_none() && !self.eco.nfts.loading() {
                 self.load_nfts(false);
             }
-            if self.eco.my_listings.is_none() {
+            if self.eco.my_listings.latest().is_none() {
                 self.load_my_listings();
             }
-            if self.eco.collections.is_none() && !self.eco.collections_loading {
-                self.eco.collections_loading = true;
+            if self.eco.collections.latest().is_none() && !self.eco.collections.loading() {
+                self.eco.collections.begin(&self.eco.clock);
                 self.send_data(DataCmd::Collections { query: None });
             }
             if !self.eco.listings.contains_key(&None) && !self.eco.listings_loading {
@@ -294,7 +297,7 @@ impl App {
             DataEv::LiquidityQuote { .. } => self.screen == Screen::Pools,
             DataEv::PairCandles { .. } => self.screen == Screen::Markets,
             DataEv::Portfolio(Ok(p)) => {
-                self.screen == Screen::Home && self.eco.portfolio.as_ref().is_some_and(|old| (old.total_usd - p.total_usd).abs() >= 0.01)
+                self.screen == Screen::Home && self.eco.portfolio.value().is_some_and(|old| (old.total_usd - p.total_usd).abs() >= 0.01)
             }
             _ => false,
         };
@@ -336,13 +339,10 @@ impl App {
                 }
             }
             DataEv::Launches(result) => {
-                self.eco.launches_at = Some(Instant::now());
-                // Keep the last good list when a refresh fails.
-                if result.is_ok() || !matches!(self.eco.launches, Some(Ok(_))) {
-                    let holding = self.launch_under_cursor();
-                    self.eco.launches = Some(result);
-                    self.keep_launch_cursor(holding);
-                }
+                // A failed refresh keeps the last good list (`Resource::shown`).
+                let holding = self.launch_under_cursor();
+                self.eco.launches.settle(result);
+                self.keep_launch_cursor(holding);
             }
             DataEv::LaunchLogos(logos) => self.eco.launch_logos.extend(logos),
             DataEv::WalletQuai(totals) => self.wallet_quai.extend(totals),
@@ -365,18 +365,14 @@ impl App {
                 }
             }
             DataEv::ChainStats(result) => {
-                // Keep the last good figures when a refresh fails.
-                if result.is_ok() || !matches!(self.eco.chain_stats, Some(Ok(_))) {
-                    self.eco.chain_stats = Some(result.map(|b| *b));
-                }
+                // A failed refresh keeps the last good figures (`Resource::shown`).
+                self.eco.chain_stats.settle(result.map(|b| *b));
             }
             DataEv::CurveMarket { token, result } => {
-                if result.is_ok() || !matches!(self.eco.curves.get(&token), Some(Ok(_))) {
-                    self.eco.curves.insert(token, result.map(|b| *b));
-                }
+                self.eco.curves.settle(token, result.map(|b| *b));
             }
             DataEv::TxCost { hash, result } => {
-                self.eco.tx_costs.insert(hash, result);
+                self.eco.tx_costs.settle(hash, result);
             }
             DataEv::GasPrice(r) => {
                 if let Ok(price) = r.and_then(|p| U256::from_str_radix(&p, 10).map_err(|e| e.to_string())) {
@@ -384,7 +380,7 @@ impl App {
                 }
             }
             DataEv::Portfolio(Ok(p)) => {
-                let first = self.eco.portfolio.is_none();
+                let first = self.eco.portfolio.value().is_none();
                 wallet_core::diag::mark("startup.portfolio");
                 let has_nfts = p.nfts.items > 0;
                 use wallet_core::media::{ICON, ICON_LARGE};
@@ -402,11 +398,10 @@ impl App {
                     self.wallet_summaries
                         .insert(m.id.clone(), wallet_core::cockpit::load_summary(&self.paths, &m.id, &p.network).unwrap_or_default());
                 }
-                self.eco.portfolio = Some(*p);
-                self.eco.portfolio_error = None;
+                self.eco.portfolio.settle(Ok(*p));
                 self.preload_images(icons);
                 // Home shows a few NFT thumbnails when the wallet holds any and images are on.
-                if has_nfts && self.screen == Screen::Home && self.config.images && self.eco.nfts.is_none() && !self.eco.nfts_loading {
+                if has_nfts && self.screen == Screen::Home && self.config.images && self.eco.nfts.latest().is_none() && !self.eco.nfts.loading() {
                     self.load_nfts(false);
                 }
                 if first && !self.config.data_disclosure_shown && self.config.explorer_lookups && self.dash.network_id == "mainnet" {
@@ -418,7 +413,7 @@ impl App {
                     );
                 }
             }
-            DataEv::Portfolio(Err(e)) => self.eco.portfolio_error = Some(e),
+            DataEv::Portfolio(Err(e)) => self.eco.portfolio.settle(Err(e)),
             DataEv::Notice(text) => self.toast(text, true),
             DataEv::MarketPools(mut r) => {
                 self.eco.markets_view.pools_loading = false;
@@ -426,7 +421,7 @@ impl App {
                 // TVL column between the directory's price and the feed's.
                 if let Ok((pools, _)) = r.as_mut() {
                     let wquai = self.net().and_then(|n| n.wquai.clone());
-                    let usd = self.eco.portfolio.as_ref().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+                    let usd = self.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
                     if usd.is_some() {
                         wallet_core::markets::reprice_tvl(pools, wquai.as_deref(), usd);
                     }
@@ -468,7 +463,7 @@ impl App {
                     // The price feed, not the on-chain USDT pool: that pool holds about four
                     // thousand dollars, and pricing the whole exchange off its spot put every
                     // computed TVL 1.8% under the explorer's. The feed is what the explorer uses.
-                    let usd = self.eco.portfolio.as_ref().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+                    let usd = self.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
                     wallet_core::markets::apply_reserves(pools, &fresh, wquai.as_deref(), usd);
                     self.dirty = true;
                 }
@@ -604,29 +599,19 @@ impl App {
                 if let Ok(v) = &r {
                     self.preload_images(v.iter().map(|n| (n.item.image.clone(), wallet_core::media::THUMB)));
                 }
-                self.eco.nfts_loading = false;
-                self.eco.nfts = Some(r);
+                self.eco.nfts.settle(r);
             }
             DataEv::Collections { result } => {
                 if let Ok(v) = &result {
                     self.preload_images(v.iter().take(30).map(|c| (c.preview.clone(), wallet_core::media::THUMB)));
                 }
-                self.eco.collections_loading = false;
-                self.eco.collections = Some(result);
+                self.eco.collections.settle(result);
             }
             DataEv::CollectionItems { contract, offset, result } => self.collection_page(contract, offset, result),
-            DataEv::CollectionStats { result } => match result {
-                Ok(rows) => {
-                    self.eco.nft_stats = rows.into_iter().map(|c| (c.address.clone(), c)).collect();
-                    self.eco.nft_stats_error = None;
-                }
-                Err(e) => self.eco.nft_stats_error = Some(e),
-            },
-            DataEv::NftTrades { result } => {
-                if let Ok(rows) = result {
-                    self.eco.nft_trades = rows;
-                }
+            DataEv::CollectionStats { result } => {
+                self.eco.nft_stats.settle(result.map(|rows| rows.into_iter().map(|c| (c.address.clone(), c)).collect()));
             }
+            DataEv::NftTrades { result } => self.eco.nft_trades.settle(result),
             DataEv::Listings { collection, result } => {
                 // The indexer's images are usually raw IPFS files; the explorer's metadata points
                 // at its resized media proxy, so look that up for the first rows.
@@ -641,7 +626,7 @@ impl App {
                 }
                 self.eco.listings.insert(collection, result);
             }
-            DataEv::MyListings(result) => self.eco.my_listings = Some(result),
+            DataEv::MyListings(result) => self.eco.my_listings.settle(result),
             DataEv::Nft { contract, token_id, result } => {
                 if let Ok(item) = &result {
                     self.preload_images([(item.image.clone(), wallet_core::media::THUMB)]);
@@ -724,8 +709,7 @@ impl App {
     /// Ask for network statistics when the Network screen has none or they are five minutes old
     /// (the feed's own freshness window; asking sooner would only read the cache).
     pub fn tick_chain_stats(&mut self) {
-        if self.eco.chain_stats_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
-            self.eco.chain_stats_at = Some(Instant::now());
+        if self.eco.chain_stats.take_due(fresh::CHAIN_STATS, &self.eco.clock) {
             self.send_data(DataCmd::ChainStats);
         }
     }
@@ -738,11 +722,9 @@ impl App {
     /// being looked at and the board, then asks at once. A feed still in flight is left to land;
     /// the block after next catches anything it missed.
     pub fn on_block(&mut self, height: u64) {
-        if height <= self.eco.head {
+        if !self.eco.clock.block(height) {
             return;
         }
-        self.eco.head = height;
-        self.eco.head_at = Some(Instant::now());
         wallet_core::diag::timing("ui.block", Instant::now());
         let due = Instant::now().checked_sub(MARKET_STUCK);
         let mv = &mut self.eco.markets_view;
@@ -754,7 +736,6 @@ impl App {
             }
         }
         self.eco.pools_view.loaded_at = None;
-        self.eco.curves_at.clear();
         self.eco.board.at.clear();
         self.eco.board.dm_at.clear();
         if !self.locked {
@@ -765,7 +746,7 @@ impl App {
     /// How long a chain-backed feed waits between reads when no block has asked for one: every
     /// [`MARKET_REFRESH`] until blocks arrive, then only as a net under them.
     pub fn feed_pace(&self) -> Duration {
-        let blocks_arriving = self.eco.head_at.is_some_and(|at| at.elapsed() < BLOCK_PACED_FALLBACK);
+        let blocks_arriving = self.eco.clock.blocks_arriving();
         if blocks_arriving { BLOCK_PACED_FALLBACK } else { MARKET_REFRESH }
     }
 

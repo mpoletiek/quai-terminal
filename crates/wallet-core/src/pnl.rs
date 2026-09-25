@@ -17,7 +17,7 @@ use crate::journal::OpKind;
 use crate::appdb::{OpStatus, Operation};
 use crate::error::Result;
 use crate::session::Session;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Operation kinds that are trades.
@@ -27,7 +27,7 @@ pub const TRADE_KINDS: [&str; 6] = ["swap", "swap_exact_output", "curve_buy", "c
 const DUST: f64 = 1e-12;
 
 /// One token's side of a fill.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Leg {
     /// Contract (lowercase).
     pub token: String,
@@ -38,7 +38,7 @@ pub struct Leg {
 }
 
 /// One confirmed trade.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Fill {
     pub op_id: String,
     pub at: u64,
@@ -67,7 +67,7 @@ impl Fill {
 }
 
 /// One token's standing.
-#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Position {
     pub token: String,
     pub symbol: String,
@@ -101,7 +101,7 @@ pub struct Position {
 }
 
 /// Performance across every token this wallet traded.
-#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Pnl {
     /// Open positions first, largest first; closed ones after, by realized PnL.
     pub positions: Vec<Position>,

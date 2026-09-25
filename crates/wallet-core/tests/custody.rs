@@ -46,3 +46,25 @@ fn every_session_of_a_wallet_shares_one_set_of_keys_and_one_lock() {
     assert!(!worker.is_unlocked());
     assert_eq!(live_unlocked(), 0, "nothing left to chase through the lanes");
 }
+
+/// A wallet's sessions open together (the worker and its lanes, the daemon's watcher), and the
+/// first open of a new wallet registers its addresses: whoever loses that race re-reads, never
+/// fails. It used to fail about half the time as "stale or mismatched wallet snapshot".
+#[test]
+fn many_sessions_open_a_fresh_wallet_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = wallet_core::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap();
+    let registry = wallet_core::registry::Registry::new(paths);
+    let meta = registry.create_hd("fresh", PHRASE, "english", "", "password123", true).unwrap();
+    let network = wallet_core::network::NetworkProfile::builtins().remove(0);
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let (registry, meta, network) = (registry.clone(), meta.clone(), network.clone());
+            std::thread::spawn(move || {
+                Session::open(registry, wallet_core::config::AppConfig::default(), meta, network).map(|_| ()).map_err(|e| e.to_string())
+            })
+        })
+        .collect();
+    let errors: Vec<String> = handles.into_iter().filter_map(|h| h.join().unwrap().err()).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}

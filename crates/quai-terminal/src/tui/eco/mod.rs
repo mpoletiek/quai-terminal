@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wallet_core::amount;
+pub use quai_engine::resource::{Keyed, Resource, fresh};
 use wallet_core::explorer::{Collection, NftItem, TokenInfo, TokenMarket};
 use wallet_core::market::{AskCheck, Listing, OwnedNft};
 use wallet_core::media::Rendition;
@@ -468,8 +469,6 @@ pub const MARKET_STUCK: Duration = Duration::from_secs(45);
 /// its own clock is only the safety net: between blocks the chain has not moved, and a read then
 /// returns what is already on screen. This is that net's interval.
 pub const BLOCK_PACED_FALLBACK: Duration = Duration::from_secs(20);
-/// How long a PnL answer is shown before opening the screen reads it again.
-pub const PNL_TTL: Duration = Duration::from_secs(30);
 /// The swap card's pair chart: hourly, which the indexer buckets, so it is one query.
 pub const SWAP_CHART_BUCKET: u64 = 3_600;
 
@@ -715,9 +714,7 @@ pub struct Eco {
     pub split_request: Option<(u64, u64)>,
     pub max_sequence: u64,
     pub max_request: Option<(u64, u64)>,
-    pub portfolio: Option<Portfolio>,
-    pub portfolio_error: Option<String>,
-    pub portfolio_requested: Option<Instant>,
+    pub portfolio: Resource<Portfolio>,
     pub portfolio_signature: Option<String>,
     pub markets: Vec<TokenMarket>,
     pub images: HashMap<(String, u32), ImageSlot>,
@@ -735,16 +732,12 @@ pub struct Eco {
     pub inline_icons: RefCell<Vec<(String, ratatui::style::Color, Arc<Rendition>)>>,
     /// Pictures padded to their cell aspect (and carded where needed), encoded once.
     pub fitted: RefCell<HashMap<FittedKey, KittyPng>>,
-    pub nfts: Option<Result<Vec<OwnedNft>, String>>,
-    pub nfts_loading: bool,
-    pub collections: Option<Result<Vec<Collection>, String>>,
-    pub collections_loading: bool,
+    pub nfts: Resource<Vec<OwnedNft>>,
+    pub collections: Resource<Vec<Collection>>,
     /// Floors, volume and listing counts per collection (the marketplace indexer), by contract.
-    pub nft_stats: HashMap<String, wallet_core::market::CollectionStats>,
-    pub nft_stats_error: Option<String>,
-    pub nft_stats_at: Option<Instant>,
+    pub nft_stats: Resource<HashMap<String, wallet_core::market::CollectionStats>>,
     /// Every marketplace sale the indexer has, newest first; windows are counted from it.
-    pub nft_trades: Vec<wallet_core::market::Trade>,
+    pub nft_trades: Resource<Vec<wallet_core::market::Trade>>,
     /// The sequence the last result belongs to: its name and the steps sent, for the result
     /// dialog.
     pub flow_summary: Option<(String, Vec<String>)>,
@@ -756,7 +749,6 @@ pub struct Eco {
     pub explore_index: RefCell<Option<ExploreIndex>>,
     /// Markets' row order (indices into the pool directory) and the fingerprint it was sorted for.
     pub market_order: RefCell<Option<(u64, Vec<usize>)>>,
-    pub nft_trades_at: Option<Instant>,
     /// How Explore is ordered (`S`).
     pub collection_sort: CollectionSort,
     /// Collection search text; `Some` while typing.
@@ -772,7 +764,7 @@ pub struct Eco {
     pub listings: HashMap<Option<String>, Result<Vec<Listing>, String>>,
     pub listings_loading: bool,
     /// Listings by this wallet's accounts (Bazarr indexer; re-checked on-chain before changes).
-    pub my_listings: Option<Result<Vec<Listing>, String>>,
+    pub my_listings: Resource<Vec<Listing>>,
     /// Listings screen shows only this wallet's listings (`m`).
     pub listings_mine: bool,
     /// Listings order (`S`).
@@ -783,23 +775,17 @@ pub struct Eco {
     pub asks: HashMap<(String, String), Result<AskCheck, String>>,
     pub token_info: HashMap<String, Result<(TokenInfo, Option<bool>), String>>,
     /// This wallet's trading performance, when it was asked for, and whether an answer is due.
-    pub pnl: Option<Result<wallet_core::pnl::Pnl, String>>,
-    pub pnl_at: Option<Instant>,
-    pub pnl_loading: bool,
+    pub pnl: Resource<wallet_core::pnl::Pnl>,
     /// Quainance's launch zone, newest first.
-    pub launches: Option<Result<Vec<wallet_core::launches::Launch>, String>>,
-    pub launches_at: Option<Instant>,
+    pub launches: Resource<Vec<wallet_core::launches::Launch>>,
     /// Launch tokens' logos by token address (Quainance's media proxy), kept across list refreshes.
     pub launch_logos: HashMap<String, String>,
     /// Hashrate, transactions and gas over time for System › Network, and when it was asked for.
-    pub chain_stats: Option<Result<wallet_core::chainstats::ChainStats, String>>,
-    pub chain_stats_at: Option<Instant>,
+    pub chain_stats: Resource<wallet_core::chainstats::ChainStats>,
     /// Bonding curves by token, and when each was last asked for.
-    pub curves: HashMap<String, Result<wallet_core::curve::CurveMarket, String>>,
-    pub curves_at: HashMap<String, Instant>,
+    pub curves: Keyed<String, wallet_core::curve::CurveMarket>,
     /// Value and fee of observed transactions, by hash, read when their detail is shown.
-    pub tx_costs: HashMap<String, Result<wallet_core::track::TxCost, String>>,
-    pub tx_costs_asked: std::collections::HashSet<String>,
+    pub tx_costs: Keyed<String, wallet_core::track::TxCost>,
     pub lockups: Option<Result<u64, String>>,
     pub test: Option<TestResults>,
     pub testing: bool,
@@ -818,9 +804,9 @@ pub struct Eco {
     pub alerts_loaded: bool,
     /// When the TUI last checked alerts itself (it does only when no daemon runs).
     pub alerts_checked: Option<Instant>,
-    /// The newest block height the wallet worker has seen (`Ev::Head`), and when it arrived.
-    pub head: u64,
-    pub head_at: Option<Instant>,
+    /// The chain's clock: the newest block and when it arrived. Chain-backed resources are
+    /// measured against it.
+    pub clock: quai_engine::resource::Clock,
     pub pools_view: PoolsView,
     /// Zone gas price in wei, for the reserve MAX holds back. None until it loads, which makes
     /// MAX on native QUAI say so rather than guess.
@@ -847,13 +833,26 @@ pub struct Eco {
 }
 
 impl Eco {
+    /// Recent NFT sales, as last read.
+    pub fn trades(&self) -> &[wallet_core::market::Trade] {
+        self.nft_trades.value().map_or(&[], Vec::as_slice)
+    }
+
+    /// The marketplace's collection statistics by lowercase address, as last read.
+    pub fn stats(&self) -> &HashMap<String, wallet_core::market::CollectionStats> {
+        static EMPTY: std::sync::LazyLock<HashMap<String, wallet_core::market::CollectionStats>> = std::sync::LazyLock::new(HashMap::new);
+        self.nft_stats.value().unwrap_or(&EMPTY)
+    }
+}
+
+impl Eco {
     /// When the Convert card's comparison was asked for.
     pub fn convert_quoted_at(&self) -> Option<Instant> {
         self.convert.quoted_at
     }
 
     pub fn nft_len(&self) -> usize {
-        match &self.nfts {
+        match self.nfts.latest() {
             Some(Ok(v)) => v.len(),
             _ => 0,
         }
@@ -866,7 +865,7 @@ impl Eco {
     /// Listings as shown: filtered to the chosen collection, in the chosen order.
     pub fn visible_listings(&self) -> Vec<Listing> {
         if self.listings_mine {
-            let mut rows = match &self.my_listings {
+            let mut rows = match self.my_listings.latest() {
                 Some(Ok(v)) => v.clone(),
                 _ => Vec::new(),
             };
@@ -882,7 +881,7 @@ impl Eco {
 
     /// Display name for a collection contract (explorer directory, else the short address).
     pub fn collection_name(&self, contract: &str) -> String {
-        match &self.collections {
+        match self.collections.latest() {
             Some(Ok(v)) => v.iter().find(|c| c.address.eq_ignore_ascii_case(contract)).map(|c| c.name.clone()),
             _ => None,
         }
@@ -898,16 +897,16 @@ impl Eco {
         (wallet_core::registry::now() / 60).hash(&mut h);
         self.search_text.hash(&mut h);
         (self.collection_sort as u8).hash(&mut h);
-        for t in &self.nft_trades {
+        for t in self.trades() {
             (t.at, t.contract.as_str(), t.price_quai.map(f64::to_bits)).hash(&mut h);
         }
-        if let Some(Ok(v)) = &self.collections {
+        if let Some(Ok(v)) = self.collections.latest() {
             for c in v {
                 (c.address.as_str(), c.holders).hash(&mut h);
             }
         }
         let mut stats: Vec<(&String, u64, u64, u64)> = self
-            .nft_stats
+            .stats()
             .iter()
             .map(|(k, s)| (k, s.volume_quai.map_or(0, f64::to_bits), s.floor.map_or(0, f64::to_bits), s.active_listings.unwrap_or(0)))
             .collect();
@@ -932,12 +931,12 @@ impl Eco {
         let window = TRADE_WINDOWS
             .iter()
             .copied()
-            .find(|d| wallet_core::market::trade_window(&self.nft_trades, *d, now).1 > 0)
+            .find(|d| wallet_core::market::trade_window(self.trades(), *d, now).1 > 0)
             .unwrap_or(TRADE_WINDOWS[TRADE_WINDOWS.len() - 1]);
         // One pass over the trades, grouped by contract.
         let since = now.saturating_sub(window * 86_400);
         let mut by_contract: HashMap<String, (f64, usize)> = HashMap::new();
-        for t in self.nft_trades.iter().filter(|t| t.at >= since) {
+        for t in self.trades().iter().filter(|t| t.at >= since) {
             let e = by_contract.entry(t.contract.to_lowercase()).or_default();
             e.1 += 1;
             if t.is_native() {
@@ -945,7 +944,7 @@ impl Eco {
             }
         }
         let q = self.search_text.to_lowercase();
-        let all: &[Collection] = match &self.collections {
+        let all: &[Collection] = match self.collections.latest() {
             Some(Ok(v)) => v,
             _ => &[],
         };
@@ -955,7 +954,7 @@ impl Eco {
         // A collection with nothing to show for a measure sorts last, so the rows that carry the
         // number the user asked for are the ones at the top. Keys are worked out once per row.
         let key_of = |c: &Collection| -> (bool, f64) {
-            let stats = self.nft_stats.get(&c.address.to_lowercase());
+            let stats = self.stats().get(&c.address.to_lowercase());
             let value = match self.collection_sort {
                 CollectionSort::Volume7d => by_contract.get(&c.address.to_lowercase()).map_or(0.0, |v| v.0),
                 CollectionSort::Volume => stats.and_then(|s| s.volume_quai).unwrap_or(0.0),
@@ -981,7 +980,7 @@ impl Eco {
 
     pub fn collections_filtered(&self) -> Vec<&Collection> {
         let rows = self.explore_index().rows.clone();
-        match &self.collections {
+        match self.collections.latest() {
             Some(Ok(v)) => rows.into_iter().filter_map(|i| v.get(i)).collect(),
             _ => Vec::new(),
         }
@@ -995,7 +994,7 @@ impl Eco {
         }
         drop(index);
         let c = contract.to_lowercase();
-        let rows: Vec<wallet_core::market::Trade> = self.nft_trades.iter().filter(|t| t.contract == c).cloned().collect();
+        let rows: Vec<wallet_core::market::Trade> = self.trades().iter().filter(|t| t.contract == c).cloned().collect();
         wallet_core::market::trade_window(&rows, days, wallet_core::registry::now())
     }
 
@@ -1014,7 +1013,7 @@ impl Eco {
     /// name — saying "365d volume" over a column of dashes claims a measurement that was never
     /// made — so the heading is bare until there is something to have measured.
     pub fn trade_window_label(&self) -> String {
-        if self.nft_trades.is_empty() { "volume".into() } else { format!("{}d volume", self.trade_window_days()) }
+        if self.trades().is_empty() { "volume".into() } else { format!("{}d volume", self.trade_window_days()) }
     }
 
     /// Record a wanted image and return it when ready (with fade-in progress 0..=1).
@@ -1175,8 +1174,8 @@ impl App {
                 }
             }
             Screen::Home => {
-                let tokens = self.eco.portfolio.as_ref().map_or(0, |p| p.rows.len());
-                if let Some(row) = self.eco.portfolio.as_ref().and_then(|p| p.rows.get(self.selected)) {
+                let tokens = self.eco.portfolio.value().map_or(0, |p| p.rows.len());
+                if let Some(row) = self.eco.portfolio.value().and_then(|p| p.rows.get(self.selected)) {
                     self.push_detail(Detail::Asset(row.key.id()));
                 } else if let Some(pair) = self.home_positions().get(self.selected - tokens).map(|p| p.pair.clone()) {
                     // A position opens where it can be worked on: Pools, with it under the cursor.
@@ -1185,7 +1184,7 @@ impl App {
                 }
             }
             Screen::Collected => {
-                if let Some(Ok(items)) = &self.eco.nfts
+                if let Some(Ok(items)) = self.eco.nfts.latest()
                     && let Some(n) = items.get(self.selected)
                 {
                     let (c, id) = (n.item.contract.clone(), n.item.token_id.clone());
@@ -1254,7 +1253,7 @@ impl App {
                 address => self
                     .eco
                     .portfolio
-                    .as_ref()
+                    .value()
                     .and_then(|p| p.rows.iter().find(|r| r.key.id() == address))
                     .map(|r| r.symbol.clone())
                     .unwrap_or_else(|| wallet_core::session::short_address(address)),
@@ -1266,8 +1265,8 @@ impl App {
             Detail::Collection(c) => self
                 .eco
                 .collections
-                .as_ref()
-                .and_then(|r| r.as_ref().ok())
+                .latest()
+                .and_then(|r| r.ok())
                 .and_then(|v| v.iter().find(|x| x.address == *c))
                 .map(|x| x.name.clone())
                 .unwrap_or_else(|| wallet_core::session::short_address(c)),
@@ -1466,12 +1465,12 @@ impl App {
             (Some(Detail::Asset(id)), _) if id.starts_with("0x") => Some(id.clone()),
             (Some(Detail::Nft(c, _)), _) | (Some(Detail::Collection(c)), _) => Some(c.clone()),
             (None, Screen::Home) if self.pane == 0 => {
-                self.eco.portfolio.as_ref().and_then(|p| p.rows.get(self.selected)).map(|r| match &r.key {
+                self.eco.portfolio.value().and_then(|p| p.rows.get(self.selected)).map(|r| match &r.key {
                     AssetKey::Token(a) => a.clone(),
                     _ => self.receive_address(r.key == AssetKey::Qi).unwrap_or_default(),
                 })
             }
-            (None, Screen::Collected) => match &self.eco.nfts {
+            (None, Screen::Collected) => match self.eco.nfts.latest() {
                 Some(Ok(v)) => v.get(self.selected).map(|n| n.item.contract.clone()),
                 _ => None,
             },
@@ -1505,12 +1504,12 @@ impl App {
             }
             (None, Screen::Launches) => self.launch_rows().get(self.selected).and_then(|l| network.token_url(&l.token)),
             (None, Screen::Home) if self.pane == 0 => {
-                match self.eco.portfolio.as_ref().and_then(|p| p.rows.get(self.selected)).map(|r| r.key.clone()) {
+                match self.eco.portfolio.value().and_then(|p| p.rows.get(self.selected)).map(|r| r.key.clone()) {
                     Some(AssetKey::Token(a)) => network.token_url(&a),
                     _ => None,
                 }
             }
-            (None, Screen::Collected) => match &self.eco.nfts {
+            (None, Screen::Collected) => match self.eco.nfts.latest() {
                 Some(Ok(v)) => {
                     v.get(self.selected).and_then(|n| wallet_core::market::bazarr_url(&network, &n.item.contract, &n.item.token_id))
                 }

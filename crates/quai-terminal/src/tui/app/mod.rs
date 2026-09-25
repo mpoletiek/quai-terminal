@@ -3,7 +3,7 @@
 use super::fx::Ceremony;
 use super::terminal::{Caps, KittyGraphics};
 use super::theme::Theme;
-use super::worker::{Cmd, Dashboard, Ev, Prepare, Worker};
+use super::worker::{Cmd, Dashboard, Ev, Prepare};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -999,10 +999,6 @@ pub enum OnboardKind {
     Watch,
 }
 
-/// A password being checked on its own thread: the wallet it is for, and the answer (the keys and
-/// the password, or why not).
-pub type UnlockCheck = (String, std::sync::mpsc::Receiver<Result<(wallet_core::identity::Unlocked, Zeroizing<String>), String>>);
-
 /// Background wallet creation (Argon2 runs off the render thread).
 pub type Creation = std::sync::mpsc::Receiver<Result<(WalletMeta, Option<Zeroizing<String>>), String>>;
 
@@ -1107,7 +1103,8 @@ pub struct App {
     pub wallet_summaries: HashMap<String, wallet_core::cockpit::WalletSummary>,
     /// Each wallet's QUAI read live from its public addresses.
     pub wallet_quai: HashMap<String, wallet_core::sdk::U256>,
-    pub worker: Option<Worker>,
+    /// The engine: in the daemon, or here when standalone ([`quai_engine::client::Engine`]).
+    pub worker: Option<quai_engine::client::Engine>,
     pub dash: Dashboard,
     pub screen: Screen,
     pub modal: Modal,
@@ -1224,10 +1221,9 @@ pub struct App {
     pub unlocking: bool,
     /// When that unlock was submitted, so one that never answers is given up on.
     pub unlocking_since: Option<Instant>,
-    /// The password check itself. It runs on its own thread, never on the worker's queue: the
-    /// worker may be in a sync step that cannot stop (a Qi refresh), and an unlock that waited for
-    /// it could take a minute.
-    pub unlock_check: Option<UnlockCheck>,
+    /// A standalone unlock's password, kept until it opens the wallet to hand it to the daemon
+    /// (`daemon_share_unlock`). A daemon-hosted engine shares keys itself.
+    pub handoff_pending: Option<(String, Zeroizing<String>)>,
     /// A wallet switch locked the screen before the worker reached it. The worker's own `Locked`
     /// for that switch arrives later and must not lock a wallet unlocked in the meantime.
     pub switch_lock_pending: bool,
@@ -1417,7 +1413,7 @@ impl App {
             lock_error: None,
             unlocking: false,
             unlocking_since: None,
-            unlock_check: None,
+            handoff_pending: None,
             switch_lock_pending: false,
             lock_warned: false,
             theme_override: None,
@@ -1610,6 +1606,21 @@ impl App {
             || self.ambient.is_some()
             || self.lock_fade.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() < 500)
             || matches!(self.modal, Modal::Effects(_))
+    }
+
+    /// Input arrived: the screen's auto-lock starts over, and the engine's with it.
+    pub(crate) fn note_input(&mut self) {
+        self.last_input = Instant::now();
+        if let Some(w) = &self.worker {
+            w.activity();
+        }
+    }
+
+    /// A standalone engine over a worker already running (tests hand it a capturing one).
+    #[cfg(test)]
+    pub fn use_worker(&mut self, worker: super::worker::Worker) {
+        let host = quai_engine::host::Host::over(worker, self.registry.clone(), "", false);
+        self.worker = Some(quai_engine::client::Engine::Local(Box::new(host)));
     }
 
     pub fn send(&self, cmd: Cmd) {
@@ -1983,8 +1994,6 @@ impl App {
         {
             self.unlocking = false;
             self.unlocking_since = None;
-            // A late answer is dropped with it, so the next attempt starts clean.
-            self.unlock_check = None;
             self.lock_error = Some("the wallet did not answer — try again".into());
             self.dirty = true;
         }

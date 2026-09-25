@@ -167,7 +167,7 @@ pub(crate) fn cost_lines(app: &App, t: &Theme, op: Option<&Operation>, seen: Opt
     let Some(a) = seen else { return Vec::new() };
     let incoming = a.direction == "in";
     let qi = a.asset == "QI";
-    let known = a.tx_hash.as_ref().and_then(|h| app.eco.tx_costs.get(h));
+    let known = a.tx_hash.as_ref().and_then(|h| app.eco.tx_costs.get(h)).and_then(|r| r.latest());
     let reading = || Span::styled(format!("{} reading…", spinner()), dim);
     // A native row states its own value; a token row's native value comes from the transaction.
     let value = match (a.asset.as_str(), known) {
@@ -200,7 +200,7 @@ pub(crate) fn fee_cell(app: &App, t: &Theme, op: Option<&Operation>, seen: Optio
         };
     }
     match seen {
-        Some(a) if a.direction == "out" => match a.tx_hash.as_ref().and_then(|h| app.eco.tx_costs.get(h)) {
+        Some(a) if a.direction == "out" => match a.tx_hash.as_ref().and_then(|h| app.eco.tx_costs.get(h)).and_then(|r| r.latest()) {
             Some(Ok(c)) => c.fee.map_or_else(|| Span::raw(""), |f| Span::styled(c.text(f), t.dim_style())),
             _ => Span::raw(""),
         },
@@ -1131,7 +1131,7 @@ pub(crate) fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         spans.extend(v);
         Line::from(spans)
     };
-    let lines = match &app.eco.chain_stats {
+    let lines = match app.eco.chain_stats.shown() {
         None => vec![Line::from(Span::styled(format!("{} reading network statistics…", spinner()), t.dim_style()))],
         Some(Err(e)) => vec![
             Line::from(Span::styled(format!("{} {}", t.icon(Icon::Info), truncate(&app::friendly_error(e), 80)), t.dim_style())),
@@ -1202,7 +1202,7 @@ pub(crate) fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 pub(crate) fn draw_chain_charts(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let [hash, txs, gas] =
         Layout::horizontal([Constraint::Percentage(36), Constraint::Percentage(32), Constraint::Percentage(32)]).areas(area);
-    let stats = app.eco.chain_stats.as_ref().and_then(|r| r.as_ref().ok());
+    let stats = app.eco.chain_stats.value();
     // Hashrate: one row per algorithm, each on its own scale — they differ by six orders of
     // magnitude, so one shared axis would draw two flat lines and a wall.
     let block = panel(t, &format!("{}hashrate · 24h", t.lead(Icon::Mining)), false);
@@ -1289,7 +1289,7 @@ pub(crate) fn spark_with_axis(f: &mut Frame, app: &App, t: &Theme, inner: Rect, 
 
 /// What a chart shows before its data arrives, or when there is none for this network.
 pub(crate) fn chart_placeholder(f: &mut Frame, app: &App, t: &Theme, inner: Rect) {
-    let text = match &app.eco.chain_stats {
+    let text = match app.eco.chain_stats.shown() {
         None => format!("{} loading…", spinner()),
         Some(Err(_)) => format!("{} no statistics for this network", t.icon(Icon::Info)),
         Some(Ok(_)) => format!("{} no history yet", t.icon(Icon::Info)),

@@ -10,7 +10,7 @@ pub fn draw_wallets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::registry::WalletKind;
     use wallet_core::sdk::U256;
     // QUAI's price, to carry a wallet's summary forward to its live QUAI balance.
-    let quai_usd = app.eco.portfolio.as_ref().and_then(|p| p.rows.iter().find(|r| r.key == AssetKey::Quai)).and_then(|r| r.price_usd);
+    let quai_usd = app.eco.portfolio.value().and_then(|p| p.rows.iter().find(|r| r.key == AssetKey::Quai)).and_then(|r| r.price_usd);
     // Value: the last priced total, moved by however much QUAI has changed since.
     let value = |id: &str| -> Option<f64> {
         let s = app.wallet_summaries.get(id)?;

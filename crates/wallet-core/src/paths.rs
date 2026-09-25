@@ -82,7 +82,12 @@ impl Paths {
     /// The running daemon's control socket (unlock, lock, status, stop). Beside its lock, in the
     /// user's private runtime directory.
     pub fn daemon_socket(&self) -> PathBuf {
-        runtime_dir().join(format!("daemon-{}.sock", dir_key(&self.root)))
+        socket_in(runtime_dir(), format!("daemon-{}.sock", dir_key(&self.root)))
+    }
+    /// The running daemon's engine socket: terminals attach here, and the engine (and the keys)
+    /// run in the daemon. Beside its control socket.
+    pub fn engine_socket(&self) -> PathBuf {
+        socket_in(runtime_dir(), format!("engine-{}.sock", dir_key(&self.root)))
     }
     /// What the running daemon watches and which wallets it holds unlocked (public: no amounts).
     pub fn daemon_state(&self) -> PathBuf {
@@ -139,6 +144,20 @@ pub fn runtime_dir() -> PathBuf {
     base.join(APP_DIR)
 }
 
+/// Longest socket path used: a socket's address holds 108 bytes on Linux and 104 on macOS.
+const SOCKET_PATH_MAX: usize = 100;
+
+/// A socket in the runtime directory — or, when that path would be too long for a socket's
+/// address (macOS keeps its temporary directory deep under `/var/folders`), in a short private
+/// directory under `/tmp`. The daemon and its clients compute the same path.
+fn socket_in(runtime: PathBuf, name: String) -> PathBuf {
+    let full = runtime.join(&name);
+    if full.as_os_str().len() <= SOCKET_PATH_MAX {
+        return full;
+    }
+    PathBuf::from("/tmp").join(format!("{APP_DIR}-{}", current_uid())).join(name)
+}
+
 /// The user this process runs as, for a temporary directory nobody else's fallback collides with.
 fn current_uid() -> String {
     // `id -u` without a libc dependency: the runtime directory is the authority when it exists,
@@ -177,6 +196,20 @@ pub fn validate_id(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A socket must fit a socket address. macOS's temporary directory is deep enough that the
+    /// runtime directory's path would not (the bind fails, and a terminal waits on a daemon
+    /// that never serves): those go under `/tmp` instead, and short paths stay where they are.
+    #[test]
+    fn sockets_fit_a_socket_address() {
+        let short = socket_in(PathBuf::from("/run/user/1000/quai-terminal"), "engine-0123456789abcdef.sock".into());
+        assert_eq!(short, PathBuf::from("/run/user/1000/quai-terminal/engine-0123456789abcdef.sock"));
+        let mac = PathBuf::from("/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/quai-terminal-someone/quai-terminal");
+        let moved = socket_in(mac, "engine-0123456789abcdef.sock".into());
+        assert!(moved.starts_with("/tmp"), "{}", moved.display());
+        assert!(moved.as_os_str().len() <= SOCKET_PATH_MAX);
+        assert!(moved.ends_with("engine-0123456789abcdef.sock"), "the name, and so the home it serves, is kept");
+    }
 
     /// The daemon lock lives outside the data directory, and one runtime directory can hold a
     /// lock per home. Copying a `QUAI_TERMINAL_HOME` — how this project is tested — must not

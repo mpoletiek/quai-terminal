@@ -110,12 +110,12 @@ impl App {
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                self.last_input = Instant::now();
+                self.note_input();
                 let delta = if m.kind == MouseEventKind::ScrollDown { WHEEL_ROWS } else { -WHEEL_ROWS };
                 self.wheel(x, y, delta);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.last_input = Instant::now();
+                self.note_input();
                 self.pointer.drag_x = Some(x);
                 self.pointer.pressed = if self.in_grace() { None } else { self.hits.borrow().at(x, y).cloned() };
                 self.pointer.pressed_link = if self.in_grace() { None } else { self.link_at(x, y) };
@@ -148,7 +148,7 @@ impl App {
                 self.dirty = true;
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                self.last_input = Instant::now();
+                self.note_input();
                 // Dragging the chart pans it: right looks further back, left comes forward.
                 if matches!(self.pointer.pressed, Some(Target::Scroll(Scroll::Chart))) {
                     if let Some(from) = self.pointer.drag_x {
@@ -168,7 +168,7 @@ impl App {
             // Right-click: the row under the pointer becomes the focus, and its actions open —
             // the same sheet space opens, so a menu never offers what the keys don't.
             MouseEventKind::Down(MouseButton::Right) => {
-                self.last_input = Instant::now();
+                self.note_input();
                 if self.in_grace() || !matches!(self.modal, Modal::None) {
                     return;
                 }
@@ -485,7 +485,7 @@ impl App {
         use super::app::Screen;
         let activity_key = |app: &App, i: usize| app.activity_rows().get(i).map(|r| app.activity_row_key(r));
         match list {
-            ListId::Screen(Screen::Home, 0) => self.eco.portfolio.as_ref().and_then(|p| p.rows.get(index)).map(|r| r.key.id()),
+            ListId::Screen(Screen::Home, 0) => self.eco.portfolio.value().and_then(|p| p.rows.get(index)).map(|r| r.key.id()),
             ListId::Screen(Screen::Home, _) | ListId::Screen(Screen::Activity, _) => activity_key(self, index),
             ListId::Screen(Screen::Accounts, _) => self.dash.accounts.get(index).map(|a| a.address.clone()),
             ListId::Screen(Screen::Qi, _) => self.dash.qi.as_ref().and_then(|q| q.coins.get(index)).map(|c| c.outpoint.clone()),
@@ -518,7 +518,7 @@ impl App {
     pub(crate) fn row_count(&self, list: ListId) -> usize {
         match list {
             ListId::Screen(screen, pane) if screen == self.screen && pane == self.pane => self.list_len(),
-            ListId::Screen(super::app::Screen::Home, 0) => self.eco.portfolio.as_ref().map_or(0, |p| p.rows.len()),
+            ListId::Screen(super::app::Screen::Home, 0) => self.eco.portfolio.value().map_or(0, |p| p.rows.len()),
             ListId::Screen(super::app::Screen::Home, _) => self.activity_rows().len(),
             ListId::Detail => self.detail_len(),
             ListId::Palette => match &self.modal {

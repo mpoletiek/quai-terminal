@@ -35,7 +35,7 @@ use app::App;
 use crossterm::event::Event;
 use std::time::{Duration, Instant};
 use wallet_core::{CoreError, Result};
-use worker::{Cmd, Ev, Worker};
+use worker::{Cmd, Ev};
 
 /// Give the terminal back as it was found (safe to call when not in the TUI, and from a panic).
 pub fn restore_terminal() {
@@ -103,7 +103,13 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     // Alerts, chats and notifications carry on after this window closes: start the daemon that
     // watches every wallet, unless it runs already or the user turned this off.
     // (`QUAI_TERMINAL_NO_DAEMON` keeps test harnesses from leaving one behind on a scratch copy.)
-    if ctx.config.daemon_autostart
+    // The engine runs in the daemon, which holds the keys; this process never does. Standalone
+    // (asked for, a test harness, or the daemon off and not running) keeps it here.
+    let standalone = ctx.global.standalone
+        || std::env::var_os("QUAI_TERMINAL_NO_DAEMON").is_some()
+        || (!ctx.config.daemon_autostart && !crate::daemon::daemon_running(&ctx.paths));
+    if standalone
+        && ctx.config.daemon_autostart
         && meta.is_some()
         && ctx.global.network.is_none()
         && std::env::var_os("QUAI_TERMINAL_NO_DAEMON").is_none()
@@ -181,7 +187,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         if app.worker.is_none()
             && let Some(meta) = app.meta.clone()
         {
-            match Worker::spawn(app.registry.clone(), app.config.clone(), meta, app.network_id.clone(), term::wake) {
+            match start_engine(&app, meta, standalone) {
                 Ok(w) => {
                     app.worker = Some(w);
                     app.start_data_worker();
@@ -202,7 +208,6 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         if images::poll_fitted(&app) {
             app.dirty = true;
         }
-        app.poll_unlock();
         app.poll_monitor_check();
         app.poll_ipfs_check();
 
@@ -221,7 +226,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         let size = term.ui.size().map(|s| (s.width, s.height)).unwrap_or((80, 24));
         let mut events = Vec::new();
         if let Some(w) = &app.worker {
-            while let Ok(ev) = w.rx.try_recv() {
+            while let Some(ev) = w.try_recv() {
                 events.push(ev);
             }
         }
@@ -608,6 +613,24 @@ pub async fn run(ctx: Ctx) -> Result<()> {
 /// TUI tests that read or change the process-wide IPFS gateway take this, so they do not race.
 #[cfg(test)]
 pub(crate) static IPFS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// This terminal's engine: in the daemon, which holds the keys, or in this process when
+/// standalone.
+fn start_engine(app: &App, meta: wallet_core::registry::WalletMeta, standalone: bool) -> std::io::Result<quai_engine::client::Engine> {
+    use quai_engine::client::{Dialer, Engine, Remote};
+    if standalone {
+        let host =
+            quai_engine::host::Host::attach(app.registry.clone(), app.config.clone(), "", false, meta, app.network_id.clone(), term::wake)?;
+        return Ok(Engine::Local(Box::new(host)));
+    }
+    let (paths, pid_paths) = (app.paths.clone(), app.paths.clone());
+    let dialer = Dialer {
+        socket: app.paths.engine_socket(),
+        daemon_pid: Box::new(move || crate::daemon::state(&pid_paths).map(|s| s.pid)),
+        ensure_daemon: Box::new(move || crate::daemon::ensure_current(&paths, 20).map(|_| ()).map_err(|e| e.to_string())),
+    };
+    Ok(Engine::Remote(Remote::connect(dialer, meta.id, app.network_id.clone(), term::wake)?))
+}
 
 #[cfg(test)]
 mod notice_tests {

@@ -15,7 +15,7 @@ use crate::registry::now;
 use crate::session::Session;
 use crate::tx::{Review, field};
 use quai_sdk::provider::{Log, LogFilter, LogRange, TopicMatch};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use zeroize::Zeroizing;
 
@@ -35,7 +35,7 @@ const UNSENT_AFTER: u64 = 3600;
 const PRIVATE_FIELDS: [&str; 3] = ["To", "Fingerprint", "Message"];
 
 /// What messaging needs before a message can go.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyNeed {
     /// No messaging account on this network.
@@ -51,7 +51,7 @@ pub enum KeyNeed {
 }
 
 /// Where messaging stands, for `message status` and the TUI.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status {
     pub account: Option<String>,
     pub need: KeyNeed,
@@ -81,7 +81,7 @@ pub struct SyncReport {
 }
 
 /// One conversation in the list.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Conversation {
     pub peer: String,
     /// The contact's name, when the address is in the address book.
@@ -96,7 +96,7 @@ pub struct Conversation {
 }
 
 /// One message as shown.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Line {
     pub at: u64,
     pub outgoing: bool,

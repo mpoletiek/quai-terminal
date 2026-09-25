@@ -45,7 +45,7 @@ fn every_collected_tile_gets_its_picture() {
         };
         items.push(OwnedNft { item, owner: "0x00".into(), kind: TokenKind::Erc721, quantity: "1".into(), verified: true });
     }
-    app.eco.nfts = Some(Ok(items));
+    app.eco.nfts.settle(Ok(items));
     app.switch(Screen::Collected);
     let mut term = Terminal::new(TestBackend::new(160, 48)).unwrap();
     // Pictures are fitted and encoded off the UI thread: the first frame reserves their cells, and

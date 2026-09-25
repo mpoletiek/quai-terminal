@@ -1,5 +1,6 @@
 use wallet_core::journal::OpKind;
 use super::*;
+use super::super::worker::Worker;
 use wallet_core::sdk::U256;
 
 #[test]
@@ -159,7 +160,7 @@ fn review_requires_scroll() {
 fn a_risky_review_signs_only_with_its_words() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     let (worker, commits) = Worker::capture_commits();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     let review = Review {
         op_id: "r1".into(),
         kind: OpKind::ContractCall,
@@ -399,7 +400,7 @@ fn listing_runs_as_a_sequence_and_cancel_is_one_step() {
         quantity: "1".into(),
         verified: true,
     };
-    app.eco.nfts = Some(Ok(vec![item("224", TokenKind::Erc721), item("5", TokenKind::Erc1155)]));
+    app.eco.nfts.settle(Ok(vec![item("224", TokenKind::Erc721), item("5", TokenKind::Erc1155)]));
     app.open_nft_list("0x0046e5085a830567f647fe52672926bedc8d5c55", "5");
     assert!(matches!(app.modal, Modal::None), "ERC-1155 items are not listed on Zora asks");
     app.open_nft_list("0x0046e5085a830567f647fe52672926bedc8d5c55", "224");
@@ -1044,7 +1045,7 @@ fn the_token_picker_only_offers_pairs_that_have_a_route() {
     }
     // A token with no pool anywhere cannot be chosen.
     app.eco.markets = vec![];
-    app.eco.portfolio = Some(wallet_core::portfolio::Portfolio {
+    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00dead".into()), "GHOST", "0", true)],
         ..Default::default()
     });
@@ -1076,7 +1077,7 @@ fn max_reserves_gas_for_quai_and_not_for_tokens() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     let quai = U256::from(100u64) * U256::from(10u128.pow(18));
-    app.eco.portfolio = Some(wallet_core::portfolio::Portfolio {
+    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![
             asset_row(wallet_core::portfolio::AssetKey::Quai, "QUAI", &quai.to_string(), true),
             asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", "12345", true),
@@ -1108,7 +1109,7 @@ fn percent_steps_through_shares_of_max() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
     let whole = (400u128 * 10u128.pow(18)).to_string();
-    app.eco.portfolio = Some(wallet_core::portfolio::Portfolio {
+    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", &whole, true)],
         ..Default::default()
     });
@@ -1129,7 +1130,7 @@ fn max_refuses_an_inexact_balance() {
     use wallet_core::swap::SwapAsset;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     with_pools(&mut app);
-    app.eco.portfolio = Some(wallet_core::portfolio::Portfolio {
+    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token("0x00a1".into()), "SMOL", "999", false)],
         ..Default::default()
     });
@@ -1492,7 +1493,7 @@ fn the_account_that_acts_is_chosen_with_at_and_followed_everywhere() {
     use wallet_core::markets::PoolToken;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     let (worker, prepared) = Worker::capture_prepares();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.dash.unlocked = true;
     let account = |label: &str, address: &str| wallet_core::session::AccountBalance {
         address: address.into(),
@@ -1541,7 +1542,7 @@ fn pool_keys_beat_the_app_verbs_they_share() {
     use wallet_core::markets::PoolToken;
     let (_dir, mut app) = test_app(WalletKind::Hd);
     let (worker, prepared) = Worker::capture_prepares();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.switch(Screen::Pools);
     app.dash.unlocked = true;
     let tok = |s: &str| PoolToken { address: format!("0x00{s}"), symbol: s.into(), decimals: 18 };
@@ -1645,6 +1646,9 @@ fn locked_hd_app() -> (tempfile::TempDir, App) {
     app.onboarding = None;
     app.locked = true;
     app.modal = Modal::None;
+    // A standalone engine whose worker runs nothing: the password is checked by the host alone.
+    let (worker, _) = Worker::capture();
+    app.use_worker(worker);
     (dir, app)
 }
 
@@ -1654,18 +1658,20 @@ fn type_text(app: &mut App, text: &str) {
     }
 }
 
-/// Wait for the password check running on its own thread.
+/// Wait for the engine's answer to the password.
 fn await_unlock(app: &mut App) {
     let started = Instant::now();
-    while app.unlock_check.is_some() {
+    while app.unlocking {
         assert!(started.elapsed() < std::time::Duration::from_secs(20), "the password check never answered");
         std::thread::sleep(std::time::Duration::from_millis(10));
-        app.poll_unlock();
+        while let Some(ev) = app.worker.as_ref().and_then(|w| w.try_recv()) {
+            app.on_event(ev, (100, 30));
+        }
     }
 }
 
-/// The lock screen checks the password itself, so an unlock never waits for the worker: it says
-/// it is unlocking at once, keeps a refusal readable, and opens without the worker's say-so.
+/// The engine's host checks the password, so an unlock never waits for the worker: the screen
+/// says it is unlocking at once, keeps a refusal readable, and opens without the worker's say-so.
 #[test]
 fn the_lock_screen_unlocks_without_the_worker() {
     let (_dir, mut app) = locked_hd_app();
@@ -1674,7 +1680,7 @@ fn the_lock_screen_unlocks_without_the_worker() {
     press(&mut app, KeyCode::Enter);
     // Submitted: said immediately, and the password is gone from the screen's own copy.
     assert!(app.unlocking, "the screen says it is unlocking");
-    assert!(app.unlock_check.is_some(), "checked off the render thread");
+    assert!(app.lock_error.is_none() && app.locked, "checked off the render thread, not answered yet");
     assert!(app.lock_input.is_empty());
     // Keys are ignored until it answers, so they cannot land in the next attempt.
     press(&mut app, KeyCode::Char('x'));
@@ -1689,12 +1695,31 @@ fn the_lock_screen_unlocks_without_the_worker() {
     // Background work reports busy, which must not take the error's place.
     app.on_event(Ev::Busy(Some("syncing…".into())), size);
     assert_eq!(app.lock_error.as_deref(), Some("That password didn't open this wallet. Caps Lock? (A damaged vault file looks the same.)"));
-    // Typing again clears it; the right password opens the wallet with no worker running at all.
+    // Typing again clears it; the right password opens the wallet while the worker runs nothing.
     type_text(&mut app, "password123");
     assert!(app.lock_error.is_none());
     press(&mut app, KeyCode::Enter);
     await_unlock(&mut app);
     assert!(!app.locked && !app.unlocking && app.lock_error.is_none());
+}
+
+/// The engine (in the daemon) went away with the keys: the screen locks at once, even mid-unlock,
+/// and the lock screen says why; once it is back, it says to unlock again.
+#[test]
+fn a_lost_engine_locks_the_screen_and_says_why() {
+    let (_dir, mut app) = locked_hd_app();
+    let size = (100, 30);
+    type_text(&mut app, "password123");
+    press(&mut app, KeyCode::Enter);
+    await_unlock(&mut app);
+    assert!(!app.locked);
+    app.on_event(Ev::EngineLost("the other end closed the connection".into()), size);
+    assert!(app.locked && !app.unlocking);
+    assert_eq!(app.lock_error.as_deref(), Some("The engine stopped; the keys went with it."));
+    assert!(app.log.iter().any(|t| t.text.contains("closed the connection")), "the reason is in the log");
+    app.on_event(Ev::EngineBack, size);
+    assert!(app.locked, "back, but still locked: the new engine holds no keys");
+    assert_eq!(app.lock_error.as_deref(), Some("Reconnected. Unlock to sign again."));
 }
 
 /// A switch locks the screen at once. The worker confirms it later, possibly after the new wallet
@@ -1774,7 +1799,7 @@ fn sections_tabs_and_detail_stack() {
     press(&mut app, KeyCode::Tab);
     assert_eq!((app.screen, app.pane), (Screen::Home, 1));
     // Detail stack: Enter pushes, Esc pops.
-    app.eco.portfolio = Some(wallet_core::portfolio::Portfolio {
+    app.eco.portfolio.set(wallet_core::portfolio::Portfolio {
         rows: vec![wallet_core::portfolio::AssetRow {
             key: wallet_core::portfolio::AssetKey::Quai,
             symbol: "QUAI".into(),
@@ -1838,10 +1863,10 @@ fn launches_trade_on_the_curve_while_a_token_is_bonding() {
         curve: Some("0x004ce1cbb33cad511b79d52c6e1118ce4eb60db3".into()),
         ..Default::default()
     };
-    app.eco.launches = Some(Ok(vec![launch("CHEEZ", Phase::Bonding), launch("QOGE", Phase::Graduated)]));
+    app.eco.launches.set(vec![launch("CHEEZ", Phase::Bonding), launch("QOGE", Phase::Graduated)]);
     let e18 = |n: u128| wallet_core::sdk::U256::from(n) * wallet_core::sdk::U256::from(10u128.pow(18));
     let token = app.launch_rows()[0].token.clone();
-    app.eco.curves.insert(
+    app.eco.curves.settle(
         token.clone(),
         Ok(wallet_core::curve::CurveMarket { token_decimals: 18, token: token.clone(), held: e18(1_250), ..Default::default() }),
     );
@@ -2147,7 +2172,7 @@ fn the_wallet_cockpit_adds_up_every_wallet() {
     wallet_core::cockpit::save_summary(&app.paths, &other.id, &priced(vec![quai.clone()]));
     let mine = app.meta.as_ref().unwrap().id.clone();
     wallet_core::cockpit::save_summary(&app.paths, &mine, &priced(vec![quai.clone()]));
-    app.eco.portfolio = Some(priced(vec![quai]));
+    app.eco.portfolio.set(priced(vec![quai]));
     app.switch(Screen::Wallets);
     app.load_wallets();
     // The savings wallet has since received 20 QUAI: at $0.50 that is $10 more.
@@ -2349,7 +2374,7 @@ fn tab_into_the_pinned_chat_and_post() {
 fn channel_offers_are_accepted_only_after_asking() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     let (worker, mut sent) = Worker::capture();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.dash.unlocked = true;
     let offer = |code: &str, qits: u64| wallet_core::ops::ChannelOffer {
         code: code.into(),
@@ -2390,7 +2415,7 @@ fn channel_offers_are_accepted_only_after_asking() {
 fn the_channels_cursor_follows_the_sender_across_a_refresh() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     let (worker, mut sent) = Worker::capture();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.dash.unlocked = true;
     let offer = |code: &str, first_seen: u64| wallet_core::ops::ChannelOffer {
         code: code.into(),
@@ -3048,15 +3073,14 @@ fn switching_wallets_reloads_the_screen_you_are_on() {
     // On Collected, with NFTs already loaded for this wallet.
     app.dash.accounts = vec![account("0x002360Bc8E2A359bE7335B06De43F1c7F040f15a")];
     app.switch(Screen::Collected);
-    app.eco.nfts = Some(Ok(Vec::new()));
-    app.eco.nfts_loading = false;
+    app.eco.nfts.settle(Ok(Vec::new()));
 
     // A switch to another wallet: the cached view goes, and so do the accounts until the new
     // wallet's dashboard lands.
     app.eco = super::super::eco::Eco::default();
     app.dash.accounts.clear();
     app.reload_view_on_accounts = true;
-    assert!(app.eco.nfts.is_none());
+    assert!(app.eco.nfts.latest().is_none());
 
     // The dashboard for the new wallet arrives with its accounts.
     let mut dash = app.dash.clone();
@@ -3064,14 +3088,14 @@ fn switching_wallets_reloads_the_screen_you_are_on() {
     app.on_event(super::super::worker::Ev::Dashboard(Box::new(dash)), (120, 40));
 
     assert!(!app.reload_view_on_accounts, "the flag was not consumed");
-    assert!(app.eco.nfts_loading, "the open screen never asked for the new wallet's NFTs");
+    assert!(app.eco.nfts.loading(), "the open screen never asked for the new wallet's NFTs");
 
     // And it does not fire again on every later dashboard.
-    app.eco.nfts_loading = false;
+    app.eco.nfts.settle(Ok(Vec::new()));
     let mut again = app.dash.clone();
     again.accounts = vec![account("0x0011223344556677889900112233445566778899")];
     app.on_event(super::super::worker::Ev::Dashboard(Box::new(again)), (120, 40));
-    assert!(!app.eco.nfts_loading, "a later refresh re-requested a view that was already loaded");
+    assert!(!app.eco.nfts.loading(), "a later refresh re-requested a view that was already loaded");
 }
 
 /// A quote fills in the tolerance the card cannot guess. It starts at zero — which
@@ -3203,15 +3227,15 @@ fn the_trade_window_widens_until_it_holds_a_sale() {
     // Nothing at all: the longest window, so the label never claims a week it cannot back.
     assert_eq!(app.eco.trade_window_days(), 365, "no sales falls back to the longest");
     // A sale inside the week keeps the week.
-    app.eco.nft_trades = vec![sale(3, 50.0)];
+    app.eco.nft_trades.set(vec![sale(3, 50.0)]);
     assert_eq!(app.eco.trade_window_days(), 7);
     // The real shape on 2026-09-21: nothing in seven days, three in thirty.
-    app.eco.nft_trades = vec![sale(10, 50.0), sale(12, 350.0), sale(29, 50.0)];
+    app.eco.nft_trades.set(vec![sale(10, 50.0), sale(12, 350.0), sale(29, 50.0)]);
     assert_eq!(app.eco.trade_window_days(), 30, "widened past the empty week");
     let (volume, sales) = app.eco.nft_window("0x00aa", app.eco.trade_window_days());
     assert_eq!((volume, sales), (450.0, 3), "and the widened window is the one the rows count in");
     // Older still: 90 days.
-    app.eco.nft_trades = vec![sale(60, 5.0)];
+    app.eco.nft_trades.set(vec![sale(60, 5.0)]);
     assert_eq!(app.eco.trade_window_days(), 90);
 }
 
@@ -3244,7 +3268,7 @@ fn explore_shows_recent_buys_beside_the_directory() {
     app.switch(Screen::Explore);
     // Nothing traded: no tape, and the directory keeps the whole width.
     assert!(!draw(&mut app, 160).contains("recent buys"), "an empty tape is not worth the columns");
-    app.eco.nft_trades = vec![sale("ELEPHANT", 50.0, "0x00cc", 4), sale("SQUID", 350.0, "0x00dd", 9)];
+    app.eco.nft_trades.set(vec![sale("ELEPHANT", 50.0, "0x00cc", 4), sale("SQUID", 350.0, "0x00dd", 9)]);
     let wide = draw(&mut app, 160);
     assert!(wide.contains("recent buys · 2"), "the tape is there with its count");
     assert!(wide.contains("ELEPHANT") && wide.contains("350 QUAI"), "newest first, with prices: {wide:.0}");
@@ -3304,7 +3328,7 @@ fn launches_lead_with_the_curve_nearest_graduation_and_drop_what_markets_already
         progress_bps: bps,
         ..Default::default()
     };
-    app.eco.launches = Some(Ok(vec![
+    app.eco.launches.set(vec![
         // Past its curve, and `with_pools` lists a SMOL pair: Markets has it, so it goes.
         launch("0x00a1", "SMOL", Phase::Pooled, Some(10_000)),
         launch("0x00c1", "EARLY", Phase::Bonding, Some(1_200)),
@@ -3313,7 +3337,7 @@ fn launches_lead_with_the_curve_nearest_graduation_and_drop_what_markets_already
         launch("0x00c3", "NEARLY", Phase::Bonding, Some(9_400)),
         // A launchpad that would not say how far along it is sorts below the ones that did.
         launch("0x00c4", "UNKNOWN", Phase::Bonding, None),
-    ]));
+    ]);
     let shown: Vec<String> = app.launch_rows().iter().map(|l| l.symbol.clone()).collect();
     assert_eq!(shown, vec!["NEARLY", "EARLY", "UNKNOWN", "ORPHAN"], "stage order, and SMOL is a market now");
     // A graduated token reads as 100%: it must not outrank a curve still raising, or the screen
@@ -3341,11 +3365,11 @@ fn launches_keep_the_cursor_on_its_token_when_the_list_reorders() {
         progress_bps: Some(bps),
         ..Default::default()
     };
-    app.eco.launches = Some(Ok(vec![
+    app.eco.launches.set(vec![
         launch("0x00a1", "SMOL", Phase::Pooled, 10_000),
         launch("0x00c1", "EARLY", Phase::Bonding, 1_200),
         launch("0x00c3", "NEARLY", Phase::Bonding, 9_400),
-    ]));
+    ]);
     app.switch(Screen::Launches);
     app.selected = 1;
     let on = |app: &App| app.launch_rows().get(app.selected).map(|l| l.symbol.clone());
@@ -3484,7 +3508,7 @@ fn the_swap_card_trades_on_the_curve_when_it_pays_more() {
     app.eco.swap.requested_input = app.swap_input_key();
     app.eco.swap.quoted_at = Some(std::time::Instant::now());
     let (worker, prepared) = Worker::capture_prepares();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.dash.unlocked = true;
     app.swap_submit();
     let got = prepared.recv_timeout(std::time::Duration::from_secs(2));
@@ -4506,7 +4530,7 @@ fn active_orders_are_rechecked_every_thirty_seconds() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.config.features.trading = true;
     let (worker, mut sent) = Worker::capture();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     while sent.try_recv().is_ok() {}
     let mut watches = || {
         let mut n = 0;
@@ -4618,7 +4642,7 @@ fn a_reachable_order_reaches_the_desktop_once() {
 fn accounts_import_a_key_or_watch_an_address() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     let (worker, mut sent) = Worker::capture();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.switch(Screen::Accounts);
     while sent.try_recv().is_ok() {}
     app.run_action("import_key");
@@ -4643,7 +4667,7 @@ fn accounts_import_a_key_or_watch_an_address() {
 
     let (_dir, mut app) = test_app(WalletKind::Watch);
     let (worker, mut sent) = Worker::capture();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.switch(Screen::Accounts);
     app.run_action("import_key");
     assert!(!matches!(app.modal, Modal::Form(_)), "a watch-only wallet has no vault to seal a key into");
@@ -4911,7 +4935,7 @@ fn a_new_block_refreshes_what_is_on_screen_at_once() {
     app.tick_eco();
     assert!(!app.eco.markets_view.reserves_loading, "within its pace, nothing is asked between blocks");
     app.on_event(Ev::Head(10_300_000), (160, 48));
-    assert_eq!(app.eco.head, 10_300_000);
+    assert_eq!(app.eco.clock.head, 10_300_000);
     assert!(app.eco.markets_view.reserves_loading, "the block asked for reserves at once");
     assert!(app.eco.markets_view.flow_loading, "and for the tape");
     // The same height again is not a new block.

@@ -132,6 +132,14 @@ const RATCHETS: &[(&str, &[&str], &[&str], usize)] = &[
     ),
     // Phase 3: every card, form and sequence acts from `Dashboard::active_account()`.
     ("the TUI acting from the first account", &["crates/quai-terminal/src/tui"], &["dash.accounts.first()"], 0),
+    // Phase 5: the engine checks passwords and holds keys (in the daemon, or in a standalone
+    // host); the TUI hands a password over and never opens a vault or holds keys itself.
+    (
+        "the TUI unlocking or holding keys",
+        &["crates/quai-terminal/src/tui"],
+        &["registry.unlock(", ".unlock_current(", "Cmd::UseKeys", ".use_keys(", "identity::Unlocked", "custody::"],
+        0,
+    ),
 ];
 
 #[test]

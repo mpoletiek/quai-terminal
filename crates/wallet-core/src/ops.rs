@@ -40,7 +40,7 @@ pub struct QiSweepQuote {
 }
 
 /// Current-fee, exact-qit MAX fill. This is an advisory observation, never a signable review.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QiSpecialMax {
     pub amount: String,
     pub amount_qits: String,
@@ -98,7 +98,7 @@ pub struct TokenBalance {
 }
 
 /// Payment-channel peer view.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerView {
     /// Peer payment code.
     pub code: String,
@@ -111,7 +111,7 @@ pub struct PeerView {
 }
 
 /// One message in a sealed conversation, as the wallet shows it.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SealedLine {
     /// Unix seconds.
     pub at: u64,
@@ -128,7 +128,7 @@ pub struct SealedLine {
 }
 
 /// Conversion quote with settlement-risk scenarios.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConversionQuote {
     /// `quai_to_qi` or `qi_to_quai`.
     pub direction: String,
@@ -184,7 +184,7 @@ pub const SLIPPAGE_MARGIN_BPS: u16 = 50;
 pub const SATURATED_BPS: u16 = 9000;
 
 /// The node refuses conversions in two hard-coded windows after each k-Quai controller change.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConversionHold {
     /// Prime height at which the window closes and the same conversion becomes acceptable.
     pub until_prime: u64,
@@ -255,7 +255,7 @@ pub fn percent(bps: u16) -> String {
 }
 
 /// One batch-discount scenario.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RiskScenario {
     /// Description.
     pub label: String,

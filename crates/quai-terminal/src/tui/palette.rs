@@ -221,7 +221,7 @@ impl App {
                 run: Run::Term(i),
             });
         }
-        if let Some(p) = &self.eco.portfolio {
+        if let Some(p) = self.eco.portfolio.value() {
             for r in &p.rows {
                 let asset = match &r.key {
                     wallet_core::portfolio::AssetKey::Quai => SwapAsset::Quai,
@@ -335,7 +335,7 @@ impl App {
         match word {
             "quai" => Some(SendAsset::Quai),
             "qi" => Some(SendAsset::Qi),
-            _ => self.eco.portfolio.as_ref()?.rows.iter().find_map(|r| {
+            _ => self.eco.portfolio.value()?.rows.iter().find_map(|r| {
                 (matches!(r.key, wallet_core::portfolio::AssetKey::Token(_)) && r.symbol.eq_ignore_ascii_case(word))
                     .then(|| SendAsset::Token(r.symbol.clone()))
             }),
@@ -347,7 +347,7 @@ impl App {
         if word == "quai" {
             return Some(SwapAsset::Quai);
         }
-        let held = self.eco.portfolio.as_ref().and_then(|p| {
+        let held = self.eco.portfolio.value().and_then(|p| {
             p.rows.iter().find_map(|r| match &r.key {
                 wallet_core::portfolio::AssetKey::Token(a) if r.symbol.eq_ignore_ascii_case(word) => {
                     Some(SwapAsset::Token { address: a.to_lowercase(), symbol: r.symbol.clone(), decimals: r.decimals })

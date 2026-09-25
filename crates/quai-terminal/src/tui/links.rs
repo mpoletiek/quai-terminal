@@ -52,7 +52,7 @@ impl Known {
             Some(Ok((pools, _))) => pools.as_slice(),
             _ => &[],
         };
-        let held = app.eco.portfolio.as_ref().map(|p| p.rows.as_slice()).unwrap_or_default();
+        let held = app.eco.portfolio.value().map(|p| p.rows.as_slice()).unwrap_or_default();
         let key = (d.accounts.len(), d.ops.len(), d.activity.len(), d.contacts.len(), pools.len(), held.len(), app.network_id.clone());
         if key == self.key {
             return;

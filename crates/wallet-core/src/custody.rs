@@ -23,22 +23,39 @@ pub struct Custody {
     unlocked_at: std::sync::atomic::AtomicU64,
 }
 
-fn registry() -> &'static Mutex<HashMap<String, Weak<Custody>>> {
-    static REGISTRY: std::sync::OnceLock<Mutex<HashMap<String, Weak<Custody>>>> = std::sync::OnceLock::new();
+type Scoped = HashMap<(String, String), Weak<Custody>>;
+
+fn registry() -> &'static Mutex<Scoped> {
+    static REGISTRY: std::sync::OnceLock<Mutex<Scoped>> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// The custody of `wallet` in this process: the one every session of it shares.
 pub fn for_wallet(wallet: &str) -> Arc<Custody> {
+    for_wallet_in("", wallet)
+}
+
+/// The custody of `wallet` in one scope. The daemon hosts an engine for each client that
+/// attaches; each client's sessions share keys among themselves and with nobody else, so a
+/// process that connects without the password can never sign with keys another one unlocked.
+/// The empty scope is this process's own (the CLI, the daemon's watcher, a standalone TUI).
+pub fn for_wallet_in(scope: &str, wallet: &str) -> Arc<Custody> {
     let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = map.get(wallet).and_then(Weak::upgrade) {
+    let key = (scope.to_string(), wallet.to_string());
+    if let Some(existing) = map.get(&key).and_then(Weak::upgrade) {
         return existing;
     }
     map.retain(|_, weak| weak.strong_count() > 0);
     let custody =
         Arc::new(Custody { wallet: wallet.to_string(), slot: RwLock::new(None), unlocked_at: std::sync::atomic::AtomicU64::new(0) });
-    map.insert(wallet.to_string(), Arc::downgrade(&custody));
+    map.insert(key, Arc::downgrade(&custody));
     custody
+}
+
+/// The custody of `wallet` in `scope`, only if some session holds it open.
+pub fn existing(scope: &str, wallet: &str) -> Option<Arc<Custody>> {
+    let map = registry().lock().unwrap_or_else(|e| e.into_inner());
+    map.get(&(scope.to_string(), wallet.to_string())).and_then(Weak::upgrade)
 }
 
 impl Custody {
@@ -51,6 +68,14 @@ impl Custody {
     pub fn install(&self, unlocked: Unlocked) {
         let mut slot = self.slot.write().unwrap_or_else(|e| e.into_inner());
         *slot = Some(Arc::new(unlocked));
+        self.unlocked_at.store(crate::registry::now(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Hold keys another scope holds too: the same keys, not a copy. Each scope's lock lets go of
+    /// its reference; the keys leave memory once no scope holds them.
+    pub fn install_shared(&self, unlocked: Arc<Unlocked>) {
+        let mut slot = self.slot.write().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(unlocked);
         self.unlocked_at.store(crate::registry::now(), std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -91,5 +116,24 @@ mod tests {
         // Once every holder is gone, a later session starts a fresh (locked) custody.
         drop((a, again));
         assert!(!for_wallet("custody-test-a").is_unlocked());
+    }
+
+    #[test]
+    fn scopes_are_apart_and_shared_keys_live_until_the_last_scope_lets_go() {
+        let own = for_wallet("custody-test-c");
+        let client = for_wallet_in("engine:1", "custody-test-c");
+        let other = for_wallet_in("engine:2", "custody-test-c");
+        assert!(!Arc::ptr_eq(&own, &client));
+        assert!(Arc::ptr_eq(&client, &existing("engine:1", "custody-test-c").unwrap()));
+        assert!(existing("engine:9", "custody-test-c").is_none());
+        let keys = Arc::new(Unlocked::new(wallet_vault::Secrets { mnemonic: None, imported: Vec::new() }).unwrap());
+        client.install_shared(keys.clone());
+        own.install_shared(keys.clone());
+        assert!(client.is_unlocked() && own.is_unlocked());
+        assert!(!other.is_unlocked(), "another client never sees them");
+        client.clear();
+        assert!(own.is_unlocked(), "a client's lock leaves the daemon's reference");
+        own.clear();
+        assert_eq!(Arc::strong_count(&keys), 1, "no scope holds them any more");
     }
 }

@@ -38,7 +38,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, "portfolio", false);
     let inner = block.inner(top);
     f.render_widget(block, top);
-    match (&app.eco.portfolio, &app.eco.portfolio_error) {
+    match (app.eco.portfolio.value(), app.eco.portfolio.error()) {
         (Some(p), _) => {
             let pools = app.pools_usd();
             let total = amount::usd(p.total_usd + pools);
@@ -143,7 +143,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 }
             }
             // NFT thumbnails (reference only, never in the total) on the right when there is room.
-            let thumbs: Vec<(String, String, String, String)> = match &app.eco.nfts {
+            let thumbs: Vec<(String, String, String, String)> = match app.eco.nfts.latest() {
                 Some(Ok(v)) if app.config.features.nfts && app.config.images && !app.plain => v
                     .iter()
                     .filter_map(|n| {
@@ -320,7 +320,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             Span::raw("recovery phrase not verified"),
         ]));
     }
-    if let Some(p) = &app.eco.portfolio {
+    if let Some(p) = app.eco.portfolio.value() {
         if p.stale {
             items.push(Line::from(vec![
                 Span::styled(t.lead(Icon::Stale), t.dim_style()),
@@ -395,11 +395,11 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 /// The holdings table. Lives on Home, which is the only place it is drawn.
 pub fn draw_holdings(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: bool) {
-    let Some(p) = &app.eco.portfolio else {
+    let Some(p) = app.eco.portfolio.value() else {
         let block = panel(t, "holdings", focused);
         let inner = block.inner(area);
         f.render_widget(block, area);
-        match &app.eco.portfolio_error {
+        match app.eco.portfolio.error() {
             Some(e) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "refresh")]),
             None => empty_state(f, inner, t, spinner(), "Pricing your holdings…", &[]),
         }
@@ -719,7 +719,7 @@ pub(crate) fn draw_value_chart(
 }
 
 pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect, id: &str) {
-    let row = app.eco.portfolio.as_ref().and_then(|p| p.rows.iter().find(|r| r.key.id() == id));
+    let row = app.eco.portfolio.value().and_then(|p| p.rows.iter().find(|r| r.key.id() == id));
     let Some(r) = row else {
         let block = panel(t, id, true);
         let inner = block.inner(area);
@@ -794,7 +794,7 @@ pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect,
         lines.push(Line::from(Span::styled("~ balance from the indexer; the node could not be read", Style::default().fg(t.attention))));
     }
     if id == "quai"
-        && let Some(p) = &app.eco.portfolio
+        && let Some(p) = app.eco.portfolio.value()
         && !p.history.is_empty()
     {
         lines.push(Line::from(""));

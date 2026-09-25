@@ -60,6 +60,10 @@ pub struct Global {
     /// digits, no motion, ASCII marks. Every action also has a command (`--output json`).
     #[arg(long, global = true)]
     pub plain: bool,
+    /// Run the TUI's engine (and hold the wallet's keys) in this process instead of the daemon.
+    /// Also with `QUAI_TERMINAL_NO_DAEMON`, or when the daemon is off and not running.
+    #[arg(long, global = true)]
+    pub standalone: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

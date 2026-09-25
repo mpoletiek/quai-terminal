@@ -662,10 +662,10 @@ impl App {
         }
         if matches!(kind, OpKind::NftBuy | OpKind::NftTransfer) {
             self.eco.listings.clear();
-            if self.screen == Screen::Collected || self.eco.nfts.is_some() {
+            if self.screen == Screen::Collected || self.eco.nfts.latest().is_some() {
                 self.load_nfts(true);
             } else {
-                self.eco.nfts = None;
+                self.eco.nfts.clear();
             }
         }
     }

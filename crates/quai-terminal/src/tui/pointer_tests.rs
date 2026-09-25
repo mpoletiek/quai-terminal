@@ -210,7 +210,7 @@ fn a_click_right_after_a_modal_opens_is_ignored() {
 fn a_sensitive_confirmation_only_arms() {
     let (_dir, mut app, mut term) = setup();
     let (worker, mut sent) = super::super::worker::Worker::capture();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.modal = Modal::Confirm { title: "Accept".into(), body: "Accept?".into(), action: ConfirmAction::AcceptOffer("PM8T".into()) };
     frame(&mut app, &mut term);
     let yes = find(&app, |t| *t == Target::Confirm(true)).expect("yes");

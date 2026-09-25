@@ -17,7 +17,7 @@ use wallet_core::tx::{Review, Submitted};
 use zeroize::Zeroizing;
 
 /// Everything the UI displays, refreshed in the background.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Dashboard {
     pub meta: Option<WalletMeta>,
     pub network_id: String,
@@ -279,7 +279,7 @@ pub enum Prepare {
 }
 
 /// A change to the chat subscriptions or the pin. `label` is how the chat reads in the toast.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ChatOp {
     Load,
     Toggle { target: String, label: String },
@@ -287,7 +287,7 @@ pub enum ChatOp {
 }
 
 /// Private messages (v3), on the wallet worker: its keys are sealed under the messaging account's.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MsgOp {
     /// Where messaging stands, conversations and requests, and `open`'s messages (marked read).
     /// `sync` reads the chain for new ones first.
@@ -309,6 +309,7 @@ pub enum MsgOp {
 }
 
 /// Commands from the UI.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Cmd {
     Order(crate::orders::Request),
     SplitQuote {
@@ -333,9 +334,10 @@ pub enum Cmd {
     /// Keys the UI unlocked itself, off this thread, for the wallet with this id: moved, not
     /// copied, into the wallet's custody. The password was checked there, so an unlock never
     /// waits behind a sync, and it is not kept: a network switch keeps the keys.
+    #[serde(skip)]
     UseKeys {
         wallet: String,
-        keys: Box<wallet_core::identity::Unlocked>,
+        keys: std::sync::Arc<wallet_core::identity::Unlocked>,
     },
     Lock,
     /// What is at a send destination: a plain account, or a contract and the ABI it publishes.
@@ -408,8 +410,10 @@ pub enum Cmd {
     },
     MarkRead,
     /// The signing lane broadcast a transaction: refresh now so it shows.
+    #[serde(skip)]
     Committed,
     /// The signing lane changed the journal (a review discarded): re-read it.
+    #[serde(skip)]
     Journal,
     /// Chat subscriptions and the pin: read them, toggle a subscription, or set the pin.
     Chat(ChatOp),
@@ -426,6 +430,7 @@ pub enum Cmd {
         epoch: u64,
     },
     /// The Qi lane finished a pass (see [`QiLane`]). Background: it never cuts a refresh short.
+    #[serde(skip)]
     QiSynced(QiDone),
     ExportPhrase(Zeroizing<String>),
     Backup {
@@ -484,6 +489,7 @@ impl Cmd {
 }
 
 /// Events back to the UI.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Ev {
     /// A new block at this height, as soon as the worker sees one.
     Head(u64),
@@ -526,6 +532,13 @@ pub enum Ev {
         ambiguous: bool,
     },
     Unlocked,
+    /// The password did not open the vault (or the host could not check it): still locked.
+    UnlockFailed(String),
+    /// The engine went away (the daemon stopped, or was replaced), and this client's keys with
+    /// it: the screen locks and says why. Said by the client, never sent by a host.
+    EngineLost(String),
+    /// The engine is back after [`Ev::EngineLost`], locked.
+    EngineBack,
     Locked,
     /// Keys arrived for a wallet this session no longer has open (its switch failed): they were
     /// dropped, and the screen must lock again rather than show a wallet that cannot sign.
@@ -588,6 +601,8 @@ pub struct Worker {
     sign: std::sync::mpsc::Sender<SignJob>,
     /// Sent transactions, watched until they are mined.
     pending: std::sync::mpsc::Sender<PendingJob>,
+    /// Where the worker's events go, for its host to add its own ([`Worker::say`]).
+    events: std::sync::mpsc::Sender<Ev>,
 }
 
 impl Worker {
@@ -601,6 +616,7 @@ impl Worker {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
         let (ev_tx, ev_rx) = std::sync::mpsc::channel::<Ev>();
         let lane_tx = cmd_tx.clone();
+        let events = ev_tx.clone();
         let sign = SignLane::spawn(registry.clone(), config.clone(), meta.id.clone(), network_id.clone(), ev_tx.clone(), cmd_tx.clone());
         let pending =
             PendingLane::spawn(registry.clone(), config.clone(), meta.id.clone(), network_id.clone(), ev_tx.clone(), cmd_tx.clone());
@@ -617,7 +633,34 @@ impl Worker {
             let messages = MsgLane::spawn(registry.clone(), config.clone(), ev_tx.clone());
             runtime.block_on(run(registry, config, meta, network_id, Inbox::new(cmd_rx), ev_tx, wake, lane, messages));
         })?;
-        Ok(Worker { tx: cmd_tx, rx: ev_rx, sign, pending })
+        Ok(Worker { tx: cmd_tx, rx: ev_rx, sign, pending, events })
+    }
+
+    /// Take the worker's events, for a host that forwards them from another thread. What is left
+    /// behind receives nothing.
+    pub fn take_events(&mut self) -> Receiver<Ev> {
+        std::mem::replace(&mut self.rx, std::sync::mpsc::channel().1)
+    }
+
+    /// Where the worker's events go, for a host's thread to add its own.
+    pub fn events(&self) -> std::sync::mpsc::Sender<Ev> {
+        self.events.clone()
+    }
+
+    /// Lock from another thread, as [`Cmd::Lock`] through [`Worker::send`] does: the signing
+    /// lane drops its reviews and the worker the keys. False once the worker is gone.
+    pub fn locker(&self) -> impl Fn() -> bool + Send + 'static {
+        let (sign, tx) = (self.sign.clone(), self.tx.clone());
+        move || {
+            let _ = sign.send(SignJob::Lock);
+            tx.send(Cmd::Lock).is_ok()
+        }
+    }
+
+    /// An event from the worker's host, in line with the worker's own.
+    pub fn say(&self, ev: Ev) {
+        let _ = self.events.send(ev);
+        crate::wake();
     }
 
     /// Send a command where it runs. Preparing, committing and discarding go to the
@@ -679,16 +722,16 @@ impl Worker {
     /// A worker whose commands land in the returned receiver; the lanes' go nowhere.
     pub fn capture() -> (Worker, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         let (tx, rx_cmd) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
-        let (_ev, rx) = std::sync::mpsc::channel::<Ev>();
+        let (events, rx) = std::sync::mpsc::channel::<Ev>();
         let (sign, _) = std::sync::mpsc::channel::<SignJob>();
         let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
-        (Worker { tx, rx, sign, pending }, rx_cmd)
+        (Worker { tx, rx, sign, pending, events }, rx_cmd)
     }
 
     /// A worker whose commits land in the returned receiver as (review, typed words).
     pub fn capture_commits() -> (Worker, std::sync::mpsc::Receiver<(String, Option<String>)>) {
         let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
-        let (_ev, rx) = std::sync::mpsc::channel::<Ev>();
+        let (events, rx) = std::sync::mpsc::channel::<Ev>();
         let (sign, jobs) = std::sync::mpsc::channel::<SignJob>();
         let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
         let (commits, out) = std::sync::mpsc::channel();
@@ -701,13 +744,13 @@ impl Worker {
                 }
             }
         });
-        (Worker { tx, rx, sign, pending }, out)
+        (Worker { tx, rx, sign, pending, events }, out)
     }
 
     /// A worker whose preparations land in the returned receiver; everything else goes nowhere.
     pub fn capture_prepares() -> (Worker, std::sync::mpsc::Receiver<Prepare>) {
         let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
-        let (_ev, rx) = std::sync::mpsc::channel::<Ev>();
+        let (events, rx) = std::sync::mpsc::channel::<Ev>();
         let (sign, jobs) = std::sync::mpsc::channel::<SignJob>();
         let (pending, _) = std::sync::mpsc::channel::<PendingJob>();
         let (prepares, out) = std::sync::mpsc::channel::<Prepare>();
@@ -721,7 +764,7 @@ impl Worker {
                 }
             }
         });
-        (Worker { tx, rx, sign, pending }, out)
+        (Worker { tx, rx, sign, pending, events }, out)
     }
 }
 
@@ -1719,7 +1762,7 @@ async fn run(
                 // Queued behind the switch that opened this wallet, so a mismatch means that
                 // switch failed; these keys are not this session's.
                 if session.meta.id == wallet {
-                    session.use_keys(*keys);
+                    session.use_shared_keys(keys);
                     dash.unlocked = true;
                 } else {
                     send(Ev::KeysRefused);
@@ -2527,10 +2570,10 @@ mod tests {
     #[test]
     fn transactions_go_to_their_own_lane() {
         let (tx, mut worker_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
-        let (_ev_tx, rx) = std::sync::mpsc::channel::<Ev>();
+        let (events, rx) = std::sync::mpsc::channel::<Ev>();
         let (sign, sign_rx) = std::sync::mpsc::channel::<SignJob>();
         let (pending, pending_rx) = std::sync::mpsc::channel::<PendingJob>();
-        let w = Worker { tx, rx, sign, pending };
+        let w = Worker { tx, rx, sign, pending, events };
         w.send(Cmd::Prepare(Prepare::FillGap { from: None }));
         w.send(Cmd::Commit("op".into()));
         w.send(Cmd::Discard("op".into()));

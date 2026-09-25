@@ -823,7 +823,7 @@ pub fn lag_warning(monitor: u64, rpc: u64, rpc_url: &str) -> Option<String> {
 }
 
 /// Result of checking a node against a profile.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeHealth {
     /// Network id.
     pub network: String,

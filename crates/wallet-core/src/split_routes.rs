@@ -57,7 +57,7 @@ pub struct SplitPlan {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SplitDecision {
     pub plan: Option<SplitPlan>,
     pub reason: String,

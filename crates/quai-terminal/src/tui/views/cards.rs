@@ -89,7 +89,7 @@ pub(crate) fn amount_span(t: &Theme, text: &str, focused: bool) -> Span<'static>
 }
 
 pub(crate) fn available(app: &App, asset: &SwapAsset) -> Option<String> {
-    let p = app.eco.portfolio.as_ref()?;
+    let p = app.eco.portfolio.value()?;
     let id = match asset {
         SwapAsset::Quai => "quai".to_string(),
         SwapAsset::Token { address, .. } => address.clone(),
@@ -110,7 +110,7 @@ pub(crate) fn asset_chip(app: &App, t: &Theme, asset: Option<&SwapAsset>) -> Vec
                 SwapAsset::Token { address, .. } => {
                     app.eco
                         .portfolio
-                        .as_ref()
+                        .value()
                         .and_then(|p| p.rows.iter().find(|r| r.key.id() == *address))
                         .is_some_and(|r| r.trust == Trust::Verified)
                         || app
@@ -764,7 +764,7 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, "trading PnL · in QUAI", true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let pnl = match &app.eco.pnl {
+    let pnl = match app.eco.pnl.latest() {
         None => return empty_state(f, inner, t, spinner(), "Reading this wallet's trades…", &[]),
         Some(Err(e)) => return empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]),
         Some(Ok(p)) if p.fills.is_empty() => {
@@ -801,7 +801,7 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             Line::from(vec![
                 Span::styled("net ", t.dim_style()),
                 Span::styled(format!("{} QUAI", num::minus(signed_text(pnl.net))), tone(pnl.net).add_modifier(Modifier::BOLD)),
-                Span::styled(if app.eco.pnl_loading { "  refreshing…" } else { "" }, t.dim_style()),
+                Span::styled(if app.eco.pnl.loading() { "  refreshing…" } else { "" }, t.dim_style()),
             ]),
             Line::from(vec![
                 Span::styled("realized ", t.dim_style()),
@@ -935,14 +935,14 @@ pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         area
     };
     let rows = app.launch_rows();
-    let heading = match &app.eco.launches {
+    let heading = match app.eco.launches.shown() {
         Some(Ok(list)) => format!("launch zone · {}", amount::count(list.len(), "token")),
         _ => "launch zone".into(),
     };
     let block = panel(t, &heading, true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    match &app.eco.launches {
+    match app.eco.launches.shown() {
         None => return empty_state(f, inner, t, spinner(), "Reading Quainance's launch zone…", &[]),
         Some(Err(e)) if rows.is_empty() => {
             return empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]);
@@ -959,7 +959,7 @@ pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         }
         _ => {}
     }
-    let quai_usd = app.eco.portfolio.as_ref().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+    let quai_usd = app.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
     let now = wallet_core::registry::now();
     // The name column and the age earn their place from 86 columns: below that the symbol and
     // numbers are what fit.
@@ -1038,7 +1038,7 @@ pub fn draw_launches(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     if let Some(selected) = rows.get(selected) {
         lines.push(Line::from(Span::styled(format!("price basis: {} · {}", selected.price_basis.label(), selected.token), t.dim_style())));
     }
-    if let Some(Err(e)) = &app.eco.launches {
+    if let Some(Err(e)) = app.eco.launches.shown() {
         lines.push(Line::from(Span::styled(
             format!("{} last refresh failed: {}", t.icon(Icon::Danger), truncate(&app::friendly_error(e), 60)),
             Style::default().fg(t.danger),
@@ -1058,14 +1058,14 @@ pub(crate) fn draw_curve(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(m) = app.focused_curve().filter(|m| m.token == l.token) else {
-        let text = match app.eco.curves.get(&l.token) {
+        let text = match app.eco.curves.get(&l.token).and_then(|r| r.shown()) {
             Some(Err(e)) => format!("{} {}", t.icon(Icon::Danger), truncate(&app::friendly_error(e), 70)),
             _ => format!("{} reading the curve…", spinner()),
         };
         f.render_widget(Paragraph::new(Span::styled(text, t.dim_style())), inner);
         return;
     };
-    let quai_usd = app.eco.portfolio.as_ref().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+    let quai_usd = app.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
     let usd = |q: f64| quai_usd.map(|u| format!(" · {}", amount::usd_price(q * u))).unwrap_or_default();
     let mut lines = vec![
         Line::from(vec![

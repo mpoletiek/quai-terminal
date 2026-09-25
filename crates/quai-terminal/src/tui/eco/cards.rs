@@ -33,7 +33,7 @@ impl App {
         let Some(hash) = self.dash.activity.iter().find(|a| a.key == k && a.asset != "QI").and_then(|a| a.tx_hash.clone()) else {
             return;
         };
-        if self.eco.tx_costs_asked.insert(hash.clone()) {
+        if self.eco.tx_costs.take_due(hash.clone(), fresh::TX_COST, &self.eco.clock) {
             self.send_data(DataCmd::TxCost(hash));
         }
     }
@@ -94,7 +94,7 @@ impl App {
         let focused = match (self.detail.last(), self.screen) {
             (Some(Detail::Asset(id)), _) => Some(id.clone()),
             (None, Screen::Home) if self.pane == 0 => {
-                self.eco.portfolio.as_ref().and_then(|p| p.rows.get(self.selected)).map(|r| r.key.id())
+                self.eco.portfolio.value().and_then(|p| p.rows.get(self.selected)).map(|r| r.key.id())
             }
             _ => None,
         };
@@ -116,7 +116,7 @@ impl App {
             "quai" => Some(SwapAsset::Quai),
             "qi" => None,
             address => {
-                let row = self.eco.portfolio.as_ref().and_then(|p| p.rows.iter().find(|r| r.key.id() == address));
+                let row = self.eco.portfolio.value().and_then(|p| p.rows.iter().find(|r| r.key.id() == address));
                 Some(SwapAsset::Token {
                     address: address.to_string(),
                     symbol: row.map(|r| r.symbol.clone()).unwrap_or_else(|| wallet_core::session::short_address(address)),
@@ -251,7 +251,7 @@ impl App {
             route: RouteState::Unknown,
         });
         let mut seen = std::collections::HashSet::new();
-        if let Some(p) = &self.eco.portfolio {
+        if let Some(p) = self.eco.portfolio.value() {
             for r in &p.rows {
                 if let AssetKey::Token(address) = &r.key
                     && seen.insert(address.clone())
@@ -365,7 +365,7 @@ impl App {
     /// figure is refused rather than filled: MAX from a rounded-up balance builds a transaction
     /// that reverts for insufficient funds.
     pub(crate) fn exact_balance(&self, asset: &SwapAsset) -> Option<(U256, u8)> {
-        let rows = &self.eco.portfolio.as_ref()?.rows;
+        let rows = &self.eco.portfolio.value()?.rows;
         let row = rows
             .iter()
             .find(|r| match (&r.key, asset) {

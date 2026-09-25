@@ -13,22 +13,29 @@ impl App {
 
     /// This wallet's listing of an item, when the indexer has it.
     pub fn my_listing(&self, contract: &str, token_id: &str) -> Option<Listing> {
-        match &self.eco.my_listings {
+        match self.eco.my_listings.latest() {
             Some(Ok(v)) => v.iter().find(|l| l.contract.eq_ignore_ascii_case(contract) && l.token_id == token_id).cloned(),
             _ => None,
         }
     }
 
+    /// Recent NFT sales, as last read.
+    pub fn nft_trades(&self) -> &[wallet_core::market::Trade] {
+        self.eco.trades()
+    }
+
     /// Keep the marketplace's own numbers current: floors and listing counts every 5 minutes,
     /// the sales history every 2. Both are one request for the whole market.
     pub fn load_nft_market(&mut self, force: bool) {
-        use std::time::Duration;
-        if force || self.eco.nft_stats_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
-            self.eco.nft_stats_at = Some(Instant::now());
+        let clock = self.eco.clock;
+        if force {
+            self.eco.nft_stats.begin(&clock);
+            self.eco.nft_trades.begin(&clock);
+        }
+        if force || self.eco.nft_stats.take_due(fresh::NFT_STATS, &clock) {
             self.send_data(DataCmd::CollectionStats);
         }
-        if force || self.eco.nft_trades_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) {
-            self.eco.nft_trades_at = Some(Instant::now());
+        if force || self.eco.nft_trades.take_due(fresh::NFT_TRADES, &clock) {
             self.send_data(DataCmd::NftTrades);
         }
     }
@@ -38,7 +45,7 @@ impl App {
         if owners.is_empty() || !self.config.features.nfts {
             return;
         }
-        self.eco.nfts_loading = true;
+        self.eco.nfts.begin(&self.eco.clock);
         self.send_data(DataCmd::Nfts { owners, refresh });
     }
 
@@ -70,7 +77,7 @@ impl App {
                 true
             }
             KeyCode::Char('R') => {
-                self.eco.collections_loading = true;
+                self.eco.collections.begin(&self.eco.clock);
                 self.send_data(DataCmd::Collections { query: None });
                 self.load_nft_market(true);
                 true
@@ -87,7 +94,7 @@ impl App {
     }
 
     pub(crate) fn transfer_selected_nft(&mut self) {
-        if let Some(Ok(items)) = &self.eco.nfts
+        if let Some(Ok(items)) = self.eco.nfts.latest()
             && let Some(n) = items.get(self.selected)
         {
             let (c, id) = (n.item.contract.clone(), n.item.token_id.clone());
@@ -100,12 +107,12 @@ impl App {
             self.toast("this wallet is watch-only", true);
             return;
         }
-        let held = matches!(&self.eco.nfts, Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id));
+        let held = matches!(self.eco.nfts.latest(), Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id));
         if !held {
             self.toast("this wallet does not hold that NFT", true);
             return;
         }
-        let multi = matches!(&self.eco.nfts, Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id && n.kind == wallet_core::explorer::TokenKind::Erc1155));
+        let multi = matches!(self.eco.nfts.latest(), Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id && n.kind == wallet_core::explorer::TokenKind::Erc1155));
         self.open_form(FormKind::NftTransfer { contract: contract.to_string(), token_id: token_id.to_string(), multi });
     }
 
@@ -183,7 +190,7 @@ impl App {
         {
             return item.image.clone();
         }
-        if let Some(Ok(v)) = &self.eco.nfts
+        if let Some(Ok(v)) = self.eco.nfts.latest()
             && let Some(n) = v.iter().find(|n| n.item.contract.eq_ignore_ascii_case(contract) && n.item.token_id == token_id)
             && n.item.image.is_some()
         {
@@ -217,7 +224,7 @@ impl App {
             self.toast("this wallet is watch-only", true);
             return;
         }
-        let held = match &self.eco.nfts {
+        let held = match self.eco.nfts.latest() {
             Some(Ok(v)) => v.iter().find(|n| n.item.contract == contract && n.item.token_id == token_id).cloned(),
             _ => None,
         };
@@ -250,7 +257,7 @@ impl App {
             self.toast("this wallet is watch-only", true);
             return;
         }
-        let held = match &self.eco.nfts {
+        let held = match self.eco.nfts.latest() {
             Some(Ok(v)) => v.iter().find(|n| n.item.contract == contract && n.item.token_id == token_id).cloned(),
             _ => None,
         };
@@ -269,7 +276,7 @@ impl App {
     }
 
     pub(crate) fn selected_nft(&self) -> Option<(String, String)> {
-        match &self.eco.nfts {
+        match self.eco.nfts.latest() {
             Some(Ok(items)) => items.get(self.selected).map(|n| (n.item.contract.clone(), n.item.token_id.clone())),
             _ => None,
         }

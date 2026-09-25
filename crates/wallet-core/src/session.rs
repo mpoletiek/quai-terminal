@@ -51,7 +51,7 @@ pub struct DashboardCache {
 }
 
 /// A Qi coin for display.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoinView {
     /// `txhash:index`.
     pub outpoint: String,
@@ -62,7 +62,7 @@ pub struct CoinView {
     /// Denomination index.
     pub denomination: u8,
     /// Unlock height.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub unlock_height: U256,
     /// Held by a pending wallet operation.
     pub reserved: bool,
@@ -76,7 +76,7 @@ pub struct CoinView {
 }
 
 /// Qi summary.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QiSummary {
     /// Exact buckets.
     pub balance: QiBalanceView,
@@ -87,22 +87,22 @@ pub struct QiSummary {
 }
 
 /// Serializable Qi balance buckets (Qits).
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct QiBalanceView {
     /// Total.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub total: U256,
     /// Spendable.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub spendable: U256,
     /// Reserved by pending operations.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub reserved: U256,
     /// Locked.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub locked: U256,
     /// Expired (not evaluated without a trim profile).
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub expired: U256,
 }
 
@@ -207,6 +207,7 @@ impl Session {
         let qi_store = SqliteStore::open(dir.join("qi.sqlite"), scope)?;
         let app = AppDb::open(&registry.paths().wallet_dir(&meta.id).join("app.sqlite"))?;
         let rpc = network.node()?;
+        let custody = crate::custody::for_wallet_in(registry.custody_scope(), &id);
         let mut session = Self {
             registry,
             config,
@@ -219,7 +220,7 @@ impl Session {
             quai_store,
             qi_store,
             app,
-            custody: crate::custody::for_wallet(&id),
+            custody,
             pending: HashMap::new(),
             preparing_plan: None,
             confirmations: HashMap::new(),
@@ -332,6 +333,24 @@ impl Session {
 
     /// Register every wallet account/key with the SDK stores for this network.
     pub fn sync_metadata(&mut self) -> Result<()> {
+        // Every session of a wallet does this as it opens, and they open together (the worker
+        // and its lanes, the daemon's watcher): whoever registers the addresses first moves the
+        // store on, and the others see a stale snapshot. They re-read and find nothing missing.
+        for attempt in 1..=8u64 {
+            if self.sync_metadata_once()? {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5 * attempt));
+        }
+        Err(CoreError::Storage("wallet state: another session kept changing it".into()))
+    }
+
+    /// One try at [`Session::sync_metadata`]: false when another session registered first.
+    fn sync_metadata_once(&mut self) -> Result<bool> {
+        let stale = |e: quai_sdk::wallet::storage::StorageError| match e {
+            quai_sdk::wallet::storage::StorageError::StaleSnapshot => Ok(false),
+            other => Err(CoreError::from(other)),
+        };
         let registered: std::collections::HashSet<Address> = self.quai_store.addresses()?.iter().map(PublicAddress::address).collect();
         let quai_account = self.meta.quai_account()?;
         let mut missing = Vec::new();
@@ -355,7 +374,9 @@ impl Session {
         }
         if !missing.is_empty() {
             let generation = self.quai_store.snapshot()?.generation;
-            self.quai_store.import_metadata(generation, &missing)?;
+            if let Err(e) = self.quai_store.import_metadata(generation, &missing) {
+                return stale(e);
+            }
         }
         let registered_qi: std::collections::HashSet<Address> = self.qi_store.addresses()?.iter().map(PublicAddress::address).collect();
         let mut missing_qi = Vec::new();
@@ -369,9 +390,11 @@ impl Session {
         }
         if !missing_qi.is_empty() {
             let generation = self.qi_store.snapshot()?.generation;
-            self.qi_store.import_metadata(generation, &missing_qi)?;
+            if let Err(e) = self.qi_store.import_metadata(generation, &missing_qi) {
+                return stale(e);
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
     // ---------------- lock state ----------------
@@ -391,6 +414,12 @@ impl Session {
     /// the wallet id before handing them over.
     pub fn use_keys(&mut self, unlocked: Unlocked) {
         self.custody.install(unlocked);
+    }
+
+    /// [`Session::use_keys`] for keys another custody scope holds too (the daemon's, when the
+    /// user shares unlocks with it): the same keys, not a copy.
+    pub fn use_shared_keys(&mut self, unlocked: std::sync::Arc<Unlocked>) {
+        self.custody.install_shared(unlocked);
     }
 
     /// Close this session without locking the wallet: its unsigned reviews are discarded (their

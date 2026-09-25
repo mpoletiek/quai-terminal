@@ -427,7 +427,7 @@ const TVL_PRICE_OLD: u64 = 15 * 60;
 fn tvl_price_taken(app: &App, pool: &wallet_core::markets::Pool) -> Option<u64> {
     let wquai = app.net()?.wquai.clone()?;
     let quai_side = [&pool.token0, &pool.token1].iter().any(|t| t.address.eq_ignore_ascii_case(&wquai));
-    let board = app.eco.portfolio.as_ref()?.prices.as_ref()?;
+    let board = app.eco.portfolio.value()?.prices.as_ref()?;
     (quai_side && board.quai_usd.is_some() && board.taken_at > 0).then_some(board.taken_at)
 }
 
@@ -449,7 +449,7 @@ pub(crate) fn holding_line(
     bs: &str,
     qs: &str,
 ) -> String {
-    let Some(p) = &app.eco.portfolio else { return String::new() };
+    let Some(p) = app.eco.portfolio.value() else { return String::new() };
     let wquai = app.net().and_then(|n| n.wquai.clone()).map(|w| w.to_lowercase());
     let held = |tok: &wallet_core::markets::PoolToken| {
         p.rows

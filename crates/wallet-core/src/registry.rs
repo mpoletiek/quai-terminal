@@ -199,6 +199,9 @@ pub struct Registry {
     paths: Paths,
     kdf: KdfParams,
     allow_weak_kdf: bool,
+    /// Whose keys sessions opened through this registry share ([`crate::custody::for_wallet_in`]):
+    /// empty for this process's own, or one engine client's.
+    custody_scope: std::sync::Arc<str>,
 }
 
 /// The journal contains public metadata and an already authenticated encrypted vault only.
@@ -232,13 +235,24 @@ impl Registry {
             && ["QUAI_TERMINAL_INSECURE_FAST_KDF", "QUAI_WALLET_INSECURE_FAST_KDF"]
                 .iter()
                 .any(|name| std::env::var(name).is_ok_and(|v| v == "1"));
-        Self { paths, kdf: if fast { KdfParams::INSECURE_TEST } else { KdfParams::DEFAULT }, allow_weak_kdf: fast }
+        Self { paths, kdf: if fast { KdfParams::INSECURE_TEST } else { KdfParams::DEFAULT }, allow_weak_kdf: fast, custody_scope: "".into() }
     }
 
     /// Registry with cheap KDF parameters, for tests elsewhere in the crate.
     #[cfg(test)]
     pub(crate) fn fast(paths: Paths) -> Self {
-        Self { paths, kdf: KdfParams::INSECURE_TEST, allow_weak_kdf: true }
+        Self { paths, kdf: KdfParams::INSECURE_TEST, allow_weak_kdf: true, custody_scope: "".into() }
+    }
+
+    /// This registry, for sessions whose keys are held apart from every other scope's: one engine
+    /// client's unlock never lets another client (or the daemon's watcher) sign.
+    pub fn scoped(&self, scope: &str) -> Self {
+        Self { custody_scope: scope.into(), ..self.clone() }
+    }
+
+    /// The custody scope sessions opened through this registry share.
+    pub fn custody_scope(&self) -> &str {
+        &self.custody_scope
     }
 
     /// Paths.

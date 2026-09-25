@@ -246,7 +246,7 @@ pub struct Record {
     pub notified_at: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Create {
     pub account: Option<String>,
     pub from: String,

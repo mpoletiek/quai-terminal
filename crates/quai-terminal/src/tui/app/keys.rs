@@ -54,7 +54,7 @@ impl App {
     pub fn list_len(&self) -> usize {
         match self.screen {
             Screen::Home if self.pane == 1 => self.activity_rows().len().min(12),
-            Screen::Home => self.eco.portfolio.as_ref().map_or(0, |p| p.rows.len()) + self.home_positions().len(),
+            Screen::Home => self.eco.portfolio.value().map_or(0, |p| p.rows.len()) + self.home_positions().len(),
             Screen::Pools => self.eco.pools_view.positions.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, Vec::len),
             Screen::Accounts => self.dash.accounts.len(),
             Screen::Activity => self.activity_rows().len(),
@@ -83,7 +83,7 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
-        self.last_input = Instant::now();
+        self.note_input();
         self.dirty = true;
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if matches!(self.modal, Modal::Review(_) | Modal::Form(_)) {

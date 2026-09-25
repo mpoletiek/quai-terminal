@@ -4,7 +4,7 @@
 use crate::worker::Ev;
 use wallet_core::{Result, orders, session::Session};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Request {
     List,
     Create(orders::Create),

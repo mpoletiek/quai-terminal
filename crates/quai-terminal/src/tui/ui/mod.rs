@@ -920,7 +920,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
     if let Some(h) = &d.health {
         // The block the worker announced as soon as it saw it, not the one its last refresh
         // finished reading: the header says where the chain is, and every screen follows it.
-        let height = h.height.max(app.eco.head);
+        let height = h.height.max(app.eco.clock.head);
         segs.push(Seg {
             joined: Some(node_at),
             ..seg(

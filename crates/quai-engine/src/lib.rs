@@ -4,9 +4,14 @@
 //!
 //! See docs/ARCHITECTURE_REVIEW_2026-09-24.md §5.
 
+pub mod client;
 pub mod data;
+pub mod host;
 pub mod messaging;
 pub mod orders;
+pub mod protocol;
+pub mod resource;
+pub mod server;
 pub mod worker;
 
 use std::sync::OnceLock;

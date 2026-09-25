@@ -203,8 +203,7 @@ impl App {
                 }
             }
             Ev::Pnl(result) => {
-                self.eco.pnl_loading = false;
-                self.eco.pnl = Some(result.map(|p| *p));
+                self.eco.pnl.settle(result.map(|p| *p));
             }
             Ev::QiMax { key, result } => {
                 if self.eco.max_request != Some((key, self.max_identity())) {
@@ -282,7 +281,7 @@ impl App {
                 }
                 // Balances changed (a swap output, a claimed WQI, a transfer): rebuild the portfolio
                 // on the views that show it, without waiting for the view to be reopened.
-                if matches!(self.screen, Screen::Home | Screen::Swap) || self.eco.portfolio.is_none() {
+                if matches!(self.screen, Screen::Home | Screen::Swap) || self.eco.portfolio.value().is_none() {
                     self.maybe_refresh_portfolio(false);
                 }
                 self.preload();
@@ -457,7 +456,23 @@ impl App {
                 self.signing = b;
             }
             // A watch-only wallet opened by a switch: nothing to unlock.
-            Ev::Unlocked => self.show_unlocked(),
+            Ev::Unlocked => self.unlocked_by_engine(),
+            Ev::UnlockFailed(e) => self.unlock_failed(e),
+            Ev::EngineLost(why) => {
+                self.unlocking = false;
+                self.unlocking_since = None;
+                self.handoff_pending = None;
+                self.enter_lock(Some(size));
+                // Short enough for the lock box; the reason goes in the log.
+                self.lock_error = Some("The engine stopped; the keys went with it.".into());
+                self.toast(format!("engine stopped ({why}) · reconnecting"), true);
+            }
+            Ev::EngineBack => {
+                if self.locked {
+                    self.lock_error = Some("Reconnected. Unlock to sign again.".into());
+                }
+                self.toast("reconnected to the engine".to_string(), false);
+            }
             Ev::Locked => {
                 // The confirmation of a switch this screen already locked for. If that wallet was
                 // unlocked while the worker was still getting there, it stays unlocked.
@@ -674,7 +689,7 @@ impl App {
         }
         let newest_seen = self.dash.notifications.iter().map(|n| n.id).max().unwrap_or(0);
         if next.notifications.iter().any(|n| n.id > newest_seen && n.title == "NFT sold") {
-            self.eco.nfts = None;
+            self.eco.nfts.clear();
             self.load_my_listings();
             self.ring();
             return;
@@ -713,7 +728,7 @@ impl App {
                 let verified = self
                     .eco
                     .portfolio
-                    .as_ref()
+                    .value()
                     .and_then(|p| p.rows.iter().find(|r| r.key.id().to_lowercase() == token))
                     .is_some_and(|r| r.trust == wallet_core::portfolio::Trust::Verified);
                 verified
@@ -797,70 +812,52 @@ impl App {
         }
     }
 
-    /// Check a password on its own thread. The lock screen says it is unlocking meanwhile, and
-    /// [`App::poll_unlock`] takes the answer.
+    /// Hand a password to the engine, which checks it where the keys will live (the daemon, or
+    /// this process when standalone) off every UI path. The lock screen says it is unlocking
+    /// meanwhile; [`Ev::Unlocked`] or [`Ev::UnlockFailed`] is the answer.
     pub fn begin_unlock(&mut self, password: Zeroizing<String>) {
         let Some(meta) = self.meta.clone() else { return };
+        self.lock_error = None;
+        self.dirty = true;
+        let Some(engine) = &self.worker else {
+            self.lock_error = Some("the wallet is still starting — try again in a moment".into());
+            return;
+        };
         wallet_core::diag::begin("ux.unlock");
         self.unlocking = true;
         self.unlocking_since = Some(Instant::now());
-        self.lock_error = None;
-        self.dirty = true;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let registry = self.registry.clone();
-        let wallet = meta.id.clone();
-        let spawned = std::thread::Builder::new().name("wallet-unlock".into()).spawn(move || {
-            let answer = registry.unlock(&meta, &password).map(|keys| (keys, password)).map_err(|e| e.to_string());
-            let _ = tx.send(answer);
-        });
-        match spawned {
-            Ok(_) => self.unlock_check = Some((wallet, rx)),
-            Err(e) => {
-                self.unlocking = false;
-                self.unlocking_since = None;
-                self.lock_error = Some(format!("could not start unlocking: {e}"));
-            }
-        }
+        // Standalone, the daemon gets the password too when the user shares unlocks with it
+        // (once it opens the wallet here); a daemon-hosted engine shares the keys itself.
+        let starting = crate::daemon::STARTING.load(std::sync::atomic::Ordering::SeqCst);
+        self.handoff_pending = (!engine.is_remote()
+            && self.config.daemon_share_unlock
+            && (starting || crate::daemon::state(&self.paths).is_some_and(|d| !d.unlocked(&meta.id))))
+        .then(|| (meta.id.clone(), password.clone()));
+        engine.unlock(meta.id, password);
     }
 
-    /// Take a finished password check: unlock the screen and hand the keys to the worker, or say
-    /// why not.
-    pub fn poll_unlock(&mut self) {
-        let Some((wallet, rx)) = &self.unlock_check else { return };
-        let answer = match rx.try_recv() {
-            Ok(answer) => answer,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("unlocking stopped unexpectedly — try again".into()),
-        };
-        let wallet = wallet.clone();
-        self.unlock_check = None;
+    /// The engine opened the wallet: hand a standalone unlock to the daemon if asked to.
+    fn unlocked_by_engine(&mut self) {
+        if let Some((wallet, password)) = self.handoff_pending.take()
+            && self.meta.as_ref().is_some_and(|m| m.id == wallet)
+        {
+            self.hand_to_daemon(wallet, password);
+        }
+        self.show_unlocked();
+    }
+
+    /// The password did not open the wallet: say why, and stay locked.
+    fn unlock_failed(&mut self, error: String) {
+        self.handoff_pending = None;
         self.unlocking = false;
         self.unlocking_since = None;
         self.dirty = true;
-        // Checked for a wallet that is no longer the open one: its keys are dropped here.
-        if !self.locked || self.meta.as_ref().is_none_or(|m| m.id != wallet) {
+        if !self.locked {
             return;
         }
-        match answer {
-            Ok((keys, password)) => {
-                // A daemon still starting (or being replaced) is waited for in the hand-off task.
-                let starting = crate::daemon::STARTING.load(std::sync::atomic::Ordering::SeqCst);
-                if self.config.daemon_share_unlock && (starting || crate::daemon::state(&self.paths).is_some_and(|d| !d.unlocked(&wallet)))
-                {
-                    self.hand_to_daemon(wallet.clone(), password.clone());
-                }
-                // The password stops here: the keys move into the wallet's custody, and nothing
-                // keeps the password to open the vault again.
-                drop(password);
-                self.send(Cmd::UseKeys { wallet, keys: Box::new(keys) });
-                self.show_unlocked();
-            }
-            Err(e) => {
-                let text = friendly_error(&e);
-                self.lock_error = Some(text.clone());
-                self.log.push_front(Toast { text, level: Severity::Danger, at: Instant::now(), id: None });
-            }
-        }
+        let text = friendly_error(&error);
+        self.lock_error = Some(text.clone());
+        self.log.push_front(Toast { text, level: Severity::Danger, at: Instant::now(), id: None });
     }
 
     /// Give the running daemon this wallet's password, off the UI thread. The copy lives only in

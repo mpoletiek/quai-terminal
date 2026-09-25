@@ -18,7 +18,7 @@ use quai_sdk::qi::{PreparedQiOperation, PreparedQiReplacement, PreparedQiTransac
 use serde::{Deserialize, Serialize};
 
 /// One row of a review.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Field {
     /// Label.
     pub label: String,
@@ -27,7 +27,7 @@ pub struct Field {
 }
 
 /// A Qi input or output line.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoinLine {
     /// Address or outpoint.
     pub address: String,
@@ -38,7 +38,7 @@ pub struct CoinLine {
 }
 
 /// Everything shown before authorization, generated from the frozen payload.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Review {
     /// Operation id (used to commit or discard).
     pub op_id: String,
@@ -88,7 +88,7 @@ pub struct Review {
 }
 
 /// One asset's movement in a review.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BalanceChange {
     /// `out`, `in`, `fee`, or `none` (nothing moves, e.g. an approval).
     pub direction: String,
@@ -261,7 +261,7 @@ pub fn balance_changes(
 }
 
 /// An asset a review can picture. Amounts stay text; pictures never carry meaning alone.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReviewVisual {
     /// `pay`, `receive`, `token` or `nft`.
     pub role: String,
@@ -308,7 +308,7 @@ pub fn review_visuals(kind: &OpKind, asset: &str, detail: &Detail) -> Vec<Review
 }
 
 /// Result of committing a reviewed operation.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Submitted {
     /// Operation id.
     pub op_id: String,

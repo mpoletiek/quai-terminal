@@ -790,7 +790,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
         let icon = "data:image/png;base64,icon";
         let thumb = "data:image/png;base64,thumb";
         let wqi = "0x002b2596ecf05c93a31ff916e8b456df6c77c750".to_string();
-        app.eco.portfolio = Some(Portfolio {
+        app.eco.portfolio.set(Portfolio {
             network: "local".into(),
             rows: vec![
                 row(AssetKey::Quai, "QUAI", "90412200000000000000000", 18, Some(0.00881), Trust::Verified, None),
@@ -858,7 +858,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             owner: Some("0x00aa".into()),
             quantity: "1".into(),
         };
-        app.eco.nfts = Some(Ok(vec![
+        app.eco.nfts.settle(Ok(vec![
             OwnedNft { item: item.clone(), owner: "0x00aa".into(), kind: TokenKind::Erc721, quantity: "1".into(), verified: true },
             OwnedNft {
                 item: NftItem { token_id: "7".into(), image: None, name: "Miner #17".into(), ..item.clone() },
@@ -884,7 +884,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
         let seaport = Listing { protocol: "seaport".into(), token_id: "9".into(), ..listing.clone() };
         app.eco.listings.insert(None, Ok(vec![listing.clone(), seaport]));
         app.eco.listings.insert(Some(pepe.clone()), Ok(vec![listing]));
-        app.eco.collections = Some(Ok(vec![Collection {
+        app.eco.collections.settle(Ok(vec![Collection {
             address: pepe.clone(),
             name: "Quai Pepes".into(),
             symbol: "PEPE".into(),
@@ -954,8 +954,7 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
             legs: vec![],
         }));
         app.eco.lockups = Some(Ok(0));
-        app.eco.pnl = Some(Ok(sample_pnl()));
-        app.eco.pnl_at = Some(std::time::Instant::now());
+        app.eco.pnl.settle(Ok(sample_pnl()));
         // Markets: one pool with a day of swaps and syncs.
         {
             use wallet_core::markets::{DexOverview, Pool, PoolEvent, PoolToken};
@@ -1191,7 +1190,7 @@ fn every_screen_renders_at_every_size() {
             })
             .collect();
         let e18 = |n: u128| wallet_core::sdk::U256::from(n) * wallet_core::sdk::U256::from(10u128.pow(18));
-        app.eco.curves.insert(
+        app.eco.curves.settle(
             cheez.token.clone(),
             Ok(wallet_core::curve::CurveMarket {
                 token_decimals: 18,
@@ -1210,8 +1209,7 @@ fn every_screen_renders_at_every_size() {
                 claimable: e18(3),
             }),
         );
-        app.eco.launches =
-            Some(Ok(vec![cheez, launch("QOGE", Phase::Graduated, Some(10_000), Some(0.00027)), launch("PUNK", Phase::Pooled, None, None)]));
+        app.eco.launches.set(vec![cheez, launch("QOGE", Phase::Graduated, Some(10_000), Some(0.00027)), launch("PUNK", Phase::Pooled, None, None)]);
     }
     // Both markets quoted for 5,000 QUAI: the market route pays more, the protocol is selected.
     {
@@ -1917,7 +1915,7 @@ fn the_network_screen_shows_hashrate_transactions_and_gas() {
             fees_wei: 19_000e18 + (i as f64) * 1e20,
         })
         .collect();
-    app.eco.chain_stats = Some(Ok(ChainStats {
+    app.eco.chain_stats.set(ChainStats {
         observed_at: wallet_core::registry::now() - 90,
         avg_block_secs: Some(5.25),
         total_transactions: Some(100_701_162),
@@ -1927,7 +1925,7 @@ fn the_network_screen_shows_hashrate_transactions_and_gas() {
         hashrate_history: (0..24u64).map(|i| (1_789_500_000 + i * 3600, rates(0.9 + (i % 5) as f64 * 0.05))).collect(),
         hours,
         block_reward_quai: Some(94.556),
-    }));
+    });
     app.switch(Screen::Network);
     let wide = screen_text(&mut app, 160, 45);
     let all = wide.join("\n");
@@ -1955,7 +1953,7 @@ fn the_network_screen_shows_hashrate_transactions_and_gas() {
     assert!(narrow.iter().all(|l| l.chars().count() == 96), "rows keep the terminal's width");
     assert!(narrow.join("\n").contains("node health"), "node health keeps its room when narrow");
     // Before the statistics arrive the charts say so rather than drawing nothing.
-    app.eco.chain_stats = None;
+    app.eco.chain_stats.clear();
     assert!(screen_text(&mut app, 160, 45).join("\n").contains("loading"));
 }
 
@@ -1984,10 +1982,10 @@ fn launch_rows_carry_an_icon() {
         created_at: wallet_core::registry::now() - 3600,
         metadata_uri: Some("ipfs://bafkreigynbdigag634tzagcofoclwl7yqaehe4gq4s4gnx6yxal764fzfa".into()),
     };
-    app.eco.launches = Some(Ok(vec![
+    app.eco.launches.set(vec![
         launch("0x0016c3221b6a1707427d660945cd284a9be58cec", "CHEEZ"),
         launch("0x0048848ca70ea1560577b4725a84b23b6bc589e2", "QOGE"),
-    ]));
+    ]);
     app.eco.launch_logos.insert("0x0016c3221b6a1707427d660945cd284a9be58cec".into(), "https://www.quainance.com/api/media/bafy".into());
     assert_eq!(
         app.asset_icon_url("0x0016C3221B6A1707427D660945CD284A9BE58CEC").as_deref(),
@@ -2038,8 +2036,7 @@ fn sample_pnl() -> wallet_core::pnl::Pnl {
 #[test]
 fn pnl_shows_totals_positions_and_what_a_token_leaves_out() {
     let (_dir, mut app) = drawable_app();
-    app.eco.pnl = Some(Ok(sample_pnl()));
-    app.eco.pnl_at = Some(std::time::Instant::now());
+    app.eco.pnl.settle(Ok(sample_pnl()));
     app.switch(Screen::Pnl);
     let screen = screen_text(&mut app, 160, 45);
     let text = screen.join("\n");
@@ -2597,7 +2594,7 @@ fn frame_budget() {
 fn liquidity_positions_are_holdings_on_home() {
     let (_dir, mut app) = populated_app();
     app.switch(Screen::Home);
-    let tokens = app.eco.portfolio.as_ref().unwrap().rows.len();
+    let tokens = app.eco.portfolio.value().unwrap().rows.len();
     let positions = app.home_positions().len();
     assert!(positions > 0, "the fixture holds positions");
     assert_eq!(app.list_len(), tokens + positions, "the cursor reaches them");

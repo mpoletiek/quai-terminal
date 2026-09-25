@@ -9,17 +9,21 @@ impl App {
     /// [`PNL_TTL`], and on `R`. Trades move it, so a stale answer is re-read rather than kept.
     /// Nothing is marked loading without a worker to answer: the request would go nowhere.
     pub fn load_pnl(&mut self, force: bool) {
-        if self.worker.is_none() || self.eco.pnl_loading || !(force || self.eco.pnl_at.is_none_or(|t| t.elapsed() >= PNL_TTL)) {
+        if self.worker.is_none() {
             return;
         }
-        self.eco.pnl_at = Some(Instant::now());
-        self.eco.pnl_loading = true;
+        let pnl = &mut self.eco.pnl;
+        if force && !pnl.loading() {
+            pnl.begin(&self.eco.clock);
+        } else if !pnl.take_due(fresh::PNL, &self.eco.clock) {
+            return;
+        }
         self.send(Cmd::Pnl);
     }
 
     /// Positions the PnL screen lists, in its order.
     pub fn pnl_positions(&self) -> &[wallet_core::pnl::Position] {
-        match &self.eco.pnl {
+        match self.eco.pnl.latest() {
             Some(Ok(p)) => &p.positions,
             _ => &[],
         }
@@ -49,11 +53,13 @@ impl App {
     }
 
     pub fn load_launches(&mut self, force: bool) {
-        let due = Duration::from_secs(wallet_core::launches::LAUNCH_TTL);
-        if force || self.eco.launches_at.is_none_or(|t| t.elapsed() >= due) {
-            self.eco.launches_at = Some(Instant::now());
-            self.send_data(DataCmd::Launches);
+        let launches = &mut self.eco.launches;
+        if force {
+            launches.begin(&self.eco.clock);
+        } else if !launches.take_due(fresh::LAUNCHES, &self.eco.clock) {
+            return;
         }
+        self.send_data(DataCmd::Launches);
     }
 
     /// Keep the focused launch's curve fresh (every 15 s): a curve moves with every trade.
@@ -64,8 +70,7 @@ impl App {
         }) else {
             return;
         };
-        if self.eco.curves_at.get(&l.token).is_none_or(|t| t.elapsed() >= self.feed_pace()) {
-            self.eco.curves_at.insert(l.token.clone(), Instant::now());
+        if self.eco.curves.take_due(l.token.clone(), fresh::CURVE, &self.eco.clock) {
             let owners = self.dash.active_account().map(|a| vec![a.address.clone()]).unwrap_or_default();
             self.send_data(DataCmd::CurveMarket { token: l.token, curve, owners });
         }
@@ -74,16 +79,13 @@ impl App {
     /// The focused launch's curve, when it has been read.
     pub fn focused_curve(&self) -> Option<&wallet_core::curve::CurveMarket> {
         let token = self.launch_rows().get(self.selected)?.token.clone();
-        self.eco.curves.get(&token).and_then(|r| r.as_ref().ok())
+        self.eco.curves.value(&token)
     }
 
     /// The launches shown, newest first.
     pub fn launch_rows(&self) -> Vec<wallet_core::launches::Launch> {
         use wallet_core::launches::Phase;
-        let listed: &[wallet_core::launches::Launch] = match &self.eco.launches {
-            Some(Ok(list)) => list,
-            _ => &[],
-        };
+        let listed: &[wallet_core::launches::Launch] = self.eco.launches.value().map_or(&[], Vec::as_slice);
         let mut rows: Vec<wallet_core::launches::Launch> = listed
             .iter()
             .filter(|l| match l.phase {

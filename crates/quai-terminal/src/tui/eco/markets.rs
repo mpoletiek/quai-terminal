@@ -166,7 +166,7 @@ impl App {
                 return Some(1.0);
             }
             if network.wquai.as_ref().is_some_and(|w| w.eq_ignore_ascii_case(&token.address)) {
-                return self.eco.portfolio.as_ref().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
+                return self.eco.portfolio.value().and_then(|p| p.prices.as_ref()).and_then(|b| b.quai_usd);
             }
         }
         self.eco.markets.iter().find(|m| m.address.eq_ignore_ascii_case(&token.address)).and_then(|m| m.price_usd)
@@ -365,7 +365,7 @@ impl App {
             return;
         }
         let pools = pools.clone();
-        let at = (self.eco.head > 0).then_some(self.eco.head);
+        let at = (self.eco.clock.head > 0).then_some(self.eco.clock.head);
         self.eco.markets_view.reserves_loading = true;
         self.eco.markets_view.reserves_attempted = Some(Instant::now());
         self.eco.markets_view.reserves_asked_block = at;
@@ -385,7 +385,7 @@ impl App {
         let pools = pools.clone();
         self.eco.markets_view.flow_loading = true;
         self.eco.markets_view.flow_asked = Some(Instant::now());
-        let at = (self.eco.head > 0).then_some(self.eco.head);
+        let at = (self.eco.clock.head > 0).then_some(self.eco.clock.head);
         self.send_data(DataCmd::DexFlow { pools, blocks: FLOW_BLOCKS, at });
     }
 
@@ -517,7 +517,7 @@ impl App {
         let held = self
             .eco
             .portfolio
-            .as_ref()
+            .value()
             .and_then(|p| p.rows.iter().find(|r| matches!(&r.key, AssetKey::Token(a) if a.eq_ignore_ascii_case(&token))))
             .map(|r| amount::format_amount(r.amount(), r.decimals))
             .unwrap_or_default();
@@ -570,7 +570,7 @@ impl App {
         if let Some(native) = wallet_core::media::native_icon(contract) {
             return Some(native.to_string());
         }
-        let rows = self.eco.portfolio.as_ref().map(|p| p.rows.as_slice()).unwrap_or_default();
+        let rows = self.eco.portfolio.value().map(|p| p.rows.as_slice()).unwrap_or_default();
         let from_rows = rows
             .iter()
             .find(|r| match &r.key {
@@ -679,7 +679,7 @@ impl App {
         if due && events_idle {
             self.eco.markets_view.events_loading = Some(pool.address.clone());
             self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
-            self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.head > 0).then_some(self.eco.head) });
+            self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.clock.head > 0).then_some(self.eco.clock.head) });
             return None;
         }
         matches!(self.eco.markets_view.events.get(&pool.address), Some(Ok(_))).then_some(since)
@@ -737,6 +737,6 @@ impl App {
         }
         self.eco.markets_view.events_prefetching = Some(pool.address.clone());
         self.eco.markets_view.events_at.insert(pool.address.clone(), (Instant::now(), since));
-        self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.head > 0).then_some(self.eco.head) });
+        self.send_data(DataCmd::PoolEvents { pool: Box::new(pool), since, at: (self.eco.clock.head > 0).then_some(self.eco.clock.head) });
     }
 }
