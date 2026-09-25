@@ -147,9 +147,12 @@ async fn connection(stream: tokio::net::UnixStream, registry: Registry, build: S
     let mut at = Attached { wallet, network };
     let mut data: Option<DataSender> = None;
     let (data_out, mut data_inbox) = tokio::sync::mpsc::unbounded_channel::<DataEv>();
+    // From here the client's frames are read by a task of their own: a read waiting in the
+    // `select!` below would be dropped half-way whenever an event went out first.
+    let (mut frames, _reader) = protocol::reader::<ClientMsg, _>(read, CLIENT_FRAME_LIMIT);
     let why = loop {
         tokio::select! {
-            incoming = protocol::read_msg::<ClientMsg>(&mut read, CLIENT_FRAME_LIMIT) => match incoming {
+            incoming = frames.recv() => match incoming.unwrap_or(Err(FrameError::Closed)) {
                 Ok(ClientMsg::Hello { .. } | ClientMsg::Attach { .. }) => break "handshake repeated".to_string(),
                 Ok(ClientMsg::Data(cmd)) => {
                     let Some(cmd) = host_side(cmd, &registry) else { continue };

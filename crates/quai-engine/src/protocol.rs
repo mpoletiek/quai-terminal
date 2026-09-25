@@ -154,6 +154,40 @@ pub async fn read_msg<T: serde::de::DeserializeOwned>(
     decode(&body)
 }
 
+/// Messages read off a stream by a task of their own. A reader must not wait in `select!` beside
+/// other branches itself: `read_exact` is not cancel-safe, so a read dropped when another branch
+/// wins leaves half a frame behind, and the next length is read from the middle of a body ("a
+/// frame of … bytes is over the limit"). A channel receive can be dropped and asked again safely.
+/// The task ends at the first error, after handing it over, or when the receiver goes. It keeps
+/// the socket drained whatever the other side of the `select!` is doing, so two peers that are
+/// both writing never wait on each other.
+pub fn reader<T, R>(mut read: R, limit: usize) -> (tokio::sync::mpsc::UnboundedReceiver<Result<T, FrameError>>, Reader)
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        loop {
+            let msg = read_msg::<T>(&mut read, limit).await;
+            let end = msg.is_err();
+            if tx.send(msg).is_err() || end {
+                return;
+            }
+        }
+    });
+    (rx, Reader(task))
+}
+
+/// A [`reader`]'s task: stopped when this is dropped, so a connection that ends stops reading.
+pub struct Reader(tokio::task::JoinHandle<()>);
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Which program this is: version, path, size and modification time. A rebuild or an upgrade
 /// changes it, which is how a client knows the host runs other code.
 pub fn build() -> String {
@@ -410,5 +444,57 @@ mod tests {
             }
         }
         assert!(decoded > 0, "mutation never produced a decodable frame: the fuzz is not reaching the decoder");
+    }
+    /// Frames read inside a `select!` beside a branch that keeps winning: how the relays read.
+    fn big_frames(n: usize) -> Vec<HostMsg> {
+        (0..n)
+            .map(|i| {
+                HostMsg::Data(DataEv::Image {
+                    url: format!("ipfs://{i}"),
+                    edge: 256,
+                    rendition: Some(std::sync::Arc::new(wallet_core::media::Rendition {
+                        hash: "h".into(),
+                        width: 256,
+                        height: 256,
+                        png: vec![7; 4096],
+                        rgba: vec![(i % 251) as u8; 256 * 256 * 4],
+                        dominant: (1, 2, 3),
+                    })),
+                    transient: false,
+                })
+            })
+            .collect()
+    }
+
+    /// Large frames arriving while another branch of the same `select!` keeps winning: every one
+    /// arrives whole and in order. Reading in the `select!` itself lost bytes at once here (the
+    /// cause of "a frame of … bytes is over the limit" in 0.1.0-alpha.9).
+    #[tokio::test(flavor = "current_thread")]
+    async fn frames_survive_a_select_that_keeps_choosing_something_else() {
+        let (mut a, b) = tokio::net::UnixStream::pair().unwrap();
+        let frames = big_frames(40);
+        let n = frames.len();
+        tokio::spawn(async move {
+            for f in frames {
+                if write_msg(&mut a, &f).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let (mut incoming, _reader) = reader::<HostMsg, _>(b, HOST_FRAME_LIMIT);
+        let mut tick = tokio::time::interval(std::time::Duration::from_micros(50));
+        let mut got = 0;
+        while got < n {
+            tokio::select! {
+                m = incoming.recv() => match m {
+                    Some(Ok(HostMsg::Data(DataEv::Image { url, .. }))) => {
+                        assert_eq!(url, format!("ipfs://{got}"), "in order");
+                        got += 1;
+                    }
+                    other => panic!("frame {got} of {n}: {:?}", other.map(|m| m.map(|_| ()).map_err(|e| e.to_string()))),
+                },
+                _ = tick.tick() => {}
+            }
+        }
     }
 }
