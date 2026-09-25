@@ -3137,6 +3137,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "quai-engine"
+version = "0.1.0-alpha.8"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "wallet-core",
+ "zeroize",
+]
+
+[[package]]
 name = "quai-keystore"
 version = "0.1.0-alpha.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3273,6 +3286,7 @@ dependencies = [
  "nucleo-matcher",
  "png",
  "qrcode",
+ "quai-engine",
  "ratatui",
  "rpassword",
  "rustix",

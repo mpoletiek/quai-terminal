@@ -734,8 +734,15 @@ impl AppDb {
     }
 
     /// Drop a cancelled journal row so its reservation id can be reused (nonce-gap repair).
-    pub fn remove_cancelled_operation(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM operations WHERE id=?1 AND status='cancelled'", params![id])?;
+    /// Make room for a new review under a reused reservation id: remove a row with that id that
+    /// never signed anything — cancelled, or left `prepared` by a process that stopped with a
+    /// review open (its reservation was released when the custody records were reconciled).
+    /// A row with a transaction hash is never touched.
+    pub fn remove_unsigned_operation(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM operations WHERE id=?1 AND tx_hash IS NULL AND status IN ('cancelled','prepared')",
+            params![id],
+        )?;
         Ok(())
     }
 
@@ -1893,6 +1900,27 @@ mod tests {
             .map(|s| s["s"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(stages, ["signed", "submitted", "replaced", "confirmed"], "a patch alone adds no stage");
+    }
+
+    /// A review left open by a process that stopped leaves a `prepared` row; the next review
+    /// under the same (released, reused) reservation id replaces it. A signed row never moves.
+    #[test]
+    fn a_reused_reservation_replaces_only_rows_that_never_signed() {
+        let db = AppDb::memory().unwrap();
+        db.insert_operation(&op("aa11", OpStatus::Prepared)).unwrap();
+        assert!(db.insert_operation(&op("aa11", OpStatus::Prepared)).is_err(), "the id is taken");
+        db.remove_unsigned_operation("aa11").unwrap();
+        db.insert_operation(&op("aa11", OpStatus::Prepared)).unwrap();
+        let mut signed = op("bb22", OpStatus::Submitted);
+        signed.tx_hash = Some("0xsigned".into());
+        db.insert_operation(&signed).unwrap();
+        db.remove_unsigned_operation("bb22").unwrap();
+        assert!(db.operation("bb22").unwrap().is_some(), "a signed row stays");
+        let mut prepared_with_hash = op("cc33", OpStatus::Prepared);
+        prepared_with_hash.tx_hash = Some("0xmaybe".into());
+        db.insert_operation(&prepared_with_hash).unwrap();
+        db.remove_unsigned_operation("cc33").unwrap();
+        assert!(db.operation("cc33").unwrap().is_some(), "a row with a hash may have been broadcast");
     }
 
     #[test]

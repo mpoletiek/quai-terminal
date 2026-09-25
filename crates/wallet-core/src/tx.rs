@@ -980,9 +980,8 @@ impl Session {
             }
             Pending::Qi { prepared, op } => {
                 let id = prepared.reservation_id();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held.as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1009,9 +1008,8 @@ impl Session {
             }
             Pending::QiPortable { prepared, op } => {
                 let id = prepared.reservation_id();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held.as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let signing_started = std::time::Instant::now();
@@ -1037,9 +1035,8 @@ impl Session {
             }
             Pending::QiSpecial { prepared, op } => {
                 let id = prepared.reservation_id();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held.as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1066,9 +1063,8 @@ impl Session {
             Pending::QiReplacement { prepared, op_id } => {
                 let id = prepared.reservation_id();
                 let fee = prepared.fee().to_string();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held.as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1077,9 +1073,8 @@ impl Session {
                 drop(session);
                 drop(keys);
                 self.record_candidate(&op_id, hash.to_string(), Some(&fee))?;
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held.as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1297,9 +1292,8 @@ impl Session {
                 }),
             )
         } else {
-            let keys = self
-                .unlocked
-                .as_ref()
+            let held = self.held();
+            let keys = held.as_deref()
                 .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                 .qi_keyring_with_channels(&self.qi_store)?;
             let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1440,8 +1434,8 @@ impl Session {
         // The newest candidate is the one to beat: every replacement returns less change than the
         // candidate it replaces, so building on an older one would not be strictly lower than the
         // newest and the SDK would refuse it.
-        let keys =
-            self.unlocked.as_ref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
+        let held = self.held();
+        let keys = held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
         let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
         let candidates = session.signed_candidates(id);
         drop(session);
@@ -1505,9 +1499,8 @@ impl Session {
             if special {
                 intent = intent.aggregating_destination();
             }
-            let keys = self
-                .unlocked
-                .as_ref()
+            let held = self.held();
+            let keys = held.as_deref()
                 .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                 .qi_keyring_with_channels(&self.qi_store)?;
             let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);

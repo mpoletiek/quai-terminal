@@ -1,0 +1,25 @@
+[package]
+name = "quai-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Quai Terminal's engine: the wallet worker, its lanes and the data worker, hosted by the TUI or the daemon"
+
+[dependencies]
+wallet-core = { path = "../wallet-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+futures = "0.3"
+
+[features]
+# Workers that capture what is sent to them, for hosts' tests. Never enabled in a build.
+test-support = []
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

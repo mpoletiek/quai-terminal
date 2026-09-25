@@ -12,6 +12,7 @@ pub mod cockpit;
 mod commitments;
 pub mod config;
 pub mod contracts;
+pub mod custody;
 pub mod curve;
 pub mod data;
 pub mod diag;

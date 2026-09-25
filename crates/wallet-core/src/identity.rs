@@ -116,6 +116,14 @@ fn key_bytes(key: &SecretKey) -> Zeroizing<[u8; 32]> {
     Zeroizing::new(*key.export_bytes().as_bytes())
 }
 
+/// Unlocked keys alive in this process (a test hook: custody keeps one per wallet).
+static LIVE_UNLOCKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many sets of unlocked keys exist in this process right now.
+pub fn live_unlocked() -> usize {
+    LIVE_UNLOCKED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Decrypted signing material for an unlocked wallet. Dropping it clears the keys.
 pub struct Unlocked {
     secrets: Secrets,
@@ -126,6 +134,12 @@ pub struct Unlocked {
     pub qi_hd: Option<HdWallet>,
     /// Private payment code, when the wallet has a mnemonic.
     pub payment: Option<PrivatePaymentCode>,
+}
+
+impl Drop for Unlocked {
+    fn drop(&mut self) {
+        LIVE_UNLOCKED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl std::fmt::Debug for Unlocked {
@@ -149,16 +163,13 @@ impl Unlocked {
             }
             None => (None, None, None),
         };
+        LIVE_UNLOCKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Self { secrets, quai_hd, qi_hd, payment, vault_generation: None })
     }
 
-    /// A second copy for another session of the same wallet (the signing lane), rebuilt from the
-    /// decrypted vault content: no password, no key-stretching, and the copy wipes itself when
-    /// dropped just as this one does.
-    pub fn duplicate(&self) -> Result<Unlocked> {
-        let mut copy = Unlocked::new(self.secrets.clone())?;
-        copy.vault_generation = self.vault_generation;
-        Ok(copy)
+    /// The vault generation these keys were unlocked from.
+    pub fn vault_generation(&self) -> Option<u64> {
+        self.vault_generation
     }
 
     /// Decrypted secrets (for export and re-sealing).

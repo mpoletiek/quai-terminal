@@ -174,6 +174,8 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     let mut last_size = term.ui.size().map(|s| (s.width, s.height)).unwrap_or((0, 0));
     let mut resized_at: Option<Instant> = None;
 
+    // The engine's lanes and data worker wake this loop when they have news.
+    quai_engine::set_waker(term::wake);
     let result = loop {
         // Start the worker once a wallet exists (immediately, or after onboarding).
         if app.worker.is_none()

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/wallet-vault", "crates/wallet-core", "crates/quai-terminal"]
+members = ["crates/wallet-vault", "crates/wallet-core", "crates/quai-engine", "crates/quai-terminal"]
 resolver = "3"
 
 [workspace.package]

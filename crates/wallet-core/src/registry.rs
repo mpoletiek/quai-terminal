@@ -629,14 +629,8 @@ impl Registry {
     }
 
     /// Import a key into authoritative custody, never into a stale decrypted session snapshot.
-    pub fn add_key(
-        &self,
-        meta: &mut WalletMeta,
-        unlocked: &mut Unlocked,
-        password: &str,
-        secret_hex: &str,
-        label: &str,
-    ) -> Result<Address> {
+    /// Returns the new address and the wallet's keys as re-sealed, which replace the old ones.
+    pub fn add_key(&self, meta: &mut WalletMeta, password: &str, secret_hex: &str, label: &str) -> Result<(Address, Unlocked)> {
         let key = identity::parse_secret_hex(secret_hex)?;
         let record = identity::imported_key_record(&key)?;
         let address = key.public_key().address();
@@ -655,8 +649,7 @@ impl Registry {
         self.commit(&mut current, Some(vault))?;
         fresh.vault_generation = Some(current.generation);
         *meta = current;
-        *unlocked = fresh;
-        Ok(address)
+        Ok((address, fresh))
     }
 
     /// Change the password while holding the same lock as imports and all other wallet writers.
@@ -906,7 +899,7 @@ mod tests {
         assert!(reg.create_hd("main", PHRASE, "english", "", "password123", true).is_err());
         assert!(reg.create_hd("dup", PHRASE, "english", "", "password123", true).is_err());
         assert!(matches!(reg.unlock(&meta, "wrongpass1"), Err(CoreError::Locked(_))));
-        let mut unlocked = reg.unlock(&meta, "password123").unwrap();
+        let unlocked = reg.unlock(&meta, "password123").unwrap();
         let second = reg.add_quai_account(&mut meta, None).unwrap();
         assert!(second.hd_index.unwrap() > meta.quai_accounts[0].hd_index.unwrap());
         let key = unlocked.quai_key(second.address.parse().unwrap(), second.hd_index).unwrap();
@@ -923,9 +916,10 @@ mod tests {
             }
         }
         let hexkey = imported.unwrap();
-        reg.add_key(&mut meta, &mut unlocked, "password123", &hexkey, "miner").unwrap();
+        let (_, sealed) = reg.add_key(&mut meta, "password123", &hexkey, "miner").unwrap();
+        assert_eq!(sealed.secrets().imported.len(), 1, "the keys add_key returns carry the import");
         assert_eq!(meta.qi_imported.len(), 1);
-        assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &hexkey, "again").is_err());
+        assert!(reg.add_key(&mut meta, "password123", &hexkey, "again").is_err());
         let reopened = reg.unlock(&meta, "password123").unwrap();
         assert_eq!(reopened.secrets().imported.len(), 1);
         reg.change_password(&meta, "password123", "newpassword9").unwrap();
@@ -988,11 +982,9 @@ mod tests {
         let (reg, dir) = registry();
         let mut a = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
         let mut b = a.clone();
-        let mut a_keys = reg.unlock(&a, "password123").unwrap();
-        let mut b_keys = reg.unlock(&b, "password123").unwrap();
         let keys = imported_fixture_keys();
-        let first = reg.add_key(&mut a, &mut a_keys, "password123", &keys[0], "first").unwrap();
-        let second = reg.add_key(&mut b, &mut b_keys, "password123", &keys[1], "second").unwrap();
+        let (first, _) = reg.add_key(&mut a, "password123", &keys[0], "first").unwrap();
+        let (second, b_keys) = reg.add_key(&mut b, "password123", &keys[1], "second").unwrap();
         assert_eq!(b_keys.secrets().imported.len(), 2);
         // A's metadata/key snapshot predates B, including for password rotation.
         reg.change_password(&a, "password123", "rotatedpassword").unwrap();
@@ -1002,7 +994,7 @@ mod tests {
             assert_eq!(keys.imported_key(address).unwrap().public_key().address(), address);
         }
         let before = reg.load(&a.id).unwrap();
-        assert!(reg.add_key(&mut a, &mut a_keys, "password123", &imported_fixture_keys()[0], "old password").is_err());
+        assert!(reg.add_key(&mut a, "password123", &imported_fixture_keys()[0], "old password").is_err());
         assert_eq!(reg.load(&a.id).unwrap().generation, before.generation);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1037,7 +1029,7 @@ mod tests {
         let (reg, dir) = registry();
         let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
         let unlocked = reg.unlock(&meta, "password123").unwrap();
-        let copied = unlocked.duplicate().unwrap();
+        let copied = unlocked;
         let original = meta.generation;
         reg.change_password(&meta, "password123", "rotatedpassword").unwrap();
         reg.update_meta(&mut meta, |m| {
@@ -1085,17 +1077,17 @@ mod tests {
     fn failed_before_journal_keeps_prior_state_and_export_recovers_a_complete_snapshot() {
         let (reg, dir) = registry();
         let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
-        let mut unlocked = reg.unlock(&meta, "password123").unwrap();
+        let unlocked = reg.unlock(&meta, "password123").unwrap();
         let before = meta.generation;
         let keys = imported_fixture_keys();
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some("before_journal".into()));
-        assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &keys[0], "new").is_err());
+        assert!(reg.add_key(&mut meta, "password123", &keys[0], "new").is_err());
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = None);
         assert_eq!(reg.load(&meta.id).unwrap().generation, before);
         assert!(unlocked.secrets().imported.is_empty());
         assert!(!reg.journal_path(&meta.id).exists());
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some("vault".into()));
-        assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &keys[0], "new").is_err());
+        assert!(reg.add_key(&mut meta, "password123", &keys[0], "new").is_err());
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = None);
         let (exported, vault) = reg.encrypted_snapshot(&meta.id).unwrap();
         let secrets = VaultFile::from_json(&vault.unwrap()).unwrap().open("password123", true).unwrap();
@@ -1110,11 +1102,11 @@ mod tests {
         for boundary in ["journal", "vault", "metadata"] {
             let (reg, dir) = registry();
             let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
-            let mut unlocked = reg.unlock(&meta, "password123").unwrap();
+            let unlocked = reg.unlock(&meta, "password123").unwrap();
             let before = meta.generation;
             let keys = imported_fixture_keys();
             MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some(boundary.into()));
-            assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &keys[0], "new").is_err());
+            assert!(reg.add_key(&mut meta, "password123", &keys[0], "new").is_err());
             MUTATION_FAILURE.with(|f| *f.borrow_mut() = None);
             assert_eq!(meta.generation, before, "failed publication did not change session metadata");
             assert!(unlocked.secrets().imported.is_empty(), "failed publication did not mutate live secrets");
@@ -1191,14 +1183,14 @@ mod tests {
         let mode = std::env::var("QW_MUTATION_CHILD_MODE").unwrap();
         let reg = Registry::fast(Paths::resolve(Some(root.into())).unwrap());
         let mut meta = reg.resolve(None, None).unwrap();
-        let mut keys = reg.unlock(&meta, "password123").unwrap();
+        let _keys = reg.unlock(&meta, "password123").unwrap();
         let fixtures = imported_fixture_keys();
         if let Ok(index) = mode.parse::<usize>() {
             std::fs::write(reg.paths.root().join(format!("ready-{index}")), b"ready").unwrap();
             wait_for_file(&reg.paths.root().join("go"));
-            let imported = reg.add_key(&mut meta, &mut keys, "password123", &fixtures[index], &format!("key-{index}"));
+            let imported = reg.add_key(&mut meta, "password123", &fixtures[index], &format!("key-{index}")).map(|(address, _)| address);
             if matches!(imported, Err(CoreError::Locked(_))) {
-                reg.add_key(&mut meta, &mut keys, "rotatedpassword", &fixtures[index], &format!("key-{index}")).unwrap();
+                reg.add_key(&mut meta, "rotatedpassword", &fixtures[index], &format!("key-{index}")).unwrap();
             } else {
                 imported.unwrap();
             }
@@ -1209,7 +1201,7 @@ mod tests {
             reg.change_password(&meta, "password123", "rotatedpassword").unwrap();
         } else {
             MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some(mode));
-            assert!(reg.add_key(&mut meta, &mut keys, "password123", &fixtures[0], "crash").is_err());
+            assert!(reg.add_key(&mut meta, "password123", &fixtures[0], "crash").is_err());
             // No stack unwinding: exercise lock release and recovery after process termination.
             std::process::exit(73);
         }
@@ -1248,8 +1240,8 @@ mod tests {
     fn password_rotation_races_an_import_without_losing_either_key() {
         let (reg, dir) = registry();
         let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
-        let mut keys = reg.unlock(&meta, "password123").unwrap();
-        reg.add_key(&mut meta, &mut keys, "password123", &imported_fixture_keys()[0], "prior").unwrap();
+        let _keys = reg.unlock(&meta, "password123").unwrap();
+        reg.add_key(&mut meta, "password123", &imported_fixture_keys()[0], "prior").unwrap();
         let mut import = child(&reg, "1");
         let mut rotation = child(&reg, "rotate");
         wait_for_file(&dir.join("ready-1"));

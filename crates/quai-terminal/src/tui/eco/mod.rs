@@ -433,13 +433,7 @@ pub struct BoardView {
     pub msg_offered: bool,
 }
 
-/// What the wallet worker says about private messages.
-#[derive(Clone, Debug)]
-pub struct MessagingView {
-    pub status: wallet_core::messaging::service::Status,
-    pub conversations: Vec<wallet_core::messaging::service::Conversation>,
-    pub requests: Vec<wallet_core::messaging::service::Conversation>,
-}
+pub use quai_engine::messaging::MessagingView;
 
 /// What the board's left column lists: a public channel, or a person to write to in private.
 #[derive(Clone, Debug, PartialEq, Eq)]

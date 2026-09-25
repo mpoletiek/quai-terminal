@@ -42,7 +42,9 @@ fn local_dependencies(dir: &Path, names: &BTreeSet<String>) -> BTreeSet<String> 
 const ALLOWED: &[(&str, &[&str])] = &[
     ("wallet-vault", &[]),
     ("wallet-core", &["wallet-vault"]),
-    ("quai-terminal-cli", &["wallet-core", "wallet-vault"]),
+    // The engine runs wallets; it never touches the vault except through wallet-core's custody.
+    ("quai-engine", &["wallet-core"]),
+    ("quai-terminal-cli", &["quai-engine", "wallet-core", "wallet-vault"]),
 ];
 
 #[test]

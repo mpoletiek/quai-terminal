@@ -952,9 +952,8 @@ impl Session {
     }
 
     fn ensure_channel(&mut self, peer: &PaymentCode) -> Result<()> {
-        let payment = self
-            .unlocked
-            .as_ref()
+        let held = self.held();
+        let payment = held.as_deref()
             .ok_or_else(|| CoreError::Locked("unlock the wallet to use payment codes".into()))?
             .payment
             .as_ref()
@@ -1065,7 +1064,8 @@ impl Session {
         let (mut intent, shown_to, peer) = match &recipient {
             Recipient::PaymentCode(code) => {
                 self.ensure_channel(code)?;
-                let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+                let held = self.held();
+                let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
                 let destinations = allocate_payment_destinations(&mut self.qi_store, payment, code, qits, needed.max(1))?;
                 (QiIntent::new(qits, destinations), code.to_base58(), Some(code.clone()))
             }
@@ -1086,9 +1086,8 @@ impl Session {
             trace("send_qi: refreshing Qi");
             self.refresh_qi_for_spend().await?;
             trace("send_qi: building keyring");
-            let keys = self
-                .unlocked
-                .as_ref()
+            let held = self.held();
+            let keys = held.as_deref()
                 .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                 .qi_keyring_with_channels(&self.qi_store)?;
             trace("send_qi: preparing");
@@ -1125,7 +1124,8 @@ impl Session {
                 }
                 Err(QiError::InsufficientDestinations) => match &peer {
                     Some(code) if intent.destinations.len() < 64 => {
-                        let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+                        let held = self.held();
+                        let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
                         let extra = intent.destinations.len();
                         let more = allocate_payment_destinations(&mut self.qi_store, payment, code, qits, extra)?;
                         intent.destinations.extend(more);
@@ -1217,9 +1217,8 @@ impl Session {
         let mut pool = Some(self.change_pool(outputs.clamp(2, MAX_CHANGE_POOL))?);
         let prepared = loop {
             self.refresh_qi_for_spend().await?;
-            let keys = self
-                .unlocked
-                .as_ref()
+            let held = self.held();
+            let keys = held.as_deref()
                 .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                 .qi_keyring_with_channels(&self.qi_store)?;
             let policy = self.qi_policy(max_fee, 128);
@@ -1298,7 +1297,8 @@ impl Session {
 
     /// Registered payment-channel peers (requires unlock to validate ownership).
     pub fn peers(&self) -> Result<Vec<PeerView>> {
-        let payment = self.keys()?.payment.as_ref().ok_or_else(|| CoreError::Invalid("this wallet has no payment code".into()))?;
+        let keys = self.keys()?;
+        let payment = keys.payment.as_ref().ok_or_else(|| CoreError::Invalid("this wallet has no payment code".into()))?;
         let contacts = self.app.contacts()?;
         let mut out = Vec::new();
         for channel in self.qi_store.payment_channels(payment)? {
@@ -1393,7 +1393,8 @@ impl Session {
         if let Some(start) = continue_from {
             options.range.start = start;
         }
-        let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+        let held = self.held();
+        let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
         for attempt in 0..5 {
             match scan_payment_channel(&self.node.provider, &mut self.qi_store, payment, &peer, &options, || false).await {
                 Ok(report) => return Ok((report.next_index, report.indexes.len())),
@@ -1426,7 +1427,8 @@ impl Session {
     pub async fn discover_mailbox_pass(&mut self, pass: MailboxPass, stop: &mut dyn FnMut() -> bool) -> Result<MailboxSummary> {
         let mailbox_address = self.quai_contract(&self.network.mailbox, "payment mailbox")?;
         let caller = self.caller()?;
-        let own = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?.public_code().to_base58();
+        let held = self.held();
+        let own = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?.public_code().to_base58();
         let network = self.network.id.clone();
         let at = crate::registry::now();
         let cursor_key = format!("mailbox_cursor:{network}");
@@ -1484,7 +1486,8 @@ impl Session {
         caller: QuaiAddress,
         start: usize,
     ) -> Result<quai_sdk::payment_channels::MailboxDiscoveryReport> {
-        let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+        let held = self.held();
+        let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
         let mailbox = PaymentMailbox::new(mailbox_address, &self.node.provider)?;
         let request = MailboxDiscovery::new(start, MAILBOX_PAGE).with_registration(MailboxRegistration::ReportOnly);
         for attempt in 0..5 {
@@ -1555,7 +1558,8 @@ impl Session {
     /// [`Self::sync_payment_channels`] runs it inline for the CLI and the daemon.
     pub async fn sync_payment_channels_until(&mut self, stop: &mut dyn FnMut() -> bool) -> Result<PaymentSync> {
         let mut sync = PaymentSync::default();
-        let has_payment = self.unlocked.as_ref().is_some_and(|u| u.payment.is_some());
+        let held = self.held();
+        let has_payment = held.as_deref().is_some_and(|u| u.payment.is_some());
         if !has_payment || stop() {
             return Ok(sync);
         }
@@ -1569,7 +1573,8 @@ impl Session {
             sync.deferred = summary.deferred;
         }
         let registered: Vec<String> = {
-            let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+            let held = self.held();
+            let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
             self.qi_store.payment_channels(payment)?.iter().map(|c| c.channel.counterparty_code().to_base58()).collect()
         };
         for code in registered.into_iter().filter(|c| !covered.contains(c)) {
@@ -1880,9 +1885,8 @@ impl Session {
         let mut pool = Some(self.change_pool(pool_size)?);
         let prepared = loop {
             self.refresh_qi_for_spend().await?;
-            let keys = self
-                .unlocked
-                .as_ref()
+            let held = self.held();
+            let keys = held.as_deref()
                 .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                 .qi_keyring_with_channels(&self.qi_store)?;
             let policy = QiPolicy::new(cap.unwrap_or(U256::from(500u64)), 64, 256, 10).with_max_fee_rounds(12);
@@ -2145,12 +2149,12 @@ impl Session {
     /// is asked for again and checked against the vault first: a mistyped one must not become the
     /// vault's new password.
     pub fn import_key(&mut self, password: &str, secret_hex: &str, label: &str) -> Result<String> {
-        if self.unlocked.is_none() {
+        if !self.custody.is_unlocked() {
             return Err(CoreError::Locked("wallet is locked".into()));
         }
         let mut meta = self.meta.clone();
-        let keys = self.unlocked.as_mut().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?;
-        let address = self.registry.add_key(&mut meta, keys, password, secret_hex, label)?;
+        let (address, keys) = self.registry.add_key(&mut meta, password, secret_hex, label)?;
+        self.custody.install(keys);
         self.meta = meta;
         self.sync_metadata()?;
         Ok(address.to_string())

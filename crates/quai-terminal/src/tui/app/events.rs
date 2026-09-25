@@ -849,7 +849,10 @@ impl App {
                 {
                     self.hand_to_daemon(wallet.clone(), password.clone());
                 }
-                self.send(Cmd::UseKeys { wallet, keys: Box::new(keys), password });
+                // The password stops here: the keys move into the wallet's custody, and nothing
+                // keeps the password to open the vault again.
+                drop(password);
+                self.send(Cmd::UseKeys { wallet, keys: Box::new(keys) });
                 self.show_unlocked();
             }
             Err(e) => {
