@@ -121,17 +121,30 @@ platform() {
 }
 
 # The newest release, prereleases included. GitHub's "latest release" skips prereleases, and every
-# release so far is an alpha, so the list is read instead.
+# release so far is an alpha, so the list is read instead. Its order is not by date (it put
+# v0.1.0-alpha.9 before v0.1.0-alpha.10), so the release published last is picked from it.
 newest_release() {
-    api="https://api.github.com/repos/$REPO/releases?per_page=1"
+    api="https://api.github.com/repos/$REPO/releases?per_page=100"
     if [ "$fetcher" = curl ]; then
         body="$(curl -fsSL --proto '=https' --tlsv1.2 -H 'Accept: application/vnd.github+json' "$api")" || body=""
     else
         body="$(wget -q --https-only -O - "$api")" || body=""
     fi
-    tag="$(printf '%s' "$body" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    tag="$(printf '%s' "$body" | newest_tag)"
     [ -n "$tag" ] || fail "could not ask GitHub for the newest release (rate limited or offline?); set QUAI_TERMINAL_VERSION to a tag, e.g. v0.1.0-alpha.2"
     printf '%s' "$tag"
+}
+
+# newest_tag < releases.json: the tag of the release published last. Each release's tag_name comes
+# before its published_at (a draft's is null, and it is skipped); ISO-8601 times sort as text.
+newest_tag() {
+    tr ',' '\n' | awk '
+        /"tag_name"[[:space:]]*:/ { t = $0; sub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", t); sub(/".*/, "", t); tag = t }
+        /"published_at"[[:space:]]*:[[:space:]]*"/ {
+            p = $0; sub(/.*"published_at"[[:space:]]*:[[:space:]]*"/, "", p); sub(/".*/, "", p)
+            if (tag != "") print p, tag
+            tag = ""
+        }' | sort -r | head -n 1 | awk '{ print $2 }'
 }
 
 # verify DIR FILE: FILE must appear in DIR/SHA256SUMS with a matching hash.
