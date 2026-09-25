@@ -81,7 +81,7 @@ impl App {
             "add_contact" => self.open_form(FormKind::Contact(None)),
             "contacts" => self.switch(Screen::Contacts),
             "trade" => self.open_trade(),
-            "swap" => self.switch(Screen::Swap),
+            "swap" => self.show_card(Card::Swap),
             "portfolio" => self.switch(Screen::Home),
             "home" => self.switch(Screen::Home),
             "nfts" => self.switch(Screen::Collected),
@@ -95,12 +95,12 @@ impl App {
             "test_data" => self.send_data(super::super::data::DataCmd::Test),
             "speedup" => {
                 let rows = self.activity_rows();
-                match rows.get(self.selected) {
-                    Some((_, true, i)) if self.screen == Screen::Activity && self.dash.ops[*i].status.replaceable() => {
+                match rows.get(self.nav.selected) {
+                    Some((_, true, i)) if self.nav.screen == Screen::Activity && self.dash.ops[*i].status.replaceable() => {
                         let id = self.dash.ops[*i].id.clone();
                         self.send(Cmd::Prepare(Prepare::SpeedUp { op: id }));
                     }
-                    Some((_, true, i)) if self.screen == Screen::Activity && !self.dash.ops[*i].status.is_terminal() => {
+                    Some((_, true, i)) if self.nav.screen == Screen::Activity && !self.dash.ops[*i].status.is_terminal() => {
                         self.toast("this transaction is already mined; nothing to speed up", true)
                     }
                     _ => self.toast("select a pending transaction on the activity screen first", true),
@@ -108,12 +108,14 @@ impl App {
             }
             "fill_gap" => self.send(Cmd::Prepare(Prepare::FillGap { from: None })),
             "themes" => self.modal = Modal::Themes(Picker::new(self)),
+            "pro" => self.set_mode(wallet_core::config::Mode::Pro),
+            "simple" => self.set_mode(wallet_core::config::Mode::Simple),
             // The terminal's own selection back, until the mouse is taken again (this action
             // again, or the setting). Shift-drag selects in most terminals without this.
             "mouse_release" => {
-                self.mouse_released = !self.mouse_released;
+                self.input.mouse_released = !self.input.mouse_released;
                 self.toast(
-                    if self.mouse_released {
+                    if self.input.mouse_released {
                         "mouse released · drag to select text · run this again to take it back"
                     } else {
                         "mouse on"
@@ -133,6 +135,7 @@ impl App {
             "lock_gallery" => self.modal = Modal::Effects(Gallery::new(&self.config.lock_effect)),
             "refresh" => self.send(Cmd::Refresh { full: true }),
             "lock" => self.lock_now(None),
+            "switch_account" => self.open_account_picker(),
             "export_phrase" => self.open_form(FormKind::ExportPhrase),
             "backup" => self.open_form(FormKind::Backup),
             "network" => self.switch(Screen::Network),
@@ -145,7 +148,7 @@ impl App {
                     self.info("motion is off (Settings → Motion)");
                 } else {
                     let args = super::super::fx::theme_args("matrix", &self.theme);
-                    self.ambient = Ceremony::with_args("matrix", &args, "follow the white rabbit", 100, 30, 420)
+                    self.fx.ambient = Ceremony::with_args("matrix", &args, "follow the white rabbit", 100, 30, 420)
                         .map(|c| c.at_speed(super::super::fx::LOCK_SPEED));
                 }
             }
@@ -153,12 +156,12 @@ impl App {
                 if self.motion() == Motion::Off {
                     self.info("motion is off (Settings → Motion)");
                 } else {
-                    match super::super::fx::poem_rain(self.recent_hashes.iter().map(String::as_str)) {
+                    match super::super::fx::poem_rain(self.fx.recent_hashes.iter().map(String::as_str)) {
                         Some(text) => {
                             let args = super::super::fx::theme_args("rain", &self.theme);
-                            self.ambient =
+                            self.fx.ambient =
                                 Ceremony::with_args("rain", &args, &text, 100, 30, 360).map(|c| c.at_speed(super::super::fx::LOCK_SPEED));
-                            self.poem_haiku = Some(super::super::fx::POEM_HAIKU.to_string());
+                            self.fx.poem_haiku = Some(super::super::fx::POEM_HAIKU.to_string());
                         }
                         None => self.info("waiting for a few blocks to fall"),
                     }
@@ -203,7 +206,7 @@ impl App {
             list[(i + dir).rem_euclid(list.len() as i32) as usize]
         }
         let on_off = |b: bool| if b { "on" } else { "off" };
-        let changed: Option<(String, String)> = match self.settings_rows().get(self.selected).map(|s| s.0) {
+        let changed: Option<(String, String)> = match self.settings_rows().get(self.nav.selected).map(|s| s.0) {
             Some("theme") => {
                 self.run_action("themes");
                 None
@@ -219,7 +222,7 @@ impl App {
             Some("mouse") => {
                 use wallet_core::config::MouseMode;
                 self.config.mouse = cycle(&[MouseMode::Auto, MouseMode::Full, MouseMode::Click, MouseMode::Off], self.config.mouse, dir);
-                self.mouse_released = false;
+                self.input.mouse_released = false;
                 Some(("Mouse".into(), format!("{:?}", self.config.mouse).to_lowercase()))
             }
             Some("lock_loop") => {
@@ -246,6 +249,14 @@ impl App {
                 self.config.background =
                     cycle(&[BackgroundMode::Auto, BackgroundMode::Terminal, BackgroundMode::Solid], self.config.background, dir);
                 Some(("Background".into(), format!("{:?}", self.config.background).to_lowercase()))
+            }
+            Some("mode") => {
+                let mode = match self.config.mode {
+                    wallet_core::config::Mode::Simple => wallet_core::config::Mode::Pro,
+                    wallet_core::config::Mode::Pro => wallet_core::config::Mode::Simple,
+                };
+                self.config.mode = mode;
+                Some(("Mode".into(), mode_note(mode).into()))
             }
             Some("layout") => {
                 self.config.layout = cycle(&["auto", "standard", "trader", "focus"], self.config.layout.as_str(), dir).into();
@@ -297,7 +308,7 @@ impl App {
             }
             Some("sound") => {
                 self.config.sound = !self.config.sound;
-                self.bell = self.config.sound;
+                self.fx.bell = self.config.sound;
                 Some(("Terminal bell".into(), on_off(self.config.sound).into()))
             }
             Some("big_numbers") => {
@@ -355,7 +366,7 @@ impl App {
 
     pub(crate) fn data_source_action(&mut self) {
         let on_off = |b: bool| if b { "on" } else { "off" };
-        let changed: Option<(String, String)> = match DATA_SOURCES.get(self.selected).map(|s| s.0) {
+        let changed: Option<(String, String)> = match DATA_SOURCES.get(self.nav.selected).map(|s| s.0) {
             Some("explorer_lookups") => {
                 self.config.explorer_lookups = !self.config.explorer_lookups;
                 Some(("Explorer lookups".into(), on_off(self.config.explorer_lookups).into()))
@@ -387,6 +398,16 @@ impl App {
 
     /// Save the preferences: serialized here, written by the persistence lane (two fsyncs are
     /// not a keypress's business).
+    /// Simple or Pro, saved; a screen that is Pro gives way to Home.
+    pub fn set_mode(&mut self, mode: wallet_core::config::Mode) {
+        self.config.mode = mode;
+        self.save_config();
+        if !self.nav.screen.enabled(&self.shown()) {
+            self.switch(Screen::Home);
+        }
+        self.info(format!("{} · {}", mode.key(), mode_note(mode)));
+    }
+
     pub fn save_config(&mut self) {
         match toml::to_string_pretty(&self.config) {
             Ok(text) => self.persist.write(self.paths.config_file(), text),
@@ -401,8 +422,27 @@ impl App {
 
     /// A preference write that failed: say so.
     pub fn poll_persist(&mut self) {
+        use super::super::persist::Read;
         if let Some(e) = self.persist.error() {
             self.toast(e, true);
+        }
+        while let Some((what, texts)) = self.persist.answer() {
+            self.dirty = true;
+            match what {
+                Read::PaletteRecent { wallet } if self.meta.as_ref().is_some_and(|m| m.id == wallet) => {
+                    self.palette_recent = texts
+                        .into_iter()
+                        .flatten()
+                        .flat_map(|s| s.lines().filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>())
+                        .take(super::super::palette::RECENTS)
+                        .collect();
+                }
+                Read::Summaries { network, wallets } if network == self.network_id => {
+                    self.cockpit.summaries =
+                        wallets.into_iter().zip(texts).filter_map(|(w, text)| Some((w, serde_json::from_str(&text?).ok()?))).collect();
+                }
+                _ => {}
+            }
         }
     }
 
@@ -421,7 +461,7 @@ impl App {
             networks,
             ..Dashboard::default()
         };
-        self.busy = Some(format!("connecting to {name}…"));
+        self.status.busy = Some(format!("connecting to {name}…"));
         self.send(Cmd::SwitchNetwork(id.clone()));
         self.reset_eco_for_network();
         let _ = id;
@@ -445,8 +485,8 @@ impl App {
             Err(e) => return self.toast(e.to_string(), true),
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        self.monitor_check = Some(rx);
-        self.busy = Some(format!("checking {url} against {network}…"));
+        self.tasks.monitor_check = Some(rx);
+        self.status.busy = Some(format!("checking {url} against {network}…"));
         let network = network.to_string();
         std::thread::spawn(move || {
             let endpoint = profile.monitor.clone().expect("set above");
@@ -478,7 +518,7 @@ impl App {
             }
             let _ = wallet_core::ipfs::set_gateway(content, None);
             self.save_config();
-            self.eco.images.retain(|_, slot| !matches!(slot, super::super::eco::ImageSlot::Failed(_)));
+            self.eco.media.images.retain(|_, slot| !matches!(slot, super::super::eco::ImageSlot::Failed(_)));
             return self.toast(format!("{} now uses {}", content.label(), content.default_gateway()), false);
         }
         let gateway = match wallet_core::ipfs::Gateway::parse(url) {
@@ -486,8 +526,8 @@ impl App {
             Err(e) => return self.toast(e.to_string(), true),
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        self.ipfs_check = Some(rx);
-        self.busy = Some(format!("testing {}…", gateway.display()));
+        self.tasks.ipfs_check = Some(rx);
+        self.status.busy = Some(format!("testing {}…", gateway.display()));
         std::thread::spawn(move || {
             let result = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -502,7 +542,15 @@ impl App {
     pub(crate) fn next_wallet_id(&mut self) -> Option<String> {
         self.load_wallets();
         let current = self.meta.as_ref().map(|m| m.id.clone());
-        let i = self.wallets.iter().position(|w| Some(&w.id) == current.as_ref())?;
-        (self.wallets.len() > 1).then(|| self.wallets[(i + 1) % self.wallets.len()].id.clone())
+        let i = self.cockpit.list.iter().position(|w| Some(&w.id) == current.as_ref())?;
+        (self.cockpit.list.len() > 1).then(|| self.cockpit.list[(i + 1) % self.cockpit.list.len()].id.clone())
+    }
+}
+
+/// What a mode shows, in a line.
+pub(crate) fn mode_note(mode: wallet_core::config::Mode) -> &'static str {
+    match mode {
+        wallet_core::config::Mode::Simple => "home, send and receive, one exchange, activity, NFTs, contacts",
+        wallet_core::config::Mode::Pro => "adds markets, pools, launches, orders, PnL, the marketplace, Qi coins, the board, network",
     }
 }

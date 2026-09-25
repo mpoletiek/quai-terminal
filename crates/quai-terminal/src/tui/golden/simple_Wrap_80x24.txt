@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 3 Trade 4 5 6 0 │ ● Local dev │ watch-only        ● 1 unread N
+┌ ▸ exchange · wrap ───────────────────────────────────────────────────────────┐
+│   pair        Qi → WQI ‹›                                                    │
+│   amount      0 Qi                                                           │
+│   available   240 Qi spendable                                               │
+│ wrap Qi into WQI backing (step 1 of 2)                                       │
+│                                                                              │
+│ enter review                                                                 │
+│ 1 wrap Qi → 2 wait for settlement → 3 claim WQI                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ wrapped balances ────────────────────────────────────────────────────────────┐
+│ Loading wrapped balances…                                                    │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter review  / pick asset  space actions  : palette  ? more

@@ -24,8 +24,8 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     // On a short terminal it is two lines, the total and what it takes in, so the holdings keep
     // their rows.
     // Sized text (OSC 66) is two rows where block digits are three, so its panel is a row shorter.
-    let sizing = app.caps.text_sizing && app.config.big_numbers && !app.plain && !app.short;
-    let hero_h = if app.short {
+    let sizing = app.term.caps.text_sizing && app.config.big_numbers && !app.term.plain && !app.term.short;
+    let hero_h = if app.term.short {
         4
     } else if sizing {
         6.min(area.height.saturating_sub(6)).max(3)
@@ -38,12 +38,13 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, "portfolio", false);
     let inner = block.inner(top);
     f.render_widget(block, top);
-    match (&app.eco.portfolio, &app.eco.portfolio_error) {
+    match (app.eco.feeds.portfolio.value(), app.eco.feeds.portfolio.error()) {
         (Some(p), _) => {
             let pools = app.pools_usd();
             let total = amount::usd(p.total_usd + pools);
             // The `▌` beside the total lights when value arrives, and fades back to its color.
             let gutter = app
+                .fx
                 .gutter_flash
                 .map(|s| s.elapsed().as_millis())
                 .filter(|ms| *ms < super::super::edge::FLASH_MS)
@@ -51,19 +52,19 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 .unwrap_or(t.focus);
             let change = p.change_7d.map(|c| num::pct(c, 1)).unwrap_or_default();
             // Plain: the change is said as a number; a row of block glyphs is noise to a reader.
-            let spark = if app.plain { String::new() } else { sparkline(&p.history.iter().map(|v| v.usd).collect::<Vec<_>>(), 16) };
+            let spark = if app.term.plain { String::new() } else { sparkline(&p.history.iter().map(|v| v.usd).collect::<Vec<_>>(), 16) };
             let whole = total.trim_start_matches('$').split('.').next().unwrap_or("0").to_string();
             let big = !sizing
                 && app.config.big_numbers
-                && !app.plain
-                && !app.short
+                && !app.term.plain
+                && !app.term.short
                 && hero_fits(inner.width.saturating_sub(34), inner.height, &[&whole]);
             let mut y = inner.y;
             // Where the terminal can draw text larger than a cell (kitty's OSC 66), the total is
             // in the user's own font at twice the size, cents beside it at text size. Under a
             // modal or an effect it is one line of ordinary text, so the dimming covers it too
             // and nothing moves.
-            let sized = sizing && matches!(app.modal, app::Modal::None) && app.ambient.is_none();
+            let sized = sizing && matches!(app.modal, app::Modal::None) && app.fx.ambient.is_none();
             if sized {
                 use super::super::term::backend::{BIG_TEXT_CELL, BigText};
                 let (head, cents) = total.split_once('.').map_or((total.as_str(), String::new()), |(h, c)| (h, format!(".{c}")));
@@ -84,7 +85,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     }
                 }
                 f.render_widget(Paragraph::new(Span::styled(cents, t.dim_style())), Rect { x: x + w, y: y + 1, width: 6, height: 1 });
-                app.big_text.borrow_mut().push(text);
+                app.term.big_text.borrow_mut().push(text);
                 y += 2;
             } else if big {
                 let rows = big_digits(&whole);
@@ -131,7 +132,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             if pools > 0.0 {
                 notes.push(format!("incl. {} in pools", amount::usd(pools)));
             }
-            if app.short {
+            if app.term.short {
                 notes = vec![notes.join(" · ")];
             }
             for (k, note) in notes.into_iter().enumerate() {
@@ -143,8 +144,8 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 }
             }
             // NFT thumbnails (reference only, never in the total) on the right when there is room.
-            let thumbs: Vec<(String, String, String, String)> = match &app.eco.nfts {
-                Some(Ok(v)) if app.config.features.nfts && app.config.images && !app.plain => v
+            let thumbs: Vec<(String, String, String, String)> = match app.eco.nft.nfts.latest() {
+                Some(Ok(v)) if app.config.features.nfts && app.config.images && !app.term.plain => v
                     .iter()
                     .filter_map(|n| {
                         n.item.image.clone().map(|img| (n.item.contract.clone(), n.item.token_id.clone(), img, n.item.name.clone()))
@@ -171,10 +172,10 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let more_y = inner.bottom().saturating_sub(1);
             let mut more = Vec::new();
             if p.nfts.items > 0 {
-                if !app.plain {
+                if !app.term.plain {
                     more.push(Span::styled("◧ ", Style::default().fg(t.qi)));
                 }
-                let counted = if app.short {
+                let counted = if app.term.short {
                     format!("{}  ", amount::count(p.nfts.items, "NFT"))
                 } else {
                     format!(
@@ -232,9 +233,9 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         .ops
         .iter()
         .filter(|o| o.status == wallet_core::appdb::OpStatus::Locked)
-        .filter_map(|o| o.detail["unlock_height"].as_u64())
+        .filter_map(|o| o.detail.unlock_height().as_u64())
         .collect();
-    for news in &app.unlocked_news {
+    for news in &app.news.unlocked_news {
         items.push(Line::from(vec![Span::styled(t.lead(Icon::Ok), Style::default().fg(t.ok)), Span::raw(news.clone())]));
     }
     for l in app.dash.locks.iter().filter(|l| !l.unlocked && !l.unlock_height.is_some_and(|h| op_unlocks.contains(&h))).take(3) {
@@ -249,20 +250,21 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     {
         items.push(Line::from(vec![
             Span::styled(t.lead(Icon::Attention), Style::default().fg(t.attention)),
-            Span::raw(format!("{} Qi wrapped, ready to claim as WQI ({})", num::qi(qits), Screen::Wrap.place())),
+            Span::raw(format!("{} Qi wrapped, ready to claim as WQI ({})", num::qi(qits), app::Card::Wrap.place())),
         ]));
     }
-    if let Some(flow) = &app.eco.flow {
-        let state = if flow.waiting.is_some() {
-            "waiting for the approval to confirm"
-        } else if flow.review_op.is_some() || flow.requested {
-            "review open"
-        } else {
-            "preparing the next step"
+    if let Some(plan) = &app.eco.plan {
+        use quai_engine::plans::Phase;
+        let state = match &plan.view.phase {
+            Phase::Waiting(_) if plan.view.last == Some(wallet_core::journal::OpKind::Approve) => "waiting for the approval to confirm",
+            Phase::Waiting(_) => "waiting for the last step to confirm",
+            Phase::Reviewing(_) => "review open",
+            _ if plan.requested => "review open",
+            _ => "preparing the next step",
         };
         let mut line =
-            vec![Span::styled(t.lead(Icon::InFlight), Style::default().fg(t.pending)), Span::raw(format!("{} · ", flow.kind.label()))];
-        line.extend(super::super::widgets::stepper(t, &flow.stepper(None)));
+            vec![Span::styled(t.lead(Icon::InFlight), Style::default().fg(t.pending)), Span::raw(format!("{} · ", plan.view.label))];
+        line.extend(super::super::widgets::stepper(t, &plan.view.stepper(None)));
         line.push(Span::styled(format!(" · {state}"), t.dim_style()));
         items.push(Line::from(line));
     }
@@ -286,7 +288,9 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         ]));
     }
     for o in open.iter().filter(|o| o.status == OpStatus::Locked).take(2) {
-        let eta = o.detail["unlock_height"]
+        let eta = o
+            .detail
+            .unlock_height()
             .as_u64()
             .filter(|u| *u > head && head > 0)
             .map(|u| format!(" in ~{}", wallet_core::track::human_duration((u - head) * 5)))
@@ -320,7 +324,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             Span::raw("recovery phrase not verified"),
         ]));
     }
-    if let Some(p) = &app.eco.portfolio {
+    if let Some(p) = app.eco.feeds.portfolio.value() {
         if p.stale {
             items.push(Line::from(vec![
                 Span::styled(t.lead(Icon::Stale), t.dim_style()),
@@ -350,7 +354,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         f.render_widget(Paragraph::new(items.clone()).block(panel(t, &format!("attention · {}", items.len()), false)), attention);
         recent
     };
-    let title = if app.first_payment.is_some() {
+    let title = if app.news.first_payment.is_some() {
         // Once in a wallet's life, on chrome: the first payment it ever received.
         format!("recent activity · your first payment {}", t.icon(Icon::Ok))
     } else if items.is_empty() {
@@ -365,11 +369,11 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let text_w = inner.width.saturating_sub(4 + 1 + 1 + 3) as usize;
     let mut rows = activity_table_rows(app, t, inner.height as usize, false, Some(text_w));
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         hits.add(recent, crate::tui::hit::Target::Pane(1));
         let all = app.activity_rows();
         let n = rows.len();
-        hits.rows(crate::tui::hit::ListId::Screen(app.screen, 1), inner, 0, n, |i| all.get(i).map(|r| app.activity_row_key(r)));
+        hits.rows(crate::tui::hit::ListId::Screen(app.nav.screen, 1), inner, 0, n, |i| all.get(i).map(|r| app.activity_row_key(r)));
     }
     if rows.is_empty() {
         empty(
@@ -383,7 +387,7 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         return;
     }
     if app.lit_pane() == Some(1) {
-        rows = rows.into_iter().enumerate().map(|(i, r)| if i == app.selected { r.style(t.selected()) } else { r }).collect();
+        rows = rows.into_iter().enumerate().map(|(i, r)| if i == app.nav.selected { r.style(t.selected()) } else { r }).collect();
     }
     f.render_widget(
         Table::new(rows, [Constraint::Length(4), Constraint::Length(1), Constraint::Min(10), Constraint::Length(1)]).column_spacing(1),
@@ -395,11 +399,11 @@ pub fn draw_home(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 /// The holdings table. Lives on Home, which is the only place it is drawn.
 pub fn draw_holdings(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: bool) {
-    let Some(p) = &app.eco.portfolio else {
+    let Some(p) = app.eco.feeds.portfolio.value() else {
         let block = panel(t, "holdings", focused);
         let inner = block.inner(area);
         f.render_widget(block, area);
-        match &app.eco.portfolio_error {
+        match app.eco.feeds.portfolio.error() {
             Some(e) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "refresh")]),
             None => empty_state(f, inner, t, spinner(), "Pricing your holdings…", &[]),
         }
@@ -428,7 +432,7 @@ pub fn draw_holdings(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: b
                     Span::raw(format!("{} Qi wrapped and waiting to be claimed as WQI · ", num::qi(qits))),
                 ]
                 .into_iter()
-                .chain(place_spans(t, Screen::Wrap))
+                .chain(place_spans(t, app::Card::Wrap))
                 .collect::<Vec<_>>(),
             )),
             Rect { height: 1, ..inner },
@@ -455,10 +459,10 @@ pub fn draw_holdings(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: b
     let icon_col: Vec<(Rect, &AssetRow)> = Vec::new();
     let mut icons = icon_col;
     let visible = inner.height.saturating_sub(1) as usize;
-    let list_id = crate::tui::hit::ListId::Screen(app.screen, 0);
+    let list_id = crate::tui::hit::ListId::Screen(app.nav.screen, 0);
     let offset = app.pane_window(list_id, count, visible);
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         hits.add(list, crate::tui::hit::Target::Pane(0));
         let body = Rect { y: inner.y + 1, height: visible as u16, ..inner };
         hits.rows(list_id, body, offset, count, |i| {
@@ -506,7 +510,7 @@ pub fn draw_holdings(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: b
             }
             cells.push(Cell::from(src_span(t, r, p.stale)));
             let row = Row::new(cells);
-            if i == app.selected { row.style(t.selected()) } else { row }
+            if i == app.nav.selected { row.style(t.selected()) } else { row }
         })
         .collect();
     // Positions after the tokens: the pair, the share of the pool held, and its value.
@@ -535,7 +539,7 @@ pub fn draw_holdings(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: b
         }
         cells.push(Cell::from(Span::styled(if lp.lp_staked.is_zero() { "pool" } else { "staked" }, t.dim_style())));
         let row = Row::new(cells);
-        rows.push(if i == app.selected { row.style(t.selected()) } else { row });
+        rows.push(if i == app.nav.selected { row.style(t.selected()) } else { row });
     }
     let widths: Vec<Constraint> = if narrow {
         vec![Constraint::Length(2), Constraint::Length(13), Constraint::Min(12), Constraint::Length(11), Constraint::Length(6)]
@@ -672,7 +676,7 @@ pub(crate) fn draw_allocation(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
 /// The finest marker a line chart can use here: octants (2×4 solid pixels a cell) where the
 /// terminal draws them itself, braille dots (the same grid, in every Nerd Font) elsewhere.
 pub(crate) fn chart_marker(app: &App) -> ratatui::symbols::Marker {
-    if app.caps.drawn_blocks && !app.plain { ratatui::symbols::Marker::Octant } else { ratatui::symbols::Marker::Braille }
+    if app.term.caps.drawn_blocks && !app.term.plain { ratatui::symbols::Marker::Octant } else { ratatui::symbols::Marker::Braille }
 }
 
 pub(crate) fn draw_value_chart(
@@ -719,7 +723,7 @@ pub(crate) fn draw_value_chart(
 }
 
 pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect, id: &str) {
-    let row = app.eco.portfolio.as_ref().and_then(|p| p.rows.iter().find(|r| r.key.id() == id));
+    let row = app.eco.feeds.portfolio.value().and_then(|p| p.rows.iter().find(|r| r.key.id() == id));
     let Some(r) = row else {
         let block = panel(t, id, true);
         let inner = block.inner(area);
@@ -772,7 +776,7 @@ pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect,
     lines.push(kv(t, "allocation", Span::raw(format!("{:.1}%", r.allocation * 100.0))));
     if let AssetKey::Token(address) = &r.key {
         lines.push(kv(t, "contract", Span::styled(address.clone(), Style::default().fg(t.link))));
-        match app.eco.token_info.get(address) {
+        match app.eco.feeds.token_info.get(address) {
             Some(Ok((info, verified))) => {
                 lines.push(kv(t, "holders", Span::raw(info.holders.map(|h| h.to_string()).unwrap_or_else(|| "—".into()))));
                 lines.push(kv(t, "decimals", Span::raw(info.decimals.map(|d| d.to_string()).unwrap_or_else(|| r.decimals.to_string()))));
@@ -794,7 +798,7 @@ pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect,
         lines.push(Line::from(Span::styled("~ balance from the indexer; the node could not be read", Style::default().fg(t.attention))));
     }
     if id == "quai"
-        && let Some(p) = &app.eco.portfolio
+        && let Some(p) = app.eco.feeds.portfolio.value()
         && !p.history.is_empty()
     {
         lines.push(Line::from(""));
@@ -819,7 +823,7 @@ pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect,
     };
     let mut lines: Vec<Line> = Vec::new();
     for a in app.dash.activity.iter().filter(|a| match token {
-        Some(addr) => a.detail["token"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(addr)),
+        Some(addr) => a.detail.token().as_str().is_some_and(|x| x.eq_ignore_ascii_case(addr)),
         None => a.asset.eq_ignore_ascii_case(&r.symbol),
     }) {
         lines.push(Line::from(vec![
@@ -831,7 +835,7 @@ pub(crate) fn draw_asset_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect,
         .dash
         .ops
         .iter()
-        .filter(|o| o.asset.eq_ignore_ascii_case(&r.symbol) || o.detail["token"].as_str().is_some_and(|x| Some(x) == token))
+        .filter(|o| o.asset.eq_ignore_ascii_case(&r.symbol) || o.detail.token().as_str().is_some_and(|x| Some(x) == token))
     {
         lines.push(Line::from(vec![Span::styled(format!("{:<6} ", ago(o.created)), t.dim_style()), Span::raw(truncate(&describe(o), 34))]));
     }

@@ -3,6 +3,7 @@
 use crate::error::{CoreError, Result};
 use crate::network::NetworkProfile;
 use crate::paths::Paths;
+use crate::registry::VaultExt;
 use serde::{Deserialize, Serialize};
 
 /// Motion preference for TUI effects.
@@ -90,7 +91,7 @@ pub enum IconMode {
 pub const LAYOUT_VERSION: u32 = 5;
 
 /// What third-party data a caller may fetch, from the preferences plus `--offline-data`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataPolicy {
     /// Address-linked explorer lookups.
     pub explorer: bool,
@@ -125,6 +126,33 @@ pub struct Features {
 impl Default for Features {
     fn default() -> Self {
         Self { messaging: false, trading: true, nfts: true }
+    }
+}
+
+/// How much of the wallet the terminal shows, over the feature switches: Simple is the money
+/// (home, send and receive, one exchange, activity, collected NFTs, contacts and messages); Pro
+/// adds the trader's views (markets, pools, launches, orders, PnL), the NFT marketplace, the Qi
+/// coin list, the board and the network pages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Simple,
+    Pro,
+}
+
+impl Mode {
+    /// A configuration from before the choice existed: everything, as it always showed.
+    fn before_modes() -> Mode {
+        Mode::Pro
+    }
+
+    /// `simple` or `pro`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Mode::Simple => "simple",
+            Mode::Pro => "pro",
+        }
     }
 }
 
@@ -277,6 +305,10 @@ pub struct AppConfig {
     pub first_receive_celebrated: bool,
     /// Optional parts of the wallet that are turned on.
     pub features: Features,
+    /// How much of the wallet the terminal shows. A new configuration starts Simple; one written
+    /// before there was a choice has no `mode` and stays Pro, as its owner knows it.
+    #[serde(default = "Mode::before_modes")]
+    pub mode: Mode,
     /// Message-board channels this wallet follows, in the order they are shown.
     #[serde(default = "default_channels")]
     pub board_channels: Vec<String>,
@@ -336,6 +368,7 @@ impl Default for AppConfig {
             data_disclosure_shown: false,
             layout_seen: 0,
             features: Features::default(),
+            mode: Mode::Simple,
             board_channels: default_channels(),
             swap_slippage_bps: 50,
             swap_deadline_minutes: 10,
@@ -404,7 +437,7 @@ impl AppConfig {
     /// Atomically save configuration.
     pub fn save(&self, paths: &Paths) -> Result<()> {
         let text = toml::to_string_pretty(self).map_err(|e| CoreError::Storage(format!("config encode: {e}")))?;
-        wallet_vault::write_private_atomic(&paths.config_file(), text.as_bytes())?;
+        wallet_vault::write_private_atomic(&paths.config_file(), text.as_bytes()).vault()?;
         Ok(())
     }
 
@@ -443,6 +476,13 @@ impl AppConfig {
                 self.auto_lock_minutes = value.parse().map_err(|_| CoreError::Invalid("auto_lock_minutes must be a number".into()))?
             }
             "theme" => self.theme = value.into(),
+            "mode" => {
+                self.mode = match value {
+                    "simple" => Mode::Simple,
+                    "pro" => Mode::Pro,
+                    _ => return Err(CoreError::Invalid(format!("mode is simple or pro, not `{value}`"))),
+                }
+            }
             "motion" => {
                 self.motion = match value {
                     "vivid" => Motion::Vivid,
@@ -608,5 +648,21 @@ mod tests {
         let back: AppConfig = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
         assert!(back.features.messaging && back.features.trading && !back.features.nfts);
         assert!(back.features.require(Feature::Nfts).unwrap_err().to_string().contains("features.nfts on"));
+    }
+
+    /// A new install starts Simple; a configuration written before the choice existed keeps
+    /// showing everything; `config set mode` goes either way and survives a save.
+    #[test]
+    fn new_configs_are_simple_and_older_ones_stay_pro() {
+        assert_eq!(AppConfig::default().mode, Mode::Simple);
+        let old: AppConfig = toml::from_str("default_network = \"mainnet\"\nauto_lock_minutes = 5\n").unwrap();
+        assert_eq!(old.mode, Mode::Pro, "an existing config keeps its full view");
+        let mut c = AppConfig::default();
+        let saved: AppConfig = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(saved.mode, Mode::Simple, "a new config says so once written");
+        c.set("mode", "pro").unwrap();
+        assert!(c.set("mode", "expert").is_err());
+        let back: AppConfig = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(back.mode, Mode::Pro);
     }
 }

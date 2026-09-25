@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 3 4 5 6 0 System │ ● Local dev │ watch-only       ● 1 unread N
+ System ·  Wallets   Settings   [ ]
+┌ ▸ wallets on this computer ──────────────────────────────────────────────────┐
+│   wallet           keys         value        QUAI           Qi               │
+│ ▸ preview          watch-only              —              —          —       │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ wallet · preview · open ─────────────────────────────────────────────────────┐
+│ keys          none here · watch-only, it cannot sign                         │
+│ holds         1 address watched                                              │
+│ created       1m ago                                                         │
+│ stored        <data>/wallets/<id>                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+ N notifications  enter actions  a new wallet  space actions  : palette  ? more

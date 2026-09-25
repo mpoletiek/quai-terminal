@@ -1,18 +1,13 @@
  ◆  PREVIEW │ 1 2 3 4 5 People 6 0 │ ● Local dev │ watch-only     ● 1 unread N
- People ·  Contacts   Channels   Board   [ ]
+ People ·  Contacts   Board   [ ]
 ┌ you ─────────────────────────────────────────────────────────────────────────┐
 │ This wallet has no payment code (import a recovery phrase to get one).       │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌ ▸ payment channels · 0 ──────────────────────────────────────────────────────┐
+┌ ▸ contacts · 1 ──────────────────────────────────────────────────────────────┐
+│    name              address              payment code      note             │
+│ 0  bob               —                    PM8TJcZE…D1SWDD                    │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                      ○  Unlock to see payment channels.                      │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -21,4 +16,9 @@
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- N notifications  s pay · accept  space actions  : palette  ? more
+┌ payment channels · 0 ────────────────────────────────────────────────────────┐
+│                                                                              │
+│                      ○  Unlock to see payment channels.                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  s pay  a add contact  space actions  : palette  ? more

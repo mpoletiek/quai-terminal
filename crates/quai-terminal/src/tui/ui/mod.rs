@@ -1,6 +1,6 @@
 //! Rendering. Widgets use semantic theme roles only; color never carries meaning alone.
 
-use super::app::{self, ACTIONS, App, FieldKind, Modal, OnboardKind, Onboarding, Picker, Screen};
+use super::app::{self, ACTIONS, App, Card, FieldKind, Modal, OnboardKind, Onboarding, Picker, Screen};
 use super::hit::{HeaderPart, Target};
 use super::icons::Icon;
 use super::terminal::Tier;
@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Padding, Paragra
 use wallet_core::amount;
 use wallet_core::appdb::{Activity, OpStatus, Operation};
 use wallet_core::config::Motion;
+use wallet_core::journal::OpKind;
 use wallet_core::sdk::U256;
 use wallet_core::session::{short_address, short_code};
 use wallet_core::track::{describe, human_duration};
@@ -21,7 +22,7 @@ use wallet_core::track::{describe, human_duration};
 pub(crate) mod layout;
 mod lock;
 mod modals;
-mod screens;
+pub(crate) mod screens;
 pub(crate) use layout::{Breakpoint, SHORT_ROWS, with_inspector};
 pub(crate) use lock::*;
 pub use modals::*;
@@ -108,34 +109,34 @@ pub(crate) fn ago_short(secs: u64) -> String {
 }
 
 /// Plain-language outcome of an operation kind, shown in every review.
-fn review_story(kind: &str) -> Vec<String> {
+fn review_story(kind: &OpKind) -> Vec<String> {
     let locks = format!("the time locks under {}", Screen::Accounts.place());
     let steps: Vec<String> = match kind {
-        "convert_quai_to_qi" => vec![
+        OpKind::ConvertQuaiToQi => vec![
             "signed and broadcast; included within a few blocks".into(),
             "if the block's shared discount exceeds your slippage, it refunds (the fee is spent)".into(),
             format!("otherwise Qi arrives time-locked and counts down to spendable in {locks}"),
         ],
-        "convert_qi_to_quai" => {
+        OpKind::ConvertQiToQuai => {
             vec![
                 "signed and broadcast; included within a few blocks".into(),
                 format!("QUAI arrives time-locked in the account; it counts down in {locks}"),
             ]
         }
-        "send_qi" => vec![
+        OpKind::SendQi => vec![
             "each output lands on a fresh one-time address".into(),
             "the recipient finds it with their payment code (mailbox or channel scan)".into(),
         ],
-        "wrap_qi" => vec![format!("Qi moves into the wrapper; once settled, claim WQI in {}", Screen::Wrap.place())],
-        "nft_list" | "nft_reprice" => vec![
+        OpKind::WrapQi => vec![format!("Qi moves into the wrapper; once settled, claim WQI in {}", Card::Wrap.place())],
+        OpKind::NftList | OpKind::NftReprice => vec![
             "a Zora ask goes live on-chain; Bazarr shows it within a minute".into(),
             "the item stays in your wallet until someone buys it at this price".into(),
             "when it sells, the proceeds arrive and the wallet notifies you (NFT sold)".into(),
         ],
-        "nft_unlist" => vec!["the ask is removed on-chain; nobody can buy the item at the old price".into()],
-        "unwrap_wqi" => vec!["WQI is burned; Qi returns after the protocol lock".into()],
-        "fill_gap" => vec!["uses the unused nonce; transactions queued behind it can then be mined".into()],
-        "aggregate_qi" | "sweep_qi" => {
+        OpKind::NftUnlist => vec!["the ask is removed on-chain; nobody can buy the item at the old price".into()],
+        OpKind::UnwrapWqi => vec!["WQI is burned; Qi returns after the protocol lock".into()],
+        OpKind::FillGap => vec!["uses the unused nonce; transactions queued behind it can then be mined".into()],
+        OpKind::AggregateQi | OpKind::SweepQi => {
             vec!["coins merge into fewer outputs you own; aggregation must be first in a block, so it may wait".into()]
         }
         _ => vec![format!("signed and broadcast; included within a few blocks and tracked in {}", Screen::Activity.place())],
@@ -260,8 +261,9 @@ pub(crate) fn status_style(t: &Theme, s: OpStatus) -> Style {
     Style::default().fg(c)
 }
 
-pub(crate) fn kind_icon(t: &Theme, kind: &str) -> &'static str {
-    t.icon(match kind {
+/// The glyph for an operation, by its name (so a kind from a newer build still gets one).
+pub(crate) fn kind_icon(t: &Theme, kind: &OpKind) -> &'static str {
+    t.icon(match kind.as_str() {
         k if k.starts_with("convert") => Icon::Convert,
         k if k.contains("swap") => Icon::Swap,
         k if k.contains("unwrap") => Icon::Unwrap,
@@ -283,20 +285,25 @@ pub(crate) fn empty(f: &mut Frame, area: Rect, t: &Theme, icon: Icon, text: &str
     empty_state(f, area, t, glyph, text, hints)
 }
 
+/// Keys and what they do, on one line: `a accept  ·  B block`.
+pub(crate) fn hint_line(t: &Theme, hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (k, v)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", t.dim_style()));
+        }
+        spans.push(Span::styled(k.to_string(), t.strong_style().fg(t.focus)));
+        spans.push(Span::styled(format!(" {v}"), t.dim_style()));
+    }
+    Line::from(spans)
+}
+
 /// Centered empty state: glyph, one line, key hints.
 pub(crate) fn empty_state(f: &mut Frame, area: Rect, t: &Theme, glyph: &str, text: &str, hints: &[(&str, &str)]) {
     let mut lines = vec![Line::from(Span::styled(format!("{glyph}  {text}"), t.dim_style()))];
     if !hints.is_empty() {
-        let mut spans = Vec::new();
-        for (i, (k, v)) in hints.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled("  ·  ", t.dim_style()));
-            }
-            spans.push(Span::styled(*k, t.strong_style().fg(t.focus)));
-            spans.push(Span::styled(format!(" {v}"), t.dim_style()));
-        }
         lines.push(Line::from(""));
-        lines.push(Line::from(spans));
+        lines.push(hint_line(t, hints));
     }
     let w = lines.iter().map(|line| line.width()).max().unwrap_or(1).min(area.width as usize).max(1) as u16;
     let h = lines.iter().map(|line| line.width().max(1).div_ceil(w as usize)).sum::<usize>().min(area.height as usize) as u16;
@@ -368,15 +375,15 @@ pub fn milestone(height: u64) -> bool {
 
 /// Draw one frame.
 pub fn draw(f: &mut Frame, app: &mut App) {
-    app.eco.inline_icons.borrow_mut().clear();
-    app.hits.borrow_mut().clear();
-    app.last_size = (f.area().width, f.area().height);
+    app.eco.media.inline_icons.borrow_mut().clear();
+    app.input.hits.borrow_mut().clear();
+    app.term.last_size = (f.area().width, f.area().height);
     // When a different modal appears, note the moment: clicks in the next instant were aimed at
     // what was there before (see `pointer::MODAL_GRACE`).
     let kind = modal_code(&app.modal);
-    if kind != app.modal_kind.get() {
-        app.modal_kind.set(kind);
-        app.modal_since.set((kind != 0).then(std::time::Instant::now));
+    if kind != app.input.modal_kind.get() {
+        app.input.modal_kind.set(kind);
+        app.input.modal_since.set((kind != 0).then(std::time::Instant::now));
     }
     app.theme.icons = app.icon_set();
     SPUN.with(|s| s.set(false));
@@ -384,7 +391,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     FRAMED.with(|m| m.borrow_mut().clear());
     draw_frame(f, app);
     // Any spinner drawn keeps turning until the frame no longer shows one.
-    app.spun = SPUN.with(|s| s.get());
+    app.fx.spun = SPUN.with(|s| s.get());
     close_clipped_titles(f.buffer_mut());
     let t = app.theme.clone();
     legible_selection(f.buffer_mut(), &t);
@@ -392,7 +399,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // must show the same blank cells (the bitmaps themselves stay placed across it).
     super::images::place_inline_icons(app, f.buffer_mut(), &t);
     // Inside tmux, pictures are text the terminal draws them over (see `placeholders`).
-    if app.caps.placeholders && super::images::bitmaps(app) {
+    if app.term.caps.placeholders && super::images::bitmaps(app) {
         super::placeholders::place(app, f.buffer_mut());
     }
     // Hashes and addresses the wallet knows open in the explorer (OSC 8), where they are shown;
@@ -404,18 +411,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     {
         use super::term::backend::BIG_TEXT_CELL;
         let buf = &*f.buffer_mut();
-        app.big_text.borrow_mut().retain(|b| {
+        app.term.big_text.borrow_mut().retain(|b| {
             (b.y..b.y + u16::from(b.scale))
                 .all(|y| (b.x..b.x + b.width()).all(|x| buf.cell((x, y)).is_some_and(|c| c.symbol() == BIG_TEXT_CELL)))
         });
     }
     // The composed content, kept for the frames where only the edge light moves (`draw_edges`),
     // while the edges animate at all.
-    app.content = app.eco.anim_step.get().is_some().then(|| f.buffer_mut().clone());
+    app.content = app.eco.anim.step.get().is_some().then(|| f.buffer_mut().clone());
     super::edge::paint(app, f.buffer_mut(), &t);
-    *app.links_shown.borrow_mut() = links.clone();
+    *app.term.links_shown.borrow_mut() = links.clone();
     super::term::backend::set_links(links);
-    app.focus_at = focus_position(app, f.buffer_mut(), &t);
+    app.input.focus_at = focus_position(app, f.buffer_mut(), &t);
 }
 
 /// Where the keyboard's focus is on screen, for the terminal's own cursor to wait at (hidden),
@@ -431,10 +438,10 @@ fn focus_position(app: &App, buf: &Buffer, t: &Theme) -> Option<(u16, u16)> {
         }
     }
     let list = app.main_list();
-    let hits = app.hits.borrow();
+    let hits = app.input.hits.borrow();
     hits.live_regions()
         .iter()
-        .find(|(_, target)| matches!(target, Target::Row { list: l, index, .. } if *l == list && *index == app.selected))
+        .find(|(_, target)| matches!(target, Target::Row { list: l, index, .. } if *l == list && *index == app.nav.selected))
         .map(|(r, _)| (r.x, r.y))
 }
 
@@ -455,7 +462,7 @@ pub fn draw_edges(f: &mut Frame, app: &mut App) {
 
 /// A row's jump label: quiet at rest, lit once `'` has armed a jump and it can be pressed.
 pub(crate) fn jump_style(app: &App, t: &Theme) -> Style {
-    if app.jump_pending.is_some() { t.strong_style().fg(t.focus) } else { t.dim_style() }
+    if app.nav.jump_pending.is_some() { t.strong_style().fg(t.focus) } else { t.dim_style() }
 }
 
 /// A panel title longer than its panel runs into the corner (`reserves 2┐`). Wherever text
@@ -501,6 +508,7 @@ fn modal_code(m: &Modal) -> u8 {
         Modal::Sheet { .. } => 17,
         Modal::GoTo => 18,
         Modal::Wallets { .. } => 19,
+        Modal::Accounts { .. } => 20,
     }
 }
 
@@ -553,10 +561,10 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     let t = app.theme.clone();
     let area = f.area();
     f.render_widget(Block::default().style(t.base()), area);
-    app.qr_rect = None;
-    app.big_text.borrow_mut().clear();
-    app.breakpoint = Breakpoint::of(area.width);
-    app.short = area.height < SHORT_ROWS;
+    app.term.qr_rect = None;
+    app.term.big_text.borrow_mut().clear();
+    app.term.breakpoint = Breakpoint::of(area.width);
+    app.term.short = area.height < SHORT_ROWS;
 
     if too_small((area.width, area.height)) {
         let p = Paragraph::new(vec![
@@ -573,7 +581,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_toasts(f, app, &t, area);
         return;
     }
-    if app.locked {
+    if app.lock.locked {
         draw_lock(f, app, &t, area);
         draw_modal(f, app, &t, area);
         draw_toasts(f, app, &t, area);
@@ -583,14 +591,16 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     let [header, _rule, body, footer] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(0), Constraint::Min(5), Constraint::Length(1)]).areas(area);
     // Trader: Markets and the swap card side by side, on a terminal wide enough to hold both.
-    app.trader = match app.config.layout.as_str() {
-        "trader" => body.width >= 140,
-        "auto" => body.width >= 200,
-        _ => false,
-    };
-    let (nav, content) = if app.breakpoint > Breakpoint::Compact && app.config.layout != "focus" {
+    // Pro's: Markets is not part of Simple.
+    app.trader = app.config.mode == wallet_core::config::Mode::Pro
+        && match app.config.layout.as_str() {
+            "trader" => body.width >= 140,
+            "auto" => body.width >= 200,
+            _ => false,
+        };
+    let (nav, content) = if app.term.breakpoint > Breakpoint::Compact && app.config.layout != "focus" {
         // The rail widens on a wide terminal, where the columns are there to spare.
-        let rail = if app.breakpoint == Breakpoint::Wide { 24 } else { 23 };
+        let rail = if app.term.breakpoint == Breakpoint::Wide { 24 } else { 23 };
         let [n, m] = Layout::horizontal([Constraint::Length(rail), Constraint::Min(40)]).areas(body);
         (Some(n), m)
     } else {
@@ -600,10 +610,10 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     if let Some(n) = nav {
         draw_nav(f, app, &t, n);
     }
-    let section = app.screen.section();
-    let main = if section.tab_labels(&app.config.features).len() > 1 && content.height > 8 {
+    let section = app.nav.screen.section();
+    let main = if section.tab_labels(&app.shown()).len() > 1 && content.height > 8 {
         // Two rows (the labels, and a rule lit under the open one) unless rows are short.
-        let rows = if app.short { 1 } else { 2 };
+        let rows = if app.term.short { 1 } else { 2 };
         let [tabs, m] = Layout::vertical([Constraint::Length(rows), Constraint::Min(4)]).areas(content);
         super::views::draw_tabs(f, app, &t, tabs);
         m
@@ -612,18 +622,18 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     };
     // The pinned chat docks beside every screen but the Board (which shows it already): a column
     // on the right when there is width to spare, a strip along the bottom when there is height.
-    app.dock_shown = false;
+    app.dock.shown = false;
     let main = match app.eco.board.pin.clone() {
-        Some(pin) if app.screen != Screen::Board && app.config.features.messaging => {
+        Some(pin) if app.nav.screen != Screen::Board && app.config.features.messaging => {
             if main.width >= 150 {
                 let [m, dock] = Layout::horizontal([Constraint::Min(80), Constraint::Length(46)]).areas(main);
                 super::views::draw_chat_dock(f, app, &t, dock, &pin);
-                app.dock_shown = true;
+                app.dock.shown = true;
                 m
             } else if main.height >= 30 {
                 let [m, dock] = Layout::vertical([Constraint::Min(20), Constraint::Length(9)]).areas(main);
                 super::views::draw_chat_dock(f, app, &t, dock, &pin);
-                app.dock_shown = true;
+                app.dock.shown = true;
                 m
             } else {
                 main
@@ -631,55 +641,40 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         }
         _ => main,
     };
-    match app.detail.last() {
+    match app.nav.detail.last() {
         Some(d) => super::views::draw_detail(f, app, &t, main, &d.clone()),
-        None => match app.screen {
-            Screen::Home => super::views::draw_home(f, app, &t, main),
-            Screen::Markets | Screen::Swap if app.trader => {
+        None => match app.nav.screen {
+            // Trader: Markets and the swap card side by side.
+            Screen::Markets if app.trader => {
                 let [left, right] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(main);
                 super::views::draw_markets(f, app, &t, left);
                 super::views::draw_swap(f, app, &t, right);
             }
-            Screen::Markets => super::views::draw_markets(f, app, &t, main),
-            Screen::Accounts => draw_accounts(f, app, &t, main),
-            Screen::Activity => draw_activity(f, app, &t, main),
-            Screen::Qi => draw_qi(f, app, &t, main),
-            Screen::Contacts => draw_payments(f, app, &t, main, false),
-            Screen::Channels => draw_payments(f, app, &t, main, true),
-            Screen::Board => super::views::draw_board(f, app, &t, main),
-            Screen::Wallets => super::views::draw_wallets(f, app, &t, main),
-            Screen::Orders => super::order_ui::draw_screen(f, app, &t, main),
-            Screen::Swap => super::views::draw_swap(f, app, &t, main),
-            Screen::Pools => super::views::draw_pools(f, app, &t, main),
-            Screen::Convert => super::views::draw_convert_card(f, app, &t, main),
-            Screen::Wrap => super::views::draw_wrap_card(f, app, &t, main),
-            Screen::Launches => super::views::draw_launches(f, app, &t, main),
-            Screen::Pnl => super::views::draw_pnl(f, app, &t, main),
-            Screen::Collected => super::views::draw_collected(f, app, &t, main),
-            Screen::Explore => super::views::draw_explore(f, app, &t, main),
-            Screen::Listings => super::views::draw_listings(f, app, &t, main),
-            Screen::Network => draw_node(f, app, &t, main),
-            Screen::Settings => draw_settings(f, app, &t, main),
-            Screen::DataSources => super::views::draw_data_sources(f, app, &t, main),
+            Screen::Exchange if app.trader && app.nav.card == Card::Swap => {
+                let [left, right] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(main);
+                super::views::draw_markets(f, app, &t, left);
+                super::views::draw_swap(f, app, &t, right);
+            }
+            screen => screen.view().draw(f, app, &t, main),
         },
     }
     let modal_open = !matches!(app.modal, Modal::None);
     // Decorative effects never draw over modals (reviews, secrets, forms).
     if modal_open {
-        app.ambient = None;
+        app.fx.ambient = None;
     }
-    if let Some(c) = app.ambient.as_mut() {
+    if let Some(c) = app.fx.ambient.as_mut() {
         f.render_widget(Clear, main);
         f.render_widget(Block::default().style(t.base()), main);
         // By the clock, not per redraw: keys and data arriving mid-effect don't speed it up.
         if c.advance() {
             c.render(main, f.buffer_mut(), t.base().fg(t.ok));
         } else {
-            app.ambient = None;
+            app.fx.ambient = None;
             // `:poem`: the hash rain gives way to the haiku.
-            if let Some(haiku) = app.poem_haiku.take() {
+            if let Some(haiku) = app.fx.poem_haiku.take() {
                 let args = super::fx::theme_args("decrypt", &t);
-                app.ambient =
+                app.fx.ambient =
                     super::fx::Ceremony::with_args("decrypt", &args, &haiku, 100, 30, 300).map(|c| c.at_speed(super::fx::LOCK_SPEED));
             }
         }
@@ -694,7 +689,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
 /// A thumb on the right border of every list that holds more than it shows: where you are, and
 /// how much there is. Only over a plain border cell, so nothing else is ever drawn over.
 fn draw_scrollbars(buf: &mut Buffer, app: &App, t: &Theme) {
-    let lists = app.hits.borrow().lists().to_vec();
+    let lists = app.input.hits.borrow().lists().to_vec();
     for (area, offset, len) in lists {
         let h = area.height as usize;
         if len <= h || h < 3 {
@@ -720,8 +715,8 @@ fn draw_scrollbars(buf: &mut Buffer, app: &App, t: &Theme) {
 /// whole, in groups of four (and links it like the original).
 fn hover_marks(app: &App, buf: &mut Buffer, t: &Theme, links: &mut Vec<super::links::Link>) {
     use super::hit::ReviewPart;
-    let Some((x, y)) = app.pointer.at else { return };
-    let region = app.hits.borrow().region_at(x, y).map(|(r, target)| (r, target.clone()));
+    let Some((x, y)) = app.input.pointer.at else { return };
+    let region = app.input.hits.borrow().region_at(x, y).map(|(r, target)| (r, target.clone()));
     match region {
         Some((rect, Target::Row { .. })) => {
             // The panel's edge beside the row: seen whatever the row begins with (an icon's
@@ -732,7 +727,7 @@ fn hover_marks(app: &App, buf: &mut Buffer, t: &Theme, links: &mut Vec<super::li
             {
                 c.set_symbol("┃").set_fg(t.focus);
             }
-            if let (Color::Rgb(fr, fg, fb), true) = (t.focus, app.caps.truecolor) {
+            if let (Color::Rgb(fr, fg, fb), true) = (t.focus, app.term.caps.truecolor) {
                 for (i, k) in [0.16f32, 0.09, 0.04].into_iter().enumerate() {
                     if let Some(c) = buf.cell_mut((rect.x + i as u16, rect.y))
                         && c.bg != t.selection
@@ -825,9 +820,19 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
             ],
         )
     });
+    // With more than one account, which one acts rides beside the name (`@` changes it).
+    if d.accounts.len() > 1
+        && let Some(active) = d.active_account()
+    {
+        segs.push(Seg {
+            joined: Some(0),
+            targets: vec![(1, Target::Header(HeaderPart::Account))],
+            ..seg(3, vec![Span::styled(" · ", t.dim_style()), Span::styled(truncate(&active.label, 18), t.strong_style())])
+        });
+    }
     // The balance rides beside the name, rounded: this is the glance figure, not the ledger.
     // `$` hides it, for a room with other people in it. It is the first thing to go.
-    if app.config.balance_in_bar && !app.locked && !d.accounts.is_empty() {
+    if app.config.balance_in_bar && !app.lock.locked && !d.accounts.is_empty() {
         let quai = d.accounts.iter().fold(wallet_core::sdk::U256::ZERO, |s, a| s.saturating_add(a.balance));
         let shown = wallet_core::amount::group_thousands(&wallet_core::amount::format_amount_short(quai, 18, 2));
         segs.push(Seg { joined: Some(0), ..seg(6, vec![Span::styled(format!("  {shown} QUAI"), t.strong_style())]) });
@@ -837,7 +842,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
         // there, so it outlasts the place name (the tab strip below says that too).
         let mut strip = seg(2, Vec::new());
         for s in app.sections() {
-            let active = s == app.screen.section();
+            let active = s == app.nav.screen.section();
             strip.targets.push((strip.spans.len(), Target::Section(s)));
             strip.spans.push(Span::styled(
                 format!("{}{} ", s.key(), if active { format!(" {}", s.title()) } else { String::new() }),
@@ -851,7 +856,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
     }
     // Where you are, beyond what the tab strip below already says (the section and its tab):
     // an open detail, with its trail. Nothing at all on a plain screen.
-    let tabs = app.screen.section().tab_labels(&app.config.features).len();
+    let tabs = app.nav.screen.section().tab_labels(&app.shown()).len();
     let crumbs: Vec<String> = app.breadcrumb().into_iter().skip(if tabs > 1 { 2 } else { 1 }).collect();
     let last = crumbs.len().saturating_sub(1);
     let mut trail = Vec::new();
@@ -875,7 +880,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
     let node_at = segs.len();
     // The block glyph pulses only where motion is on; with it off, a new block is just the
     // height changing.
-    let beating = app.motion().effects() && app.beat.is_some_and(|b| b.elapsed() < BEAT_PULSE);
+    let beating = app.motion().effects() && app.fx.beat.is_some_and(|b| b.elapsed() < BEAT_PULSE);
     let stale = d.health.as_ref().and_then(|h| h.head_age_secs).is_some_and(|s| s > 90);
     let mismatch = d.health.as_ref().is_some_and(|h| !h.identity_ok);
     // Every node state has its own glyph and word, never color alone.
@@ -902,7 +907,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
     if let Some(h) = &d.health {
         // The block the worker announced as soon as it saw it, not the one its last refresh
         // finished reading: the header says where the chain is, and every screen follows it.
-        let height = h.height.max(app.eco.head);
+        let height = h.height.max(app.eco.clock.head);
         segs.push(Seg {
             joined: Some(node_at),
             ..seg(
@@ -937,7 +942,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
         right.push(Span::styled(format!("{} {b} ", spinner()), Style::default().fg(t.pending)));
     }
     // A limit waiting for its review is a standing state, said in the header until it is.
-    if let Some(n @ 1..) = app.eco.orders.as_deref().map(|rows| super::order_ui::reachable(rows).len()) {
+    if let Some(n @ 1..) = app.eco.feeds.orders.value().map(|rows| super::order_ui::reachable(rows).len()) {
         right.push(Span::styled(format!("◆ {} reachable ", amount::count(n, "limit")), Style::default().fg(t.attention)));
     }
     let unread = d.notifications.iter().filter(|n| !n.read).count();
@@ -996,7 +1001,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
         spans.extend(s.spans);
     }
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         hits.spans(left_area, &spans, |i| targets.iter().find(|(at, _)| *at == i).map(|(_, t)| t.clone()));
         let right_area = Rect { x: area.right().saturating_sub(right_w), width: right_w, ..area };
         hits.spans(right_area, &right, |i| unread_at.filter(|u| i == *u || i == *u + 1).map(|_| Target::Header(HeaderPart::Unread)));
@@ -1009,7 +1014,7 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
 
 fn draw_nav(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     // The sections start level with the content, below the tab strip (two rows unless short).
-    let top = if app.short { 1 } else { 2 };
+    let top = if app.term.short { 1 } else { 2 };
     let rail = Rect { y: area.y + top, height: area.height.saturating_sub(top), ..area };
     let sections = app.sections();
     // A blank row between sections where the height allows it, so each is an easy target.
@@ -1019,7 +1024,7 @@ fn draw_nav(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let mut lines = Vec::new();
     // Line index → what a click on that line does.
     let mut targets: Vec<(usize, Target)> = Vec::new();
-    let current = app.screen.section();
+    let current = app.nav.screen.section();
     for (i, s) in sections.iter().enumerate() {
         if i > 0 && (spaced || *s == app::Section::System) {
             lines.push(Line::from(""));
@@ -1033,7 +1038,7 @@ fn draw_nav(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         let dim = if active { style } else { t.dim_style() };
         let dot = match s {
             // Money arrived since Activity was last opened: marked until it is.
-            app::Section::Activity if app.arrivals_unseen => Span::styled("•", style.fg(t.ok)),
+            app::Section::Activity if app.news.arrivals_unseen => Span::styled("•", style.fg(t.ok)),
             app::Section::Home => Span::styled("•", style.fg(t.quai)),
             app::Section::Nfts => Span::styled("◧", style.fg(t.qi)),
             _ => Span::styled(" ", style),
@@ -1064,7 +1069,7 @@ fn draw_nav(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     lines.push(Line::from(Span::styled("   [ ] tabs", t.dim_style().add_modifier(Modifier::ITALIC))));
     let block = Block::default().borders(Borders::RIGHT).border_type(BorderType::Plain).border_style(t.border(false));
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         for (line, target) in targets {
             if (line as u16) < rail.height {
                 hits.add(Rect::new(rail.x, rail.y + line as u16, rail.width.saturating_sub(1), 1), target);
@@ -1076,7 +1081,7 @@ fn draw_nav(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 fn draw_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let mut hints: Vec<(String, String)> = app::context_hints(app);
-    let at_screen = matches!(app.modal, Modal::None) && !app.dock_focus && !(app.detail.is_empty() && app.input_focused());
+    let at_screen = matches!(app.modal, Modal::None) && !app.dock.focus && !(app.nav.detail.is_empty() && app.input_focused());
     if at_screen && app.dash.notifications.iter().any(|n| !n.read) {
         hints.insert(0, ("N".into(), "notifications".into()));
     }
@@ -1104,7 +1109,7 @@ fn draw_footer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         keys.push(hint_key(k));
     }
     // A hint is its key: clicking the key or its label presses it.
-    app.hits.borrow_mut().spans(area, &spans, |i| keys.get(i / 2).copied().flatten().map(Target::Key));
+    app.input.hits.borrow_mut().spans(area, &spans, |i| keys.get(i / 2).copied().flatten().map(Target::Key));
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(app.bar_bg())), area);
 }
 
@@ -1144,7 +1149,7 @@ fn draw_pending(f: &mut Frame, app: &App, t: &Theme, area: Rect) -> u16 {
     let waiting = app.confirming_ops();
     let Some(oldest) = waiting.first() else {
         // The one that just left the pill is said where the pill was, for a moment.
-        let Some((text, _)) = &app.pill_resolved else { return 0 };
+        let Some((text, _)) = &app.fx.pill_resolved else { return 0 };
         let failed = text.starts_with(t.icon(Icon::Danger));
         let text = truncate(text, (area.width as usize).saturating_sub(12).min(70));
         let w = (text.chars().count() as u16 + 3).min(area.width);
@@ -1193,12 +1198,12 @@ fn draw_toasts(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let pill = if modal_open { 0 } else { draw_pending(f, app, t, area) };
     let mut y = area.bottom().saturating_sub(1 + pill);
     let shown = if modal_open { 1 } else { usize::MAX };
-    for toast in app.toasts.iter().rev().take(shown) {
+    for toast in app.status.toasts.iter().rev().take(shown) {
         let max = (area.width as usize).saturating_sub(10).min(90);
         let text = truncate(&toast.text, max);
         let w = (text.chars().count() as u16 + 6).min(area.width);
         let rect = Rect::new(area.right().saturating_sub(w + 1), y, w, 1);
-        app.hits.borrow_mut().add(rect, Target::Toast);
+        app.input.hits.borrow_mut().add(rect, Target::Toast);
         let (glyph, color) = severity_mark(t, toast.level);
         f.render_widget(Clear, rect);
         f.render_widget(

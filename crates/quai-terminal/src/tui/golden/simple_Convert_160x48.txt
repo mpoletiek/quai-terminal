@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                                                                               ● 1 unread N
+                        ┌ ▸ exchange · convert QUAI ↔ Qi ─────────────────────────────┐┌ both markets ─────────────────────────────────────────────────────────┐
+                        │   pair        ◆  QUAI → ◉  Qi ‹›                            ││ ▌◊ PROTOCOL protocol conversion                                       │
+  1  Home            • ││   you pay     5,000 QUAI   available 179,071.7533 QUAI      ││ ▌  ▀█    █ █ ▀▀█ ▀▀█                                                  │
+                       ││   slippage    auto ‹› (conversion · suggested by the quote) ││ ▌   █    ▀▀█  ▀█ █▀▀                                                  │
+▌ 3  Trade             ││   route       protocol conversion ‹›                        ││ ▌  ▀▀▀ ▌   ▀ ▀▀▀ ▀▀▀.118 Qi                                           │
+                       ││                                                             ││ ▌  convert QUAI → Qi                                                  │
+  4  NFTs            ◧ ││ enter quote the conversion   r route   f flip               ││ ▌  spendable locked by the protocol (weeks)   no LP fee or price      │
+                       ││ Conversions in one prime block share a discount; beyond     ││ impact                                                                │
+  5  People            ││ your slippage they refund (fee spent).                      ││ ▌  ! conversions in one prime block share a discount; one above yo…   │
+                       ││                                                             ││                                                                       │
+  6  Activity          ││                                                             ││  ≋ MARKET   market route (Quainance)    ✓ pays more                   │
+                       ││                                                             ││    ▀█  ▀▀█   █▀█ █▀█ ▀▀█                                              │
+                       ││                                                             ││     █  █▀▀   █▀█ ▀▀█  ▀█                                              │
+  0  System            ││                                                             ││    ▀▀▀ ▀▀▀ ▌ ▀▀▀ ▀▀▀ ▀▀▀.000 Qi                                       │
+                       ││                                                             ││    wrap QUAI → WQUAI  ·  swap WQUAI → WQI  ·  unwrap WQI → Qi         │
+   [ ] tabs            ││                                                             ││    spendable in minutes   no LP fee or price impact                   │
+                       ││                                                             ││    ! conversions in one prime block share a discount; one above yo…   │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││ the market route pays 800.26% more at this block                      │
+                       ││                                                             ││ Rates move with the pools and the block's conversion flow.            │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       ││                                                             ││                                                                       │
+                       │└─────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────┘
+ N notifications  enter quote · review  / pick asset  f flip  esc back to swap  space actions  : palette  ? more

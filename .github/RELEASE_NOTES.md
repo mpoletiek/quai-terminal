@@ -3,28 +3,35 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
-## What's new in 0.1.0-alpha.8
+## What's new in 0.1.0-alpha.9
 
-- **A token's bonding curve is quoted beside the exchanges.** When you swap QUAI for a token that
-  trades on a Quainance or HartiiLabs curve, the swap card quotes the curve too, says how deep it
-  is, and trades on the curve when it pays more or when the exchanges cannot fill the amount. QAXE
-  is the case in point: its market is its curve (about $3.9k), and a separate $13 pool beside it was
-  all the swap card could see, so 1,000 QUAI was refused there although the curve fills it.
-- **More of Quainance's trade zone.** Tokens from Quainance's second launcher (its revenue system)
-  can be bought and sold on their curves, and every pair on Quainance's exchanges is listed,
-  including new and small ones the explorer leaves out. QuaiSwap lists the trade zone's pools
-  (BARRY, BOSS, Q0, QPEPE) and QIQI, and nothing else. poop.fun curves are not supported.
-- **The revenue AMM is named for what it is.** The exchange shown as "Hartii AMM" is Quainance's
-  revenue AMM; HartiiLabs' tokens trade on their own curves.
-- **Markets numbers you can trust.** Sorting by 24h change or TVL orders by the figures the rows
-  show, from the top of the list. A pair's 24h change is a real day's change: history that does not
-  reach a day back no longer produces one. 24h volume, trades, high and low no longer change with
-  the chart's timeframe. Launch progress means the same thing on every row.
-- **Cursors stay put.** Pools, Launches and the trade tape keep the cursor on the pool, token or
-  trade it was on when their lists refresh, so an action never lands on a row that moved under it.
-- **Smaller fixes.** The token picker ranks what you typed first (`qi` finds Qi), Convert stops
-  claiming a route pays more than one that cannot run, curve quotes work from a watch-only wallet,
-  and `markets PUNK` finds the pair from its symbol.
+This release rebuilds how the wallet is put together. Most of it is underneath; what you will see:
+
+- **Your keys live in the background daemon, not the terminal.** The terminal is now a client of
+  the daemon: your password is checked there and the unlocked keys are held there, for that terminal
+  alone. If the daemon stops, the terminal locks at once and says why. `--standalone` keeps
+  everything in the terminal, as before.
+- **Simple and Pro.** A new install starts in Simple: home, send and receive, one exchange,
+  activity, NFTs and contacts. Pro adds markets, pools, launches, orders, PnL, the NFT marketplace
+  and the network pages. An existing install stays Pro. Switch in Settings › Mode, or with `:pro`.
+- **Every review is checked against the transaction it signs.** The wallet decodes the bytes it is
+  about to sign and refuses when they do not say what the review says. Risky reviews (an unknown
+  contract, an unlimited approval, a first payment to an address, half or more of an account) ask
+  you to type a few short words. Calls to contracts the wallet does not know are allowed, with a
+  review of the raw call.
+- **Choose the account that acts.** `@` picks it, from anywhere; every card, form and review says
+  which account it spends from.
+- **One Exchange.** Swap, Convert and Wrap are one screen, and a multi-step trade (approve, wrap,
+  swap) is one plan, walked the same way from the terminal and the command line. Rejecting a review
+  brings back the form as you typed it.
+- **Pictures are decoded in a separate, sandboxed process** that holds no keys.
+- **Private messages, off by default.** Messages encrypted to one person with weekly keys, sent from
+  a messaging account of their own. They stay off until you turn them on, and their cryptography has
+  not yet had an independent review.
+- **People** puts contacts and the payment channels to them on one screen; with messaging on, `5`
+  opens the inbox.
+- **Speed.** Measured against the previous build on the same machine: nothing is slower, and
+  unlocking is about 9% faster.
 
 ## Download
 
@@ -86,6 +93,11 @@ Read this part.
   split swaps, and the automatic wrap before a trade have not: they are qualified by simulation against the deployed contracts and by execution on a
   disposable local chain. A limit order's swap is an ordinary swap once you approve its review,
   but no order has yet been run to completion on mainnet.
+- **This version's own transactions have not yet run on mainnet.** 0.1.0-alpha.9 rebuilds how
+  transactions are built, reviewed and signed. Its swaps (with their approvals), adding and removing
+  liquidity, and QUAI → Qi conversion were run end to end on a disposable local chain, and its
+  reviews checked read-only against the deployed mainnet contracts; the mainnet runs above were
+  made with earlier versions. Start with small amounts.
 - It holds real keys. Back up your recovery phrase before funding anything, and try it with a small
   amount first.
 - `wallet watch` creates a watch-only wallet that cannot sign. That is the safe way to look around.

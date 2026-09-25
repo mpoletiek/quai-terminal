@@ -1,0 +1,150 @@
+{
+ "days": 7,
+ "granularity": "hour",
+ "stale": false,
+ "source": {
+  "id": "quainance",
+  "kind": "subgraph",
+  "factoryAddress": "0x0018a110b6ca369dcf5ab062c72f049e93b9ede2",
+  "feeRateBps": "30",
+  "feesAreEstimated": true
+ },
+ "watermark": {
+  "sourceBlockHeight": "10109768",
+  "sourceBlockHash": "0x6161c9fa76c4a4e2ee17f969f6b6f1eeb0bd400dec8b8ea8a2d8acb35fce033a"
+ },
+ "freshness": {
+  "observedAt": "2026-09-15T11:59:14.843Z",
+  "ageSeconds": 276,
+  "staleAfterSeconds": 900
+ },
+ "coverage": {
+  "volume24h": "complete",
+  "historyFrom": "2026-09-08T12:00:00.000Z",
+  "historyTo": "2026-09-15T11:00:00.000Z"
+ },
+ "current": {
+  "observedAt": "2026-09-15T11:59:14.843Z",
+  "tvlUsd": "11285.02159298522962239222867917507",
+  "totalVolumeUsd": "57945.40187284921311887296067401144",
+  "volume24hUsd": "2928.62436092643291207503658298473",
+  "volume24hWindowSeconds": 86406,
+  "estimatedFees24hUsd": "8.78587308277929873622510974895419",
+  "pairCount": "18",
+  "txCount": "3383",
+  "indexedPoolCount": 18,
+  "poolsTruncated": false
+ },
+ "pools": [
+  {
+   "address": "0x0021f5cc862ebb0252ba209266f2fabbc7592e83",
+   "name": "USDT/WQUAI",
+   "token0": {
+    "address": "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5",
+    "symbol": "USDT"
+   },
+   "token1": {
+    "address": "0x006c3e2aaae5db1bcd11a1a097ce572312eaddbb",
+    "symbol": "WQUAI"
+   },
+   "reserve0": "1630.792458",
+   "reserve1": "186842.95947719747979204",
+   "tvlUsd": "3261.584916",
+   "totalVolumeUsd": "29191.20545266680699540988372534568",
+   "volume24hUsd": "312.63872467632352636433367807792",
+   "volume24hWindowSeconds": 86406,
+   "estimatedFees24hUsd": "0.93791617402897057909300103423376",
+   "txCount": "1650",
+   "volume24hCoverage": "complete"
+  },
+  {
+   "address": "0x000ed989feefb2b8f40bf3ee60131ccbd8f9a5d0",
+   "name": "WQI/QOWBOY",
+   "token0": {
+    "address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+    "symbol": "WQI"
+   },
+   "token1": {
+    "address": "0x004d8d26c54b0d335a111546adb47a9c30b761dd",
+    "symbol": "QOWBOY"
+   },
+   "reserve0": "1493.164153445526130055",
+   "reserve1": "908294549.464198623255545713",
+   "tvlUsd": "3023.810742670412109707921541569735",
+   "totalVolumeUsd": "491.574863207274717274860094171321",
+   "volume24hUsd": "25.973020182017173735702562734462",
+   "volume24hWindowSeconds": 86406,
+   "estimatedFees24hUsd": "0.077919060546051521207107688203386",
+   "txCount": "55",
+   "volume24hCoverage": "complete"
+  },
+  {
+   "address": "0x00602f12ea0491f02865aa6c418815319e2a645b",
+   "name": "WQI/WQUAI",
+   "token0": {
+    "address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+    "symbol": "WQI"
+   },
+   "token1": {
+    "address": "0x006c3e2aaae5db1bcd11a1a097ce572312eaddbb",
+    "symbol": "WQUAI"
+   },
+   "reserve0": "837.444505290058738236",
+   "reserve1": "99601.275197968583207309",
+   "tvlUsd": "1738.668760701712575804599722531199",
+   "totalVolumeUsd": "22217.57851581291644136191635269729",
+   "volume24hUsd": "1903.64824601932832169880981628048",
+   "volume24hWindowSeconds": 86406,
+   "estimatedFees24hUsd": "5.71094473805798496509642944884144",
+   "txCount": "766",
+   "volume24hCoverage": "complete"
+  },
+  {
+   "address": "0x0050287dad80029957a3c696ee3d876abadeaf92",
+   "name": "SMOL/WQI",
+   "token0": {
+    "address": "0x00033a4d7dcb5559e96245a90dbe6f858e10e8bc",
+    "symbol": "SMOL"
+   },
+   "token1": {
+    "address": "0x002b2596ecf05c93a31ff916e8b456df6c77c750",
+    "symbol": "WQI"
+   },
+   "reserve0": "292836840.777586626539048926",
+   "reserve1": "546.63539636655241746",
+   "tvlUsd": "1106.992811234389267817347670426369",
+   "totalVolumeUsd": "866.355831030011141188370982195041",
+   "volume24hUsd": "203.074661994245064989416312087714",
+   "volume24hWindowSeconds": 86406,
+   "estimatedFees24hUsd": "0.609223985982735194968248936263142",
+   "txCount": "186",
+   "volume24hCoverage": "complete"
+  }
+ ],
+ "history": [
+  {
+   "bucket": "2026-09-08T12:00:00.000Z",
+   "tvlUsd": "5636.029881155162025604205080163122",
+   "totalVolumeUsd": "35371.52562381844382672194488417696",
+   "sourceBlockHeight": "9989614"
+  },
+  {
+   "bucket": "2026-09-08T13:00:00.000Z",
+   "tvlUsd": "5636.029881155162025604205080163122",
+   "totalVolumeUsd": "35371.52562381844382672194488417696",
+   "sourceBlockHeight": "9990325"
+  },
+  {
+   "bucket": "2026-09-08T14:00:00.000Z",
+   "tvlUsd": "5636.029881155162025604205080163122",
+   "totalVolumeUsd": "35371.52562381844382672194488417696",
+   "sourceBlockHeight": "9991054"
+  },
+  {
+   "bucket": "2026-09-08T15:00:00.000Z",
+   "tvlUsd": "5636.029881155162025604205080163122",
+   "totalVolumeUsd": "35371.52562381844382672194488417696",
+   "sourceBlockHeight": "9991772"
+  }
+ ]
+}

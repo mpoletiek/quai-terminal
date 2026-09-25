@@ -7,7 +7,7 @@ use super::*;
 /// Token icons or the NFT thumbnail for a review, with their names as text beside them.
 pub(crate) fn draw_review_pictures(f: &mut Frame, app: &App, t: &Theme, area: Rect, visuals: &[wallet_core::tx::ReviewVisual]) {
     // Only the review's own pictures are placed while it is open.
-    app.eco.kitty.borrow_mut().clear();
+    app.eco.media.kitty.borrow_mut().clear();
     let bg = Style::default().bg(t.raised);
     if let Some(v) = visuals.iter().find(|v| v.role == "nft") {
         let id = v.token_id.clone().unwrap_or_default();
@@ -113,8 +113,8 @@ pub(crate) fn blend(a: (u8, u8, u8), b: (u8, u8, u8), amount: f32) -> Color {
 pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
     // An open modal has the pointer: nothing behind it answers a click (see `hit`).
     if !matches!(app.modal, Modal::None) {
-        app.hits.borrow_mut().capture(area);
-        let badges: Vec<(String, Color)> = app.eco.inline_icons.borrow().iter().map(|(l, c, _)| (l.clone(), *c)).collect();
+        app.input.hits.borrow_mut().capture(area);
+        let badges: Vec<(String, Color)> = app.eco.media.inline_icons.borrow().iter().map(|(l, c, _)| (l.clone(), *c)).collect();
         scrim(f.buffer_mut(), t, &badges);
     }
     let palette = match &app.modal {
@@ -165,10 +165,8 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             let available = |asset: &str| -> Option<String> {
                 match asset {
                     "QUAI" => {
-                        let a = account_value
-                            .as_ref()
-                            .and_then(|v| dash.accounts.iter().find(|a| a.address == *v))
-                            .or(dash.accounts.first())?;
+                        let a =
+                            account_value.as_ref().and_then(|v| dash.accounts.iter().find(|a| a.address == *v)).or(dash.active_account())?;
                         Some(format!("{} QUAI", q(a.balance)))
                     }
                     "QI" => dash.qi.as_ref().map(|s| format!("{} Qi", qi(s.balance.spendable))),
@@ -228,7 +226,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             {
                 // Each field is three lines (label and value, the track, a note): a click on the
                 // first two focuses it; on a choice's value, it moves to the next option.
-                let mut hits = app.hits.borrow_mut();
+                let mut hits = app.input.hits.borrow_mut();
                 hits.add(rect, Target::Swallow);
                 hits.add(body, Target::Scroll(super::super::hit::Scroll::Form));
                 let label_w = form.fields.iter().map(|fl| fl.label.chars().count()).max().unwrap_or(10).max(10) + 2;
@@ -272,8 +270,8 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             let rv = &r.review;
             let mut lines: Vec<Line> = Vec::new();
             // A step of a sequence says where it stands in it, first.
-            if let Some(flow) = app.eco.flow.as_ref().filter(|f| f.review_op.as_deref() == Some(rv.op_id.as_str())) {
-                let steps = flow.stepper(Some(&super::super::eco::step_name(&rv.kind)));
+            if let Some(plan) = app.eco.plan.as_ref().filter(|p| p.view.phase == quai_engine::plans::Phase::Reviewing(rv.op_id.clone())) {
+                let steps = plan.view.stepper(Some(&super::super::eco::step_name(&rv.kind)));
                 let at = steps.iter().position(|(_, s)| *s == super::super::eco::StepState::Now).map_or(0, |i| i + 1);
                 let mut line = vec![Span::styled(format!("step {at} of {} · ", steps.len()), t.dim_style())];
                 line.extend(super::super::widgets::stepper(t, &steps));
@@ -293,7 +291,11 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                 };
                 lines.push(Line::from(line));
             }
-            if !rv.warnings.is_empty() {
+            // Risks come with the words to type (review_decoder::Risk): they stay a filled pill.
+            for risk in &rv.risks {
+                lines.push(Line::from(super::super::widgets::pill(t, &format!("{} this {risk}", t.icon(Icon::Warning)), t.danger)));
+            }
+            if !rv.warnings.is_empty() || !rv.risks.is_empty() {
                 lines.push(Line::from(""));
             }
             // The outcome first, in one glance: what leaves, what arrives, what the fee can be.
@@ -420,7 +422,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             let inner = modal_frame(f, rect, t, &title);
             let [mut body, buttons] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
             let mut strip = None;
-            if strip_h > 0 && body.height >= strip_h + 8 && !app.plain {
+            if strip_h > 0 && body.height >= strip_h + 8 && !app.term.plain {
                 let [s, rest] = Layout::vertical([Constraint::Length(strip_h), Constraint::Min(3)]).areas(body);
                 strip = Some(s);
                 body = rest;
@@ -444,6 +446,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             );
             // Not yet signable: the button says what it waits for.
             let approve = match (can, r.approve_focused) {
+                (false, _) if !r.words_typed() => button(t, "Approve & sign", "type to enable", t.ok, ButtonState::Waiting),
                 (false, _) => button(t, "Approve & sign", "read to enable", t.ok, ButtonState::Waiting),
                 (true, true) if app.config.hold_to_sign => button(t, "Approve & sign", "hold enter", t.ok, ButtonState::Focused),
                 (true, true) => button(t, "Approve & sign", "enter", t.ok, ButtonState::Focused),
@@ -451,6 +454,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             };
             // (Read from the field: the modal is borrowed.)
             let held = app
+                .input
                 .hold
                 .as_ref()
                 .filter(|(id, _, last)| *id == rv.op_id && last.elapsed() < app::HOLD_GAP && can && r.approve_focused)
@@ -488,7 +492,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             {
                 // Reject rejects; Approve only arms (the key signs). The body scrolls with the
                 // wheel, which counts as reading the same way the arrow keys do.
-                let mut hits = app.hits.borrow_mut();
+                let mut hits = app.input.hits.borrow_mut();
                 hits.add(rect, Target::Swallow);
                 hits.add(body, Target::Scroll(super::super::hit::Scroll::Review));
                 let row = Rect { y: buttons.y + 1, height: 1, ..buttons };
@@ -498,7 +502,26 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                     _ => None,
                 });
             }
-            f.render_widget(Paragraph::new(vec![Line::from(""), line]).style(Style::default().bg(t.raised)), buttons);
+            // A risky review's words are typed on the line above the buttons, with Approve focused.
+            let words = match &rv.confirm {
+                Some(phrase) => {
+                    let done = r.words_typed();
+                    let mut spans = vec![
+                        Span::styled("to sign, type ", t.dim_style()),
+                        Span::styled(phrase.clone(), t.strong_style().fg(t.danger)),
+                        Span::styled("  › ", t.dim_style()),
+                        Span::styled(r.typed.clone(), if done { t.strong_style().fg(t.ok) } else { t.strong_style() }),
+                    ];
+                    if r.approve_focused && !done {
+                        spans.push(Span::styled("▏", Style::default().fg(t.focus)));
+                    } else if !r.approve_focused {
+                        spans.push(Span::styled("  (tab to Approve first)", t.dim_style()));
+                    }
+                    Line::from(spans)
+                }
+                None => Line::from(""),
+            };
+            f.render_widget(Paragraph::new(vec![words, line]).style(Style::default().bg(t.raised)), buttons);
             if let Some(strip) = strip {
                 draw_review_pictures(f, app, t, strip, &visuals);
             }
@@ -506,7 +529,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         Modal::Help => {
             use super::super::keymap::{self as km, Group, Verb};
             let keys = app.keys_here();
-            let moved = app.help_moved;
+            let moved = app.nav.help_moved;
             let rect = centered(area, 100, area.height.saturating_sub(2));
             let inner = modal_frame(f, rect, t, "keys");
             // Wide enough for the longest binding ("backspace ctrl-o") and a space after it.
@@ -583,7 +606,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             }
             lines.push(Line::from(""));
             lines.push(row("review".into(), "read to the end · tab to Approve · enter signs · esc rejects · y copies it as a command"));
-            let terms = super::super::glossary::for_screen(app.screen);
+            let terms = super::super::glossary::for_screen(app.place());
             if !terms.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled("words here", t.strong_style())));
@@ -602,11 +625,11 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             )));
             let viewport = inner.height.saturating_sub(1);
             let overflow = (lines.len() as u16).saturating_sub(viewport);
-            app.help_scroll = app.help_scroll.min(overflow);
-            let scroll = app.help_scroll;
+            app.nav.help_scroll = app.nav.help_scroll.min(overflow);
+            let scroll = app.nav.help_scroll;
             let below = overflow - scroll;
             {
-                let mut hits = app.hits.borrow_mut();
+                let mut hits = app.input.hits.borrow_mut();
                 hits.add(rect, Target::Button(super::super::hit::Button::Close));
                 hits.add(inner, Target::Scroll(super::super::hit::Scroll::Help));
             }
@@ -642,9 +665,9 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             // Rows below the query, less one for the selected entry's CLI line.
             let rows = inner.height.saturating_sub(4) as usize;
             let start =
-                app.lists.borrow_mut().entry(super::super::hit::ListId::Palette).or_default().window(*selected, entries.len(), rows);
+                app.input.lists.borrow_mut().entry(super::super::hit::ListId::Palette).or_default().window(*selected, entries.len(), rows);
             {
-                let mut hits = app.hits.borrow_mut();
+                let mut hits = app.input.hits.borrow_mut();
                 hits.add(rect, Target::Swallow);
                 let list_area = Rect { y: inner.y + 2, height: rows as u16, ..inner };
                 hits.rows(super::super::hit::ListId::Palette, list_area, start, entries.len(), |i| entries.get(i).map(|e| e.label.clone()));
@@ -712,7 +735,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("enter or esc hides the phrase and wipes it from memory", t.dim_style())));
             // A click hides it too; nothing on this screen is ever copied.
-            app.hits.borrow_mut().add(rect, Target::Button(super::super::hit::Button::Close));
+            app.input.hits.borrow_mut().add(rect, Target::Button(super::super::hit::Button::Close));
             f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
         }
         Modal::Quote(qt) => {
@@ -721,7 +744,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             let extra = qt.hold.as_ref().map_or(0, |h| textwrap(&h.note, 84).len() + 1) + usize::from(qt.discount_saturated) * 5;
             let rect = centered(area, 88, (24 + qt.notes.len() + extra) as u16);
             let inner = modal_frame(f, rect, t, "conversion quote");
-            app.hits.borrow_mut().add(rect, Target::Swallow);
+            app.input.hits.borrow_mut().add(rect, Target::Swallow);
             let label_w = qt.scenarios.iter().map(|s| s.label.chars().count()).max().unwrap_or(20) + 2;
             let mut lines = vec![
                 Line::from(Span::styled(qt.headline.clone(), t.strong_style())),
@@ -839,7 +862,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             let summary = app.eco.flow_summary.as_ref().is_some_and(|(_, s)| s.len() > 1);
             let rect = centered(area, 96, if summary { 14 } else { 12 });
             let inner = modal_frame(f, rect, t, "submitted");
-            app.hits.borrow_mut().add(rect, Target::Swallow);
+            app.input.hits.borrow_mut().add(rect, Target::Swallow);
             let style = status_style(t, s.status);
             let mut lines = vec![
                 Line::from(vec![
@@ -880,9 +903,10 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             let inner = modal_frame(f, rect, t, "glossary");
             let [list, meaning] = Layout::horizontal([Constraint::Length(24), Constraint::Min(20)]).areas(inner);
             let rows = list.height as usize;
-            let start = app.lists.borrow_mut().entry(super::super::hit::ListId::Glossary).or_default().window(*selected, terms.len(), rows);
+            let start =
+                app.input.lists.borrow_mut().entry(super::super::hit::ListId::Glossary).or_default().window(*selected, terms.len(), rows);
             {
-                let mut hits = app.hits.borrow_mut();
+                let mut hits = app.input.hits.borrow_mut();
                 hits.add(rect, Target::Swallow);
                 hits.rows(super::super::hit::ListId::Glossary, list, start, terms.len(), |_| None);
             }
@@ -915,7 +939,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         Modal::Notifications => {
             let rect = centered(area, 96, 24);
             let inner = modal_frame(f, rect, t, "notifications");
-            app.hits.borrow_mut().add(rect, Target::Swallow);
+            app.input.hits.borrow_mut().add(rect, Target::Swallow);
             let lines: Vec<Line> = if dash.notifications.is_empty() {
                 vec![Line::from(Span::styled("Quiet chain, quiet mind.", t.dim_style()))]
             } else {
@@ -945,11 +969,11 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                     .collect()
             };
             let mut lines = lines;
-            if !app.log.is_empty() {
-                lines.truncate((inner.height as usize).saturating_sub(app.log.len().min(6) + 2));
+            if !app.status.log.is_empty() {
+                lines.truncate((inner.height as usize).saturating_sub(app.status.log.len().min(6) + 2));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled("recent messages", t.strong_style())));
-                for m in app.log.iter().take(6) {
+                for m in app.status.log.iter().take(6) {
                     let (g, c) = severity_mark(t, m.level);
                     lines.push(Line::from(vec![
                         Span::styled(format!("{g} "), Style::default().fg(c)),
@@ -967,7 +991,11 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         }
         Modal::Confirm { title, body, .. } => {
             let width = 64u16.min(area.width.saturating_sub(4));
-            let wrapped = textwrap(body, width.saturating_sub(4) as usize);
+            // Line breaks in the body are kept (two fingerprints read one above the other).
+            let wrapped: Vec<String> = body
+                .split('\n')
+                .flat_map(|p| if p.trim().is_empty() { vec![String::new()] } else { textwrap(p, width.saturating_sub(4) as usize) })
+                .collect();
             let rect = centered(area, width, wrapped.len() as u16 + 5);
             let title = title.clone();
             let inner = modal_frame(f, rect, t, &title);
@@ -981,7 +1009,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                 Span::styled(" yes", t.text_style()),
             ]);
             {
-                let mut hits = app.hits.borrow_mut();
+                let mut hits = app.input.hits.borrow_mut();
                 hits.add(rect, Target::Swallow);
                 let row = Rect { y: inner.y + lines.len() as u16, height: 1, ..inner };
                 hits.spans(row, &buttons.spans, |i| match i {
@@ -1015,7 +1043,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             lines.push(Line::from(Span::styled("enter/esc close", t.dim_style())));
             let rect = centered(area, width, lines.len() as u16 + 2);
             let inner = modal_frame(f, rect, t, title);
-            app.hits.borrow_mut().add(rect, Target::Swallow);
+            app.input.hits.borrow_mut().add(rect, Target::Swallow);
             f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
         }
         Modal::Sheet { items, selected } => {
@@ -1046,7 +1074,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                 })
                 .collect();
             {
-                let mut hits = app.hits.borrow_mut();
+                let mut hits = app.input.hits.borrow_mut();
                 hits.add(rect, Target::Swallow);
                 hits.rows(super::super::hit::ListId::Sheet, inner, 0, items.len(), |_| None);
             }
@@ -1054,8 +1082,8 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         }
         Modal::GoTo => {
             // Every destination, grouped by section, one letter each: `g` then the letter.
-            let features = app.config.features;
-            let mut groups: Vec<(app::Section, Vec<(char, Screen)>)> = Vec::new();
+            let features = app.shown();
+            let mut groups: Vec<(app::Section, Vec<(char, super::super::keymap::Place)>)> = Vec::new();
             for (c, s) in super::super::keymap::ROUTES.iter().copied() {
                 if !s.enabled(&features) {
                     continue;
@@ -1070,7 +1098,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             let height = groups.len() as u16 + 3;
             let rect = Rect::new(area.x + 1, area.bottom().saturating_sub(height + 1), area.width.saturating_sub(2), height);
             let inner = modal_frame(f, rect, t, "go to · g then a letter · g g first row · esc");
-            let mut hits = app.hits.borrow_mut();
+            let mut hits = app.input.hits.borrow_mut();
             hits.add(rect, Target::Swallow);
             let mut lines = Vec::new();
             for (row, (sec, routes)) in groups.iter().enumerate() {
@@ -1093,22 +1121,25 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         Modal::Themes(picker) => {
             let rect = centered(area, 116, 32);
             let inner = modal_frame(f, rect, t, "theme showroom · ↑↓ preview · type to filter · enter use · esc revert");
-            let mut hits = app.hits.borrow_mut();
+            let mut hits = app.input.hits.borrow_mut();
             hits.add(rect, Target::Swallow);
             draw_showroom(f, inner, t, picker, Some(&mut hits));
         }
         Modal::Wallets { selected } => {
             let selected = *selected;
             let here = app.meta.as_ref().map(|m| m.id.clone());
-            let rows = app.wallets.len().max(1) as u16;
+            let rows = app.cockpit.list.len().max(1) as u16;
             let rect = centered(area, 64, rows + 6);
             let inner = modal_frame(f, rect, t, "wallets");
-            let mut hits = app.hits.borrow_mut();
+            let mut hits = app.input.hits.borrow_mut();
             hits.add(rect, Target::Swallow);
             let list = Rect { height: inner.height.saturating_sub(2), ..inner };
-            hits.rows(super::super::hit::ListId::Wallets, list, 0, app.wallets.len(), |i| app.wallets.get(i).map(|w| w.id.clone()));
+            hits.rows(super::super::hit::ListId::Wallets, list, 0, app.cockpit.list.len(), |i| {
+                app.cockpit.list.get(i).map(|w| w.id.clone())
+            });
             let mut lines: Vec<Line> = app
-                .wallets
+                .cockpit
+                .list
                 .iter()
                 .enumerate()
                 .map(|(i, w)| {
@@ -1117,7 +1148,7 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
                         wallet_core::registry::WalletKind::Watch => "watch-only",
                         _ => "keys",
                     };
-                    let worth = app.wallet_summaries.get(&w.id).map(|s| amount::usd(s.total_usd)).unwrap_or_default();
+                    let worth = app.cockpit.summaries.get(&w.id).map(|s| amount::usd(s.total_usd)).unwrap_or_default();
                     let style = if i == selected { t.selected() } else { t.text_style() };
                     Line::from(vec![
                         Span::styled(if current { "▸ " } else { "  " }, Style::default().fg(t.focus)),
@@ -1136,19 +1167,56 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             drop(hits);
             f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
         }
+        Modal::Accounts { selected } => {
+            let selected = *selected;
+            let active = dash.active_account().map(|a| a.address.clone());
+            let rows = dash.accounts.len().max(1) as u16;
+            let rect = centered(area, 72, rows + 6);
+            let inner = modal_frame(f, rect, t, "the account that acts");
+            let mut hits = app.input.hits.borrow_mut();
+            hits.add(rect, Target::Swallow);
+            let list = Rect { height: inner.height.saturating_sub(2), ..inner };
+            hits.rows(super::super::hit::ListId::Accounts, list, 0, dash.accounts.len(), |i| {
+                dash.accounts.get(i).map(|a| a.address.clone())
+            });
+            let mut lines: Vec<Line> = dash
+                .accounts
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let current = active.as_deref() == Some(a.address.as_str());
+                    let style = if i == selected { t.selected() } else { t.text_style() };
+                    Line::from(vec![
+                        Span::styled(if current { "▸ " } else { "  " }, Style::default().fg(t.focus)),
+                        Span::styled(format!("{} ", i + 1), t.dim_style()),
+                        Span::styled(format!("{:<18}", truncate(&a.label, 18)), style.add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("{:<15}", wallet_core::session::short_address(&a.address)), t.dim_style()),
+                        Span::styled(format!("{:>18} QUAI", q(a.balance)), Style::default().fg(t.quai)),
+                        Span::styled(if current { "  acts" } else { "" }, t.dim_style()),
+                    ])
+                })
+                .collect();
+            if lines.is_empty() {
+                lines.push(Line::from(Span::styled("No accounts yet: add one under System › Wallets.", t.dim_style())));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("enter or 1–9: new cards, sends and trades act from it · esc close", t.dim_style())));
+            drop(hits);
+            f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), inner);
+        }
         Modal::TokenPicker { pay, query, selected } => {
             let (pay, query, selected) = (*pay, query.clone(), *selected);
             let rect = centered(area, 84, 22);
             let inner = modal_frame(f, rect, t, if pay { "you pay · pick a token" } else { "you receive · pick a token" });
-            app.hits.borrow_mut().add(rect, Target::Swallow);
+            app.input.hits.borrow_mut().add(rect, Target::Swallow);
             super::super::views::draw_token_picker(f, app, t, inner, &query, selected, pay);
         }
         Modal::Effects(gallery) => {
             let rect = centered(area, 116, 32);
             let inner = modal_frame(f, rect, t, "lock screen gallery · ↑↓ preview · enter use · esc close");
-            let mut hits = app.hits.borrow_mut();
+            let mut hits = app.input.hits.borrow_mut();
             hits.add(rect, Target::Swallow);
-            let mut lists = app.lists.borrow_mut();
+            let mut lists = app.input.lists.borrow_mut();
             draw_gallery(f, inner, t, gallery, lists.entry(super::super::hit::ListId::Gallery).or_default(), &mut hits);
         }
     }
@@ -1194,7 +1262,7 @@ pub(crate) fn draw_receive(f: &mut Frame, app: &mut App, t: &Theme, area: Rect, 
         Layout::vertical([Constraint::Length(2), Constraint::Min(5), Constraint::Length(text_lines + 3)]).areas(inner);
     {
         use super::super::hit::Button;
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         hits.add(rect, Target::Swallow);
         // The switch is centered: its spans start where the centering puts the line.
         let w = switch.width() as u16;
@@ -1227,14 +1295,14 @@ pub(crate) fn draw_receive(f: &mut Frame, app: &mut App, t: &Theme, area: Rect, 
     if data.is_empty() {
         return;
     }
-    match app.caps.tier {
+    match app.term.caps.tier {
         // Inside tmux (placeholders) the QR is cells, which tmux keeps in place anyway.
-        Tier::Pixels if !app.caps.placeholders => {
+        Tier::Pixels if !app.term.caps.placeholders => {
             let rows = qr_area.height.min(qr_area.width / 2).max(8);
-            let cols = ((rows as u32 * app.caps.cell_px.1 as u32) / app.caps.cell_px.0.max(1) as u32) as u16;
+            let cols = ((rows as u32 * app.term.caps.cell_px.1 as u32) / app.term.caps.cell_px.0.max(1) as u32) as u16;
             let cols = cols.min(qr_area.width);
             let r = Rect::new(qr_area.x + (qr_area.width - cols) / 2, qr_area.y, cols, rows.min(qr_area.height));
-            app.qr_rect = Some((r, data));
+            app.term.qr_rect = Some((r, data));
         }
         Tier::Pixels | Tier::Cells => {
             let fit = [4usize, 2].into_iter().find_map(|quiet| {
@@ -1281,12 +1349,13 @@ pub fn wants_animation(app: &App) -> bool {
     // Nothing turns for a window nobody is looking at: the 500 ms tick still redraws when a status
     // changes, and animation picks up again on focus.
     // The lock screen is the exception: a screensaver plays whether or not anyone is looking.
-    let lock_screen = app.locked && (app.ambient.is_some() || app.lock_fade.is_some());
-    (app.focused || lock_screen) && app.motion() != Motion::Off && (app.animating() || app.eco.fading())
+    let lock_screen = app.lock.locked && (app.fx.ambient.is_some() || app.lock.fade.is_some());
+    (app.term.focused || lock_screen) && app.motion() != Motion::Off && (app.animating() || app.eco.fading())
 }
 
 /// Whether a spinner is showing that should turn: the status line's while work runs, and the
 /// pending pill's while a transaction waits to be mined.
 pub fn spinning(app: &App) -> bool {
-    app.focused && (app.spun || app.busy_label().is_some() || app.unlocking || (app.motion().effects() && !app.confirming_ops().is_empty()))
+    app.term.focused
+        && (app.fx.spun || app.busy_label().is_some() || app.lock.unlocking || (app.motion().effects() && !app.confirming_ops().is_empty()))
 }

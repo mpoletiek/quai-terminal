@@ -1,6 +1,6 @@
 //! The mouse against the real screens: what a click does, what it may never do.
 
-use super::super::app::{App, ConfirmAction, Modal, Screen, Section};
+use super::super::app::{App, Card, ConfirmAction, Modal, Screen, Section};
 use super::super::hit::{ListId, Target};
 use super::super::ui::draw;
 use super::super::ui::tests::populated_app;
@@ -14,7 +14,7 @@ const SIZE: (u16, u16) = (160, 48);
 fn frame(app: &mut App, term: &mut Terminal<TestBackend>) {
     term.draw(|f| draw(f, app)).unwrap();
     // Tests click at once; the grace for a modal that just appeared is its own test.
-    app.modal_since.set(Some(Instant::now() - Duration::from_secs(5)));
+    app.input.modal_since.set(Some(Instant::now() - Duration::from_secs(5)));
 }
 
 fn mouse(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
@@ -32,7 +32,7 @@ fn centre(r: Rect) -> (u16, u16) {
 
 /// Where a target was drawn this frame (its first region).
 fn find(app: &App, want: impl Fn(&Target) -> bool) -> Option<Rect> {
-    app.hits.borrow().live().iter().find(|(_, t)| want(t)).map(|(r, _)| *r)
+    app.input.hits.borrow().live().iter().find(|(_, t)| want(t)).map(|(r, _)| *r)
 }
 
 fn setup() -> (tempfile::TempDir, App, Terminal<TestBackend>) {
@@ -52,14 +52,14 @@ fn chrome_clicks_do_what_their_keys_do() {
         let r = find(&app, |t| *t == Target::Section(section)).unwrap_or_else(|| panic!("{section:?} in the rail"));
         let (x, y) = centre(r);
         click(&mut app, x, y);
-        assert_eq!(app.screen.section(), section, "clicking {section:?}");
+        assert_eq!(app.nav.screen.section(), section, "clicking {section:?}");
     }
     app.switch(Screen::Markets);
     frame(&mut app, &mut term);
     let r = find(&app, |t| *t == Target::Tab(2)).expect("a third tab");
     let (x, y) = centre(r);
     click(&mut app, x, y);
-    assert_eq!(app.screen, Section::Markets.screens(&app.config.features)[2], "the third tab, by click");
+    assert_eq!(app.nav.screen, Section::Markets.screens(&app.shown())[2], "the third tab, by click");
     // `?` in the footer opens the keys, as the key does.
     app.switch(Screen::Home);
     frame(&mut app, &mut term);
@@ -83,7 +83,7 @@ fn a_click_is_press_and_release_on_the_same_thing() {
     let nfts = find(&app, |t| *t == Target::Section(Section::Nfts)).unwrap();
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), trade.x + 2, trade.y);
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), nfts.x + 2, nfts.y);
-    assert_eq!(app.screen, Screen::Home, "dragged off: nothing happened");
+    assert_eq!(app.nav.screen, Screen::Home, "dragged off: nothing happened");
 }
 
 /// Rows select what was drawn under the pointer, and the window stays where it was: a row
@@ -95,6 +95,7 @@ fn clicking_a_row_selects_it_without_scrolling() {
         app.switch(screen);
         frame(&mut app, &mut term);
         let rows: Vec<(Rect, usize)> = app
+            .input
             .hits
             .borrow()
             .live()
@@ -108,7 +109,7 @@ fn clicking_a_row_selects_it_without_scrolling() {
         let offset_before = app.view_offset();
         let (r, index) = *rows.last().unwrap();
         click(&mut app, r.x + 1, r.y);
-        assert_eq!(app.selected, index, "{screen:?}: the clicked row is selected");
+        assert_eq!(app.nav.selected, index, "{screen:?}: the clicked row is selected");
         frame(&mut app, &mut term);
         assert_eq!(app.view_offset(), offset_before, "{screen:?}: the list did not move under the pointer");
     }
@@ -128,10 +129,10 @@ fn the_wheel_scrolls_the_list_under_the_pointer() {
     mouse(&mut app, MouseEventKind::ScrollDown, r.x + 1, r.y);
     frame(&mut app, &mut term_small);
     assert!(app.view_offset() > before, "the list scrolled");
-    assert_eq!(app.selected, 0, "the selection stayed");
+    assert_eq!(app.nav.selected, 0, "the selection stayed");
     app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), (80, 24));
     frame(&mut app, &mut term_small);
-    let selected = app.selected;
+    let selected = app.nav.selected;
     assert!(
         find(&app, |t| matches!(t, Target::Row { list: ListId::Screen(Screen::Settings, 0), index, .. } if *index == selected)).is_some(),
         "the keyboard brings the selection back into view"
@@ -156,19 +157,20 @@ fn a_click_can_never_sign() {
                 viewport: 0,
                 approve_focused: false,
                 opened: Instant::now() - Duration::from_secs(60),
+                typed: String::new(),
             });
         };
         open(&mut app);
         app.move_selection(10_000);
         frame(&mut app, &mut term);
-        let regions: Vec<(Rect, Target)> = app.hits.borrow().live().to_vec();
+        let regions: Vec<(Rect, Target)> = app.input.hits.borrow().live().to_vec();
         for (rect, target) in regions {
             let (x, y) = centre(rect);
             for _ in 0..2 {
                 click(&mut app, x, y);
             }
             mouse(&mut app, MouseEventKind::ScrollDown, x, y);
-            assert!(app.committing_kind.is_none(), "clicking {target:?} signed");
+            assert!(app.status.committing_kind.is_none(), "clicking {target:?} signed");
             if !matches!(app.modal, Modal::Review(_)) {
                 // Reject (or the backdrop of something else) closed it: open it again.
                 open(&mut app);
@@ -181,10 +183,10 @@ fn a_click_can_never_sign() {
         let (x, y) = centre(approve);
         click(&mut app, x, y);
         assert!(matches!(&app.modal, Modal::Review(r) if r.approve_focused), "armed");
-        assert!(app.committing_kind.is_none(), "armed, not signed");
+        assert!(app.status.committing_kind.is_none(), "armed, not signed");
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), SIZE);
-        assert!(app.committing_kind.is_some(), "the keyboard signs");
-        app.committing_kind = None;
+        assert!(app.status.committing_kind.is_some(), "the keyboard signs");
+        app.status.committing_kind = None;
     }
 }
 
@@ -199,7 +201,7 @@ fn a_click_right_after_a_modal_opens_is_ignored() {
     let (x, y) = centre(yes);
     click(&mut app, x, y);
     assert!(!app.quit && matches!(app.modal, Modal::Confirm { .. }), "too soon: ignored");
-    app.modal_since.set(Some(Instant::now() - Duration::from_secs(1)));
+    app.input.modal_since.set(Some(Instant::now() - Duration::from_secs(1)));
     click(&mut app, x, y);
     assert!(app.quit, "after the grace, yes is yes");
 }
@@ -209,7 +211,7 @@ fn a_click_right_after_a_modal_opens_is_ignored() {
 fn a_sensitive_confirmation_only_arms() {
     let (_dir, mut app, mut term) = setup();
     let (worker, mut sent) = super::super::worker::Worker::capture();
-    app.worker = Some(worker);
+    app.use_worker(worker);
     app.modal = Modal::Confirm { title: "Accept".into(), body: "Accept?".into(), action: ConfirmAction::AcceptOffer("PM8T".into()) };
     frame(&mut app, &mut term);
     let yes = find(&app, |t| *t == Target::Confirm(true)).expect("yes");
@@ -247,7 +249,7 @@ fn a_modal_captures_the_pointer_and_regions_stay_on_screen() {
         let before = super::super::app::modal_name(&m);
         app.modal = m;
         frame(&mut app, &mut term);
-        let hits = app.hits.borrow();
+        let hits = app.input.hits.borrow();
         assert!(hits.captured(), "{before} took the pointer (now {})", super::super::app::modal_name(&app.modal));
         for (r, t) in hits.live() {
             assert!(r.right() <= SIZE.0 && r.bottom() <= SIZE.1, "{t:?} at {r:?} is off screen");
@@ -273,13 +275,14 @@ fn the_pointer_cannot_press_a_signing_key() {
         viewport: 0,
         approve_focused: true,
         opened: Instant::now() - Duration::from_secs(60),
+        typed: String::new(),
     });
     app.move_selection(10_000);
     frame(&mut app, &mut term);
     assert!(matches!(&app.modal, Modal::Review(r) if r.can_approve() && r.approve_focused), "armed and read: Enter would sign");
     for code in [KeyCode::Enter, KeyCode::Char('y'), KeyCode::Tab, KeyCode::Char(' ')] {
         app.press(code, SIZE);
-        assert!(app.committing_kind.is_none() && matches!(app.modal, Modal::Review(_)), "{code:?} got through");
+        assert!(app.status.committing_kind.is_none() && matches!(app.modal, Modal::Review(_)), "{code:?} got through");
     }
 }
 
@@ -320,7 +323,7 @@ fn hit_maps_match_their_golden_files() {
     };
     let picture = |app: &App| -> String {
         let mut grid = vec![vec![' '; w as usize]; h as usize];
-        for (r, t) in app.hits.borrow().live() {
+        for (r, t) in app.input.hits.borrow().live() {
             for y in r.y..r.bottom().min(h) {
                 for x in r.x..r.right().min(w) {
                     grid[y as usize][x as usize] = mark(t);
@@ -339,13 +342,18 @@ fn hit_maps_match_their_golden_files() {
             drift.push(file.display().to_string());
         }
     };
-    for screen in Screen::ALL {
-        if screen == Screen::DataSources {
+    for place in super::super::keymap::Place::all() {
+        if place == super::super::keymap::Place::Screen(Screen::DataSources) {
             continue;
         }
-        app.switch(screen);
+        // Named as before the exchange's cards were one screen, so the files still compare.
+        let name = match place {
+            super::super::keymap::Place::Screen(s) => format!("{s:?}"),
+            p => p.title().to_string(),
+        };
+        app.go(place);
         frame(&mut app, &mut term);
-        check(format!("{screen:?}_{w}x{h}"), picture(&app));
+        check(format!("{name}_{w}x{h}"), picture(&app));
     }
     for (i, m) in super::super::ui::tests::modals(&app).into_iter().filter(|m| !matches!(m, Modal::None)).enumerate() {
         app.switch(Screen::Home);
@@ -365,6 +373,7 @@ fn right_click_opens_the_rows_actions() {
     app.switch(Screen::Contacts);
     frame(&mut app, &mut term);
     let rows: Vec<(Rect, usize)> = app
+        .input
         .hits
         .borrow()
         .live()
@@ -376,16 +385,17 @@ fn right_click_opens_the_rows_actions() {
         .collect();
     let (r, index) = *rows.last().expect("contact rows");
     mouse(&mut app, MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y);
-    assert_eq!(app.selected, index, "the row under the pointer is the focus");
+    assert_eq!(app.nav.selected, index, "the row under the pointer is the focus");
     assert!(matches!(app.modal, Modal::Sheet { .. }), "its actions opened");
     frame(&mut app, &mut term);
     let n = match &app.modal {
         Modal::Sheet { items, .. } => items.len(),
         _ => 0,
     };
-    let drawn = app.hits.borrow().live().iter().filter(|(_, t)| matches!(t, Target::Row { list: ListId::Sheet, .. })).count();
+    let drawn = app.input.hits.borrow().live().iter().filter(|(_, t)| matches!(t, Target::Row { list: ListId::Sheet, .. })).count();
     assert_eq!(drawn, n, "every action is on screen and clickable");
     let edit = app
+        .input
         .hits
         .borrow()
         .live()
@@ -404,11 +414,11 @@ fn right_click_opens_the_rows_actions() {
 fn card_fields_take_a_click() {
     let (_dir, mut app, mut term) = setup();
     for (screen, field, get) in [
-        (Screen::Swap, 3usize, (|a: &App| a.eco.swap.field) as fn(&App) -> usize),
-        (Screen::Convert, 2, |a: &App| a.eco.convert.field),
-        (Screen::Wrap, 0, |a: &App| a.eco.wrap.field),
+        (Card::Swap, 3usize, (|a: &App| a.eco.swap.field) as fn(&App) -> usize),
+        (Card::Convert, 2, |a: &App| a.eco.convert.field),
+        (Card::Wrap, 0, |a: &App| a.eco.wrap.field),
     ] {
-        app.switch(screen);
+        app.show_card(screen);
         frame(&mut app, &mut term);
         let r = find(&app, |t| *t == Target::CardField(field)).unwrap_or_else(|| panic!("{screen:?} field {field} is clickable"));
         let (x, y) = centre(r);
@@ -425,13 +435,13 @@ fn card_fields_take_a_click() {
 fn the_pointer_takes_the_shape_of_what_is_under_it() {
     use super::super::hit::ReviewPart;
     let (_dir, mut app, _term) = setup();
-    app.pointer.hover = None;
+    app.input.pointer.hover = None;
     assert_eq!(app.pointer_shape(), "default");
-    app.pointer.hover = Some(Target::Row { list: ListId::Screen(Screen::Home, 0), index: 0, key: None });
+    app.input.pointer.hover = Some(Target::Row { list: ListId::Screen(Screen::Home, 0), index: 0, key: None });
     assert_eq!(app.pointer_shape(), "pointer");
-    app.pointer.hover = Some(Target::CardField(0));
+    app.input.pointer.hover = Some(Target::CardField(0));
     assert_eq!(app.pointer_shape(), "text");
-    app.pointer.hover = Some(Target::Swallow);
+    app.input.pointer.hover = Some(Target::Swallow);
     assert_eq!(app.pointer_shape(), "default", "inside a modal where nothing is clickable");
     let review = super::super::ui::tests::modals(&app)
         .into_iter()
@@ -444,8 +454,9 @@ fn the_pointer_takes_the_shape_of_what_is_under_it() {
         viewport: 10,
         approve_focused: false,
         opened: Instant::now() - Duration::from_secs(age),
+        typed: String::new(),
     };
-    app.pointer.hover = Some(Target::Review(ReviewPart::Approve));
+    app.input.pointer.hover = Some(Target::Review(ReviewPart::Approve));
     app.modal = Modal::Review(state(0, 60));
     assert_eq!(app.pointer_shape(), "not-allowed", "not read to the end");
     app.modal = Modal::Review(state(30, 60));
@@ -458,19 +469,25 @@ fn the_pointer_takes_the_shape_of_what_is_under_it() {
 #[test]
 fn a_link_copies_on_alt_click_and_a_plain_click_stays_the_rows() {
     let (_dir, mut app, mut term) = setup();
-    app.caps.hyperlinks = true;
+    app.term.caps.hyperlinks = true;
     app.switch(Screen::Accounts);
     frame(&mut app, &mut term);
-    let on_row = |app: &App, x: u16, y: u16| app.hits.borrow().at(x, y).is_some_and(|t| matches!(t, Target::Row { .. }));
-    let link =
-        app.links_shown.borrow().iter().find(|l| on_row(&app, l.x + 1, l.y)).cloned().expect("an account's address, linked on its row");
+    let on_row = |app: &App, x: u16, y: u16| app.input.hits.borrow().at(x, y).is_some_and(|t| matches!(t, Target::Row { .. }));
+    let link = app
+        .term
+        .links_shown
+        .borrow()
+        .iter()
+        .find(|l| on_row(&app, l.x + 1, l.y))
+        .cloned()
+        .expect("an account's address, linked on its row");
     let (x, y) = (link.x + 1, link.y);
     click(&mut app, x, y);
-    assert!(app.clipboard.is_none(), "a plain click on a row copies nothing");
+    assert!(app.tasks.clipboard.is_none(), "a plain click on a row copies nothing");
     let alt = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::ALT };
     app.on_mouse(alt(MouseEventKind::Down(MouseButton::Left)), SIZE);
     app.on_mouse(alt(MouseEventKind::Up(MouseButton::Left)), SIZE);
-    let copied = app.clipboard.take().expect("alt+click copies");
+    let copied = app.tasks.clipboard.take().expect("alt+click copies");
     let id = link.url.rsplit('/').next().unwrap();
     assert_eq!(copied.text.as_str(), id, "the id the link shows, not the link");
     assert_eq!(copied.what, "address");

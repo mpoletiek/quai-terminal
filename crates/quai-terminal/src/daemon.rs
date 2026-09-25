@@ -419,16 +419,7 @@ pub struct DaemonState {
 /// This program, as a file: version, path, size and modification time. A rebuild or an upgrade
 /// changes it, which is how an open terminal knows the daemon runs older code.
 pub fn build_id() -> String {
-    let exe = std::env::current_exe().ok();
-    let meta = exe.as_ref().and_then(|e| std::fs::metadata(e).ok());
-    let modified = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-    format!(
-        "{} {} {} {}",
-        env!("CARGO_PKG_VERSION"),
-        exe.map(|e| e.display().to_string()).unwrap_or_default(),
-        meta.map_or(0, |m| m.len()),
-        modified.map_or(0, |d| d.as_secs())
-    )
+    quai_engine::protocol::build()
 }
 
 /// A daemon is being started or replaced on a background thread (`ensure_current_soon`).
@@ -511,25 +502,33 @@ impl Drop for Request {
     }
 }
 
-/// Accept control connections: one JSON line in, one JSON line out. The socket is the user's own
-/// (0600, in their private runtime directory), which is what lets a password travel over it.
-fn serve_control(path: std::path::PathBuf, tx: tokio::sync::mpsc::Sender<Request>) -> Result<()> {
+/// Bind a socket only this user can reach: in the private runtime directory, mode 0600,
+/// replacing a stale socket of ours but never anything else.
+fn bind_private(path: &std::path::Path) -> Result<std::os::unix::net::UnixListener> {
     if let Some(dir) = path.parent() {
         ensure_runtime_dir(dir)?;
     }
-    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
         if !metadata.file_type().is_socket() || metadata.uid() != own_uid() {
-            return Err(CoreError::Storage("refusing to replace a non-socket daemon control path".into()));
+            return Err(CoreError::Storage("refusing to replace a non-socket daemon runtime path".into()));
         }
-        std::fs::remove_file(&path)?;
+        std::fs::remove_file(path)?;
     }
-    let listener = tokio::net::UnixListener::bind(&path).map_err(|e| CoreError::Storage(format!("control socket: {e}")))?;
-    #[cfg(unix)]
+    let listener = std::os::unix::net::UnixListener::bind(path).map_err(|e| CoreError::Storage(format!("socket: {e}")))?;
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
+    Ok(listener)
+}
+
+/// Accept control connections: one JSON line in, one JSON line out. The socket is the user's own
+/// (0600, in their private runtime directory), which is what lets a password travel over it.
+fn serve_control(path: std::path::PathBuf, tx: tokio::sync::mpsc::Sender<Request>) -> Result<()> {
+    let listener = bind_private(&path)?;
+    listener.set_nonblocking(true)?;
+    let listener = tokio::net::UnixListener::from_std(listener).map_err(|e| CoreError::Storage(format!("control socket: {e}")))?;
     tokio::spawn(async move {
         let connections = std::sync::Arc::new(tokio::sync::Semaphore::new(16));
         while let Ok((stream, _)) = listener.accept().await {
@@ -576,7 +575,17 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
     // Polling is background work: it keeps headroom in shared API limits for interactive use.
     wallet_core::http::set_background_process(true);
     let _lock = LockFile::acquire(ctx.paths.daemon_lock())?;
+    // A configuration read, nothing on the network: a daemon that cannot run is refused before it
+    // binds a socket terminals would find and get nothing from.
     let network = ctx.network()?;
+    let build = build_id();
+    let since = wallet_core::registry::now();
+    // Terminals attach before anything slow happens here (a node check can take seconds): the
+    // engine they get does not wait for this loop, and neither does the first frame they draw.
+    let early = DaemonState { pid: std::process::id(), since, interval, build: build.clone(), ..DaemonState::default() };
+    let _ = wallet_vault::write_private_atomic(&ctx.paths.daemon_state(), serde_json::to_string(&early).unwrap_or_default().as_bytes());
+    let _engines = quai_engine::server::serve(bind_private(&ctx.paths.engine_socket())?, ctx.registry.clone(), build.clone())
+        .map_err(|e| CoreError::Storage(format!("engine server: {e}")))?;
     let mut watched: Vec<Watched> = Vec::new();
     for meta in ctx.registry.list()? {
         match Watched::open(ctx, meta, &network) {
@@ -588,9 +597,10 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
     for w in &mut watched {
         w.check_monitor().await;
     }
-    if let Some(first) = watched.first() {
-        first.session.verify_node().await?;
-    }
+    // The node is checked before anything is read from it, but a node that is down (or a
+    // network that is off) must not take the daemon down: terminals' engines run here. Checked
+    // again at each poll until it answers.
+    let mut verified = false;
     if !locked && !detached {
         for w in watched.iter_mut().filter(|w| w.session.meta.can_sign()) {
             let prompt_text = format!("Password for `{}` (enter to leave it locked)", w.session.meta.name);
@@ -607,8 +617,6 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
     let (tx, mut requests) = tokio::sync::mpsc::channel::<Request>(8);
     serve_control(ctx.paths.daemon_socket(), tx)?;
     let _alerts = AlertWorker::start(ctx.paths.clone(), network.clone(), interval)?;
-    let since = wallet_core::registry::now();
-    let build = build_id();
     let write_state = |watched: &[Watched]| {
         let state = DaemonState {
             pid: std::process::id(),
@@ -645,86 +653,101 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
                 }
             }
         }
-        let several = watched.len() > 1;
-        // Keys held longer than the configured lifetime are dropped: the daemon runs unattended,
-        // and a recovery phrase should not sit in it indefinitely.
-        let lifetime = ctx.config.daemon_unlock_hours.max(1) * 3600;
-        for w in watched.iter_mut().filter(|w| w.session.is_unlocked()) {
-            if wallet_core::registry::now().saturating_sub(w.session.unlocked_at()) >= lifetime {
-                w.session.lock();
-                eprintln!("[{}] locked after {} h unlocked", w.session.meta.name, ctx.config.daemon_unlock_hours);
+        if !verified {
+            let check = match watched.first() {
+                Some(first) => match tokio::time::timeout(std::time::Duration::from_secs(15), first.session.verify_node()).await {
+                    Ok(result) => result.map_err(|e| e.to_string()),
+                    Err(_) => Err("the node did not answer".into()),
+                },
+                None => Ok(()),
+            };
+            match check {
+                Ok(()) => verified = true,
+                Err(e) => eprintln!("node check: {e}; nothing is read from it until it passes"),
             }
         }
-        // Posts from any wallet here are the user's own, whichever wallet reads them.
-        let own: Vec<String> = watched.iter().flat_map(|w| w.session.meta.quai_owner_addresses()).map(|a| a.to_lowercase()).collect();
-        // Switched in Settings while this runs: read every poll, so turning a feature off stops
-        // its monitoring without a restart.
-        let features = AppConfig::load(&ctx.paths).map_or(ctx.config.features, |c| c.features);
-        if let Some(first) = watched.first() {
-            let result = tokio::select! {
-                result = work_or_control(warm_shared_feeds(&first.session, features), &mut requests) => result,
-                _ = &mut stop => break 'poll,
-            };
-            if let Err(request) = result {
-                if handle(ctx, &mut watched, request) {
+        if verified {
+            let several = watched.len() > 1;
+            // Keys held longer than the configured lifetime are dropped: the daemon runs unattended,
+            // and a recovery phrase should not sit in it indefinitely.
+            let lifetime = ctx.config.daemon_unlock_hours.max(1) * 3600;
+            for w in watched.iter_mut().filter(|w| w.session.is_unlocked()) {
+                if wallet_core::registry::now().saturating_sub(w.session.unlocked_at()) >= lifetime {
+                    w.session.lock();
+                    eprintln!("[{}] locked after {} h unlocked", w.session.meta.name, ctx.config.daemon_unlock_hours);
+                }
+            }
+            // Posts from any wallet here are the user's own, whichever wallet reads them.
+            let own: Vec<String> = watched.iter().flat_map(|w| w.session.meta.quai_owner_addresses()).map(|a| a.to_lowercase()).collect();
+            // Switched in Settings while this runs: read every poll, so turning a feature off stops
+            // its monitoring without a restart.
+            let features = AppConfig::load(&ctx.paths).map_or(ctx.config.features, |c| c.features);
+            if let Some(first) = watched.first() {
+                let result = tokio::select! {
+                    result = work_or_control(warm_shared_feeds(&first.session, features), &mut requests) => result,
+                    _ = &mut stop => break 'poll,
+                };
+                if let Err(request) = result {
+                    if handle(ctx, &mut watched, request) {
+                        break 'poll;
+                    }
+                    write_state(&watched);
+                    continue 'poll;
+                }
+            }
+            for i in 0..watched.len() {
+                let result = tokio::select! {
+                    result = work_or_control(watched[i].tick(ctx, features), &mut requests) => result,
+                    _ = &mut stop => { stopping = true; break 'poll; }
+                };
+                let channels = match result {
+                    Ok(channels) => channels,
+                    Err(request) => {
+                        if handle(ctx, &mut watched, request) {
+                            break 'poll;
+                        }
+                        write_state(&watched);
+                        continue 'poll;
+                    }
+                };
+                watched[i].announce_channels(ctx, channels, &mut channel_notices, &own);
+                watched[i].notify_desktop(ctx, several);
+                // Answer anyone waiting between wallets, so an unlock does not wait out a whole poll.
+                let mut answered = false;
+                while let Ok(req) = requests.try_recv() {
+                    stopping |= handle(ctx, &mut watched, req);
+                    answered = true;
+                }
+                if answered {
+                    write_state(&watched);
+                }
+                if stopping {
                     break 'poll;
                 }
-                write_state(&watched);
-                continue 'poll;
             }
-        }
-        for i in 0..watched.len() {
-            let result = tokio::select! {
-                result = work_or_control(watched[i].tick(ctx, features), &mut requests) => result,
-                _ = &mut stop => { stopping = true; break 'poll; }
-            };
-            let channels = match result {
-                Ok(channels) => channels,
-                Err(request) => {
-                    if handle(ctx, &mut watched, request) {
-                        break 'poll;
+            // The status bar shows the default wallet (or the first).
+            let shown = watched
+                .iter()
+                .position(|w| ctx.config.default_wallet.as_deref().is_some_and(|d| d == w.session.meta.id || d == w.session.meta.name))
+                .or((!watched.is_empty()).then_some(0));
+            if let Some(w) = shown.map(|i| &mut watched[i]) {
+                let result = tokio::select! {
+                    result = work_or_control(w.session.public_status(ctx.config.show_amounts_in_notifications), &mut requests) => result,
+                    _ = &mut stop => break 'poll,
+                };
+                let status = match result {
+                    Ok(status) => status,
+                    Err(request) => {
+                        if handle(ctx, &mut watched, request) {
+                            break 'poll;
+                        }
+                        write_state(&watched);
+                        continue 'poll;
                     }
-                    write_state(&watched);
-                    continue 'poll;
+                };
+                if let Err(e) = extras::write_status(&ctx.paths, &status) {
+                    eprintln!("status: {e}");
                 }
-            };
-            watched[i].announce_channels(ctx, channels, &mut channel_notices, &own);
-            watched[i].notify_desktop(ctx, several);
-            // Answer anyone waiting between wallets, so an unlock does not wait out a whole poll.
-            let mut answered = false;
-            while let Ok(req) = requests.try_recv() {
-                stopping |= handle(ctx, &mut watched, req);
-                answered = true;
-            }
-            if answered {
-                write_state(&watched);
-            }
-            if stopping {
-                break 'poll;
-            }
-        }
-        // The status bar shows the default wallet (or the first).
-        let shown = watched
-            .iter()
-            .position(|w| ctx.config.default_wallet.as_deref().is_some_and(|d| d == w.session.meta.id || d == w.session.meta.name))
-            .or((!watched.is_empty()).then_some(0));
-        if let Some(w) = shown.map(|i| &mut watched[i]) {
-            let result = tokio::select! {
-                result = work_or_control(w.session.public_status(ctx.config.show_amounts_in_notifications), &mut requests) => result,
-                _ = &mut stop => break 'poll,
-            };
-            let status = match result {
-                Ok(status) => status,
-                Err(request) => {
-                    if handle(ctx, &mut watched, request) {
-                        break 'poll;
-                    }
-                    write_state(&watched);
-                    continue 'poll;
-                }
-            };
-            if let Err(e) = extras::write_status(&ctx.paths, &status) {
-                eprintln!("status: {e}");
             }
         }
         write_state(&watched);
@@ -753,6 +776,7 @@ pub async fn run(ctx: &Ctx, interval: u64, locked: bool, detached: bool) -> Resu
         let _ = extras::write_status(&ctx.paths, &status);
     }
     let _ = std::fs::remove_file(ctx.paths.daemon_socket());
+    let _ = std::fs::remove_file(ctx.paths.engine_socket());
     let _ = std::fs::remove_file(ctx.paths.daemon_state());
     eprintln!("daemon stopped; wallets locked");
     Ok(())
@@ -951,7 +975,7 @@ pub fn spawn_background(paths: &wallet_core::paths::Paths, interval: u64) -> Res
     command.spawn()?;
     // Wait for it to take the lock, so what follows (a status, an unlock) finds it.
     for _ in 0..100 {
-        if daemon_running(paths) && paths.daemon_socket().exists() {
+        if daemon_running(paths) && paths.engine_socket().exists() {
             return Ok(true);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));

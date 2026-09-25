@@ -18,6 +18,7 @@
                        ││   Terminal bell on good news     ○ off                                                                                               │
    [ ] tabs            ││                                                                                                                                      │
                        ││ Features                                                                                                                             │
+                       ││   Mode                           pro  ›  adds markets, pools, launches, orders, PnL, the marketplace, Qi coins, the board, network   │
                        ││   Messaging                      ● on · board, sealed DMs, chat dock                                                                 │
                        ││   Trading                        ● on · markets, swap, pools, launches                                                               │
                        ││   NFTs                           ● on · collected, explore, listings                                                                 │
@@ -38,7 +39,6 @@
                        ││ data          <data>                                                                                                                 │
                        ││                                                                                                                                      │
                        ││ With theme = auto the wallet follows Omarchy live; T opens the showroom from anywhere.                                               │
-                       ││                                                                                                                                      │
                        ││                                                                                                                                      │
                        ││                                                                                                                                      │
                        ││                                                                                                                                      │

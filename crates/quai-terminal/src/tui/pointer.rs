@@ -16,7 +16,7 @@
 //! - Clicks, the wheel and drags count as presence for auto-lock; a pointer merely resting on the
 //!   window does not.
 
-use super::app::{App, ConfirmAction, FieldKind, Modal, Screen};
+use super::app::{App, Card, ConfirmAction, FieldKind, Modal, Screen};
 use super::hit::{Button, HeaderPart, ListId, ReviewPart, Scroll, Target};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
@@ -79,7 +79,7 @@ impl App {
     /// to, a text cursor on fields, and not-allowed on an Approve not yet read to the end.
     pub fn pointer_shape(&self) -> &'static str {
         use super::hit::ReviewPart;
-        match &self.pointer.hover {
+        match &self.input.pointer.hover {
             None | Some(Target::Swallow | Target::Backdrop | Target::Scroll(_)) => "default",
             Some(Target::Field(_) | Target::CardField(_)) => "text",
             Some(Target::Review(ReviewPart::Approve)) => match &self.modal {
@@ -95,63 +95,63 @@ impl App {
         let (x, y) = (m.column, m.row);
         match m.kind {
             MouseEventKind::Moved => {
-                let over = self.hits.borrow().at(x, y).cloned();
+                let over = self.input.hits.borrow().at(x, y).cloned();
                 // Onto or off a shown hash or address: its tooltip comes or goes.
                 let link = |at: Option<(u16, u16)>| {
-                    at.and_then(|(x, y)| self.links_shown.borrow().iter().position(|l| l.y == y && (l.x..l.end).contains(&x)))
+                    at.and_then(|(x, y)| self.term.links_shown.borrow().iter().position(|l| l.y == y && (l.x..l.end).contains(&x)))
                 };
                 // Over the chart the crosshair follows the pointer cell by cell.
-                let crossed = link(self.pointer.at) != link(Some((x, y)))
-                    || (matches!(over, Some(Target::Scroll(Scroll::Chart))) && self.pointer.at != Some((x, y)));
-                self.pointer.at = Some((x, y));
-                if over != self.pointer.hover || crossed {
-                    self.pointer.hover = over;
+                let crossed = link(self.input.pointer.at) != link(Some((x, y)))
+                    || (matches!(over, Some(Target::Scroll(Scroll::Chart))) && self.input.pointer.at != Some((x, y)));
+                self.input.pointer.at = Some((x, y));
+                if over != self.input.pointer.hover || crossed {
+                    self.input.pointer.hover = over;
                     self.dirty = true;
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                self.last_input = Instant::now();
+                self.note_input();
                 let delta = if m.kind == MouseEventKind::ScrollDown { WHEEL_ROWS } else { -WHEEL_ROWS };
                 self.wheel(x, y, delta);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.last_input = Instant::now();
-                self.pointer.drag_x = Some(x);
-                self.pointer.pressed = if self.in_grace() { None } else { self.hits.borrow().at(x, y).cloned() };
-                self.pointer.pressed_link = if self.in_grace() { None } else { self.link_at(x, y) };
+                self.note_input();
+                self.input.pointer.drag_x = Some(x);
+                self.input.pointer.pressed = if self.in_grace() { None } else { self.input.hits.borrow().at(x, y).cloned() };
+                self.input.pointer.pressed_link = if self.in_grace() { None } else { self.link_at(x, y) };
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 // Only something a click acts on counts as being under the link: a scrolling body
                 // or a backdrop does not.
                 let on_target = matches!(
-                    self.hits.borrow().at(x, y),
+                    self.input.hits.borrow().at(x, y),
                     Some(t) if !matches!(t, Target::Scroll(_) | Target::Swallow | Target::Backdrop)
                 );
-                if let Some(url) = self.pointer.pressed_link.take()
+                if let Some(url) = self.input.pointer.pressed_link.take()
                     && self.link_at(x, y).as_deref() == Some(url.as_str())
                     && self.click_link(&url, m.modifiers, on_target)
                 {
-                    self.pointer.pressed = None;
+                    self.input.pointer.pressed = None;
                     self.dirty = true;
                     return;
                 }
-                let Some(pressed) = self.pointer.pressed.take() else { return };
-                let released = self.hits.borrow().at(x, y).cloned();
+                let Some(pressed) = self.input.pointer.pressed.take() else { return };
+                let released = self.input.hits.borrow().at(x, y).cloned();
                 if released.as_ref() != Some(&pressed) {
                     return;
                 }
                 let now = Instant::now();
                 let double =
-                    self.pointer.last_click.as_ref().is_some_and(|(t, at)| *t == pressed && now.duration_since(*at) <= DOUBLE_CLICK);
-                self.pointer.last_click = if double { None } else { Some((pressed.clone(), now)) };
+                    self.input.pointer.last_click.as_ref().is_some_and(|(t, at)| *t == pressed && now.duration_since(*at) <= DOUBLE_CLICK);
+                self.input.pointer.last_click = if double { None } else { Some((pressed.clone(), now)) };
                 self.activate(pressed, double, size);
                 self.dirty = true;
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                self.last_input = Instant::now();
+                self.note_input();
                 // Dragging the chart pans it: right looks further back, left comes forward.
-                if matches!(self.pointer.pressed, Some(Target::Scroll(Scroll::Chart))) {
-                    if let Some(from) = self.pointer.drag_x {
+                if matches!(self.input.pointer.pressed, Some(Target::Scroll(Scroll::Chart))) {
+                    if let Some(from) = self.input.pointer.drag_x {
                         let pool = self.selected_pool().map(|p| p.address.clone()).unwrap_or_default();
                         let timeframe = self.eco.markets_view.timeframe;
                         let mv = &mut self.eco.markets_view;
@@ -162,17 +162,17 @@ impl App {
                         mv.pan.0 = (mv.pan.0 as i64 + moved).clamp(0, super::eco::MARKET_CANDLES as i64 * 3) as usize;
                         self.dirty = true;
                     }
-                    self.pointer.drag_x = Some(x);
+                    self.input.pointer.drag_x = Some(x);
                 }
             }
             // Right-click: the row under the pointer becomes the focus, and its actions open —
             // the same sheet space opens, so a menu never offers what the keys don't.
             MouseEventKind::Down(MouseButton::Right) => {
-                self.last_input = Instant::now();
+                self.note_input();
                 if self.in_grace() || !matches!(self.modal, Modal::None) {
                     return;
                 }
-                let under = self.hits.borrow().at(x, y).cloned();
+                let under = self.input.hits.borrow().at(x, y).cloned();
                 if let Some(Target::Row { list, index, key: shown }) = under
                     && let Some(index) = self.resolve_row(list, index, shown.as_deref())
                 {
@@ -187,7 +187,7 @@ impl App {
 
     /// The explorer link drawn at `(x, y)`, if any.
     fn link_at(&self, x: u16, y: u16) -> Option<String> {
-        self.links_shown.borrow().iter().find(|l| l.y == y && (l.x..l.end).contains(&x)).map(|l| l.url.clone())
+        self.term.links_shown.borrow().iter().find(|l| l.y == y && (l.x..l.end).contains(&x)).map(|l| l.url.clone())
     }
 
     /// A click on an explorer link. Ctrl opens it in the browser, and so does a plain click where
@@ -229,17 +229,17 @@ impl App {
 
     /// Whether a press now would be too soon after a modal appeared or the window was focused.
     fn in_grace(&self) -> bool {
-        let modal = !matches!(self.modal, Modal::None) && self.modal_since.get().is_some_and(|at| at.elapsed() < MODAL_GRACE);
-        let focus = self.focus_gained_at.is_some_and(|at| at.elapsed() < FOCUS_GRACE);
+        let modal = !matches!(self.modal, Modal::None) && self.input.modal_since.get().is_some_and(|at| at.elapsed() < MODAL_GRACE);
+        let focus = self.term.focus_gained_at.is_some_and(|at| at.elapsed() < FOCUS_GRACE);
         modal || focus
     }
 
     /// The wheel over `(x, y)`: the list or body under the pointer scrolls, whatever has focus.
     fn wheel(&mut self, x: u16, y: u16, delta: i64) {
-        let target = self.hits.borrow().scrollable_at(x, y).cloned();
+        let target = self.input.hits.borrow().scrollable_at(x, y).cloned();
         match target {
             Some(Target::Row { list, .. }) => {
-                self.lists.borrow_mut().entry(list).or_default().scroll(delta);
+                self.input.lists.borrow_mut().entry(list).or_default().scroll(delta);
                 self.dirty = true;
             }
             Some(Target::Scroll(Scroll::Review)) => {
@@ -248,7 +248,7 @@ impl App {
                 self.move_selection(delta);
             }
             Some(Target::Scroll(Scroll::Help)) => {
-                self.help_scroll = (self.help_scroll as i64 + delta).max(0) as u16;
+                self.nav.help_scroll = (self.nav.help_scroll as i64 + delta).max(0) as u16;
                 self.dirty = true;
             }
             Some(Target::Scroll(Scroll::Chart)) => {
@@ -261,7 +261,7 @@ impl App {
             }
             Some(Target::Scroll(Scroll::Form)) => {
                 let code = if delta > 0 { KeyCode::Down } else { KeyCode::Up };
-                let (w, h) = self.last_size;
+                let (w, h) = self.term.last_size;
                 self.press(code, (w, h));
             }
             _ => {}
@@ -281,9 +281,9 @@ impl App {
                 }
             }
             Target::Pane(p) => {
-                if matches!(self.modal, Modal::None) && p < self.screen.panes() {
-                    self.pane = p;
-                    self.dock_focus = false;
+                if matches!(self.modal, Modal::None) && p < self.nav.screen.panes() {
+                    self.nav.pane = p;
+                    self.dock.focus = false;
                 }
             }
             Target::Row { list, index, key: shown } => {
@@ -294,9 +294,10 @@ impl App {
                 }
             }
             Target::Header(HeaderPart::Wallet) => self.open_wallet_switcher(),
+            Target::Header(HeaderPart::Account) => self.open_account_picker(),
             Target::Header(HeaderPart::Network) => self.switch(super::app::Screen::Network),
             Target::Header(HeaderPart::Unread) => self.press(KeyCode::Char('N'), size),
-            Target::Toast => self.toasts.clear(),
+            Target::Toast => self.status.toasts.clear(),
             Target::Review(ReviewPart::Reject) => self.press(KeyCode::Esc, size),
             Target::Review(ReviewPart::Approve) => {
                 if let Modal::Review(r) = &mut self.modal {
@@ -305,9 +306,9 @@ impl App {
                 let can = matches!(&self.modal, Modal::Review(r) if r.can_approve());
                 self.toast(if can { "approve is armed · press enter to sign" } else { "read to the end of the review first" }, !can);
             }
-            Target::Route(screen) => {
+            Target::Route(place) => {
                 self.modal = Modal::None;
-                self.switch(screen);
+                self.go(place);
             }
             Target::Scroll(_) | Target::Swallow => {}
             Target::Confirm(false) => self.press(KeyCode::Char('n'), size),
@@ -329,10 +330,12 @@ impl App {
             }
             // A card's field: focus it, as Tab would have. (Typing, a token pick and review stay
             // with the keys.)
-            Target::CardField(n) => match self.screen {
-                Screen::Swap => self.eco.swap.field = n,
-                Screen::Convert => self.eco.convert.field = n,
-                Screen::Wrap => self.eco.wrap.field = n,
+            Target::CardField(n) => match self.nav.screen {
+                Screen::Exchange => match self.nav.card {
+                    Card::Swap => self.eco.swap.field = n,
+                    Card::Convert => self.eco.convert.field = n,
+                    Card::Wrap => self.eco.wrap.field = n,
+                },
                 Screen::Pools => {
                     if let Some(add) = self.eco.pools_view.add.as_mut() {
                         add.field = n;
@@ -399,19 +402,19 @@ impl App {
     fn select_row(&mut self, list: ListId, index: usize) {
         match list {
             ListId::Screen(screen, pane) => {
-                if self.screen == screen && self.detail.is_empty() {
-                    self.pane = pane;
-                    self.dock_focus = false;
+                if self.nav.screen == screen && self.nav.detail.is_empty() {
+                    self.nav.pane = pane;
+                    self.dock.focus = false;
                     // Pools keeps a cursor per pane of its own.
                     match (screen, pane) {
                         (super::app::Screen::Pools, 0) => self.eco.pools_view.selected = index,
                         (super::app::Screen::Pools, _) => self.eco.pools_view.pool_selected = index,
-                        _ => self.selected = index,
+                        _ => self.nav.selected = index,
                     }
                 }
             }
-            ListId::Detail => self.detail_selected = index,
-            ListId::DetailListings => self.eco.collection_listing = index,
+            ListId::Detail => self.nav.detail_selected = index,
+            ListId::DetailListings => self.eco.nft.listing = index,
             ListId::Palette => {
                 if let Modal::Palette { selected, .. } = &mut self.modal {
                     *selected = index;
@@ -448,6 +451,11 @@ impl App {
                     *selected = index;
                 }
             }
+            ListId::Accounts => {
+                if let Modal::Accounts { selected } = &mut self.modal {
+                    *selected = index;
+                }
+            }
             ListId::Sheet => {
                 // One click is enough: the sheet's items are actions, like buttons.
                 if let Modal::Sheet { items, .. } = &self.modal
@@ -465,7 +473,7 @@ impl App {
         let enter_opens = match list {
             // Screen lists open a detail (or run the row's action); the modal lists choose.
             ListId::Screen(..) | ListId::Detail | ListId::DetailListings => matches!(self.modal, Modal::None),
-            ListId::Palette | ListId::TokenPicker | ListId::Themes | ListId::Gallery | ListId::Wallets => true,
+            ListId::Palette | ListId::TokenPicker | ListId::Themes | ListId::Gallery | ListId::Wallets | ListId::Accounts => true,
             ListId::Glossary | ListId::Sheet => false,
         };
         if enter_opens {
@@ -479,12 +487,12 @@ impl App {
         use super::app::Screen;
         let activity_key = |app: &App, i: usize| app.activity_rows().get(i).map(|r| app.activity_row_key(r));
         match list {
-            ListId::Screen(Screen::Home, 0) => self.eco.portfolio.as_ref().and_then(|p| p.rows.get(index)).map(|r| r.key.id()),
+            ListId::Screen(Screen::Home, 0) => self.eco.feeds.portfolio.value().and_then(|p| p.rows.get(index)).map(|r| r.key.id()),
             ListId::Screen(Screen::Home, _) | ListId::Screen(Screen::Activity, _) => activity_key(self, index),
             ListId::Screen(Screen::Accounts, _) => self.dash.accounts.get(index).map(|a| a.address.clone()),
             ListId::Screen(Screen::Qi, _) => self.dash.qi.as_ref().and_then(|q| q.coins.get(index)).map(|c| c.outpoint.clone()),
-            ListId::Screen(Screen::Contacts, _) => self.dash.contacts.get(index).map(|c| c.name.clone()),
-            ListId::Screen(Screen::Channels, _) => {
+            ListId::Screen(Screen::Contacts, 0) => self.dash.contacts.get(index).map(|c| c.name.clone()),
+            ListId::Screen(Screen::Contacts, _) => {
                 let offers = self.dash.offers.len();
                 if index < offers {
                     self.dash.offers.get(index).map(|o| o.code.clone())
@@ -492,14 +500,14 @@ impl App {
                     self.dash.peers.get(index - offers).map(|p| p.code.clone())
                 }
             }
-            ListId::Screen(Screen::Wallets, _) => self.wallets.get(index).map(|w| w.id.clone()),
+            ListId::Screen(Screen::Wallets, _) => self.cockpit.list.get(index).map(|w| w.id.clone()),
             ListId::Screen(Screen::Markets, 0) => self.market_rows().get(index).map(|p| p.address.clone()),
             ListId::Screen(Screen::Markets, _) => self.flow_rows().get(index).map(|s| s.tx.clone()),
             ListId::Screen(Screen::Pools, 0) => self.position_rows().get(index).map(|p| p.pair.clone()),
             ListId::Screen(Screen::Launches, _) => self.launch_rows().get(index).map(|l| l.token.clone()),
             ListId::Screen(Screen::Explore, _) => self.eco.collections_filtered().get(index).map(|c| c.address.clone()),
             ListId::Screen(Screen::Listings, _) => self.eco.visible_listings().get(index).map(|l| format!("{}:{}", l.contract, l.token_id)),
-            ListId::Screen(Screen::Orders, _) => self.eco.orders.as_ref().and_then(|o| o.get(index)).map(|p| p.id.clone()),
+            ListId::Screen(Screen::Orders, _) => self.eco.feeds.orders.value().and_then(|o| o.get(index)).map(|p| p.id.clone()),
             ListId::Palette => match &self.modal {
                 Modal::Palette { query, .. } => self.palette_entries(query).get(index).map(|e| e.label.clone()),
                 _ => None,
@@ -511,8 +519,8 @@ impl App {
     /// How many rows a list has now (for finding a row that moved).
     pub(crate) fn row_count(&self, list: ListId) -> usize {
         match list {
-            ListId::Screen(screen, pane) if screen == self.screen && pane == self.pane => self.list_len(),
-            ListId::Screen(super::app::Screen::Home, 0) => self.eco.portfolio.as_ref().map_or(0, |p| p.rows.len()),
+            ListId::Screen(screen, pane) if screen == self.nav.screen && pane == self.nav.pane => self.list_len(),
+            ListId::Screen(super::app::Screen::Home, 0) => self.eco.feeds.portfolio.value().map_or(0, |p| p.rows.len()),
             ListId::Screen(super::app::Screen::Home, _) => self.activity_rows().len(),
             ListId::Detail => self.detail_len(),
             ListId::Palette => match &self.modal {
@@ -530,42 +538,42 @@ impl App {
 
     /// The first visible item of `list`, drawn in `rows` rows (see `ListState::window`).
     pub(crate) fn list_window(&self, list: ListId, selected: usize, len: usize, rows: usize) -> usize {
-        self.lists.borrow_mut().entry(list).or_default().window(selected, len, rows)
+        self.input.lists.borrow_mut().entry(list).or_default().window(selected, len, rows)
     }
 
     /// The window of a pane's list: it follows the selection while that pane has focus, and
     /// otherwise stays where it was (the screen shares one selection between its panes).
     pub(crate) fn pane_window(&self, list: ListId, len: usize, rows: usize) -> usize {
-        let focused = matches!(list, ListId::Screen(s, p) if s == self.screen && p == self.pane);
-        let mut lists = self.lists.borrow_mut();
+        let focused = matches!(list, ListId::Screen(s, p) if s == self.nav.screen && p == self.nav.pane);
+        let mut lists = self.input.lists.borrow_mut();
         let state = lists.entry(list).or_default();
-        let selected = if focused { self.selected } else { state.offset };
+        let selected = if focused { self.nav.selected } else { state.offset };
         state.window(selected, len, rows)
     }
 
     /// The current screen's focused list.
     pub(crate) fn main_list(&self) -> ListId {
-        ListId::Screen(self.screen, self.pane)
+        ListId::Screen(self.nav.screen, self.nav.pane)
     }
 
     /// The keyboard moved: every list follows its selection again.
     pub(crate) fn unpin_lists(&mut self) {
-        for state in self.lists.get_mut().values_mut() {
+        for state in self.input.lists.get_mut().values_mut() {
             state.pinned = false;
         }
     }
 
     /// Go straight to sub-tab `i` of the current section.
     pub fn select_tab(&mut self, i: usize) {
-        let section = self.screen.section();
+        let section = self.nav.screen.section();
         if section == super::app::Section::Activity {
             if let Some(f) = super::app::ActivityFilter::ALL.get(i) {
-                self.activity_filter = *f;
-                self.selected = 0;
+                self.nav.activity_filter = *f;
+                self.nav.selected = 0;
             }
             return;
         }
-        if let Some(&screen) = section.screens(&self.config.features).get(i) {
+        if let Some(&screen) = section.screens(&self.shown()).get(i) {
             self.open_tab(screen);
         }
     }

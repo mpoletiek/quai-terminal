@@ -22,7 +22,8 @@ impl App {
 
     pub(crate) fn open_form(&mut self, kind: FormKind) {
         let accounts = self.account_choices();
-        let preferred = self.dash.accounts.get(if self.screen == Screen::Accounts { self.selected } else { 0 }).map(|a| a.address.clone());
+        let preferred =
+            self.dash.accounts.get(if self.nav.screen == Screen::Accounts { self.nav.selected } else { 0 }).map(|a| a.address.clone());
         let account = |label: &str| {
             let f = Field::new(label, "←/→ to choose").with(preferred.clone().unwrap_or_default());
             if accounts.is_empty() { Field::new(label, "label, address or #").optional() } else { f.choice(accounts.clone()) }
@@ -179,19 +180,26 @@ impl App {
             ),
             FormKind::BoardPost { channel } => (
                 "Post a message",
-                vec![account("Post from"), Field::new(&format!("Message to #{channel}"), "up to 1024 bytes")],
-                Some("Public and permanent: anyone can read it, it cannot be taken back, and it is signed by this account."),
+                vec![Field::new(&format!("Message to #{channel}"), "up to 1024 bytes")],
+                Some("Public and permanent: anyone can read it, it cannot be taken back, and it goes from your messaging account."),
             ),
-            FormKind::BoardDm { peer, name } => (
-                "Send a sealed message",
-                vec![
-                    account("Send from"),
-                    Field::new(
-                        &format!("Message to {}", name.clone().unwrap_or_else(|| wallet_core::session::short_code(peer))),
-                        "only you two can read it",
-                    ),
-                ],
-                Some("Encrypted, but not hidden: your address, the time and the size are public, and it cannot be taken back."),
+            FormKind::Message { peer, name } => (
+                "Send a private message",
+                vec![Field::new(
+                    &format!("Message to {}", name.clone().unwrap_or_else(|| wallet_core::session::short_address(peer))),
+                    "only they can read it",
+                )],
+                Some("Encrypted to them alone. On chain anyone sees your messaging address, the time and the size, not who it is for."),
+            ),
+            FormKind::MessageNew => (
+                "New private message",
+                vec![Field::new("To", "messaging address or contact"), Field::new("Message", "only they can read it")],
+                Some("Encrypted to them alone. On chain anyone sees your messaging address, the time and the size, not who it is for."),
+            ),
+            FormKind::MessagingFund => (
+                "Fund the messaging account",
+                vec![account("From"), Field::new("Amount", "QUAI for its fees").amount("QUAI")],
+                Some("An ordinary send. Anyone can see which account funds your messaging address."),
             ),
             FormKind::FollowChannel => (
                 "Follow a channel",
@@ -199,7 +207,7 @@ impl App {
                 Some("A channel is just a name: following one only decides what this wallet shows."),
             ),
             FormKind::RenameWallet(id) => {
-                let current = self.wallets.iter().find(|w| &w.id == id).map(|w| w.name.clone()).unwrap_or_default();
+                let current = self.cockpit.list.iter().find(|w| &w.id == id).map(|w| w.name.clone()).unwrap_or_default();
                 ("Rename wallet", vec![Field::new("Name", "letters, digits, - and _").with(&current)], None)
             }
             FormKind::AddAccount => ("Add Quai account", vec![Field::new("Label", "e.g. Savings").optional()], None),
@@ -398,9 +406,9 @@ impl App {
             ),
         };
         let focus = fields.iter().position(|f| f.value.is_empty() && !matches!(f.kind, FieldKind::Choice(_))).unwrap_or(0);
-        self.contract_probe = None;
-        self.contract_found = None;
-        self.contract_asked.clear();
+        self.tasks.contract_probe = None;
+        self.tasks.contract_found = None;
+        self.tasks.contract_asked.clear();
         self.modal = Modal::Form(Form {
             kind,
             title: built_title.unwrap_or_else(|| title.into()),
@@ -471,19 +479,21 @@ impl App {
             } else {
                 format!("list {name} for {price} {currency}")
             };
-            self.start_flow(super::super::eco::FlowKind::NftList {
-                account: Some(owner.clone()),
-                contract: contract.clone(),
-                token_id: token_id.clone(),
-                price: Some(price),
-                currency,
+            self.start_steps(
+                Prepare::NftListNext {
+                    account: Some(owner.clone()),
+                    contract: contract.clone(),
+                    token_id: token_id.clone(),
+                    price: Some(price),
+                    currency,
+                },
                 label,
-            });
+            );
             return;
         }
         if let FormKind::RenameWallet(id) = &form.kind {
             let name = v(0);
-            let Some(mut meta) = self.wallets.iter().find(|w| &w.id == id).cloned() else {
+            let Some(mut meta) = self.cockpit.list.iter().find(|w| &w.id == id).cloned() else {
                 self.toast("that wallet is gone", true);
                 return;
             };
@@ -590,7 +600,7 @@ impl App {
             _ => None,
         };
         if let Some((prepare, label)) = steps {
-            self.start_flow(super::super::eco::FlowKind::Steps { prepare: Box::new(prepare), label });
+            self.start_steps(prepare, label);
             return;
         }
         let cmd = match &form.kind {
@@ -608,8 +618,10 @@ impl App {
             FormKind::WrapQuai => Cmd::Prepare(Prepare::WrapQuai { account: opt(0), amount: v(1) }),
             FormKind::UnwrapQuai => Cmd::Prepare(Prepare::UnwrapQuai { account: opt(0), amount: v(1) }),
             FormKind::Notify => Cmd::Prepare(Prepare::Notify { from: opt(0), peer: v(1) }),
-            FormKind::BoardPost { channel } => Cmd::Prepare(Prepare::BoardPost { from: opt(0), channel: channel.clone(), text: v(1) }),
-            FormKind::BoardDm { peer, .. } => Cmd::Prepare(Prepare::BoardDm { from: opt(0), peer: peer.clone(), text: v(1) }),
+            FormKind::BoardPost { channel } => Cmd::Prepare(Prepare::BoardPost { channel: channel.clone(), text: v(0) }),
+            FormKind::Message { peer, .. } => Cmd::Prepare(Prepare::Message { peer: peer.clone(), text: v(0) }),
+            FormKind::MessageNew => Cmd::Prepare(Prepare::Message { peer: v(0), text: v(1) }),
+            FormKind::MessagingFund => Cmd::Prepare(Prepare::MessagingFund { from: opt(0), amount: v(1) }),
             FormKind::OrderCreate { .. } | FormKind::FollowChannel | FormKind::RenameWallet(_) => unreachable!("handled above"),
             FormKind::AddAccount => Cmd::AddAccount(opt(0)),
             // Moved straight into wiped buffers; the form's own copies are wiped when it drops.
@@ -697,12 +709,12 @@ impl App {
 
     /// The channel offer under the cursor on Channels (offers are listed first).
     pub(crate) fn channel_offer(&self) -> Option<&wallet_core::ops::ChannelOffer> {
-        self.dash.offers.get(self.selected)
+        self.dash.offers.get(self.nav.selected)
     }
 
     /// The registered channel under the cursor on Channels, below the offers.
     pub(crate) fn channel_peer(&self) -> Option<&wallet_core::ops::PeerView> {
-        self.selected.checked_sub(self.dash.offers.len()).and_then(|i| self.dash.peers.get(i))
+        self.nav.selected.checked_sub(self.dash.offers.len()).and_then(|i| self.dash.peers.get(i))
     }
 
     /// Save a payment channel's sender as a contact, or edit the contact it already belongs to.
@@ -730,7 +742,7 @@ impl App {
             let (have, decimals, unit) = match asset {
                 "QUAI" => {
                     let a =
-                        account.as_ref().and_then(|v| self.dash.accounts.iter().find(|a| a.address == *v)).or(self.dash.accounts.first());
+                        account.as_ref().and_then(|v| self.dash.accounts.iter().find(|a| a.address == *v)).or(self.dash.active_account());
                     match a {
                         Some(a) => (a.balance, 18, "QUAI"),
                         None => continue,
@@ -773,7 +785,7 @@ impl App {
         }
         self.open_form(FormKind::ContractCall { address: found.address.clone(), name: metadata.name.clone(), functions });
         // `open_form` clears the probe; this form is about that contract, so it keeps it.
-        self.contract_found = Some(found);
+        self.tasks.contract_found = Some(found);
         true
     }
 
@@ -821,23 +833,23 @@ impl App {
         // Only a complete address; a contact name resolves to one the worker looks up itself.
         let looks_done = text.len() >= 42 && text.starts_with("0x");
         if !looks_done {
-            self.contract_found = None;
-            self.contract_probe = None;
+            self.tasks.contract_found = None;
+            self.tasks.contract_probe = None;
             return;
         }
         // Asked once per destination per form, whatever the answer was. A failure is an answer.
-        if self.contract_probe.as_deref() == Some(text.as_str()) || !self.contract_asked.insert(text.to_lowercase()) {
+        if self.tasks.contract_probe.as_deref() == Some(text.as_str()) || !self.tasks.contract_asked.insert(text.to_lowercase()) {
             return;
         }
-        self.contract_found = None;
-        self.contract_probe = Some(text.clone());
+        self.tasks.contract_found = None;
+        self.tasks.contract_probe = Some(text.clone());
         self.send(Cmd::InspectContract { address: text });
     }
 
     /// Put what the probe found under the open form, without disturbing what is typed in it.
     pub(crate) fn refresh_form_note(&mut self) {
         let Modal::Form(mut form) = std::mem::replace(&mut self.modal, Modal::None) else { return };
-        form.contract_note = Self::contract_note(&form.kind, self.contract_found.as_ref());
+        form.contract_note = Self::contract_note(&form.kind, self.tasks.contract_found.as_ref());
         self.modal = Modal::Form(form);
         self.dirty = true;
     }

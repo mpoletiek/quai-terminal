@@ -10,9 +10,9 @@
 //! followed. As with pictures ([`crate::media::MEDIA_HOSTS`]), a URI a minter chose is never
 //! fetched from an arbitrary host: that would let a spam airdrop learn when this wallet looked.
 
-use crate::error::{CoreError, Result};
 use crate::explorer::NftItem;
 use crate::ipfs;
+use quai_model::error::{CoreError, Result};
 use serde_json::Value;
 
 /// A metadata document is a few kilobytes; anything near this is not one.

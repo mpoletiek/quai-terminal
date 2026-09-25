@@ -5,6 +5,8 @@ use crate::amount::{self, QI_DECIMALS, QUAI_DECIMALS};
 use crate::appdb::Token;
 use crate::data::Trust;
 use crate::error::{CoreError, Result};
+use crate::journal::OpKind;
+use crate::network::PinTrust;
 use crate::network::ZONE;
 use crate::registry::{QuaiAccount, parse_any_address};
 use crate::session::{Session, new_operation_id, qi_stale, stale_pause};
@@ -39,7 +41,7 @@ pub struct QiSweepQuote {
 }
 
 /// Current-fee, exact-qit MAX fill. This is an advisory observation, never a signable review.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QiSpecialMax {
     pub amount: String,
     pub amount_qits: String,
@@ -97,7 +99,7 @@ pub struct TokenBalance {
 }
 
 /// Payment-channel peer view.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerView {
     /// Peer payment code.
     pub code: String,
@@ -109,25 +111,10 @@ pub struct PeerView {
     pub send_addresses: usize,
 }
 
-/// One message in a sealed conversation, as the wallet shows it.
-#[derive(Clone, Debug, Serialize)]
-pub struct SealedLine {
-    /// Unix seconds.
-    pub at: u64,
-    /// Sender address.
-    pub from: String,
-    /// Sent by this wallet.
-    pub mine: bool,
-    /// The text, or `None` when the body will not open for this conversation.
-    pub text: Option<String>,
-    /// Posted from an account not recorded for this contact. A sealed body opening is not proof
-    /// of who posted it (anyone can copy a body onto the board from their own address), so this
-    /// is shown, never recorded; naming the account is the user's call.
-    pub new_address: bool,
-}
+pub use quai_messaging::board::SealedLine;
 
 /// Conversion quote with settlement-risk scenarios.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConversionQuote {
     /// `quai_to_qi` or `qi_to_quai`.
     pub direction: String,
@@ -183,7 +170,7 @@ pub const SLIPPAGE_MARGIN_BPS: u16 = 50;
 pub const SATURATED_BPS: u16 = 9000;
 
 /// The node refuses conversions in two hard-coded windows after each k-Quai controller change.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConversionHold {
     /// Prime height at which the window closes and the same conversion becomes acceptable.
     pub until_prime: u64,
@@ -254,7 +241,7 @@ pub fn percent(bps: u16) -> String {
 }
 
 /// One batch-discount scenario.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RiskScenario {
     /// Description.
     pub label: String,
@@ -384,7 +371,7 @@ impl Session {
             from,
             intent: AccountIntent::new(recipient, value)
                 .with_data(RpcData::new(vec![]).map_err(|_| CoreError::Invalid("calldata".into()))?),
-            kind: "send_quai".into(),
+            kind: OpKind::SendQuai,
             title: "Send QUAI".into(),
             asset: "QUAI".into(),
             amount: value,
@@ -392,7 +379,7 @@ impl Session {
             counterparty: recipient.to_string(),
             fields: vec![],
             warnings,
-            detail: serde_json::json!({}),
+            detail: serde_json::json!({}).into(),
             max_gas: 100_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -409,7 +396,7 @@ impl Session {
         let me = Self::quai_address_of(&from)?;
         self.prepare_account(AccountRequest {
             intent: AccountIntent::new(me, U256::ZERO).with_data(RpcData::new(vec![]).map_err(|_| CoreError::Invalid("calldata".into()))?),
-            kind: "fill_gap".into(),
+            kind: OpKind::FillGap,
             title: "Fill nonce gap".into(),
             asset: "QUAI".into(),
             amount: U256::ZERO,
@@ -417,7 +404,7 @@ impl Session {
             counterparty: from.address.clone(),
             fields: vec![field("Purpose", format!("use nonce {nonce} so later transactions from this account can be mined"))],
             warnings: vec![],
-            detail: serde_json::json!({"nonce": nonce}),
+            detail: serde_json::json!({"nonce": nonce}).into(),
             max_gas: 100_000,
             max_fee: None,
             from,
@@ -677,7 +664,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "send_token".into(),
+            kind: OpKind::SendToken,
             title: format!("Send {}", token.symbol),
             asset: token.symbol.clone(),
             amount: atoms,
@@ -685,7 +672,7 @@ impl Session {
             counterparty: recipient.to_string(),
             fields: vec![field("Token contract", token.address.clone()), field("Call", format!("transfer({recipient}, {atoms})"))],
             warnings: vec![],
-            detail: serde_json::json!({"token": token.address, "decimals": token.decimals}),
+            detail: serde_json::json!({"token": token.address, "decimals": token.decimals}).into(),
             max_gas: 200_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -724,17 +711,21 @@ impl Session {
         let call = Erc20::new(contract, &self.node.provider)?.approve(spender, atoms)?;
         let mut warnings = Vec::new();
         let (kind, title, shown) = if atoms.is_zero() {
-            ("revoke", format!("Revoke {} allowance", token.symbol), "0 (revoke)".to_string())
+            (OpKind::Revoke, format!("Revoke {} allowance", token.symbol), "0 (revoke)".to_string())
         } else if atoms == UNLIMITED {
             warnings.push(format!("UNLIMITED approval: {spender} will be able to move all of your {} at any time", token.symbol));
-            ("approve", format!("Approve {} (unlimited)", token.symbol), "unlimited".to_string())
+            (OpKind::Approve, format!("Approve {} (unlimited)", token.symbol), "unlimited".to_string())
         } else {
-            ("approve", format!("Approve {}", token.symbol), format!("{} {}", amount::format_amount(atoms, token.decimals), token.symbol))
+            (
+                OpKind::Approve,
+                format!("Approve {}", token.symbol),
+                format!("{} {}", amount::format_amount(atoms, token.decimals), token.symbol),
+            )
         };
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: kind.into(),
+            kind,
             title,
             asset: token.symbol.clone(),
             amount: if atoms == UNLIMITED { U256::ZERO } else { atoms },
@@ -746,7 +737,7 @@ impl Session {
                 field("Allowance", shown),
             ],
             warnings,
-            detail: serde_json::json!({"token": token.address, "decimals": token.decimals, "spender": spender.to_string(), "unlimited": atoms == UNLIMITED}),
+            detail: serde_json::json!({"token": token.address, "decimals": token.decimals, "spender": spender.to_string(), "unlimited": atoms == UNLIMITED}).into(),
             max_gas: 200_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -951,9 +942,9 @@ impl Session {
     }
 
     fn ensure_channel(&mut self, peer: &PaymentCode) -> Result<()> {
-        let payment = self
-            .unlocked
-            .as_ref()
+        let held = self.held();
+        let payment = held
+            .as_deref()
             .ok_or_else(|| CoreError::Locked("unlock the wallet to use payment codes".into()))?
             .payment
             .as_ref()
@@ -990,7 +981,7 @@ impl Session {
         let to = recipients.first().cloned().unwrap_or_default();
         let mut op = self.new_op(
             id,
-            "send_qi",
+            OpKind::SendQi,
             "qi",
             "qi",
             "QI",
@@ -1016,8 +1007,8 @@ impl Session {
                 warnings,
                 prepared.signing_digest().to_string(),
             )?;
-            op.detail["review"] = serde_json::to_value(&review)?;
-            op.detail["review_version"] = serde_json::json!(1);
+            op.detail.set_review(serde_json::to_value(&review)?);
+            op.detail.set_review_version(serde_json::json!(1));
             self.journal(op.clone())?;
             Ok::<_, CoreError>(review)
         })();
@@ -1064,7 +1055,8 @@ impl Session {
         let (mut intent, shown_to, peer) = match &recipient {
             Recipient::PaymentCode(code) => {
                 self.ensure_channel(code)?;
-                let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+                let held = self.held();
+                let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
                 let destinations = allocate_payment_destinations(&mut self.qi_store, payment, code, qits, needed.max(1))?;
                 (QiIntent::new(qits, destinations), code.to_base58(), Some(code.clone()))
             }
@@ -1085,11 +1077,9 @@ impl Session {
             trace("send_qi: refreshing Qi");
             self.refresh_qi_for_spend().await?;
             trace("send_qi: building keyring");
-            let keys = self
-                .unlocked
-                .as_ref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let held = self.held();
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             trace("send_qi: preparing");
             let policy = QiPolicy::new(max_fee, 64, 256, 10).with_max_fee_rounds(12);
             let result = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store)
@@ -1124,7 +1114,8 @@ impl Session {
                 }
                 Err(QiError::InsufficientDestinations) => match &peer {
                     Some(code) if intent.destinations.len() < 64 => {
-                        let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+                        let held = self.held();
+                        let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
                         let extra = intent.destinations.len();
                         let more = allocate_payment_destinations(&mut self.qi_store, payment, code, qits, extra)?;
                         intent.destinations.extend(more);
@@ -1149,7 +1140,7 @@ impl Session {
         // A raw Qi address gets the same lookalike and dust checks as a Quai one. A payment code
         // pays fresh addresses nobody else can derive, so there is nothing to compare it with.
         let mut warnings = if peer.is_none() { self.recipient_warnings(&shown_to) } else { Vec::new() };
-        let mut detail = serde_json::json!({});
+        let mut detail = crate::journal::Detail::new();
         if let Some(code) = &peer {
             fields.push(field("Paid to", format!("{} one-time payment-code addresses", prepared.recipient_outputs())));
             let notified = self.peer_notified(code).await.unwrap_or(None);
@@ -1157,13 +1148,13 @@ impl Session {
                 Some(true) => fields.push(field("Mailbox", "recipient already notified")),
                 Some(false) => {
                     warnings.push("the recipient has not been notified of this payment code; run `payment notify` (a separate Quai transaction) so Pelagus wallets can find the funds".into());
-                    detail = serde_json::json!({"needs_notify": true});
+                    detail = serde_json::json!({"needs_notify": true}).into();
                 }
                 None => {}
             }
-            detail["peer"] = serde_json::json!(code.to_base58());
+            detail.set_peer(serde_json::json!(code.to_base58()));
         }
-        let mut op = self.new_op(id, "send_qi", "qi", "qi", "QI", qits, &shown_to, detail);
+        let mut op = self.new_op(id, OpKind::SendQi, "qi", "qi", "QI", qits, &shown_to, detail);
         let digest = prepared.signing_digest().to_string();
         let review = self.qi_review(
             op.clone(),
@@ -1177,8 +1168,8 @@ impl Session {
             digest,
         )?;
         op.fee = prepared.fee().to_string();
-        op.detail["review"] = serde_json::to_value(&review)?;
-        op.detail["review_version"] = serde_json::json!(1);
+        op.detail.set_review(serde_json::to_value(&review)?);
+        op.detail.set_review_version(serde_json::json!(1));
         if let Err(error) = self.journal(op.clone()) {
             self.qi_store.release_unsigned(id)?;
             return Err(error);
@@ -1216,11 +1207,9 @@ impl Session {
         let mut pool = Some(self.change_pool(outputs.clamp(2, MAX_CHANGE_POOL))?);
         let prepared = loop {
             self.refresh_qi_for_spend().await?;
-            let keys = self
-                .unlocked
-                .as_ref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let held = self.held();
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let policy = self.qi_policy(max_fee, 128);
             let prepared = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store)
                 .prepare_sweep(id, mode, policy, pool.as_mut().ok_or_else(|| CoreError::Storage("no change pool".into()))?)
@@ -1253,7 +1242,7 @@ impl Session {
         }
         let mut op = self.new_op(
             id,
-            if aggregate { "aggregate_qi" } else { "sweep_qi" },
+            if aggregate { OpKind::AggregateQi } else { OpKind::SweepQi },
             "qi",
             "qi",
             "QI",
@@ -1275,8 +1264,8 @@ impl Session {
             digest,
         )?;
         op.fee = prepared.fee().to_string();
-        op.detail["review"] = serde_json::to_value(&review)?;
-        op.detail["review_version"] = serde_json::json!(1);
+        op.detail.set_review(serde_json::to_value(&review)?);
+        op.detail.set_review_version(serde_json::json!(1));
         if let Err(error) = self.journal(op.clone()) {
             self.qi_store.release_unsigned(id)?;
             return Err(error);
@@ -1297,7 +1286,8 @@ impl Session {
 
     /// Registered payment-channel peers (requires unlock to validate ownership).
     pub fn peers(&self) -> Result<Vec<PeerView>> {
-        let payment = self.keys()?.payment.as_ref().ok_or_else(|| CoreError::Invalid("this wallet has no payment code".into()))?;
+        let keys = self.keys()?;
+        let payment = keys.payment.as_ref().ok_or_else(|| CoreError::Invalid("this wallet has no payment code".into()))?;
         let contacts = self.app.contacts()?;
         let mut out = Vec::new();
         for channel in self.qi_store.payment_channels(payment)? {
@@ -1392,7 +1382,8 @@ impl Session {
         if let Some(start) = continue_from {
             options.range.start = start;
         }
-        let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+        let held = self.held();
+        let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
         for attempt in 0..5 {
             match scan_payment_channel(&self.node.provider, &mut self.qi_store, payment, &peer, &options, || false).await {
                 Ok(report) => return Ok((report.next_index, report.indexes.len())),
@@ -1425,7 +1416,8 @@ impl Session {
     pub async fn discover_mailbox_pass(&mut self, pass: MailboxPass, stop: &mut dyn FnMut() -> bool) -> Result<MailboxSummary> {
         let mailbox_address = self.quai_contract(&self.network.mailbox, "payment mailbox")?;
         let caller = self.caller()?;
-        let own = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?.public_code().to_base58();
+        let held = self.held();
+        let own = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?.public_code().to_base58();
         let network = self.network.id.clone();
         let at = crate::registry::now();
         let cursor_key = format!("mailbox_cursor:{network}");
@@ -1483,7 +1475,8 @@ impl Session {
         caller: QuaiAddress,
         start: usize,
     ) -> Result<quai_sdk::payment_channels::MailboxDiscoveryReport> {
-        let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+        let held = self.held();
+        let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
         let mailbox = PaymentMailbox::new(mailbox_address, &self.node.provider)?;
         let request = MailboxDiscovery::new(start, MAILBOX_PAGE).with_registration(MailboxRegistration::ReportOnly);
         for attempt in 0..5 {
@@ -1554,7 +1547,8 @@ impl Session {
     /// [`Self::sync_payment_channels`] runs it inline for the CLI and the daemon.
     pub async fn sync_payment_channels_until(&mut self, stop: &mut dyn FnMut() -> bool) -> Result<PaymentSync> {
         let mut sync = PaymentSync::default();
-        let has_payment = self.unlocked.as_ref().is_some_and(|u| u.payment.is_some());
+        let held = self.held();
+        let has_payment = held.as_deref().is_some_and(|u| u.payment.is_some());
         if !has_payment || stop() {
             return Ok(sync);
         }
@@ -1568,7 +1562,8 @@ impl Session {
             sync.deferred = summary.deferred;
         }
         let registered: Vec<String> = {
-            let payment = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
+            let held = self.held();
+            let payment = held.as_deref().and_then(|u| u.payment.as_ref()).ok_or_else(no_payment)?;
             self.qi_store.payment_channels(payment)?.iter().map(|c| c.channel.counterparty_code().to_base58()).collect()
         };
         for code in registered.into_iter().filter(|c| !covered.contains(c)) {
@@ -1612,7 +1607,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "notify".into(),
+            kind: OpKind::Notify,
             title: "Notify payment-code recipient".into(),
             asset: "QUAI".into(),
             amount: U256::ZERO,
@@ -1620,7 +1615,7 @@ impl Session {
             counterparty: peer.to_base58(),
             fields: vec![field("Mailbox", mailbox_address.to_string()), field("Recipient code", peer.to_base58())],
             warnings,
-            detail: serde_json::json!({"peer": peer.to_base58()}),
+            detail: serde_json::json!({"peer": peer.to_base58()}).into(),
             max_gas: 600_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -1629,11 +1624,14 @@ impl Session {
 
     /// Review posting a message to the on-chain board. Every message is public and permanent:
     /// the review says so, because nothing can take one back once it is mined.
-    pub async fn review_post(&mut self, account: Option<&str>, channel: &str, text: &str, max_fee: Option<&str>) -> Result<Review> {
+    /// Review a public post. It goes from the messaging account, never the main one: a post is
+    /// signed by the account it comes from, and ties everything that account holds to what it says.
+    pub async fn review_post(&mut self, channel: &str, text: &str, max_fee: Option<&str>) -> Result<Review> {
+        let account = self.require_messaging_account()?;
         let tag = crate::messages::channel_tag(channel)?;
         let body = text.as_bytes().to_vec();
         self.review_board(
-            account,
+            Some(&account),
             &tag,
             crate::messages::KIND_TEXT,
             body,
@@ -1641,7 +1639,7 @@ impl Session {
             vec![field("Channel", format!("#{channel}")), field("Message", text.to_string())],
             vec![
                 "messages are public and permanent: anyone can read this, and nothing can take it back".into(),
-                "it is signed by this account, which links the message to your address".into(),
+                "it is posted from your messaging account, which links the message to that address".into(),
             ],
             serde_json::json!({"channel": channel}),
             max_fee,
@@ -1692,34 +1690,10 @@ impl Session {
         contacts.into_iter().find(|c| c.payment_code.as_deref() == Some(code.as_str()))
     }
 
-    /// Review a sealed message to one peer. The body is encrypted before it is shown, and the
-    /// review says exactly how far that protection goes.
-    pub async fn review_dm(&mut self, account: Option<&str>, peer: &str, text: &str, max_fee: Option<&str>) -> Result<Review> {
-        let conversation = self.conversation_with(peer)?;
-        let (tag, body) = crate::messages::seal(&conversation, text, self.head().await?)?;
-        let who = crate::session::short_code(peer);
-        self.review_board(
-            account,
-            &tag,
-            crate::messages::KIND_SEALED,
-            body,
-            who.clone(),
-            vec![field("To", who), field("Message", text.to_string()), field("Sealed", "only the two of you can read it")],
-            vec![
-                "the message is encrypted, but this transaction is not hidden: your address and the time are public, and its size to within a bucket".into(),
-                "anyone holding either side's notification key can read the whole conversation".into(),
-                "it cannot be taken back once it is mined".into(),
-            ],
-            serde_json::json!({"sealed": true}),
-            max_fee,
-        )
-        .await
-    }
-
     /// Post one body to the board. Shared by public channels and sealed conversations, so both
     /// go through the same review and the same checks the contract makes.
     #[allow(clippy::too_many_arguments)]
-    async fn review_board(
+    pub(crate) async fn review_board(
         &mut self,
         account: Option<&str>,
         tag: &[u8; 32],
@@ -1728,10 +1702,11 @@ impl Session {
         counterparty: String,
         mut fields: Vec<Field>,
         warnings: Vec<String>,
-        mut detail: serde_json::Value,
+        detail: impl Into<crate::journal::Detail>,
         max_fee: Option<&str>,
     ) -> Result<Review> {
         use quai_sdk::contracts::Contract;
+        let mut detail = detail.into();
         let pin = self
             .network
             .ecosystem
@@ -1745,11 +1720,11 @@ impl Session {
         let call = contract.prepare("post", &args, U256::ZERO)?;
         fields.push(field("Size", format!("{} bytes", body.len())));
         fields.push(field("Board", format!("{address} · {}", pin.trust_label_on(&self.node))));
-        detail["bytes"] = serde_json::json!(body.len());
+        detail.set_bytes(serde_json::json!(body.len()));
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "board_post".into(),
+            kind: OpKind::BoardPost,
             title: if kind == crate::messages::KIND_SEALED { "Send a sealed message".into() } else { "Post a message".into() },
             asset: "QUAI".into(),
             amount: U256::ZERO,
@@ -1809,7 +1784,7 @@ impl Session {
         let req = AccountRequest {
             from,
             intent: AccountIntent::new(own, its).with_data(RpcData::new(vec![]).map_err(|_| CoreError::Invalid("data".into()))?),
-            kind: "convert_quai_to_qi".into(),
+            kind: OpKind::ConvertQuaiToQi,
             title: "Convert QUAI → Qi".into(),
             asset: "QUAI".into(),
             amount: its,
@@ -1822,7 +1797,8 @@ impl Session {
                 "slippage_bps": slippage_bps,
                 "quoted_qits": quote.as_ref().and_then(|q| q.quoted.clone()),
                 "expected_qits": quote.as_ref().and_then(|q| q.expected.clone()),
-            }),
+            })
+            .into(),
             max_gas: 1_000_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         };
@@ -1859,7 +1835,7 @@ impl Session {
             intent,
             qits,
             max_fee,
-            "convert_qi_to_quai",
+            OpKind::ConvertQiToQuai,
             "Convert Qi → QUAI",
             destination.to_string(),
             fields,
@@ -1881,7 +1857,7 @@ impl Session {
         intent: QiSpecialIntent,
         qits: U256,
         max_fee: Option<&str>,
-        kind: &str,
+        kind: OpKind,
         title: &str,
         to: String,
         mut fields: Vec<Field>,
@@ -1899,11 +1875,9 @@ impl Session {
         let mut pool = Some(self.change_pool(pool_size)?);
         let prepared = loop {
             self.refresh_qi_for_spend().await?;
-            let keys = self
-                .unlocked
-                .as_ref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let held = self.held();
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let policy = QiPolicy::new(cap.unwrap_or(U256::from(500u64)), 64, 256, 10).with_max_fee_rounds(12);
             let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
             let change = pool.as_mut().ok_or_else(|| CoreError::Storage("no change pool".into()))?;
@@ -1947,8 +1921,8 @@ impl Session {
         let tx = prepared.transaction().transaction().clone();
         let review = self.qi_review(op.clone(), title, to, &tx, 0, prepared.fee(), fields, warnings, digest)?;
         op.fee = prepared.fee().to_string();
-        op.detail["review"] = serde_json::to_value(&review)?;
-        op.detail["review_version"] = serde_json::json!(1);
+        op.detail.set_review(serde_json::to_value(&review)?);
+        op.detail.set_review_version(serde_json::json!(1));
         if let Err(error) = self.journal(op.clone()) {
             self.qi_store.release_unsigned(id)?;
             return Err(error);
@@ -1999,7 +1973,7 @@ impl Session {
             intent,
             qits,
             max_fee,
-            "wrap_qi",
+            OpKind::WrapQi,
             "Wrap Qi → WQI (step 1 of 2)",
             destination.to_string(),
             vec![
@@ -2026,7 +2000,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "claim_wqi".into(),
+            kind: OpKind::ClaimWqi,
             title: "Claim WQI (step 2 of 2)".into(),
             asset: "QI".into(),
             amount: unclaimed,
@@ -2040,7 +2014,8 @@ impl Session {
             detail: serde_json::json!({"contract": contract.to_string(), "recipient": owner.to_string(), "to_token": contract.to_string(),
                 "financial_effects": [{"direction": "in", "asset": "WQI", "token": contract.to_string(), "decimals": 18,
                 "amount": quai_sdk::wrappers::qits_to_wqi_atoms(unclaimed)?.to_string(), "estimated": true,
-                "note": "claimable backing observed before preparation; actual receipt determines continuation"}]}),
+                "note": "claimable backing observed before preparation; actual receipt determines continuation"}]})
+            .into(),
             max_gas: 300_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -2074,7 +2049,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "unwrap_wqi".into(),
+            kind: OpKind::UnwrapWqi,
             title: "Unwrap WQI → Qi".into(),
             asset: "QI".into(),
             amount: qits,
@@ -2090,7 +2065,7 @@ impl Session {
             detail: serde_json::json!({"beneficiary": beneficiary.to_string(), "contract": contract.to_string(), "financial_effects": [
                 {"direction":"out","asset":"WQI","token":contract.to_string(),"decimals":18,"amount":atoms.to_string(),"note":"burned wrapped tokens"},
                 {"direction":"in","asset":"Qi","token":"qi","decimals":3,"amount":qits.to_string(),"estimated":true,"note":"destination credit pending protocol confirmation and maturity"}
-            ]}),
+            ]}).into(),
             // Each redeemed denomination creates an outpoint; Pelagus allows 1.1M for large redemptions.
             max_gas: 1_100_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
@@ -2107,7 +2082,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "wrap_quai".into(),
+            kind: OpKind::WrapQuai,
             title: "Wrap QUAI → WQUAI".into(),
             asset: "QUAI".into(),
             amount: its,
@@ -2118,7 +2093,7 @@ impl Session {
             detail: serde_json::json!({"contract": contract.to_string(), "financial_effects": [
                 {"direction":"out","asset":"QUAI","token":"quai","decimals":18,"amount":its.to_string()},
                 {"direction":"in","asset":"WQUAI","token":contract.to_string(),"decimals":18,"amount":its.to_string(),"note":"1:1 wrapped native coin"}
-            ]}),
+            ]}).into(),
             max_gas: 200_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -2140,7 +2115,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "unwrap_quai".into(),
+            kind: OpKind::UnwrapQuai,
             title: "Unwrap WQUAI → QUAI".into(),
             asset: "WQUAI".into(),
             amount: atoms,
@@ -2151,7 +2126,8 @@ impl Session {
             detail: serde_json::json!({"contract": contract.to_string(), "financial_effects": [
                 {"direction":"out","asset":"WQUAI","token":contract.to_string(),"decimals":18,"amount":atoms.to_string()},
                 {"direction":"in","asset":"QUAI","token":"quai","decimals":18,"amount":atoms.to_string(),"note":"1:1 native redemption"}
-            ]}),
+            ]})
+            .into(),
             max_gas: 200_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -2164,12 +2140,12 @@ impl Session {
     /// is asked for again and checked against the vault first: a mistyped one must not become the
     /// vault's new password.
     pub fn import_key(&mut self, password: &str, secret_hex: &str, label: &str) -> Result<String> {
-        if self.unlocked.is_none() {
+        if !self.custody.is_unlocked() {
             return Err(CoreError::Locked("wallet is locked".into()));
         }
         let mut meta = self.meta.clone();
-        let keys = self.unlocked.as_mut().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?;
-        let address = self.registry.add_key(&mut meta, keys, password, secret_hex, label)?;
+        let (address, keys) = self.registry.add_key(&mut meta, password, secret_hex, label)?;
+        self.custody.install(keys);
         self.meta = meta;
         self.sync_metadata()?;
         Ok(address.to_string())
@@ -2853,7 +2829,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent,
-            kind: "contract_call".into(),
+            kind: OpKind::ContractCall,
             title: format!("Call {}", callable.name),
             asset: "QUAI".into(),
             amount: quai,
@@ -2868,7 +2844,8 @@ impl Session {
                 "abi_source": found.metadata.as_ref().map(|m| m.cid.clone()),
                 "verified": found.verified,
                 "undeclared": found.undeclared,
-            }),
+            })
+            .into(),
             max_gas: 1_000_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })

@@ -96,6 +96,30 @@ pub fn line(prompt: &str) -> Result<String> {
     Ok(text.trim().to_string())
 }
 
+/// The text of a private message: from `file` when given, otherwise typed at the terminal or
+/// piped on stdin. Never an argument, which shell history and the process list would keep.
+pub fn message(file: Option<&std::path::Path>) -> Result<Zeroizing<String>> {
+    /// Far more than any message the chain takes; the review refuses what does not fit.
+    const LIMIT: u64 = 64 * 1024;
+    let text = match file {
+        Some(path) => {
+            let size = std::fs::metadata(path).map_err(|e| CoreError::Invalid(format!("cannot read {}: {e}", path.display())))?.len();
+            if size > LIMIT {
+                return Err(CoreError::Invalid(format!("{} is {size} bytes; a message is at most a few hundred", path.display())));
+            }
+            let text = Zeroizing::new(
+                std::fs::read_to_string(path).map_err(|e| CoreError::Invalid(format!("cannot read {}: {e}", path.display())))?,
+            );
+            Zeroizing::new(text.trim_end_matches(['\n', '\r']).to_string())
+        }
+        None => Zeroizing::new(line("Message")?),
+    };
+    if text.trim().is_empty() {
+        return Err(CoreError::Invalid("the message is empty".into()));
+    }
+    Ok(text)
+}
+
 /// Ask for an explicit confirmation word. `--yes` bypasses; non-interactive without it fails closed.
 pub fn confirm(question: &str, word: &str, yes: bool) -> Result<()> {
     if yes {

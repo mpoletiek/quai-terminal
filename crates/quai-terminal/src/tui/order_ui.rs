@@ -1,59 +1,19 @@
 //! Interactive limit-order controls. Observation is read-only; every execution opens a review.
 use super::app::{App, Field};
 use super::theme::Theme;
-use super::worker::{Cmd, Ev, Prepare};
+use super::worker::{Cmd, Prepare};
 use ratatui::{
     Frame,
     layout::Rect,
     text::Line,
     widgets::{Paragraph, Wrap},
 };
-use wallet_core::{CoreError, Result, orders, plans::TradePlan, session::Session};
+use wallet_core::{CoreError, Result, orders, plans::TradePlan};
 
-#[derive(Clone, Debug)]
-pub enum Request {
-    List,
-    Create(orders::Create),
-    Observe(String),
-    Cancel(String),
-    /// The background check: every active order re-quoted, quietly. A quote that fails leaves
-    /// that order as it was; the next check tries again.
-    Watch,
-}
-
-/// How often the open terminal re-checks active orders. One quote per order each time, against
-/// the same node and explorer budget as everything else.
-pub const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
-
-pub async fn handle(session: &mut Session, request: Request) -> Result<Ev> {
-    let mut announced = Vec::new();
-    match request {
-        Request::List => {}
-        Request::Watch => {
-            let _ = session.track().await;
-            for plan in orders::list(session)? {
-                if orders::details(&plan).is_ok_and(|v| v.state.active())
-                    && orders::observe(session, &plan.id).await.is_ok_and(|seen| seen.announced)
-                {
-                    announced.push(plan.id);
-                }
-            }
-        }
-        Request::Create(request) => {
-            orders::create(session, request).await?;
-        }
-        Request::Observe(id) => {
-            session.track().await?;
-            if orders::observe(session, &id).await?.announced {
-                announced.push(id);
-            }
-        }
-        Request::Cancel(id) => {
-            orders::cancel(session, &id)?;
-        }
-    }
-    Ok(Ev::Orders { wallet: session.meta.id.clone(), network: session.network.id.clone(), rows: orders::list(session)?, announced })
-}
+pub use quai_engine::orders::Request;
+#[cfg(test)]
+pub use quai_engine::orders::WATCH_EVERY;
+use quai_engine::resource::fresh;
 
 /// What the order form knows about the swap it was opened from: the Swap card's live quote.
 /// It drives the preview; the order itself is made against a fresh quote.
@@ -194,19 +154,23 @@ impl App {
         if !self.config.features.on(wallet_core::config::Feature::Trading) || self.worker.is_none() || self.meta.is_none() {
             return;
         }
-        if self.eco.orders_watched_at.is_some_and(|at| at.elapsed() < WATCH_EVERY) {
+        let clock = self.eco.clock;
+        if !self.eco.feeds.orders.due(fresh::ORDERS, &clock) {
             return;
         }
-        let first = self.eco.orders_watched_at.is_none();
-        let active = self.eco.orders.as_deref().is_some_and(|rows| rows.iter().any(|p| orders::details(p).is_ok_and(|v| v.state.active())));
-        self.eco.orders_watched_at = Some(std::time::Instant::now());
+        let first = !self.eco.feeds.orders.settled();
+        let active =
+            self.eco.feeds.orders.value().is_some_and(|rows| rows.iter().any(|p| orders::details(p).is_ok_and(|v| v.state.active())));
         if first || active {
+            self.eco.feeds.orders.begin(&clock);
             self.send(Cmd::Order(Request::Watch));
+        } else {
+            self.eco.feeds.orders.rest();
         }
     }
 
     fn order_selected(&self) -> Option<TradePlan> {
-        self.eco.orders.as_ref().and_then(|rows| rows.get(self.selected)).cloned()
+        self.eco.feeds.orders.value().and_then(|rows| rows.get(self.nav.selected)).cloned()
     }
 
     /// Read the orders again, as they were last checked.
@@ -216,7 +180,7 @@ impl App {
 
     /// Re-check every active order now, and read the list again.
     pub(crate) fn orders_reload(&mut self) {
-        self.eco.orders_watched_at = Some(std::time::Instant::now());
+        self.eco.feeds.orders.begin(&self.eco.clock);
         self.send(Cmd::Order(Request::Watch));
         self.info("checking your orders against fresh quotes…");
     }
@@ -238,9 +202,9 @@ impl App {
     /// A fresh review for the order under the cursor, if its limit is met.
     pub(crate) fn order_review(&mut self) {
         let Some(p) = self.order_selected() else { return };
-        if self.locked {
+        if self.lock.locked {
             self.toast("unlock the wallet before requesting an order review", true);
-        } else if self.eco.flow.is_some() {
+        } else if self.eco.plan.is_some() {
             self.toast("finish or cancel the active trading flow before reviewing an order", true);
         } else {
             self.send(Cmd::Prepare(Prepare::OrderRun { id: p.id }));
@@ -264,7 +228,7 @@ pub fn reachable(rows: &[TradePlan]) -> Vec<(String, String)> {
 /// Trade › Orders: every limit order, the one under the cursor in full, and what it may cost.
 pub fn draw_screen(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use super::app::Screen;
-    let rows: &[TradePlan] = app.eco.orders.as_deref().unwrap_or(&[]);
+    let rows: &[TradePlan] = app.eco.feeds.orders.value().map_or(&[], Vec::as_slice);
     // On a wide terminal the selected order's terms go in a column beside the list.
     let (area, column) = super::ui::with_inspector(app, area);
     let (area, column) = match column {
@@ -278,7 +242,7 @@ pub fn draw_screen(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = super::ui::panel(t, &format!("limit orders · {}", rows.len()), true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if app.eco.orders.is_none() {
+    if app.eco.feeds.orders.value().is_none() {
         return super::ui::empty_state(f, inner, t, super::ui::spinner(), "Reading your orders…", &[]);
     }
     if rows.is_empty() {
@@ -292,12 +256,12 @@ pub fn draw_screen(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             &[("g x", "swap · space o to create one")],
         );
     }
-    let selected = app.selected.min(rows.len() - 1);
+    let selected = app.nav.selected.min(rows.len() - 1);
     let list_h = if column.is_some() { inner.height } else { (rows.len() as u16).min(inner.height.saturating_sub(10).max(3)) };
     let list = Rect { height: list_h, ..inner };
     let id = super::hit::ListId::Screen(Screen::Orders, 0);
     let start = app.list_window(id, selected, rows.len(), list_h as usize);
-    app.hits.borrow_mut().rows(id, list, start, rows.len(), |i| rows.get(i).map(|p| p.id.clone()));
+    app.input.hits.borrow_mut().rows(id, list, start, rows.len(), |i| rows.get(i).map(|p| p.id.clone()));
     let mut lines: Vec<Line> = rows
         .iter()
         .enumerate()

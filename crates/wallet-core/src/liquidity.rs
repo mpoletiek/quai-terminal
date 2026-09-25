@@ -7,6 +7,7 @@
 //! into an empty pool is refused rather than silently letting the depositor set the price.
 
 use crate::amount;
+use crate::journal::OpKind;
 use crate::markets::{Pool, PoolToken};
 use quai_sdk::U256;
 use serde::{Deserialize, Serialize};
@@ -641,11 +642,9 @@ async fn pool_by_address_at(ctx: &DataCtx, pair: &str, block: BlockTag) -> Resul
     if a == b || crate::chain::is_zero_address(&token0) || crate::chain::is_zero_address(&token1) {
         return Err(CoreError::Rejected("the pair returned invalid token identities".into()));
     }
-    let venue =
-        [crate::markets::Venue::Main, crate::markets::Venue::LaunchAmm, crate::markets::Venue::Legacy, crate::markets::Venue::HartiiAmm]
-            .into_iter()
-            .find(|v| crate::swap::venue_pins(&ctx.network, *v).is_some_and(|(_, pin)| pin.address.eq_ignore_ascii_case(&factory)))
-            .ok_or_else(|| CoreError::Rejected("the pair does not belong to a configured factory".into()))?;
+    let venue = crate::venues::routable()
+        .find(|v| crate::swap::venue_pins(&ctx.network, *v).is_some_and(|(_, pin)| pin.address.eq_ignore_ascii_case(&factory)))
+        .ok_or_else(|| CoreError::Rejected("the pair does not belong to a configured factory".into()))?;
     crate::swap::verified_pool_router(ctx, venue).await?;
     let factory_contract = Contract::new(
         addr(&factory)?,
@@ -915,7 +914,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: format!("Approve {} for liquidity ({step})", approved.symbol),
             asset: approved.symbol.clone(),
             amount: atoms,
@@ -927,7 +926,7 @@ impl Session {
                 field("Allowance", format!("exactly {} {}", amount::format_amount(atoms, approved.decimals), approved.symbol)),
             ],
             warnings: quote.warnings.clone(),
-            detail: serde_json::json!({"token": approved.address, "purpose": "add_liquidity", "spender": router.to_string()}),
+            detail: serde_json::json!({"token": approved.address, "purpose": "add_liquidity", "spender": router.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })
@@ -991,7 +990,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "add_liquidity".into(),
+            kind: OpKind::AddLiquidity,
             title: format!("Add liquidity to {}/{}", quote.token0.symbol, quote.token1.symbol),
             asset: quote.token0.symbol.clone(),
             amount: quote.amount0,
@@ -1029,7 +1028,7 @@ impl Session {
                     {"direction":"out", "asset":quote.token1.symbol, "token":quote.token1.address, "decimals":quote.token1.decimals, "amount":quote.amount1.to_string(), "estimated":false, "note":"deposit"},
                     {"direction":"in", "asset":"LP", "token":pair, "decimals":18, "amount":quote.liquidity.to_string(), "estimated":true, "note":"estimated minted liquidity"}
                 ],
-            }),
+            }).into(),
             max_gas: 400_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })
@@ -1094,7 +1093,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "remove_liquidity".into(),
+            kind: OpKind::RemoveLiquidity,
             title: format!("Remove {percent}% of {}/{}", quote.token0.symbol, quote.token1.symbol),
             asset: "LP".into(),
             amount: quote.liquidity,
@@ -1126,7 +1125,7 @@ impl Session {
                     {"direction":"out", "asset":"LP", "token":pair, "decimals":18, "amount":quote.liquidity.to_string(), "estimated":false, "note":"burned liquidity"},
                     {"direction":"in", "asset":quote.token0.symbol, "token":quote.token0.address, "decimals":quote.token0.decimals, "amount":quote.amount0.to_string(), "estimated":true, "note":"estimated recipient credit; pool bound is before token transfer fees"},
                     {"direction":"in", "asset":quote.token1.symbol, "token":quote.token1.address, "decimals":quote.token1.decimals, "amount":quote.amount1.to_string(), "estimated":true, "note":"estimated recipient credit; pool bound is before token transfer fees"}
-                ]}),
+                ]}).into(),
             max_gas: 400_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })
@@ -1162,7 +1161,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: "Approve LP for withdrawal (step 1 of 2)".into(),
             asset: "LP".into(),
             amount: liquidity,
@@ -1174,7 +1173,7 @@ impl Session {
                 field("Allowance", format!("exactly {} LP", amount::format_amount_short(liquidity, 18, 6))),
             ],
             warnings: vec![],
-            detail: serde_json::json!({"token": pair, "purpose": "remove_liquidity", "spender": router.to_string()}),
+            detail: serde_json::json!({"token": pair, "purpose": "remove_liquidity", "spender": router.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, amount::QUAI_DECIMALS)?,
         })

@@ -7,9 +7,8 @@
 //! scripts). Anything that fails falls back to a monogram badge, so an image is never the only
 //! carrier of meaning.
 
-use crate::appdb::AppDb;
-use crate::error::{CoreError, Result};
 use crate::http;
+use quai_model::error::{CoreError, Result};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
@@ -52,7 +51,7 @@ const MAX_DIMENSION: u32 = 8192;
 const MAX_SVG_BYTES: usize = 1024 * 1024;
 
 /// A decoded, resized rendition.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rendition {
     /// Content hash of the source bytes.
     pub hash: String,
@@ -121,7 +120,9 @@ fn hash_bytes(bytes: &[u8]) -> String {
 }
 
 /// Decode source bytes into RGBA at most `MAX_DIMENSION` on a side.
-fn decode(bytes: &[u8], render_edge: u32) -> Result<image::RgbaImage> {
+///
+/// Untrusted bytes reach this only inside the decoding helper process ([`crate::media_helper`]).
+pub(crate) fn decode_raw(bytes: &[u8], render_edge: u32) -> Result<image::RgbaImage> {
     let format = sniff(bytes).ok_or_else(|| CoreError::Invalid("not a supported image (PNG, JPEG, GIF, WebP, SVG)".into()))?;
     match format {
         Format::Svg => render_svg(bytes, render_edge),
@@ -204,23 +205,28 @@ pub fn dominant_color(img: &image::RgbaImage) -> (u8, u8, u8) {
     buckets.values().max_by_key(|e| e.0).map(|&(_, n, r, g, b)| ((r / n) as u8, (g / n) as u8, (b / n) as u8)).unwrap_or((128, 128, 128))
 }
 
-/// Fit an image inside `edge × edge` and produce a rendition.
-pub fn make_rendition(bytes: &[u8], edge: u32) -> Result<Rendition> {
-    let hash = hash_bytes(bytes);
-    let img = decode(bytes, edge)?;
-    let (w, h) = img.dimensions();
-    if w == 0 || h == 0 {
-        return Err(CoreError::Invalid("empty image".into()));
-    }
-    let scale = (edge as f64 / w.max(h) as f64).min(1.0);
-    let (tw, th) = (((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1));
-    let resized = if (tw, th) == (w, h) { img } else { image::imageops::resize(&img, tw, th, image::imageops::FilterType::Triangle) };
-    let dominant = dominant_color(&resized);
+/// A rendition from pixels the decoding helper produced (already checked against their edge):
+/// the dominant color and the PNG are made here, from raw pixels, so nothing the helper wrote is
+/// decoded again in this process.
+pub fn rendition_from_pixels(hash: String, pixels: crate::media_helper::Pixels) -> Result<Rendition> {
+    let crate::media_helper::Pixels { width, height, rgba } = pixels;
+    let img =
+        image::RgbaImage::from_raw(width, height, rgba).ok_or_else(|| CoreError::Invalid("image pixels do not match their size".into()))?;
+    let dominant = dominant_color(&img);
     let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(resized.clone())
+    image::DynamicImage::ImageRgba8(img.clone())
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|e| CoreError::Invalid(format!("png encode: {e}")))?;
-    Ok(Rendition { hash, width: tw, height: th, png, rgba: resized.into_raw(), dominant })
+    Ok(Rendition { hash, width, height, png, rgba: img.into_raw(), dominant })
+}
+
+/// Fit an image inside `edge × edge` and produce a rendition, decoding **in this process**.
+///
+/// For bytes the wallet made itself (test fixtures, bundled logos) only. Anything a token, an NFT
+/// or a feed supplied goes through [`load`], which decodes in the helper process.
+pub fn trusted_rendition(bytes: &[u8], edge: u32) -> Result<Rendition> {
+    let pixels = crate::media_helper::decode_one(bytes, edge).map_err(CoreError::Invalid)?;
+    rendition_from_pixels(hash_bytes(bytes), pixels)
 }
 
 /// Resolve a media reference to something fetchable. `data:` URIs decode locally; `ipfs://`
@@ -283,9 +289,9 @@ pub fn resolve(url: &str) -> Result<Source> {
     Err(CoreError::Invalid("unsupported media URL".into()))
 }
 
-/// `https://www.quainance.com/api/media/<cid>`, exactly: what [`crate::launches`] builds.
+/// `https://www.quainance.com/api/media/<cid>`, exactly: what the launch index builds.
 fn quainance_media(url: &str) -> bool {
-    url.strip_prefix(&format!("{}/", crate::launches::MEDIA_PROXY))
+    url.strip_prefix(&format!("{}/", MEDIA_PROXY))
         .is_some_and(|cid| !cid.is_empty() && cid.len() <= 128 && cid.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
@@ -321,7 +327,23 @@ pub(crate) fn percent_decode(text: &str) -> Vec<u8> {
 /// Returns `Ok(None)` for a failure worth remembering (not found, too large, undecodable, or a
 /// recent such attempt) and `Err` for a passing one (timeout, busy request budget, rate limit)
 /// that callers can retry soon.
-pub async fn load(app: &AppDb, url: &str, edge: u32) -> Result<Option<Rendition>> {
+/// Quainance's resizing media proxy: launch logos and pictures come through it by content id.
+pub const MEDIA_PROXY: &str = "https://www.quainance.com/api/media";
+
+/// A rendition as remembered: width, height, PNG, RGBA, dominant color.
+pub type StoredRendition = (u32, u32, Vec<u8>, Vec<u8>, u32);
+
+/// Where pictures are remembered between runs (the wallet's database, in the engine's crate).
+pub trait MediaCache {
+    /// What a URL gave last time: its rendition hash, its error, and when.
+    fn media_get(&self, url: &str) -> Result<Option<(Option<String>, String, u64)>>;
+    fn media_put(&self, url: &str, hash: Option<&str>, error: &str) -> Result<()>;
+    fn rendition_get(&self, hash: &str, size: u32) -> Result<Option<StoredRendition>>;
+    #[allow(clippy::too_many_arguments)]
+    fn rendition_put(&self, hash: &str, size: u32, width: u32, height: u32, png: &[u8], rgba: &[u8], dominant: u32) -> Result<()>;
+}
+
+pub async fn load(app: &(impl MediaCache + ?Sized), url: &str, edge: u32) -> Result<Option<Rendition>> {
     if let Some((hash, error, fetched)) = app.media_get(url)? {
         match hash {
             Some(h) => {
@@ -349,7 +371,7 @@ pub async fn load(app: &AppDb, url: &str, edge: u32) -> Result<Option<Rendition>
                     }));
                 }
             }
-            None if !error.is_empty() && crate::registry::now().saturating_sub(fetched) < RETRY_AFTER => return Ok(None),
+            None if !error.is_empty() && quai_model::time::now().saturating_sub(fetched) < RETRY_AFTER => return Ok(None),
             None => {}
         }
     }
@@ -382,15 +404,16 @@ pub async fn load(app: &AppDb, url: &str, edge: u32) -> Result<Option<Rendition>
         app.media_put(url, None, "the IPFS gateway returned content that does not match its CID")?;
         return Ok(None);
     }
-    let bytes_for_decode = bytes.clone();
-    let decoded = tokio::task::spawn_blocking(move || {
-        let thumb = make_rendition(&bytes_for_decode, THUMB);
-        let icon = make_rendition(&bytes_for_decode, ICON);
-        (thumb, icon)
-    })
-    .await
-    .map_err(|e| CoreError::Storage(format!("image worker: {e}")))?;
-    match decoded {
+    // Decoded in the helper process; a helper that could not start is a passing failure.
+    let hash = hash_bytes(&bytes);
+    let mut decoded = crate::media_helper::decode(bytes, &[THUMB, ICON]).await?.into_iter();
+    let mut next = || -> Result<Rendition> {
+        let pixels =
+            decoded.next().ok_or_else(|| CoreError::Invalid("image decoder answered short".into()))?.map_err(CoreError::Invalid)?;
+        rendition_from_pixels(hash.clone(), pixels)
+    };
+    let (thumb, icon) = (next(), next());
+    match (thumb, icon) {
         (Ok(thumb), Ok(icon)) => {
             for r in [&thumb, &icon] {
                 let dom = (u32::from(r.dominant.0) << 16) | (u32::from(r.dominant.1) << 8) | u32::from(r.dominant.2);
@@ -447,6 +470,33 @@ pub fn fixture_png(width: u32, height: u32, color: (u8, u8, u8)) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// A remembered fetch: the content hash when it loaded, the error when it did not, and when.
+    type Entry = (Option<String>, String, u64);
+
+    /// The cache, in memory.
+    #[derive(Default)]
+    pub(super) struct Memory {
+        media: std::sync::Mutex<std::collections::HashMap<String, Entry>>,
+        renditions: std::sync::Mutex<std::collections::HashMap<(String, u32), StoredRendition>>,
+    }
+
+    impl MediaCache for Memory {
+        fn media_get(&self, url: &str) -> Result<Option<(Option<String>, String, u64)>> {
+            Ok(self.media.lock().unwrap().get(url).cloned())
+        }
+        fn media_put(&self, url: &str, hash: Option<&str>, error: &str) -> Result<()> {
+            self.media.lock().unwrap().insert(url.into(), (hash.map(str::to_string), error.into(), quai_model::time::now()));
+            Ok(())
+        }
+        fn rendition_get(&self, hash: &str, size: u32) -> Result<Option<StoredRendition>> {
+            Ok(self.renditions.lock().unwrap().get(&(hash.to_string(), size)).cloned())
+        }
+        fn rendition_put(&self, hash: &str, size: u32, width: u32, height: u32, png: &[u8], rgba: &[u8], dominant: u32) -> Result<()> {
+            self.renditions.lock().unwrap().insert((hash.into(), size), (width, height, png.to_vec(), rgba.to_vec(), dominant));
+            Ok(())
+        }
+    }
+
     /// Quainance's proxy fetches what it is asked for, so a token's image there is taken only in
     /// the one shape the wallet builds: a CID, nothing after it.
     #[test]
@@ -474,16 +524,16 @@ mod tests {
     #[test]
     fn raster_renditions_fit_and_find_color() {
         let png = fixture_png(640, 320, (200, 30, 40));
-        let r = make_rendition(&png, THUMB).unwrap();
+        let r = trusted_rendition(&png, THUMB).unwrap();
         assert_eq!((r.width, r.height), (256, 128));
         assert_eq!(r.rgba.len(), (256 * 128 * 4) as usize);
         let (red, green, _) = r.dominant;
         assert!(red > 150 && green < 80, "{:?}", r.dominant);
-        let icon = make_rendition(&png, ICON).unwrap();
+        let icon = trusted_rendition(&png, ICON).unwrap();
         assert_eq!(icon.width, 32);
         assert_eq!(&icon.png[1..4], b"PNG");
         // Small images are not upscaled.
-        assert_eq!(make_rendition(&fixture_png(10, 10, (0, 0, 255)), THUMB).unwrap().width, 10);
+        assert_eq!(trusted_rendition(&fixture_png(10, 10, (0, 0, 255)), THUMB).unwrap().width, 10);
     }
 
     #[test]
@@ -493,21 +543,21 @@ mod tests {
             <image href="/etc/passwd" width="10" height="10"/>
             <image xlink:href="https://evil.example/track.png" width="10" height="10"/>
             <script>alert(1)</script></svg>"##;
-        let r = make_rendition(svg, ICON).unwrap();
+        let r = trusted_rendition(svg, ICON).unwrap();
         assert_eq!((r.width, r.height), (32, 32));
         assert!(r.dominant.0 > 200 && r.dominant.1 < 90, "{:?}", r.dominant);
         let entity = br#"<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"/>"#;
-        assert!(make_rendition(entity, ICON).is_err());
+        assert!(trusted_rendition(entity, ICON).is_err());
     }
 
     #[test]
     fn decode_bombs_and_garbage_are_refused() {
-        assert!(make_rendition(b"not an image", ICON).is_err());
+        assert!(trusted_rendition(b"not an image", ICON).is_err());
         // A PNG header claiming 100000×100000 pixels.
         let mut png = fixture_png(1, 1, (0, 0, 0));
         png[16..20].copy_from_slice(&100_000u32.to_be_bytes());
         png[20..24].copy_from_slice(&100_000u32.to_be_bytes());
-        assert!(make_rendition(&png, ICON).is_err());
+        assert!(trusted_rendition(&png, ICON).is_err());
     }
 
     /// With a gateway configured, every way metadata names IPFS content goes to it — `ipfs://`,
@@ -559,7 +609,7 @@ mod tests {
                 let _ = socket.write_all(&png).await;
             }
         });
-        let app = AppDb::memory().unwrap();
+        let app = tests::Memory::default();
         // "hello world" is what this CID names; the gateway sends a PNG instead.
         let lying = "ipfs://bafkreifzjut3te2nhyekklss27nh3k72ysco7y32koao5eei66wof36n5e";
         let honest_path = "ipfs://QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n/pic.png";
@@ -608,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn load_caches_inline_images() {
         use base64::Engine;
-        let app = AppDb::memory().unwrap();
+        let app = tests::Memory::default();
         let url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(fixture_png(64, 64, (10, 200, 10))));
         let first = load(&app, &url, ICON).await.unwrap().unwrap();
         assert_eq!(first.width, 32);
@@ -620,7 +670,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_logos_render_in_brand_colors() {
-        let app = AppDb::memory().unwrap();
+        let app = tests::Memory::default();
         assert!(native_icon("QUAI").is_some() && native_icon("wqi").is_none());
         for asset in ["quai", "qi"] {
             let url = native_icon(asset).unwrap();

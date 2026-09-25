@@ -26,14 +26,14 @@ pub(crate) fn nft_tile(
 }
 
 pub fn draw_collected(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let title = match &app.eco.nfts {
+    let title = match app.eco.nft.nfts.latest() {
         Some(Ok(v)) => format!("collected · {}", v.len()),
         _ => "collected".into(),
     };
     let block = panel(t, &title, true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    match &app.eco.nfts {
+    match app.eco.nft.nfts.latest() {
         None => empty_state(f, inner, t, spinner(), "Finding your NFTs and checking ownership on-chain…", &[]),
         Some(Err(e)) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry"), ("g d", "data sources")]),
         Some(Ok(items)) if items.is_empty() => empty_state(
@@ -46,17 +46,17 @@ pub fn draw_collected(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         ),
         Some(Ok(items)) => {
             let (tile_w, tile_h) =
-                if app.caps.tier == super::super::terminal::Tier::Text || app.plain { (22u16, 4u16) } else { (18u16, 10u16) };
+                if app.term.caps.tier == super::super::terminal::Tier::Text || app.term.plain { (22u16, 4u16) } else { (18u16, 10u16) };
             let cols = (inner.width / tile_w).max(1) as usize;
-            *app.eco.grid_columns.borrow_mut() = cols;
+            *app.eco.nft.grid_columns.borrow_mut() = cols;
             let rows_visible = (inner.height / tile_h).max(1) as usize;
-            let row_of_selected = app.selected / cols;
+            let row_of_selected = app.nav.selected / cols;
             // The grid scrolls by whole rows of tiles, and only when the selection leaves it.
             let first_row = app.list_window(app.main_list(), row_of_selected, items.len().div_ceil(cols), rows_visible);
             for (i, n) in items.iter().enumerate().skip(first_row * cols).take(rows_visible * cols) {
                 let (row, col) = ((i / cols - first_row) as u16, (i % cols) as u16);
                 let rect = Rect::new(inner.x + col * tile_w, inner.y + row * tile_h, tile_w.saturating_sub(2), tile_h.saturating_sub(1));
-                app.hits.borrow_mut().add(
+                app.input.hits.borrow_mut().add(
                     rect,
                     crate::tui::hit::Target::Row {
                         list: app.main_list(),
@@ -75,7 +75,7 @@ pub fn draw_collected(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                         Style::default().fg(t.ok),
                     ),
                 };
-                nft_tile(f, app, t, rect, &n.item.name, n.item.image.as_deref(), &n.item.contract, sub, i == app.selected);
+                nft_tile(f, app, t, rect, &n.item.name, n.item.image.as_deref(), &n.item.contract, sub, i == app.nav.selected);
             }
         }
     }
@@ -85,9 +85,9 @@ pub fn draw_explore(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     // The marketplace's own totals, so the header says what the whole market did before the rows
     // say what each collection did.
     let days = app.eco.trade_window_days();
-    let (market_volume, market_sales) = wallet_core::market::trade_window(&app.eco.nft_trades, days, wallet_core::registry::now());
-    let listed: u64 = app.eco.nft_stats.values().filter_map(|c| c.active_listings).sum();
-    let market = if app.eco.nft_trades.is_empty() && listed == 0 {
+    let (market_volume, market_sales) = wallet_core::market::trade_window(app.nft_trades(), days, wallet_core::registry::now());
+    let listed: u64 = app.eco.nft.stats.value().into_iter().flat_map(|m| m.values()).filter_map(|c| c.active_listings).sum();
+    let market = if app.nft_trades().is_empty() && listed == 0 {
         String::new()
     } else {
         format!(
@@ -96,16 +96,16 @@ pub fn draw_explore(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             if market_sales == 1 { "" } else { "s" }
         )
     };
-    let sorted = format!(" · by {}", app.eco.collection_sort.label());
-    let title = match &app.eco.search {
+    let sorted = format!(" · by {}", app.eco.nft.sort.label());
+    let title = match &app.eco.nft.search {
         Some(q) => format!("collections · search: {q}▏"),
-        None if !app.eco.search_text.is_empty() => format!("collections · “{}” · / to edit", app.eco.search_text),
+        None if !app.eco.nft.search_text.is_empty() => format!("collections · “{}” · / to edit", app.eco.nft.search_text),
         None => format!("collections{market}{sorted} · {} sort · / search", crate::tui::keymap::key_of(crate::tui::keymap::Verb::Sort)),
     };
     // Wide enough for both: the directory says what exists, the tape beside it says what is
     // actually changing hands. Narrow terminals keep the directory at full width — a squeezed tape
     // would cost the collection names more than it adds.
-    let (area, tape) = if area.width >= 124 && !app.eco.nft_trades.is_empty() {
+    let (area, tape) = if area.width >= 124 && !app.nft_trades().is_empty() {
         let [list, tape] = Layout::horizontal([Constraint::Min(70), Constraint::Length(46)]).areas(area);
         (list, Some(tape))
     } else {
@@ -117,7 +117,7 @@ pub fn draw_explore(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, &title, true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    match &app.eco.collections {
+    match app.eco.nft.collections.latest() {
         None => empty_state(f, inner, t, spinner(), "Loading the collections directory…", &[]),
         Some(Err(e)) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]),
         Some(Ok(_)) => {
@@ -126,12 +126,12 @@ pub fn draw_explore(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 empty(f, inner, t, Icon::Search, "No collections match.", &[("/", "search")]);
                 return;
             }
-            let row_h = if app.caps.tier == super::super::terminal::Tier::Text || app.plain { 1u16 } else { 2u16 };
+            let row_h = if app.term.caps.tier == super::super::terminal::Tier::Text || app.term.plain { 1u16 } else { 2u16 };
             let visible = (inner.height.saturating_sub(1) / row_h).max(1) as usize;
-            let offset = app.list_window(app.main_list(), app.selected, list.len(), visible);
+            let offset = app.list_window(app.main_list(), app.nav.selected, list.len(), visible);
             for (k, c) in list.iter().enumerate().skip(offset).take(visible) {
                 let y = inner.y + 1 + ((k - offset) as u16) * row_h;
-                app.hits.borrow_mut().add(
+                app.input.hits.borrow_mut().add(
                     Rect::new(inner.x, y, inner.width, row_h),
                     crate::tui::hit::Target::Row { list: app.main_list(), index: k, key: Some(c.address.clone()) },
                 );
@@ -152,8 +152,8 @@ pub fn draw_explore(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 if row_h > 1 {
                     images::picture(app, f.buffer_mut(), Rect::new(inner.x, y, 4, 2), t, c.preview.as_deref(), &c.name, &c.address, true);
                 }
-                let style = if i == app.selected { t.selected() } else { t.text_style() };
-                let stats = app.eco.nft_stats.get(&c.address.to_lowercase());
+                let style = if i == app.nav.selected { t.selected() } else { t.text_style() };
+                let stats = app.eco.nft.stats.value().and_then(|m| m.get(&c.address.to_lowercase()));
                 // The indexer's floor is the marketplace's own cheapest ask; the explorer's is a
                 // fallback for a collection it has not indexed. A floor priced in a token is
                 // marked, because it cannot be compared with the QUAI ones beside it.
@@ -205,7 +205,7 @@ pub(crate) fn draw_listings_table(
     selected: Option<usize>,
     id: crate::tui::hit::ListId,
 ) {
-    let pictures = app.caps.tier != super::super::terminal::Tier::Text && !app.plain && app.config.images && area.width >= 96;
+    let pictures = app.term.caps.tier != super::super::terminal::Tier::Text && !app.term.plain && app.config.images && area.width >= 96;
     let row_h: u16 = if pictures { 2 } else { 1 };
     let height = (area.height.saturating_sub(1) / row_h).max(1) as usize;
     let offset = match selected {
@@ -216,7 +216,7 @@ pub(crate) fn draw_listings_table(
     // Rows are clickable where the list is the screen's own (the collection detail keeps a
     // cursor of its own, which the per-screen state in phase 5 brings under the same rule).
     if selected.is_some() && matches!(id, crate::tui::hit::ListId::Screen(..)) {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         for (k, &(i, l)) in shown.iter().enumerate() {
             let rect = Rect::new(area.x, area.y + 1 + k as u16 * row_h, area.width, row_h);
             let key = Some(format!("{}:{}", l.contract, l.token_id));
@@ -228,13 +228,14 @@ pub(crate) fn draw_listings_table(
         .map(|&(i, l)| {
             let usd = app
                 .eco
+                .feeds
                 .portfolio
-                .as_ref()
+                .value()
                 .and_then(|p| p.prices.as_ref())
                 .and_then(|b| b.quai_usd)
                 .filter(|_| l.is_native())
                 .map(|p| amount::usd(amount::to_f64(l.price_amount(), 18) * p));
-            let meta = app.eco.nft_meta.get(&(l.contract.to_lowercase(), l.token_id.clone())).and_then(|m| m.as_ref().ok());
+            let meta = app.eco.nft.meta.get(&(l.contract.to_lowercase(), l.token_id.clone())).and_then(|m| m.as_ref().ok());
             let name = l
                 .name
                 .clone()
@@ -302,17 +303,17 @@ pub(crate) fn draw_listings_table(
 }
 
 pub fn draw_listings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let scope = match &app.eco.listing_filter {
+    let scope = match &app.eco.nft.listing_filter {
         Some(c) => app.eco.collection_name(c),
         None => "all collections".into(),
     };
-    let scope = if app.eco.listings_mine { "yours".to_string() } else { scope };
-    let title = format!("listings · Bazarr · {scope} · {}", app.eco.listing_sort.label());
+    let scope = if app.eco.nft.listings_mine { "yours".to_string() } else { scope };
+    let title = format!("listings · Bazarr · {scope} · {}", app.eco.nft.listing_sort.label());
     let block = panel(t, &title, true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if app.eco.listings_mine {
-        match &app.eco.my_listings {
+    if app.eco.nft.listings_mine {
+        match app.eco.nft.mine.latest() {
             None => empty_state(f, inner, t, spinner(), "Loading your listings…", &[]),
             Some(Err(e)) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[(".", "everyone's")]),
             Some(Ok(list)) if list.is_empty() => {
@@ -320,27 +321,27 @@ pub fn draw_listings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             }
             Some(Ok(_)) => {
                 let visible = app.eco.visible_listings();
-                draw_listings_table(f, app, t, inner, &visible, Some(app.selected), app.main_list())
+                draw_listings_table(f, app, t, inner, &visible, Some(app.nav.selected), app.main_list())
             }
         }
         return;
     }
-    match app.eco.listings.get(&None) {
+    match app.eco.nft.listings.get(&None).and_then(|r| r.latest()) {
         None => empty_state(f, inner, t, spinner(), "Loading listings…", &[]),
         Some(Err(e)) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[("R", "retry")]),
         Some(Ok(list)) if list.is_empty() => empty(f, inner, t, Icon::Nfts, "No active listings.", &[]),
         Some(Ok(_)) => {
             let visible = app.eco.visible_listings();
-            draw_listings_table(f, app, t, inner, &visible, Some(app.selected), app.main_list())
+            draw_listings_table(f, app, t, inner, &visible, Some(app.nav.selected), app.main_list())
         }
     }
 }
 
 pub(crate) fn draw_nft_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect, contract: &str, token_id: &str) {
-    let meta = app.eco.nft_meta.get(&(contract.to_lowercase(), token_id.to_string()));
+    let meta = app.eco.nft.meta.get(&(contract.to_lowercase(), token_id.to_string()));
     let item = match meta {
         Some(Ok(i)) => Some(i.clone()),
-        _ => match &app.eco.nfts {
+        _ => match app.eco.nft.nfts.latest() {
             Some(Ok(v)) => v.iter().find(|n| n.item.contract == contract && n.item.token_id == token_id).map(|n| n.item.clone()),
             _ => None,
         },
@@ -369,7 +370,8 @@ pub(crate) fn draw_nft_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect, c
     }
     lines.push(kv(t, "contract", Span::styled(contract.to_string(), Style::default().fg(t.link))));
     lines.push(kv(t, "token id", Span::raw(token_id.to_string())));
-    let owned = matches!(&app.eco.nfts, Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id));
+    let owned =
+        matches!(app.eco.nft.nfts.latest(), Some(Ok(v)) if v.iter().any(|n| n.item.contract == contract && n.item.token_id == token_id));
     if owned {
         lines.push(kv(t, "owner", Span::styled(format!("{} you (checked on-chain)", t.icon(Icon::Ok)), Style::default().fg(t.ok))));
         if let Some(mine) = app.my_listing(contract, token_id) {
@@ -382,18 +384,19 @@ pub(crate) fn draw_nft_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect, c
         } else {
             lines.push(Line::from(Span::styled("  L list it for sale on Bazarr", t.dim_style())));
         }
-    } else if let Some(Ok(check)) = app.eco.asks.get(&(contract.to_string(), token_id.to_string()))
+    } else if let Some(Ok(check)) = app.eco.nft.asks.get(&(contract.to_string(), token_id.to_string()))
         && let Some(o) = &check.owner
     {
         lines.push(kv(t, "owner", Span::raw(short_address(o))));
     }
-    if let Some(c) = app.eco.collections.as_ref().and_then(|r| r.as_ref().ok()).and_then(|v| v.iter().find(|c| c.address == contract))
+    if let Some(c) = app.eco.nft.collections.latest().and_then(|r| r.ok()).and_then(|v| v.iter().find(|c| c.address == contract))
         && let Some(floor) = c.floor_quai
     {
         let usd = app
             .eco
+            .feeds
             .portfolio
-            .as_ref()
+            .value()
             .and_then(|p| p.prices.as_ref())
             .and_then(|b| b.quai_usd)
             .map(|p| format!(" ({})", amount::usd(floor * p)))
@@ -413,7 +416,7 @@ pub(crate) fn draw_nft_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect, c
             "market",
             Span::raw(if l.buyable() { "Zora ask (buy in wallet: b)".to_string() } else { "Seaport · view on Bazarr (o)".to_string() }),
         ));
-        match app.eco.asks.get(&(contract.to_string(), token_id.to_string())) {
+        match app.eco.nft.asks.get(&(contract.to_string(), token_id.to_string())) {
             None => lines.push(kv(t, "on-chain", Span::styled(format!("{} checking…", spinner()), t.dim_style()))),
             Some(Err(e)) => lines.push(kv(t, "on-chain", Span::styled(truncate(e, 60), Style::default().fg(t.danger)))),
             Some(Ok(check)) if check.valid => {
@@ -470,8 +473,8 @@ pub(crate) fn draw_collection_detail(f: &mut Frame, app: &App, t: &Theme, area: 
     if let Some(sales) = sales_area {
         draw_collection_sales(f, app, t, sales, contract);
     }
-    let focused = app.eco.collection_listings_focused;
-    let stats = app.eco.nft_stats.get(&contract.to_lowercase());
+    let focused = app.eco.nft.listings_focused;
+    let stats = app.eco.nft.stats.value().and_then(|m| m.get(&contract.to_lowercase()));
     let window_days = app.eco.trade_window_days();
     let (vol7, sales7) = app.eco.nft_window(contract, window_days);
     let mut parts: Vec<String> = Vec::new();
@@ -490,7 +493,7 @@ pub(crate) fn draw_collection_detail(f: &mut Frame, app: &App, t: &Theme, area: 
             parts.push(format!("{h} holders"));
         }
         if let Some(supply) = s.total_supply
-            && !app.eco.collection_total.contains_key(contract)
+            && !app.eco.nft.totals.contains_key(contract)
         {
             parts.push(format!("{supply} items"));
         }
@@ -499,13 +502,13 @@ pub(crate) fn draw_collection_detail(f: &mut Frame, app: &App, t: &Theme, area: 
         parts.insert(0, format!("{window_days}d {} QUAI over {sales7}", amount::group_thousands(&format!("{vol7:.0}"))));
     }
     // How far the pages have come: more load as the selection nears the end.
-    let loaded = match app.eco.collection_items.get(contract) {
+    let loaded = match app.eco.nft.items.get(contract) {
         Some(Ok(items)) => items.len(),
         _ => 0,
     };
-    let head = match app.eco.collection_total.get(contract).map(|t| *t as usize) {
+    let head = match app.eco.nft.totals.get(contract).map(|t| *t as usize) {
         Some(total) if loaded > 0 && loaded < total => {
-            let more = if app.eco.collection_paging.contains(contract) { " …" } else { "" };
+            let more = if app.eco.nft.paging.contains(contract) { " …" } else { "" };
             format!("items {loaded} of {total}{more}")
         }
         Some(total) if total > 0 => format!("{total} items"),
@@ -515,28 +518,29 @@ pub(crate) fn draw_collection_detail(f: &mut Frame, app: &App, t: &Theme, area: 
     let block = panel(t, &title, !focused);
     let inner = block.inner(grid_area);
     f.render_widget(block, grid_area);
-    match app.eco.collection_items.get(contract) {
+    match app.eco.nft.items.get(contract) {
         None => empty_state(f, inner, t, spinner(), "Loading items…", &[]),
         Some(Err(e)) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[]),
         Some(Ok(items)) if items.is_empty() => empty(f, inner, t, Icon::Nfts, "No items indexed.", &[]),
         Some(Ok(items)) => {
             let (tile_w, tile_h) =
-                if app.caps.tier == super::super::terminal::Tier::Text || app.plain { (22u16, 4u16) } else { (16u16, 9u16) };
+                if app.term.caps.tier == super::super::terminal::Tier::Text || app.term.plain { (22u16, 4u16) } else { (16u16, 9u16) };
             let cols = (inner.width / tile_w).max(1) as usize;
             let rows_visible = (inner.height / tile_h).max(1) as usize;
             let first_row =
-                app.list_window(crate::tui::hit::ListId::Detail, app.detail_selected / cols, items.len().div_ceil(cols), rows_visible);
+                app.list_window(crate::tui::hit::ListId::Detail, app.nav.detail_selected / cols, items.len().div_ceil(cols), rows_visible);
             for (i, it) in items.iter().enumerate().skip(first_row * cols).take(rows_visible * cols) {
                 let (row, col) = ((i / cols - first_row) as u16, (i % cols) as u16);
                 let rect = Rect::new(inner.x + col * tile_w, inner.y + row * tile_h, tile_w.saturating_sub(2), tile_h.saturating_sub(1));
-                app.hits
+                app.input
+                    .hits
                     .borrow_mut()
                     .add(rect, crate::tui::hit::Target::Row { list: crate::tui::hit::ListId::Detail, index: i, key: None });
                 let listed = app
                     .listing_for(contract, &it.token_id)
                     .map(|l| Span::styled(app.listing_price(&l), t.strong_style()))
                     .unwrap_or_else(|| Span::styled(format!("#{}", it.token_id), t.dim_style()));
-                nft_tile(f, app, t, rect, &it.name, it.image.as_deref(), contract, listed, !focused && i == app.detail_selected);
+                nft_tile(f, app, t, rect, &it.name, it.image.as_deref(), contract, listed, !focused && i == app.nav.detail_selected);
             }
         }
     }
@@ -544,12 +548,12 @@ pub(crate) fn draw_collection_detail(f: &mut Frame, app: &App, t: &Theme, area: 
     let block = panel(t, title, focused);
     let inner = block.inner(listing_area);
     f.render_widget(block, listing_area);
-    match app.eco.listings.get(&Some(contract.to_string())) {
+    match app.eco.nft.listings.get(&Some(contract.to_string())).and_then(|r| r.latest()) {
         None => empty_state(f, inner, t, spinner(), "Loading listings…", &[]),
         Some(Err(e)) => empty_state(f, inner, t, t.icon(Icon::Danger), &app::friendly_error(e), &[]),
         Some(Ok(list)) if list.is_empty() => empty(f, inner, t, Icon::Nfts, "Nothing listed right now.", &[]),
         Some(Ok(list)) => {
-            let selected = focused.then_some(app.eco.collection_listing.min(list.len() - 1));
+            let selected = focused.then_some(app.eco.nft.listing.min(list.len() - 1));
             draw_listings_table(f, app, t, inner, list, selected, crate::tui::hit::ListId::DetailListings)
         }
     }
@@ -565,15 +569,15 @@ pub(crate) fn draw_collection_detail(f: &mut Frame, app: &App, t: &Theme, area: 
 /// column of QUAI prices is never a mixed sum.
 pub(crate) fn draw_market_activity(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let mine: Vec<String> = app.dash.accounts.iter().map(|a| a.address.to_lowercase()).collect();
-    let block = panel(t, &format!("recent buys · {}", app.eco.nft_trades.len()), false);
+    let block = panel(t, &format!("recent buys · {}", app.nft_trades().len()), false);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if app.eco.nft_trades.is_empty() {
+    if app.nft_trades().is_empty() {
         return empty(f, inner, t, Icon::Nfts, "No sales through the marketplace yet.", &[]);
     }
     let rows: Vec<Row> = app
         .eco
-        .nft_trades
+        .trades()
         .iter()
         .take(inner.height.saturating_sub(1) as usize)
         .map(|s| {
@@ -609,7 +613,7 @@ pub(crate) fn draw_market_activity(f: &mut Frame, app: &App, t: &Theme, area: Re
 
 pub(crate) fn draw_collection_sales(f: &mut Frame, app: &App, t: &Theme, area: Rect, contract: &str) {
     let c = contract.to_lowercase();
-    let sales: Vec<&wallet_core::market::Trade> = app.eco.nft_trades.iter().filter(|x| x.contract == c).collect();
+    let sales: Vec<&wallet_core::market::Trade> = app.nft_trades().iter().filter(|x| x.contract == c).collect();
     let block = panel(t, &format!("sales · {}", sales.len()), false);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -688,8 +692,8 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
                 lines.push(kv(t, "explorer", Span::styled(url, Style::default().fg(t.link))));
             }
         }
-        if let Some(obj) = op.detail.as_object() {
-            for (k, v) in obj.iter().filter(|(k, _)| !matches!(k.as_str(), "native_value" | wallet_core::appdb::TIMELINE)).take(14) {
+        {
+            for (k, v) in op.detail.entries().filter(|(k, _)| !matches!(*k, "native_value" | wallet_core::appdb::TIMELINE)).take(14) {
                 lines.push(kv(
                     t,
                     k,
@@ -703,10 +707,10 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
         lines.push(Line::from(Span::styled(activity_text(a), t.strong_style())));
         lines.push(Line::from(""));
         lines.push(kv(t, "account", Span::raw(a.address.clone())));
-        if let Some(cp) = a.detail["counterparty"].as_str() {
+        if let Some(cp) = a.detail.counterparty().as_str() {
             lines.push(kv(t, if a.direction == "in" { "from" } else { "to" }, Span::raw(cp.to_string())));
         }
-        if let Some(token) = a.detail["token"].as_str() {
+        if let Some(token) = a.detail.token().as_str() {
             lines.push(kv(t, "token", Span::raw(token.to_string())));
         }
         for (label, value) in super::super::ui::cost_lines(app, t, None, Some(a)) {
@@ -721,7 +725,7 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
         if let Some(b) = a.block {
             lines.push(kv(t, "block", Span::raw(amount::group_thousands(&b.to_string()))));
         }
-        lines.push(kv(t, "source", Span::styled(a.detail["source"].as_str().unwrap_or("node").to_string(), t.dim_style())));
+        lines.push(kv(t, "source", Span::styled(a.detail.source().as_str().unwrap_or("node").to_string(), t.dim_style())));
     } else {
         lines.push(Line::from(Span::styled("this row is no longer in the recent list", t.dim_style())));
     }
@@ -732,7 +736,9 @@ pub(crate) fn draw_activity_detail(f: &mut Frame, app: &App, t: &Theme, area: Re
 /// before; an open operation ends on what it is waiting for.
 pub(crate) fn op_timeline(t: &Theme, op: &wallet_core::appdb::Operation) -> Vec<Line<'static>> {
     use chrono::TimeZone;
-    let recorded: Vec<(String, u64, Option<String>)> = op.detail[wallet_core::appdb::TIMELINE]
+    let recorded: Vec<(String, u64, Option<String>)> = op
+        .detail
+        .timeline()
         .as_array()
         .map(|list| {
             list.iter()

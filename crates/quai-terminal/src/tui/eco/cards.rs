@@ -7,7 +7,7 @@ impl App {
         let network = self.net()?;
         let usdt = network.ecosystem.usdt.as_ref().map(|u| u.address.to_lowercase());
         let pick = |address: &str, fallback: &str| {
-            let market = self.eco.markets.iter().find(|m| m.address == address);
+            let market = self.eco.feeds.markets.iter().find(|m| m.address == address);
             SwapAsset::Token {
                 address: address.to_string(),
                 symbol: market.map(|m| m.symbol.clone()).unwrap_or_else(|| fallback.to_string()),
@@ -20,10 +20,10 @@ impl App {
     /// Read what the observed transaction on screen carried and cost, once per hash. Only rows the
     /// wallet did not send need it — its own operations recorded their value and fee.
     pub(crate) fn tick_tx_cost(&mut self) {
-        let key = match self.detail.last() {
+        let key = match self.nav.detail.last() {
             Some(Detail::Activity(k)) => Some(k.clone()),
             Some(_) => None,
-            None if self.screen == Screen::Activity => match self.activity_rows().get(self.selected) {
+            None if self.nav.screen == Screen::Activity => match self.activity_rows().get(self.nav.selected) {
                 Some((_, false, i)) => self.dash.activity.get(*i).map(|a| format!("act:{}", a.key)),
                 _ => None,
             },
@@ -33,7 +33,7 @@ impl App {
         let Some(hash) = self.dash.activity.iter().find(|a| a.key == k && a.asset != "QI").and_then(|a| a.tx_hash.clone()) else {
             return;
         };
-        if self.eco.tx_costs_asked.insert(hash.clone()) {
+        if self.eco.feeds.tx_costs.take_due(hash.clone(), fresh::TX_COST, &self.eco.clock) {
             self.send_data(DataCmd::TxCost(hash));
         }
     }
@@ -51,9 +51,7 @@ impl App {
         let key = hash_key(&[direction.as_str(), &atoms.to_string(), &slippage.to_string()]);
         let debounced = card.edited.is_none_or(|t| t.elapsed() > Duration::from_millis(450));
         // Rates move with the pools and the block's conversion flow.
-        let stale = card.routes_key == key
-            && card.routes.is_some()
-            && self.eco.convert_quoted_at().is_some_and(|t| t.elapsed() > Duration::from_secs(20));
+        let stale = card.routes_key == key && card.routes.is_some() && card.quote_read.due(fresh::QI_ROUTES, &self.eco.clock);
         // The protocol route's own quote is a separate read from the two-market comparison, and it
         // is the one that carries what the discount costs at this instant, the batch scenarios and
         // the suggested tolerance. Without asking for it here the panel beside the card stays empty
@@ -61,9 +59,9 @@ impl App {
         let want_quote = (!card.market).then(|| (card.qi_to_quai, card.amount.clone()));
         let quote_wanted = want_quote.as_ref().is_some_and(|w| card.quoted_for.as_ref() != Some(w)) || stale;
         if debounced && (key != card.requested_key || stale) {
-            let owner = self.dash.accounts.first().map(|a| a.address.clone());
+            let owner = self.dash.active_account().map(|a| a.address.clone());
             self.eco.convert.requested_key = key;
-            self.eco.convert.quoted_at = Some(Instant::now());
+            self.eco.convert.quote_read.begin(&self.eco.clock);
             self.send_data(DataCmd::QiRoutes { key, direction, amount: atoms.to_string(), owner, slippage });
         }
         if debounced
@@ -86,15 +84,15 @@ impl App {
         self.eco.swap.quote_key != 0
             && self.eco.swap.quote_key == self.eco.swap.requested_key
             && self.swap_input_key().is_some_and(|input| Some(input) == self.eco.swap.requested_input)
-            && self.eco.swap.quoted_at.is_some_and(|at| at.elapsed() < Duration::from_secs(20))
+            && self.eco.swap.quote_read.age().zip(fresh::QUOTE.window()).is_some_and(|(age, window)| age < window)
     }
 
     /// `t` from anywhere: open Swap with the focused token as the pay side.
     pub fn open_trade(&mut self) {
-        let focused = match (self.detail.last(), self.screen) {
+        let focused = match (self.nav.detail.last(), self.nav.screen) {
             (Some(Detail::Asset(id)), _) => Some(id.clone()),
-            (None, Screen::Home) if self.pane == 0 => {
-                self.eco.portfolio.as_ref().and_then(|p| p.rows.get(self.selected)).map(|r| r.key.id())
+            (None, Screen::Home) if self.nav.pane == 0 => {
+                self.eco.feeds.portfolio.value().and_then(|p| p.rows.get(self.nav.selected)).map(|r| r.key.id())
             }
             _ => None,
         };
@@ -107,7 +105,7 @@ impl App {
             self.eco.swap.from = asset;
             self.eco.swap.quote = None;
         }
-        self.switch(Screen::Swap);
+        self.show_card(Card::Swap);
         self.eco.swap.field = 1;
     }
 
@@ -116,7 +114,7 @@ impl App {
             "quai" => Some(SwapAsset::Quai),
             "qi" => None,
             address => {
-                let row = self.eco.portfolio.as_ref().and_then(|p| p.rows.iter().find(|r| r.key.id() == address));
+                let row = self.eco.feeds.portfolio.value().and_then(|p| p.rows.iter().find(|r| r.key.id() == address));
                 Some(SwapAsset::Token {
                     address: address.to_string(),
                     symbol: row.map(|r| r.symbol.clone()).unwrap_or_else(|| wallet_core::session::short_address(address)),
@@ -147,8 +145,8 @@ impl App {
             SwapAsset::Quai
         };
         let (from, to) = if buy { (counter, asset) } else { (asset, counter) };
-        self.detail.clear();
-        self.switch(Screen::Swap);
+        self.nav.detail.clear();
+        self.show_card(Card::Swap);
         let card = &mut self.eco.swap;
         card.from = from;
         card.to = Some(to);
@@ -165,7 +163,7 @@ impl App {
     /// The pool graph behind the picker's route badges. Empty until pools load, which
     /// `RouteState::Unknown` handles rather than filtering everything away.
     pub fn route_graph(&self) -> RouteGraph {
-        let Some(Ok((pools, _))) = self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) else {
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else {
             return RouteGraph::default();
         };
         let hubs: Vec<String> = self
@@ -251,7 +249,7 @@ impl App {
             route: RouteState::Unknown,
         });
         let mut seen = std::collections::HashSet::new();
-        if let Some(p) = &self.eco.portfolio {
+        if let Some(p) = self.eco.feeds.portfolio.value() {
             for r in &p.rows {
                 if let AssetKey::Token(address) = &r.key
                     && seen.insert(address.clone())
@@ -267,11 +265,17 @@ impl App {
                 }
             }
         }
-        for m in &self.eco.markets {
-            if seen.insert(m.address.clone()) {
+        // Simple speaks of QUAI and Qi: the wrapped forms are steps a route takes, offered here
+        // only to someone who holds them (and so may want to trade them).
+        let simple = self.config.mode == wallet_core::config::Mode::Simple;
+        let wrapper = |address: &str| {
+            simple && network.as_ref().is_some_and(|n| [&n.wqi, &n.wquai].into_iter().flatten().any(|w| w.eq_ignore_ascii_case(address)))
+        };
+        for m in &self.eco.feeds.markets {
+            if !wrapper(&m.address) && seen.insert(m.address.clone()) {
                 let usdt =
                     network.as_ref().and_then(|n| n.ecosystem.usdt.as_ref()).is_some_and(|u| u.address.eq_ignore_ascii_case(&m.address));
-                let decimals = match self.eco.token_info.get(&m.address) {
+                let decimals = match self.eco.feeds.token_info.get(&m.address) {
                     Some(Ok((info, _))) => info.decimals.unwrap_or(UNKNOWN_DECIMALS),
                     _ if usdt => 6,
                     _ if curated.contains(&m.address) => 18,
@@ -293,9 +297,9 @@ impl App {
         }
         // Tokens that exist only in a pool: the explorer's market list does not carry every one,
         // and a token with a pool is by definition swappable, so it belongs in the picker.
-        if let Some(Ok((pools, _))) = self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) {
+        if let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() {
             for token in pools.iter().flat_map(|p| [&p.token0, &p.token1]) {
-                if !token.address.is_empty() && seen.insert(token.address.clone()) {
+                if !token.address.is_empty() && !wrapper(&token.address) && seen.insert(token.address.clone()) {
                     out.push(row(
                         SwapAsset::Token { address: token.address.clone(), symbol: token.symbol.clone(), decimals: token.decimals },
                         "in a pool".into(),
@@ -365,7 +369,7 @@ impl App {
     /// figure is refused rather than filled: MAX from a rounded-up balance builds a transaction
     /// that reverts for insufficient funds.
     pub(crate) fn exact_balance(&self, asset: &SwapAsset) -> Option<(U256, u8)> {
-        let rows = &self.eco.portfolio.as_ref()?.rows;
+        let rows = &self.eco.feeds.portfolio.value()?.rows;
         let row = rows
             .iter()
             .find(|r| match (&r.key, asset) {
@@ -397,14 +401,14 @@ impl App {
     }
 
     pub fn fill_max(&mut self) {
-        if (self.screen == Screen::Convert && self.eco.convert.qi_to_quai) || (self.screen == Screen::Wrap && self.eco.wrap.mode == 0) {
-            self.eco.max_sequence = self.eco.max_sequence.wrapping_add(1);
-            let key = self.eco.max_sequence;
-            self.eco.max_request = Some((key, self.max_identity()));
+        if (self.on_card(Card::Convert) && self.eco.convert.qi_to_quai) || (self.on_card(Card::Wrap) && self.eco.wrap.mode == 0) {
+            self.eco.requests.max_sequence = self.eco.requests.max_sequence.wrapping_add(1);
+            let key = self.eco.requests.max_sequence;
+            self.eco.requests.max = Some((key, self.max_identity()));
             self.send(Cmd::QiMax {
                 key,
-                wrapping: self.screen == Screen::Wrap,
-                account: self.dash.accounts.first().map(|a| a.address.clone()),
+                wrapping: self.on_card(Card::Wrap),
+                account: self.dash.active_account().map(|a| a.address.clone()),
                 slippage: self.eco.convert.slippage_bps,
             });
             self.info("quoting a spendable Qi amount with current fees…");
@@ -416,13 +420,16 @@ impl App {
             Asset(SwapAsset),
             Qi { whole: bool },
         }
-        let pay = match self.screen {
-            Screen::Swap => Pay::Asset(self.eco.swap.from.clone()),
+        if self.nav.screen != Screen::Exchange {
+            return;
+        }
+        let pay = match self.nav.card {
+            Card::Swap => Pay::Asset(self.eco.swap.from.clone()),
             // Qi → QUAI spends Qi coins. The protocol conversion takes fractional Qi
             // (`review_convert_qi_to_quai` parses 3 decimals), so MAX must not round down.
-            Screen::Convert if self.eco.convert.qi_to_quai => Pay::Qi { whole: false },
-            Screen::Convert => Pay::Asset(SwapAsset::Quai),
-            Screen::Wrap => match self.eco.wrap.mode {
+            Card::Convert if self.eco.convert.qi_to_quai => Pay::Qi { whole: false },
+            Card::Convert => Pay::Asset(SwapAsset::Quai),
+            Card::Wrap => match self.eco.wrap.mode {
                 // Wrapping takes fractional Qi too; only redemption (mode 2) is whole-Qi, and that
                 // side spends WQI, handled as a token below.
                 0 => Pay::Qi { whole: false },
@@ -439,7 +446,6 @@ impl App {
                     None => return,
                 },
             },
-            _ => return,
         };
         let (text, note) = match pay {
             Pay::Qi { whole } => {
@@ -466,7 +472,7 @@ impl App {
                 }
                 match asset {
                     SwapAsset::Quai => {
-                        let Some(price) = self.eco.gas_price else {
+                        let Some(price) = self.eco.feeds.gas_price else {
                             self.toast("waiting for the gas price before MAX can keep fees back", true);
                             return;
                         };
@@ -482,7 +488,7 @@ impl App {
                         let mut m = token_max(balance, decimals);
                         // Redeeming WQI pays out whole Qi, so offering a fractional MAX would
                         // only be rounded away by the contract.
-                        if self.screen == Screen::Wrap && self.eco.wrap.mode == 2 {
+                        if self.on_card(Card::Wrap) && self.eco.wrap.mode == 2 {
                             let unit = U256::from(10u64).pow(U256::from(decimals));
                             m.amount -= m.amount % unit;
                             if m.amount.is_zero() {
@@ -495,24 +501,26 @@ impl App {
                 }
             }
         };
-        match self.screen {
-            Screen::Swap => {
+        if self.nav.screen != Screen::Exchange {
+            return;
+        }
+        match self.nav.card {
+            Card::Swap => {
                 self.eco.swap.amount = text;
                 self.eco.swap.field = 1;
                 self.eco.swap.edited = Some(Instant::now());
                 self.eco.swap.requested_key = 0;
                 self.eco.swap.approving = false;
             }
-            Screen::Convert => {
+            Card::Convert => {
                 self.eco.convert.amount = text;
                 self.eco.convert.field = 1;
                 self.eco.convert.edited = Some(Instant::now());
             }
-            Screen::Wrap => {
+            Card::Wrap => {
                 self.eco.wrap.amount = text;
                 self.eco.wrap.field = 1;
             }
-            _ => return,
         }
         if let Some(note) = note {
             self.toast(&note, false);
@@ -524,128 +532,145 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
-        match self.screen {
-            Screen::Markets => self.markets_key(key),
-            Screen::Board => self.board_key(key),
-            Screen::Pools => self.pools_key(key),
-            Screen::Launches => self.launches_key(key),
-            Screen::Pnl => self.pnl_key(key),
-            Screen::Swap => self.swap_key(key),
-            Screen::Convert => self.convert_key(key),
-            Screen::Wrap => self.wrap_key(key),
-            Screen::Explore => self.explore_key(key),
-            Screen::Collected => match key.code {
-                KeyCode::Char('h') | KeyCode::Left => {
-                    self.move_selection(-1);
-                    true
-                }
-                KeyCode::Char('l') | KeyCode::Right if self.eco.nft_len() > 0 => {
-                    self.move_selection(1);
-                    true
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let cols = (*self.eco.grid_columns.borrow()).max(1);
-                    let len = self.eco.nft_len();
-                    if len > 0 {
-                        self.selected = (self.selected + cols).min(len - 1);
-                    }
-                    true
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    let cols = (*self.eco.grid_columns.borrow()).max(1);
-                    self.selected = self.selected.saturating_sub(cols);
-                    true
-                }
-                KeyCode::Char('R') => {
-                    self.load_nfts(true);
-                    true
-                }
-                KeyCode::Char('T') => {
-                    self.transfer_selected_nft();
-                    true
-                }
-                KeyCode::Char('L') => {
-                    if let Some((c, id)) = self.selected_nft() {
-                        self.open_nft_list(&c, &id);
-                    }
-                    true
-                }
-                KeyCode::Char('X') => {
-                    if let Some((c, id)) = self.selected_nft() {
-                        self.cancel_nft_listing(&c, &id);
-                    }
-                    true
-                }
-                _ => false,
-            },
-            Screen::Listings => match key.code {
-                KeyCode::Char('m') => {
-                    self.eco.listings_mine = !self.eco.listings_mine;
-                    self.selected = 0;
-                    if self.eco.listings_mine {
-                        self.load_my_listings();
-                    }
-                    self.toast(if self.eco.listings_mine { "listings: yours" } else { "listings: everyone's" }, false);
-                    true
-                }
-                KeyCode::Char('S') => {
-                    self.eco.listing_sort = self.eco.listing_sort.next();
-                    self.selected = 0;
-                    let label = self.eco.listing_sort.label();
-                    self.info(format!("listings: {label}"));
-                    true
-                }
-                KeyCode::Char(c @ ('f' | 'F')) => {
-                    let collections = match self.eco.listings.get(&None) {
-                        Some(Ok(all)) => wallet_core::market::listing_collections(all),
-                        _ => Vec::new(),
-                    };
-                    if collections.is_empty() {
-                        return true;
-                    }
-                    // Positions: 0 = all collections, then each collection by listing count.
-                    let len = collections.len() + 1;
-                    let current = self
-                        .eco
-                        .listing_filter
-                        .as_ref()
-                        .and_then(|f| collections.iter().position(|(a, _)| a == f).map(|p| p + 1))
-                        .unwrap_or(0);
-                    let next = if c == 'f' { (current + 1) % len } else { (current + len - 1) % len };
-                    self.eco.listing_filter = (next > 0).then(|| collections[next - 1].0.clone());
-                    self.selected = 0;
-                    let text = match &self.eco.listing_filter {
-                        Some(a) => format!("listings: {} ({} listed)", self.eco.collection_name(a), collections[next - 1].1),
-                        None => "listings: all collections".into(),
-                    };
-                    self.toast(text, false);
-                    true
-                }
-                KeyCode::Char('R') => {
-                    self.eco.listings_loading = true;
-                    self.send_data(DataCmd::Listings { collection: None });
-                    true
-                }
-                KeyCode::Char('b') => {
-                    if let Some(l) = self.eco.visible_listings().get(self.selected).cloned() {
-                        self.push_detail(Detail::Nft(l.contract.clone(), l.token_id.clone()));
-                        self.buy_listing(&l);
-                    }
-                    true
-                }
-                _ => false,
-            },
-            Screen::Home if key.code == KeyCode::Char('i') => {
-                self.eco.info_open = !self.eco.info_open;
+        self.nav.screen.view().key(self, key)
+    }
+
+    /// Collected's grid: move by cell and row, reload, and the item's transfer and listing keys.
+    pub(crate) fn collected_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.move_selection(-1);
                 true
             }
-            Screen::Network if key.code == KeyCode::Char('m') => {
-                if let Some((id, _)) = self.dash.networks.get(self.selected).cloned() {
-                    self.open_form(super::super::app::FormKind::Monitor { network: id });
+            KeyCode::Char('l') | KeyCode::Right if self.eco.nft_len() > 0 => {
+                self.move_selection(1);
+                true
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let cols = (*self.eco.nft.grid_columns.borrow()).max(1);
+                let len = self.eco.nft_len();
+                if len > 0 {
+                    self.nav.selected = (self.nav.selected + cols).min(len - 1);
+                }
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let cols = (*self.eco.nft.grid_columns.borrow()).max(1);
+                self.nav.selected = self.nav.selected.saturating_sub(cols);
+                true
+            }
+            KeyCode::Char('R') => {
+                self.load_nfts(true);
+                true
+            }
+            KeyCode::Char('T') => {
+                self.transfer_selected_nft();
+                true
+            }
+            KeyCode::Char('L') => {
+                if let Some((c, id)) = self.selected_nft() {
+                    self.open_nft_list(&c, &id);
+                }
+                true
+            }
+            KeyCode::Char('X') => {
+                if let Some((c, id)) = self.selected_nft() {
+                    self.cancel_nft_listing(&c, &id);
                 }
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Listings: whose, sorted how, from which collection; reload; buy the one selected.
+    pub(crate) fn listings_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('m') => {
+                self.eco.nft.listings_mine = !self.eco.nft.listings_mine;
+                self.nav.selected = 0;
+                if self.eco.nft.listings_mine {
+                    self.load_my_listings();
+                }
+                self.toast(if self.eco.nft.listings_mine { "listings: yours" } else { "listings: everyone's" }, false);
+                true
+            }
+            KeyCode::Char('S') => {
+                self.eco.nft.listing_sort = self.eco.nft.listing_sort.next();
+                self.nav.selected = 0;
+                let label = self.eco.nft.listing_sort.label();
+                self.info(format!("listings: {label}"));
+                true
+            }
+            KeyCode::Char(c @ ('f' | 'F')) => {
+                let collections = match self.eco.nft.listings.get(&None).and_then(|r| r.latest()) {
+                    Some(Ok(all)) => wallet_core::market::listing_collections(all),
+                    _ => Vec::new(),
+                };
+                if collections.is_empty() {
+                    return true;
+                }
+                // Positions: 0 = all collections, then each collection by listing count.
+                let len = collections.len() + 1;
+                let current = self
+                    .eco
+                    .nft
+                    .listing_filter
+                    .as_ref()
+                    .and_then(|f| collections.iter().position(|(a, _)| a == f).map(|p| p + 1))
+                    .unwrap_or(0);
+                let next = if c == 'f' { (current + 1) % len } else { (current + len - 1) % len };
+                self.eco.nft.listing_filter = (next > 0).then(|| collections[next - 1].0.clone());
+                self.nav.selected = 0;
+                let text = match &self.eco.nft.listing_filter {
+                    Some(a) => format!("listings: {} ({} listed)", self.eco.collection_name(a), collections[next - 1].1),
+                    None => "listings: all collections".into(),
+                };
+                self.toast(text, false);
+                true
+            }
+            KeyCode::Char('R') => {
+                self.eco.nft.listings.entry(None).begin(&self.eco.clock);
+                self.send_data(DataCmd::Listings { collection: None });
+                true
+            }
+            KeyCode::Char('b') => {
+                if let Some(l) = self.eco.visible_listings().get(self.nav.selected).cloned() {
+                    self.push_detail(Detail::Nft(l.contract.clone(), l.token_id.clone()));
+                    self.buy_listing(&l);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Home: `i` opens and closes what the totals leave out.
+    pub(crate) fn home_key(&mut self, key: KeyEvent) -> bool {
+        if key.code != KeyCode::Char('i') {
+            return false;
+        }
+        self.eco.info_open = !self.eco.info_open;
+        true
+    }
+
+    /// Network: `m` sets the monitoring node of the network under the cursor.
+    pub(crate) fn network_key(&mut self, key: KeyEvent) -> bool {
+        if key.code != KeyCode::Char('m') {
+            return false;
+        }
+        if let Some((id, _)) = self.dash.networks.get(self.nav.selected).cloned() {
+            self.open_form(super::super::app::FormKind::Monitor { network: id });
+        }
+        true
+    }
+
+    /// The exchange's keys are its card's.
+    pub(crate) fn exchange_key(&mut self, key: KeyEvent) -> bool {
+        match self.nav.card {
+            Card::Swap => self.swap_key(key),
+            Card::Convert => self.convert_key(key),
+            Card::Wrap => self.wrap_key(key),
         }
     }
 
@@ -708,12 +733,12 @@ impl App {
             if let Some(identity) = self.swap_input_key()
                 && let Some(to) = &self.eco.swap.to
             {
-                self.eco.max_sequence = self.eco.max_sequence.wrapping_add(1);
-                let key = self.eco.max_sequence;
-                self.eco.split_request = Some((key, identity));
+                self.eco.requests.max_sequence = self.eco.requests.max_sequence.wrapping_add(1);
+                let key = self.eco.requests.max_sequence;
+                self.eco.requests.split = Some((key, identity));
                 self.send(Cmd::SplitQuote {
                     key,
-                    account: self.dash.accounts.first().map(|a| a.address.clone()),
+                    account: self.dash.active_account().map(|a| a.address.clone()),
                     from: asset(&self.eco.swap.from),
                     to: asset(to),
                     amount: self.eco.swap.amount.clone(),
@@ -847,8 +872,8 @@ impl App {
     pub fn keep_cursor_on(&mut self, address: Option<String>) {
         let Some(addr) = address else { return };
         let Some(i) = self.market_rows().iter().position(|p| p.address == addr) else { return };
-        if self.screen == Screen::Markets && self.pane == 0 {
-            self.selected = i;
+        if self.nav.screen == Screen::Markets && self.nav.pane == 0 {
+            self.nav.selected = i;
         }
         self.eco.markets_view.pair_selected = i;
     }
@@ -877,8 +902,8 @@ impl App {
         card.field = 1;
     }
 
-    /// The exchange's pair, read off whichever of its views is showing (or was last): what is
-    /// paid, and what is received (a swap may not have chosen yet).
+    /// The exchange's pair, read off its card (showing, or last shown): what is paid, and what is
+    /// received (a swap may not have chosen yet).
     pub fn exchange_pair(&self) -> (ExAsset, Option<ExAsset>) {
         let net = self.net();
         let token = |address: Option<String>, symbol: &str| {
@@ -891,17 +916,16 @@ impl App {
         let wqi = || token(net.as_ref().and_then(|n| n.wqi.clone()), "WQI");
         let wquai = || token(net.as_ref().and_then(|n| n.wquai.clone()), "WQUAI");
         let quai = ExAsset::Swap(SwapAsset::Quai);
-        let view = if self.screen.is_exchange() { self.screen } else { self.last_exchange };
-        match view {
-            Screen::Convert if self.eco.convert.qi_to_quai => (ExAsset::Qi, Some(quai)),
-            Screen::Convert => (quai, Some(ExAsset::Qi)),
-            Screen::Wrap => match self.eco.wrap.mode {
+        match self.nav.card {
+            Card::Convert if self.eco.convert.qi_to_quai => (ExAsset::Qi, Some(quai)),
+            Card::Convert => (quai, Some(ExAsset::Qi)),
+            Card::Wrap => match self.eco.wrap.mode {
                 0 | 1 => (ExAsset::Qi, Some(wqi())),
                 2 => (wqi(), Some(ExAsset::Qi)),
                 3 => (quai, Some(wquai())),
                 _ => (wquai(), Some(quai)),
             },
-            _ => (ExAsset::Swap(self.eco.swap.from.clone()), self.eco.swap.to.clone().map(ExAsset::Swap)),
+            Card::Swap => (ExAsset::Swap(self.eco.swap.from.clone()), self.eco.swap.to.clone().map(ExAsset::Swap)),
         }
     }
 
@@ -952,16 +976,18 @@ impl App {
         let quai = ExAsset::Swap(SwapAsset::Quai);
         // What was typed follows when the side it was typed for is still the side paid.
         let (was, _) = self.exchange_pair();
-        let typed = match (self.screen, was == from) {
+        // From outside the exchange, what was typed is the swap card's.
+        let card = if self.nav.screen == Screen::Exchange { self.nav.card } else { Card::Swap };
+        let typed = match (card, was == from) {
             (_, false) => String::new(),
-            (Screen::Convert, _) => self.eco.convert.amount.clone(),
-            (Screen::Wrap, _) => self.eco.wrap.amount.clone(),
-            _ => self.eco.swap.amount.clone(),
+            (Card::Convert, _) => self.eco.convert.amount.clone(),
+            (Card::Wrap, _) => self.eco.wrap.amount.clone(),
+            (Card::Swap, _) => self.eco.swap.amount.clone(),
         };
         let wrap = |app: &mut App, mode: usize| {
             app.eco.wrap.mode = mode;
             app.eco.wrap.amount = typed.clone();
-            app.switch(Screen::Wrap);
+            app.show_card(Card::Wrap);
             app.eco.wrap.field = 1;
         };
         match (&from, &to) {
@@ -1000,7 +1026,7 @@ impl App {
                 if !typed.is_empty() {
                     self.eco.swap.amount = typed;
                 }
-                self.switch(Screen::Swap);
+                self.show_card(Card::Swap);
                 self.eco.swap.field = 1;
             }
         }
@@ -1011,7 +1037,7 @@ impl App {
         card.amount = typed;
         card.quote = None;
         card.routes = None;
-        self.switch(Screen::Convert);
+        self.show_card(Card::Convert);
         self.eco.convert.field = 1;
     }
 
@@ -1027,7 +1053,7 @@ impl App {
     pub(crate) fn exchange_back_to_swap(&mut self) {
         // Without trading there is no swap card to go back to, and Esc says nothing.
         if self.config.features.on(wallet_core::config::Feature::Trading) {
-            self.switch(Screen::Swap);
+            self.show_card(Card::Swap);
         }
     }
 
@@ -1129,7 +1155,7 @@ impl App {
                 } else if !self.can_sign() {
                     self.toast("this wallet is watch-only", true);
                 } else {
-                    let account = self.dash.accounts.first().map(|a| a.address.clone());
+                    let account = self.dash.active_account().map(|a| a.address.clone());
                     let direction =
                         if qi_to_quai { wallet_core::qi_market::Direction::QiToQuai } else { wallet_core::qi_market::Direction::QuaiToQi };
                     self.start_protocol_conversion(direction, amount, slippage, account);
@@ -1183,7 +1209,7 @@ impl App {
                     self.toast("enter an amount", true);
                     return true;
                 }
-                let account = self.dash.accounts.first().map(|a| a.address.clone());
+                let account = self.dash.active_account().map(|a| a.address.clone());
                 if mode == 1 {
                     self.claim_now(account);
                     return true;
@@ -1267,7 +1293,7 @@ impl App {
             &card.slippage_bps.to_string(),
             &card.deadline_minutes.to_string(),
             &self.network_id,
-            &self.dash.accounts.first().map(|a| a.address.clone()).unwrap_or_default(),
+            &self.dash.active_account().map(|a| a.address.clone()).unwrap_or_default(),
         ]))
     }
 
@@ -1278,10 +1304,10 @@ impl App {
     pub(crate) fn max_identity(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        format!("{:?}", self.screen).hash(&mut h);
+        format!("{:?}", self.nav.screen).hash(&mut h);
         self.meta.as_ref().map(|m| &m.id).hash(&mut h);
         self.network_id.hash(&mut h);
-        self.dash.accounts.first().map(|a| &a.address).hash(&mut h);
+        self.dash.active_account().map(|a| &a.address).hash(&mut h);
         self.eco.convert.amount.hash(&mut h);
         self.eco.convert.qi_to_quai.hash(&mut h);
         self.eco.convert.slippage_bps.hash(&mut h);
@@ -1298,7 +1324,7 @@ impl App {
             (SwapAsset::Quai, SwapAsset::Token { address, .. }) | (SwapAsset::Token { address, .. }, SwapAsset::Quai) => address,
             _ => return None,
         };
-        let Some(Ok((pools, _))) = self.eco.markets_view.pools.as_ref().map(|r| r.as_ref()) else { return None };
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return None };
         pools
             .iter()
             .find(|p| p.venue == wallet_core::markets::Venue::Curve && p.token0.address.eq_ignore_ascii_case(token))
@@ -1334,13 +1360,7 @@ impl App {
 
     /// Keep the swap card's rate and chart fed: the market list, then the pair's hourly candles.
     pub(crate) fn tick_swap(&mut self) {
-        let mv = &self.eco.markets_view;
-        if !mv.pools_loading
-            && mv.pools_attempted.is_none_or(|at| at.elapsed() >= MARKET_REFRESH)
-            && (mv.pools.is_none() || mv.pools_at.is_none_or(|t| t.elapsed().as_secs() > wallet_core::markets::DIRECTORY_TTL))
-        {
-            self.eco.markets_view.pools_loading = true;
-            self.eco.markets_view.pools_attempted = Some(Instant::now());
+        if self.eco.markets_view.pools.take_due(fresh::MARKET_DIRECTORY, &self.eco.clock) {
             self.send_data(DataCmd::MarketPools);
             return;
         }
@@ -1376,14 +1396,12 @@ impl App {
         if self.swap_quote_current()
             && let Some(offer) = self.swap_uses_curve()
         {
-            let account = self.dash.accounts.first().map(|a| a.address.clone());
+            let account = self.dash.active_account().map(|a| a.address.clone());
             let (amount, slippage, deadline) = (card.amount.clone(), card.slippage_bps, Some(card.deadline_minutes));
             let (token, symbol, curve) = (offer.token.clone(), offer.symbol.clone(), offer.curve.clone());
             if offer.sell {
-                self.start_flow(FlowKind::Steps {
-                    prepare: Box::new(Prepare::CurveSellNext { account, token, symbol: symbol.clone(), curve, amount, slippage, deadline }),
-                    label: format!("sell {symbol} to its curve"),
-                });
+                let label = format!("sell {symbol} to its curve");
+                self.start_steps(Prepare::CurveSellNext { account, token, symbol, curve, amount, slippage, deadline }, label);
             } else {
                 self.send(Cmd::Prepare(Prepare::CurveBuy { account, token, symbol, curve, amount, slippage, deadline }));
             }
@@ -1418,7 +1436,7 @@ impl App {
             let needed = amount::parse_amount(&card.amount, 18).unwrap_or(U256::ZERO);
             let missing = needed.saturating_sub(U256::from(self.wrapped_atoms(false)));
             // The swap is signed by the first account, so only its QUAI can be wrapped.
-            let quai = self.dash.accounts.first().map_or(U256::ZERO, |a| a.balance);
+            let quai = self.dash.active_account().map_or(U256::ZERO, |a| a.balance);
             if quai > missing {
                 prewrap = Some(amount::format_amount(missing, 18));
             }
@@ -1435,85 +1453,36 @@ impl App {
             );
             return;
         }
-        let account = self.dash.accounts.first().map(|a| a.address.clone());
-        // A swap that pays out WQUAI offers to redeem it for QUAI afterwards.
-        let redeem = !wquai.is_empty() && to_id.eq_ignore_ascii_case(&wquai);
-        // Across both exchanges: swap to the hub first; the second swap is sized once it confirms.
-        let (first_to, then, unwrap_after) = match (quote.hub(), quote.legs.first()) {
-            (Some((hub, _)), Some(first)) => {
-                let hub_decimals = if first.output_decimals == 0 { 18 } else { first.output_decimals };
-                (hub, Some(NextSwap { to: to_id.clone(), unwrap_after: redeem, hub_decimals, first: None, polls: 0 }), false)
-            }
-            _ => (to_id.clone(), None, redeem),
-        };
-        let label =
-            format!("swap {} {} → {}{}", card.amount, card.from.symbol(), to.symbol(), if then.is_some() { " (two swaps)" } else { "" });
-        let (amount, slippage, deadline) = (card.amount.clone(), card.slippage_bps, card.deadline_minutes);
-        if prewrap.is_none() && !redeem {
-            let Some(owner) = account.clone() else {
-                self.toast("select a signing account", true);
-                return;
-            };
-            let action = if then.is_some() {
-                wallet_core::execution::TradingAction::CrossVenue {
-                    from: from_id,
-                    to: to_id,
-                    hub: first_to,
-                    amount,
-                    stage: 0,
-                    slippage,
-                    deadline,
-                }
-            } else {
-                wallet_core::execution::TradingAction::Swap { from: from_id, to: to_id, amount, slippage, deadline }
-            };
-            self.start_flow(FlowKind::Steps {
-                prepare: Box::new(Prepare::Trading {
-                    intent: wallet_core::execution::TradingIntent { account: owner, max_fee: None, action },
-                }),
-                label,
-            });
+        let Some(owner) = self.dash.active_account().map(|a| a.address.clone()) else {
+            self.toast("select a signing account", true);
             return;
-        }
+        };
+        // A swap that pays out WQUAI redeems it for QUAI afterwards.
+        let redeem = !wquai.is_empty() && to_id.eq_ignore_ascii_case(&wquai);
+        let two = quote.hub().is_some() && !quote.legs.is_empty();
+        let label = format!("swap {} {} → {}{}", card.amount, card.from.symbol(), to.symbol(), if two { " (two swaps)" } else { "" });
+        let (amount, slippage, deadline) = (card.amount.clone(), card.slippage_bps, card.deadline_minutes);
+        // Across both exchanges: swap to the hub first; the second swap is sized from what the
+        // first paid out, by its receipt. The engine wraps a shortfall of WQUAI first.
+        let action = match quote.hub() {
+            Some((hub, _)) if two => wallet_core::execution::TradingAction::CrossVenue {
+                from: from_id,
+                to: to_id,
+                hub,
+                amount,
+                stage: 0,
+                slippage,
+                deadline,
+                redeem,
+            },
+            _ if redeem => {
+                wallet_core::execution::TradingAction::SwapThenUnwrap { from: from_id, wquai: to_id, amount, slippage, deadline, stage: 0 }
+            }
+            _ => wallet_core::execution::TradingAction::Swap { from: from_id, to: to_id, amount, slippage, deadline },
+        };
         if let Some(missing) = &prewrap {
             self.info(format!("wrapping {missing} QUAI first, then the swap"));
         }
-        self.start_flow(FlowKind::Swap {
-            account,
-            from: from_id,
-            to: first_to,
-            amount,
-            slippage,
-            deadline,
-            label,
-            prewrap,
-            unwrap_after,
-            baseline: self.wrapped_atoms(false).to_string(),
-            then,
-        });
-    }
-
-    /// Turn a two-exchange route whose first swap confirmed into its second swap, sized from
-    /// exactly what the first paid out (recorded from its receipt). False while that output is not
-    /// visible yet.
-    pub(crate) fn begin_second_swap(&self, flow: &mut Flow) -> bool {
-        let FlowKind::Swap { from, to, amount, unwrap_after, then, .. } = &mut flow.kind else { return false };
-        let Some(next) = then.clone() else { return false };
-        let Some(first) = next.first.as_deref() else { return false };
-        let paid = self
-            .dash
-            .ops
-            .iter()
-            .find(|o| o.id == first)
-            .and_then(|o| o.detail["actual_out"].as_str())
-            .and_then(|v| U256::from_str_radix(v, 10).ok())
-            .filter(|v| !v.is_zero());
-        let Some(paid) = paid else { return false };
-        *amount = amount::format_amount(paid, next.hub_decimals);
-        *from = std::mem::replace(to, next.to);
-        *unwrap_after = next.unwrap_after;
-        *then = None;
-        flow.swapped = false;
-        true
+        self.start_plan(label, wallet_core::execution::TradingIntent { account: owner, max_fee: None, action }, None);
     }
 }

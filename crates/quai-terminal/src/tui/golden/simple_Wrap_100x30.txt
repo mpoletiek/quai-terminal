@@ -1,0 +1,30 @@
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+                       ┌ ▸ exchange · wrap ────────────────────────────────────────────────────────┐
+                       │   pair        Qi → WQI ‹›                                                 │
+  1  Home           • ││   amount      0 Qi                                                        │
+                      ││   available   240 Qi spendable                                            │
+▌ 3  Trade            ││ wrap Qi into WQI backing (step 1 of 2)                                    │
+                      ││                                                                           │
+  4  NFTs           ◧ ││ enter review                                                              │
+                      ││ 1 wrap Qi → 2 wait for settlement → 3 claim WQI                           │
+  5  People           ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+  6  Activity         │┌ wrapped balances ─────────────────────────────────────────────────────────┐
+                      ││ Loading wrapped balances…                                                 │
+                      ││                                                                           │
+  0  System           ││                                                                           │
+                      ││                                                                           │
+   [ ] tabs           ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      ││                                                                           │
+                      │└───────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter review  / pick asset  esc back to swap  space actions  : palette  ? more

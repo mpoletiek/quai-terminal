@@ -164,14 +164,10 @@ async fn a_route_s_output_is_proven_from_its_pools() {
     let ctx = mainnet();
     let wquai = ctx.network.wquai.clone().unwrap().to_lowercase();
     let mut all = wallet_core::markets::pools(&ctx).await.unwrap().0;
-    for directory in [
-        wallet_core::markets::launch_amm_pools(&ctx).await,
-        wallet_core::markets::legacy_pools(&ctx).await,
-        wallet_core::markets::hartii_amm_pools(&ctx).await,
-    ] {
-        all.extend(directory.unwrap().pools);
+    for amm in wallet_core::venues::AMMS.iter().filter(|a| a.venue != Venue::Main) {
+        all.extend(wallet_core::markets::amm_pools(&ctx, amm).await.unwrap().pools);
     }
-    for venue in [Venue::Main, Venue::LaunchAmm, Venue::Legacy, Venue::HartiiAmm] {
+    for venue in wallet_core::venues::routable() {
         let pool = all
             .iter()
             .filter(|p| p.venue == venue && (p.token0.address == wquai || p.token1.address == wquai))
@@ -639,6 +635,8 @@ async fn bazarr_listing_rechecks_and_fill_simulates() {
 #[tokio::test]
 #[ignore = "network"]
 async fn portfolio_and_images_from_the_explorer() {
+    // No wallet binary to re-execute here, and this process holds no keys.
+    wallet_core::media_helper::use_in_process_decoder_for_tests();
     use wallet_core::portfolio::{Known, Trust, build};
     use wallet_core::sdk::{BlockTag, QuaiAddress};
     let ctx = mainnet();
@@ -701,12 +699,16 @@ async fn swap_output_decodes_real_receipts() {
     // swapExactTokensForETH by 0x004a1e… (USDT → QUAI), 2026-09-15.
     let hash = "0x00550009b278724f0d95fd7c137b4a21391970692ac88659111b6e9619b13605".parse().unwrap();
     let receipt = ctx.node.provider.receipt(wallet_core::network::ZONE, hash).await.unwrap().unwrap();
-    let detail = serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "quai"});
+    let detail = wallet_core::journal::Detail::from(
+        serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "quai"}),
+    );
     let out = wallet_core::track::swap_output(&receipt, &detail, ctx.network.wquai.as_deref()).expect("withdrawal found");
     eprintln!("native out: {} QUAI", wallet_core::amount::quai(out));
     assert!(!out.is_zero());
     // Asking for a token the swap did not pay out finds nothing.
-    let wrong = serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "0x002b2596ecf05c93a31ff916e8b456df6c77c750"});
+    let wrong = wallet_core::journal::Detail::from(
+        serde_json::json!({"recipient": "0x004a1ea50754d904883db3ca9138cd4bc321734b", "to_token": "0x002b2596ecf05c93a31ff916e8b456df6c77c750"}),
+    );
     assert!(wallet_core::track::swap_output(&receipt, &wrong, ctx.network.wquai.as_deref()).is_none());
 }
 
@@ -994,7 +996,7 @@ async fn gauge_pools_and_reward_rates() {
 #[ignore = "network"]
 async fn trading_readonly_directory_routes_are_capability_bounded() {
     live_trading_check("directory_routes", async {
-        use wallet_core::capabilities::{Action, Family};
+        use wallet_core::capabilities::{Action, family_for_pool};
         use wallet_core::routes::{RouteGraph, VENUES};
         let ctx = mainnet();
         let (pools, overview) = wallet_core::markets::all_markets(&ctx).await?;
@@ -1031,7 +1033,7 @@ async fn trading_readonly_directory_routes_are_capability_bounded() {
         }
         for pool in pools.iter().take(120) {
             assert_ne!(pool.token0.address, pool.token1.address);
-            if let Some(family) = Family::for_pool(pool) {
+            if let Some(family) = family_for_pool(pool) {
                 assert!(family.support(Action::Discover).supported);
             }
         }
@@ -1139,7 +1141,7 @@ async fn chain_pools_batched_matches_unbatched() {
     let chain_only = || {
         let mut ctx = mainnet();
         ctx.network.explorer_api = None;
-        ctx.explorer = wallet_core::explorer::Explorer::for_network(&ctx.network);
+        ctx.explorer = wallet_core::explorer::Explorer::for_api(ctx.network.explorer_api.as_ref());
         ctx
     };
     let ctx = chain_only();
@@ -1176,9 +1178,9 @@ async fn chain_pools_batched_matches_unbatched() {
 #[tokio::test]
 #[ignore = "network"]
 async fn the_launch_amm_directory_is_whole_and_newest_first() {
-    use wallet_core::markets::{MAX_FACTORY_PAIRS, launch_amm_pools};
+    use wallet_core::markets::{MAX_FACTORY_PAIRS, Venue, amm_pools};
     let ctx = mainnet();
-    let directory = launch_amm_pools(&ctx).await.unwrap();
+    let directory = amm_pools(&ctx, wallet_core::venues::amm(Venue::LaunchAmm).unwrap()).await.unwrap();
     println!("launch AMM: {} of {} pairs read", directory.read, directory.total);
     assert!(directory.total >= 2, "the launch AMM has pairs: {}", directory.total);
     assert_eq!(directory.read, directory.total.min(MAX_FACTORY_PAIRS as usize));
@@ -1638,6 +1640,8 @@ async fn network_statistics_read_from_the_explorer() {
 #[tokio::test]
 #[ignore = "network"]
 async fn launch_logos_resolve_through_the_media_proxy() {
+    // No wallet binary to re-execute here, and this process holds no keys.
+    wallet_core::media_helper::use_in_process_decoder_for_tests();
     let ctx = mainnet();
     let launches = wallet_core::launches::launches(&ctx, 50).await.unwrap();
     let logos = wallet_core::launches::logos(&ctx, &launches).await;
@@ -1801,10 +1805,11 @@ async fn the_hartii_launchpad_reads_its_curves() {
     assert_eq!(pools.len(), 2, "HRT and QAXE, and nothing still raising");
     assert!(pools.iter().all(|p| ["HRT", "QAXE"].contains(&p.token0.symbol.as_str())), "{pools:?}");
     assert!(pools.iter().all(|p| p.curve.as_ref().and_then(|c| c.launchpad.as_deref()) == Some("HartiiLabs")));
-    // The reserves cannot tell these two apart; their quotes differ by more than an order of
-    // magnitude, which is why the price comes from the curve rather than from a ratio.
+    // The reserves cannot tell these two apart; their quotes differ several-fold (more than 10×
+    // on 2026-09-23, 9.2× on 2026-09-24 as the market moved), which is why the price comes from
+    // the curve rather than from a ratio.
     let priced = |sym: &str| rows.iter().find(|r| r.symbol == sym).and_then(|r| r.price_quai).unwrap();
-    assert!(priced("QAXE") / priced("HRT") > 10.0, "HRT {} QAXE {}", priced("HRT"), priced("QAXE"));
+    assert!(priced("QAXE") / priced("HRT") > 3.0, "HRT {} QAXE {}", priced("HRT"), priced("QAXE"));
     // Every curve that quotes is priced from the reserves its quote confirms: on 2026-09-23 all 35
     // reproduced quoteBuy to the wei, the bonded ones from their pool, the rest from virtual reserves.
     use wallet_core::markets::PriceBasis;
@@ -2056,4 +2061,64 @@ where
             panic!("{case}: {class}: {error}");
         }
     }
+}
+
+/// Private messages (v3) against the real board, without sending anything: the pinned contract
+/// is the deployed one; the exact bodies v3 posts (an announcement and a longest DM) are accepted
+/// by a simulated `post`, and one byte more is refused; and a full 10,000-block page of DM logs is
+/// served, which is what every sync reads.
+#[tokio::test]
+#[ignore = "network"]
+async fn private_messages_speak_to_the_mainnet_board() {
+    use quai_sdk::provider::{LogFilter, LogRange, TopicMatch};
+    use quai_sdk::{BlockTag, U256, contracts::Contract};
+    use wallet_core::messaging::wire;
+    let ctx = mainnet();
+    let pin = ctx.network.ecosystem.messages.clone().expect("mainnet has a board");
+    let board = ctx.verify_pinned(&pin, "messages").await.expect("the pinned board is the deployed one");
+    let contract = wire::Context { chain_id: ctx.network.chain_id, contract: wire::address_bytes(&board.to_string()).unwrap() };
+    // Any account can simulate a call; none of these is signed or sent.
+    let from = wallet_core::data::READ_CALLER;
+    let owner = wire::address_bytes(from).unwrap();
+    let identity = wire::IdentitySecret::generate().unwrap();
+    let (mine, theirs) = (wire::WeeklySecret::generate().unwrap(), wire::WeeklySecret::generate().unwrap());
+    let announcement =
+        wire::Announcement::sign(&contract, &owner, &identity, wire::week_of(wallet_core::registry::now()), 1, mine.public()).encode();
+    let tag = wire::random_tag().unwrap();
+    let recipient = [0x00u8; 20];
+    let envelope = wire::Envelope { ctx: &contract, sender: &owner, recipient: &recipient, tag: &tag };
+    let longest = wire::seal(&envelope, &mine, &theirs.public(), wire::CONTENT_TEXT, &vec![b'x'; wire::MAX_CONTENT]).unwrap();
+    assert_eq!(longest.len(), wire::MAX_BODY);
+    let messages = Contract::new(board, wallet_core::messages::interface().unwrap(), &ctx.node.provider);
+    let simulate = |tag: [u8; 32], kind: u8, body: Vec<u8>| {
+        let args = vec![
+            serde_json::json!(wallet_core::messages::tag_topic(&tag)),
+            serde_json::json!(kind.to_string()),
+            serde_json::json!(format!("0x{}", hex::encode(&body))),
+        ];
+        let messages = &messages;
+        async move {
+            let call = messages.prepare("post", &args, U256::ZERO).unwrap();
+            messages.simulate(from.parse().unwrap(), &call, BlockTag::Latest, Some(400_000)).await
+        }
+    };
+    simulate(wire::keys_tag(), wire::KIND_KEYS, announcement).await.expect("an announcement is accepted");
+    simulate(tag, wire::KIND_DM, longest.clone()).await.expect("the longest DM is accepted");
+    let mut too_long = longest;
+    too_long.push(0);
+    assert!(simulate(tag, wire::KIND_DM, too_long).await.is_err(), "one byte more is refused");
+    // A sync's page: every kind-3 log in 10,000 blocks, from a node that must have served them all.
+    let head = ctx.node.provider.latest_header(wallet_core::network::ZONE).await.unwrap().unwrap().number;
+    let from_block = head - (wallet_core::messaging::service::LOG_PAGE - 1);
+    let kind = format!("0x{:064x}", wire::KIND_DM);
+    let filter = LogFilter::new(wallet_core::network::ZONE, LogRange::Inclusive { from: from_block, to: head })
+        .with_addresses(vec![board.into()])
+        .with_topics(vec![
+            TopicMatch::AnyOf(wallet_core::messages::MESSAGE_TOPIC.parse().into_iter().collect()),
+            TopicMatch::Any,
+            TopicMatch::Any,
+            TopicMatch::AnyOf(kind.parse().into_iter().collect()),
+        ]);
+    let logs = ctx.node.provider.logs_served_through(&filter).await.expect("a full page is served");
+    eprintln!("kind-3 logs in the last {} blocks: {}", wallet_core::messaging::service::LOG_PAGE, logs.len());
 }

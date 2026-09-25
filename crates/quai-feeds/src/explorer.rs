@@ -5,14 +5,32 @@
 //! ownership and asks are re-checked before any transfer or purchase. Unsupported calls return
 //! [`CoreError::Unsupported`]-style `NotFound` errors that the UI shows as "—".
 
-use crate::amount::parse_indexer_integer;
-use crate::error::{CoreError, Result};
 use crate::http;
-use crate::network::{ExplorerKind, NetworkProfile};
-use crate::registry::now;
+use quai_model::amount::parse_indexer_integer;
+use quai_model::error::{CoreError, Result};
+use quai_model::time::now;
 use quai_sdk::U256;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Explorer API flavor.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplorerKind {
+    /// explorer.qu.ai (`/api/...`).
+    QuaiExplorer,
+    /// Blockscout v2 (`/api/v2/...`), e.g. orchard.quaiscan.io.
+    Blockscout,
+}
+
+/// Explorer API endpoint for a network.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExplorerApiConfig {
+    /// API flavor.
+    pub kind: ExplorerKind,
+    /// Base URL (no trailing `/api`).
+    pub base_url: String,
+}
 
 /// Which backend serves a network.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,7 +240,7 @@ pub struct ConversionSteps {
 impl ConversionSteps {
     /// Human lines for a quote card.
     pub fn lines(&self) -> Vec<String> {
-        let q = |v: &str| format!("{} QUAI", crate::amount::format_amount_short(parse_indexer_integer(v).unwrap_or_default(), 18, 4));
+        let q = |v: &str| format!("{} QUAI", quai_model::amount::format_amount_short(parse_indexer_integer(v).unwrap_or_default(), 18, 4));
         let mut out = vec![format!("input worth {}", q(&self.value_in_quai))];
         if self.floored_at_10pct {
             out.push(format!("flow discount hits the floor: 10% of input, {}", q(&self.value_out_quai_terms)));
@@ -234,9 +252,9 @@ impl ConversionSteps {
         }
         let out_value = parse_indexer_integer(&self.value_out).unwrap_or_default();
         out.push(if self.direction == "quai-to-qi" {
-            format!("out {} Qi", crate::amount::qi(out_value))
+            format!("out {} Qi", quai_model::amount::qi(out_value))
         } else {
-            format!("out {} QUAI", crate::amount::format_amount_short(out_value, 18, 4))
+            format!("out {} QUAI", quai_model::amount::format_amount_short(out_value, 18, 4))
         });
         out
     }
@@ -329,45 +347,11 @@ pub struct TokenInfo {
     pub icon_url: Option<String>,
 }
 
-pub(crate) mod u256_string {
-    use quai_sdk::U256;
-    use serde::{Deserialize, Deserializer, Serializer};
-    pub fn serialize<S: Serializer>(v: &U256, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&v.to_string())
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<U256, D::Error> {
-        let text = String::deserialize(d)?;
-        U256::from_str_radix(&text, 10).map_err(serde::de::Error::custom)
-    }
-}
+pub use quai_model::ser::u256_string;
 
 // ---------------------------------------------------------------- small parsers
 
-/// Untrusted text made safe to show: control characters (C0 and C1, so no terminal escapes),
-/// bidirectional overrides and zero-width characters removed, at most `max_chars` kept. The one
-/// sanitizer every display path uses.
-///
-/// Also removed: what makes a terminal and a width table disagree about how wide the text is,
-/// which would shift everything after it on the row (a column, a border). Variation selectors
-/// (`❤️` is one cell by the table and two on screen), tag characters, skin-tone modifiers,
-/// regional indicators (flags) and the keycap mark. Plain emoji stay: both agree they are two.
-pub fn clean(text: &str, max_chars: usize) -> String {
-    text.chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(*c,
-                    '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}'
-                    // Width: variation selectors, the keycap mark, flags, skin tones, tags.
-                    | '\u{FE00}'..='\u{FE0F}' | '\u{20E3}' | '\u{1F1E6}'..='\u{1F1FF}' | '\u{1F3FB}'..='\u{1F3FF}' | '\u{E0000}'..='\u{E007F}' | '\u{E0100}'..='\u{E01EF}')
-        })
-        .take(max_chars)
-        .collect()
-}
-
-/// [`clean`] for explorer and indexer text (names, descriptions, messages).
-pub fn clean_text(text: &str) -> String {
-    clean(text, 4096)
-}
+pub use quai_model::text::{clean, clean_text};
 
 fn s(v: &Value) -> String {
     match v {
@@ -439,9 +423,9 @@ pub fn parse_timestamp(text: &str) -> Option<u64> {
 }
 
 impl Explorer {
-    /// The explorer for a network profile.
-    pub fn for_network(profile: &NetworkProfile) -> Explorer {
-        match &profile.explorer_api {
+    /// The explorer a network profile names (`NetworkProfile::explorer_api`).
+    pub fn for_api(api: Option<&ExplorerApiConfig>) -> Explorer {
+        match api {
             Some(c) if c.kind == ExplorerKind::QuaiExplorer => {
                 Explorer { backend: Backend::Quai, base: c.base_url.trim_end_matches('/').to_string() }
             }

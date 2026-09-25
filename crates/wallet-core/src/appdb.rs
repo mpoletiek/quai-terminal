@@ -14,7 +14,7 @@ use std::path::Path;
 /// 5: leases name their process (`fetch_leases`), so one left by a process that died is taken over
 ///    at once rather than after [`FETCH_LEASE`].
 /// 6: interval conversion schedules are gone; a wallet file drops their tables.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Tables and indexes `SCHEMA` creates.
 fn schema_objects(schema: &str) -> Vec<&str> {
@@ -241,7 +241,7 @@ fn process_alive(pid: i64) -> bool {
 }
 
 /// A cached image rendition row: (width, height, png, rgba, dominant 0xRRGGBB).
-pub type StoredRendition = (u32, u32, Vec<u8>, Vec<u8>, u32);
+pub use quai_feeds::media::StoredRendition;
 
 /// Tables holding re-fetchable third-party data; excluded from backups.
 const CACHE_TABLES: [&str; 6] = ["cache", "fetch_leases", "media", "renditions", "pool_events", "dex_swaps"];
@@ -291,120 +291,7 @@ pub struct Token {
     pub hidden: bool,
 }
 
-/// Operation lifecycle status.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OpStatus {
-    /// Prepared and reserved, not signed.
-    Prepared,
-    /// Signed and durably stored, not submitted.
-    Signed,
-    /// Submitted; acknowledgement received.
-    Submitted,
-    /// Submission outcome unknown; reconcile before retrying.
-    Unknown,
-    /// Included and successful at origin.
-    Confirmed,
-    /// Included but failed/reverted.
-    Failed,
-    /// Waiting for destination settlement (conversions, wraps).
-    Settling,
-    /// Destination settled with locked output.
-    Locked,
-    /// Destination settled and spendable.
-    Settled,
-    /// Conversion refunded.
-    Refunded,
-    /// Replaced by another candidate in the same nonce family.
-    Replaced,
-    /// Abandoned before signing.
-    Cancelled,
-}
-
-impl OpStatus {
-    /// Stable text form.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OpStatus::Prepared => "prepared",
-            OpStatus::Signed => "signed",
-            OpStatus::Submitted => "submitted",
-            OpStatus::Unknown => "unknown",
-            OpStatus::Confirmed => "confirmed",
-            OpStatus::Failed => "failed",
-            OpStatus::Settling => "settling",
-            OpStatus::Locked => "locked",
-            OpStatus::Settled => "settled",
-            OpStatus::Refunded => "refunded",
-            OpStatus::Replaced => "replaced",
-            OpStatus::Cancelled => "cancelled",
-        }
-    }
-
-    /// Parse text form.
-    pub fn parse(text: &str) -> Result<Self> {
-        Ok(match text {
-            "prepared" => OpStatus::Prepared,
-            "signed" => OpStatus::Signed,
-            "submitted" => OpStatus::Submitted,
-            "unknown" => OpStatus::Unknown,
-            "confirmed" => OpStatus::Confirmed,
-            "failed" => OpStatus::Failed,
-            "settling" => OpStatus::Settling,
-            "locked" => OpStatus::Locked,
-            "settled" => OpStatus::Settled,
-            "refunded" => OpStatus::Refunded,
-            "replaced" => OpStatus::Replaced,
-            "cancelled" => OpStatus::Cancelled,
-            other => return Err(CoreError::Storage(format!("unknown operation status `{other}`"))),
-        })
-    }
-
-    /// Sent but not yet mined: a higher-fee replacement can still win.
-    pub fn replaceable(self) -> bool {
-        matches!(self, OpStatus::Submitted | OpStatus::Unknown)
-    }
-
-    /// No further automatic tracking is required.
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            OpStatus::Confirmed | OpStatus::Failed | OpStatus::Settled | OpStatus::Refunded | OpStatus::Replaced | OpStatus::Cancelled
-        )
-    }
-}
-
-/// A wallet-initiated operation (journal row).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Operation {
-    /// Reservation id (32 hex chars).
-    pub id: String,
-    /// Network id.
-    pub network: String,
-    /// Operation kind (e.g. `send_quai`, `convert_quai_to_qi`).
-    pub kind: String,
-    /// SDK store holding custody (`quai` or `qi`).
-    pub store: String,
-    /// Source account address or `qi`.
-    pub account: String,
-    /// Status.
-    pub status: OpStatus,
-    /// Transaction hash once signed.
-    pub tx_hash: Option<String>,
-    /// Asset label (`QUAI`, `QI`, token symbol).
-    pub asset: String,
-    /// Amount in base units.
-    pub amount: String,
-    /// Destination or peer.
-    pub counterparty: String,
-    /// Fee (base units of the fee asset), when known.
-    pub fee: String,
-    /// JSON detail.
-    pub detail: serde_json::Value,
-    /// Created (unix seconds).
-    pub created: u64,
-    /// Updated (unix seconds).
-    pub updated: u64,
-}
+pub use quai_model::journal::{OpStatus, Operation};
 
 /// An observed incoming or external event.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -425,8 +312,8 @@ pub struct Activity {
     pub tx_hash: Option<String>,
     /// Block number.
     pub block: Option<u64>,
-    /// JSON detail.
-    pub detail: serde_json::Value,
+    /// Detail (stored as JSON).
+    pub detail: crate::journal::Detail,
     /// First observed (unix seconds).
     pub observed: u64,
 }
@@ -578,9 +465,42 @@ impl AppDb {
         if schema_objects(schema).contains(&"operations") {
             // Interval conversion schedules were removed (version 6); nothing reads their tables.
             tx.execute_batch("DROP TABLE IF EXISTS schedule_runs; DROP TABLE IF EXISTS schedules;")?;
+            // Version 8: notifications no longer carry what a sealed message said. Older builds
+            // stored it; `secure_delete` zeroes the old text's pages instead of leaving them free.
+            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            if version < 8 {
+                tx.pragma_update(None, "secure_delete", "ON")?;
+                tx.execute(
+                    "UPDATE notifications SET body=?1 WHERE level='chat' AND title NOT LIKE '#%' AND body<>?1",
+                    [crate::chat::REDACTED_NOTICE],
+                )?;
+                // A sealed message's review, text included, was journaled with its operation.
+                Self::redact_journaled_messages(&tx)?;
+            }
         }
         tx.pragma_update(None, "user_version", target)?;
         tx.commit()?;
+        // The redaction above went through the WAL; fold it into the file so the old text does
+        // not linger in the log.
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        Ok(())
+    }
+
+    /// Replace the text of every journaled sealed-message review with [`crate::tx::PRIVATE_FIELD`].
+    fn redact_journaled_messages(tx: &Connection) -> Result<()> {
+        let mut stmt = tx.prepare("SELECT id, detail FROM operations WHERE kind='board_post' AND json_extract(detail, '$.sealed')=1")?;
+        let rows =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        for (id, detail) in rows {
+            let Ok(mut detail) = serde_json::from_str::<crate::journal::Detail>(&detail) else { continue };
+            if let Some(fields) = detail.json_mut().pointer_mut("/review/fields").and_then(|f| f.as_array_mut()) {
+                for f in fields.iter_mut().filter(|f| f["label"] == "Message") {
+                    f["value"] = serde_json::json!(crate::tx::PRIVATE_FIELD);
+                }
+            }
+            detail.set_private_fields(serde_json::json!(["Message"]));
+            tx.execute("UPDATE operations SET detail=?1 WHERE id=?2", params![detail.to_string(), id])?;
+        }
         Ok(())
     }
 
@@ -701,8 +621,12 @@ impl AppDb {
     }
 
     /// Drop a cancelled journal row so its reservation id can be reused (nonce-gap repair).
-    pub fn remove_cancelled_operation(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM operations WHERE id=?1 AND status='cancelled'", params![id])?;
+    /// Make room for a new review under a reused reservation id: remove a row with that id that
+    /// never signed anything — cancelled, or left `prepared` by a process that stopped with a
+    /// review open (its reservation was released when the custody records were reconciled).
+    /// A row with a transaction hash is never touched.
+    pub fn remove_unsigned_operation(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM operations WHERE id=?1 AND tx_hash IS NULL AND status IN ('cancelled','prepared')", params![id])?;
         Ok(())
     }
 
@@ -819,9 +743,11 @@ impl AppDb {
     /// Insert a new operation.
     pub fn insert_operation(&self, op: &Operation) -> Result<()> {
         // Its timeline starts here; each status change adds a stage (see `update_operation`).
-        let mut detail = if op.detail.is_object() { op.detail.clone() } else { serde_json::json!({}) };
-        if detail.get(TIMELINE).is_none() {
-            detail[TIMELINE] = serde_json::json!([{"s": op.status.as_str(), "at": op.created}]);
+        let mut detail = op.detail.clone();
+        detail.json_mut();
+        detail.check_keys();
+        if detail.timeline().is_null() {
+            detail.set_timeline(serde_json::json!([{"s": op.status.as_str(), "at": op.created}]));
         }
         let op = &Operation { detail, ..op.clone() };
         self.conn.execute(
@@ -830,7 +756,7 @@ impl AppDb {
             params![
                 op.id,
                 op.network,
-                op.kind,
+                op.kind.as_str(),
                 op.store,
                 op.account,
                 op.status.as_str(),
@@ -854,7 +780,7 @@ impl AppDb {
         status: OpStatus,
         tx_hash: Option<&str>,
         fee: Option<&str>,
-        detail_patch: Option<&serde_json::Value>,
+        detail_patch: Option<&crate::journal::Detail>,
     ) -> Result<()> {
         self.write_operation(id, None, status, tx_hash, fee, detail_patch).map(|_| ())
     }
@@ -870,7 +796,7 @@ impl AppDb {
         to: OpStatus,
         tx_hash: Option<&str>,
         fee: Option<&str>,
-        detail_patch: Option<&serde_json::Value>,
+        detail_patch: Option<&crate::journal::Detail>,
     ) -> Result<bool> {
         self.write_operation(id, Some(from), to, tx_hash, fee, detail_patch)
     }
@@ -880,18 +806,14 @@ impl AppDb {
     pub fn record_signed_candidate(&self, id: &str, hash: &str, fee: Option<&str>) -> Result<()> {
         let tx = self.immediate()?;
         let mut op = Self::operation_in(&tx, id)?.ok_or_else(|| CoreError::NotFound(format!("operation {id}")))?;
-        if !op.detail.is_object() {
-            op.detail = serde_json::json!({});
+        if op.detail.original_tx().is_null() {
+            op.detail.set_original_tx(serde_json::json!(op.tx_hash));
         }
-        if op.detail.get("original_tx").is_none() {
-            op.detail["original_tx"] = serde_json::json!(op.tx_hash);
-        }
-        let mut candidates: Vec<String> =
-            op.detail.get("candidates").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        let mut candidates: Vec<String> = serde_json::from_value(op.detail.candidates().clone()).unwrap_or_default();
         if !candidates.iter().any(|candidate| candidate.eq_ignore_ascii_case(hash)) {
             candidates.push(hash.to_string());
         }
-        op.detail["candidates"] = serde_json::json!(candidates);
+        op.detail.set_candidates(serde_json::json!(candidates));
         if !(op.status.is_terminal() || matches!(op.status, OpStatus::Settling | OpStatus::Locked)) {
             op.status = OpStatus::Submitted;
             op.tx_hash = Some(hash.into());
@@ -914,7 +836,7 @@ impl AppDb {
         status: OpStatus,
         tx_hash: Option<&str>,
         fee: Option<&str>,
-        detail_patch: Option<&serde_json::Value>,
+        detail_patch: Option<&crate::journal::Detail>,
     ) -> Result<bool> {
         // `detail` is a JSON blob, so a patch is a read, a merge and a write. Read it under the
         // write lock: the tracker and the committing thread both patch operations, and in
@@ -924,15 +846,9 @@ impl AppDb {
         if expect.is_some_and(|e| e != op.status) {
             return Ok(false);
         }
-        if !op.detail.is_object() {
-            op.detail = serde_json::json!({});
-        }
-        if let Some(patch) = detail_patch.and_then(|p| p.as_object())
-            && let Some(obj) = op.detail.as_object_mut()
-        {
-            for (k, v) in patch {
-                obj.insert(k.clone(), v.clone());
-            }
+        if let Some(patch) = detail_patch {
+            patch.check_keys();
+            op.detail.merge(patch.clone());
         }
         // The timeline: a stage per status change, and a note when a replacement's hash won.
         let at = now();
@@ -946,7 +862,7 @@ impl AppDb {
             stages.push(serde_json::json!({"s": "replaced", "at": at, "tx": new}));
         }
         if !stages.is_empty() {
-            let timeline = op.detail.as_object_mut().map(|o| o.entry(TIMELINE).or_insert_with(|| serde_json::json!([])));
+            let timeline = op.detail.json_mut().as_object_mut().map(|o| o.entry(TIMELINE).or_insert_with(|| serde_json::json!([])));
             if let Some(serde_json::Value::Array(list)) = timeline {
                 list.extend(stages);
             }
@@ -979,7 +895,7 @@ impl AppDb {
                 amount: r.get(8)?,
                 counterparty: r.get(9)?,
                 fee: r.get(10)?,
-                detail: serde_json::Value::Null,
+                detail: crate::journal::Detail::from(serde_json::Value::Null),
                 created: r.get::<_, i64>(12)? as u64,
                 updated: r.get::<_, i64>(13)? as u64,
             },
@@ -991,7 +907,7 @@ impl AppDb {
     fn finish_op(raw: (Operation, String, String)) -> Result<Operation> {
         let (mut op, status, detail) = raw;
         op.status = OpStatus::parse(&status)?;
-        op.detail = serde_json::from_str(&detail).unwrap_or(serde_json::Value::Null);
+        op.detail = serde_json::from_str(&detail).unwrap_or(crate::journal::Detail::from(serde_json::Value::Null));
         Ok(op)
     }
 
@@ -1496,6 +1412,22 @@ impl AppDb {
     }
 }
 
+/// Pictures are remembered in the wallet's database.
+impl quai_feeds::media::MediaCache for AppDb {
+    fn media_get(&self, url: &str) -> Result<Option<(Option<String>, String, u64)>> {
+        AppDb::media_get(self, url)
+    }
+    fn media_put(&self, url: &str, hash: Option<&str>, error: &str) -> Result<()> {
+        AppDb::media_put(self, url, hash, error)
+    }
+    fn rendition_get(&self, hash: &str, size: u32) -> Result<Option<StoredRendition>> {
+        AppDb::rendition_get(self, hash, size)
+    }
+    fn rendition_put(&self, hash: &str, size: u32, width: u32, height: u32, png: &[u8], rgba: &[u8], dominant: u32) -> Result<()> {
+        AppDb::rendition_put(self, hash, size, width, height, png, rgba, dominant)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1504,7 +1436,7 @@ mod tests {
         Operation {
             id: id.into(),
             network: "orchard".into(),
-            kind: "send_quai".into(),
+            kind: crate::journal::OpKind::SendQuai,
             store: "quai".into(),
             account: "0xabc".into(),
             status,
@@ -1513,7 +1445,7 @@ mod tests {
             amount: "1".into(),
             counterparty: "0xdef".into(),
             fee: String::new(),
-            detail: serde_json::json!({"a":1}),
+            detail: serde_json::json!({"note":1}).into(),
             created: now(),
             updated: now(),
         }
@@ -1559,6 +1491,56 @@ mod tests {
         assert_eq!((schedules, version), (0, SCHEMA_VERSION), "the old table is gone and the version bumped");
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Older builds stored what a sealed message said in its notification. Opening such a
+    /// database removes that text, leaves public channel notices alone, and leaves no copy of
+    /// the old text in the file or its log.
+    #[test]
+    fn opening_an_old_database_removes_sealed_message_text_from_notifications() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.sqlite");
+        let secret = "meet at the usual place at nine";
+        {
+            let db = AppDb::open(&path).unwrap();
+            db.notify("chat", "Bob · sealed", &format!("bob: {secret}")).unwrap();
+            db.notify("chat", "#general", "alice: gm").unwrap();
+            db.notify("info", "Payment offer", "0.1 Qi waiting").unwrap();
+            // The sealed message's review, journaled with its operation, text and all.
+            let mut dm = op("dm1", OpStatus::Confirmed);
+            dm.kind = crate::journal::OpKind::BoardPost;
+            dm.detail = serde_json::json!({"sealed": true, "review": {"fields": [
+                {"label": "To", "value": "PM8T…abcd"}, {"label": "Message", "value": secret}]}})
+            .into();
+            db.insert_operation(&dm).unwrap();
+            let mut post = op("post1", OpStatus::Confirmed);
+            post.kind = crate::journal::OpKind::BoardPost;
+            post.detail = serde_json::json!({"channel": "general", "review": {"fields": [{"label": "Message", "value": "gm all"}]}}).into();
+            db.insert_operation(&post).unwrap();
+            db.conn.pragma_update(None, "user_version", 7).unwrap();
+            db.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        }
+        let db = AppDb::open(&path).unwrap();
+        let bodies: Vec<(String, String)> = db.notifications(10).unwrap().into_iter().rev().map(|n| (n.title, n.body)).collect();
+        assert_eq!(
+            bodies,
+            [
+                ("Bob · sealed".to_string(), crate::chat::REDACTED_NOTICE.to_string()),
+                ("#general".to_string(), "alice: gm".to_string()),
+                ("Payment offer".to_string(), "0.1 Qi waiting".to_string()),
+            ]
+        );
+        let fields = |id: &str| db.operation(id).unwrap().unwrap().detail.review()["fields"].clone();
+        assert_eq!(fields("dm1")[1]["value"], crate::tx::PRIVATE_FIELD, "the sealed message's text is gone from its operation");
+        assert_eq!(fields("dm1")[0]["value"], "PM8T…abcd", "the rest of the review stays");
+        assert_eq!(fields("post1")[0]["value"], "gm all", "a public post is public anyway");
+        // Checked while the database is still open, as it is under a running TUI or daemon:
+        // closing the last connection would checkpoint on its own and hide a missing step.
+        for file in ["app.sqlite", "app.sqlite-wal"] {
+            let bytes = std::fs::read(dir.path().join(file)).unwrap_or_default();
+            assert!(!bytes.windows(secret.len()).any(|w| w == secret.as_bytes()), "{file} still holds the old text");
+        }
+        drop(db);
     }
 
     #[test]
@@ -1766,7 +1748,7 @@ mod tests {
         let left: i64 =
             db.conn.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('schedules','schedule_runs')", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0);
-        assert_eq!(db.operation("aa11").unwrap().unwrap().kind, "convert_quai_to_qi", "history is kept");
+        assert_eq!(db.operation("aa11").unwrap().unwrap().kind.as_str(), "convert_quai_to_qi", "history is kept");
         db.insert_operation(&op("bb22", OpStatus::Signed)).unwrap();
     }
 
@@ -1791,7 +1773,7 @@ mod tests {
         db.insert_operation(&op("dd44", OpStatus::Submitted)).unwrap();
         db.insert_operation(&op("ee55", OpStatus::Confirmed)).unwrap();
         assert_eq!(db.awaiting_inclusion("orchard").unwrap().iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["dd44"]);
-        let patch = serde_json::json!({"included_block": 7});
+        let patch = crate::journal::Detail::from(serde_json::json!({"included_block": 7}));
         assert!(db.transition_operation("dd44", OpStatus::Submitted, OpStatus::Confirmed, None, None, Some(&patch)).unwrap());
         // A second tracker read it as submitted too: it neither moves it again nor puts it back.
         assert!(!db.transition_operation("dd44", OpStatus::Submitted, OpStatus::Confirmed, None, None, None).unwrap());
@@ -1799,7 +1781,7 @@ mod tests {
         let moved = db.operation("dd44").unwrap().unwrap();
         assert_eq!(moved.status, OpStatus::Confirmed);
         assert_eq!(moved.fee, "", "the late fee write did not land");
-        let stages: Vec<&str> = moved.detail[TIMELINE].as_array().unwrap().iter().filter_map(|s| s["s"].as_str()).collect();
+        let stages: Vec<&str> = moved.detail.timeline().as_array().unwrap().iter().filter_map(|s| s["s"].as_str()).collect();
         assert_eq!(stages, ["submitted", "confirmed"], "confirmed once, not twice");
         assert!(db.awaiting_inclusion("orchard").unwrap().is_empty());
     }
@@ -1809,10 +1791,22 @@ mod tests {
         let db = AppDb::memory().unwrap();
         db.insert_operation(&op("cc33", OpStatus::Signed)).unwrap();
         db.update_operation("cc33", OpStatus::Submitted, Some("0xhash"), None, None).unwrap();
-        db.update_operation("cc33", OpStatus::Submitted, Some("0xhash"), None, Some(&serde_json::json!({"x": 1}))).unwrap();
+        db.update_operation(
+            "cc33",
+            OpStatus::Submitted,
+            Some("0xhash"),
+            None,
+            Some(&crate::journal::Detail::from(serde_json::json!({"note": 1}))),
+        )
+        .unwrap();
         db.update_operation("cc33", OpStatus::Submitted, Some("0xother"), None, None).unwrap();
         db.update_operation("cc33", OpStatus::Confirmed, None, None, None).unwrap();
-        let stages: Vec<String> = db.operation("cc33").unwrap().unwrap().detail[TIMELINE]
+        let stages: Vec<String> = db
+            .operation("cc33")
+            .unwrap()
+            .unwrap()
+            .detail
+            .timeline()
             .as_array()
             .unwrap()
             .iter()
@@ -1821,16 +1815,44 @@ mod tests {
         assert_eq!(stages, ["signed", "submitted", "replaced", "confirmed"], "a patch alone adds no stage");
     }
 
+    /// A review left open by a process that stopped leaves a `prepared` row; the next review
+    /// under the same (released, reused) reservation id replaces it. A signed row never moves.
+    #[test]
+    fn a_reused_reservation_replaces_only_rows_that_never_signed() {
+        let db = AppDb::memory().unwrap();
+        db.insert_operation(&op("aa11", OpStatus::Prepared)).unwrap();
+        assert!(db.insert_operation(&op("aa11", OpStatus::Prepared)).is_err(), "the id is taken");
+        db.remove_unsigned_operation("aa11").unwrap();
+        db.insert_operation(&op("aa11", OpStatus::Prepared)).unwrap();
+        let mut signed = op("bb22", OpStatus::Submitted);
+        signed.tx_hash = Some("0xsigned".into());
+        db.insert_operation(&signed).unwrap();
+        db.remove_unsigned_operation("bb22").unwrap();
+        assert!(db.operation("bb22").unwrap().is_some(), "a signed row stays");
+        let mut prepared_with_hash = op("cc33", OpStatus::Prepared);
+        prepared_with_hash.tx_hash = Some("0xmaybe".into());
+        db.insert_operation(&prepared_with_hash).unwrap();
+        db.remove_unsigned_operation("cc33").unwrap();
+        assert!(db.operation("cc33").unwrap().is_some(), "a row with a hash may have been broadcast");
+    }
+
     #[test]
     fn operations_round_trip() {
         let db = AppDb::memory().unwrap();
         db.insert_operation(&op("aa11", OpStatus::Signed)).unwrap();
         db.insert_operation(&op("bb22", OpStatus::Confirmed)).unwrap();
-        db.update_operation("aa11", OpStatus::Submitted, Some("0xhash"), Some("5"), Some(&serde_json::json!({"b":2}))).unwrap();
+        db.update_operation(
+            "aa11",
+            OpStatus::Submitted,
+            Some("0xhash"),
+            Some("5"),
+            Some(&crate::journal::Detail::from(serde_json::json!({"label":2}))),
+        )
+        .unwrap();
         let got = db.operation("aa11").unwrap().unwrap();
         assert_eq!(got.status, OpStatus::Submitted);
-        assert_eq!(got.detail["a"], 1);
-        assert_eq!(got.detail["b"], 2);
+        assert_eq!(*got.detail.note(), 1);
+        assert_eq!(*got.detail.label(), 2);
         assert_eq!(db.open_operations("orchard").unwrap().len(), 1);
         assert_eq!(db.find_operation("orchard", "0xHASH").unwrap().id, "aa11");
         assert_eq!(db.clear_history("orchard").unwrap(), 1);

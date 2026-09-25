@@ -9,6 +9,12 @@
 > split swaps, and the automatic wrap before a trade have not: they are qualified by simulation
 > against the deployed contracts and by execution on a disposable local chain.
 >
+> **0.1.0-alpha.9's own transactions have not yet run on mainnet.** This version rebuilds how
+> transactions are built, reviewed and signed. Its swaps (with their approvals), adding and removing
+> liquidity, and QUAI → Qi conversion ran end to end on a local chain, and its reviews were checked
+> read-only against mainnet's contracts; the mainnet runs above were made with earlier versions.
+> Start with small amounts.
+>
 > **It has been reviewed, and not every finding is closed.** Several reviews have been run against
 > this code; some of what they raised is fixed and some is still open. Those reviews are not
 > published here, so treat this as software with known unfinished edges rather than as audited.
@@ -20,7 +26,7 @@ A self-custodial desktop wallet for both Quai ledgers (QUAI and Qi) on Cyprus-1.
 - a keyboard-first **TUI** (`quai-terminal` with no arguments), and
 - a scriptable **CLI** with JSON output and stable exit codes.
 
-It is built on [`quai-sdk 0.1.0-alpha.11`](https://crates.io/crates/quai-sdk). Feature scope follows Pelagus. **Not included yet:** offline signing, browser/dApp integration, and cross-zone sends or accounts.
+It is built on [`quai-sdk 0.1.0-alpha.14`](https://crates.io/crates/quai-sdk). Feature scope follows Pelagus. **Not included yet:** offline signing, browser/dApp integration, and cross-zone sends or accounts.
 
 It also connects to the Quai ecosystem: a USD **portfolio** with token prices, icons and value history (explorer.qu.ai), **token swaps** through Quainance, and **NFTs** (gallery, transfers, and buying Bazarr listings).
 
@@ -87,6 +93,7 @@ Secrets are never taken from arguments or environment variables:
 - The recovery phrase and private keys are read from a hidden prompt, or from piped stdin.
 - The wallet password comes from a hidden prompt or `--password-fd N`.
 - Every value-moving command prints a full review and asks for confirmation. `--yes` skips the prompt, never the review.
+- Every review is decoded from the transaction's own bytes and refused if they do not match what it says. A risky review (an unknown contract, an unlimited approval, a first payment to an address, half or more of the account) asks you to type short words such as `pay 5b32`. With `--yes`, add `--confirm "pay 5b32"`, or `--accept-risk` for a script that has already decided.
 
 Select a wallet with `-w NAME` and a network with `-n mainnet|orchard|<custom>`. Add `-o json` for machine output.
 
@@ -96,13 +103,15 @@ The TUI has seven sections with sub-tabs, down the rail on the left:
 
 | Key | Section | Sub-tabs (`[` / `]`) |
 | --- | --- | --- |
-| `1` | **Home** | Portfolio (total, 7-day value, the full holdings table, NFT strip, attention items, recent activity) · Qi coins (cash drawer, aggregate and sweep) · Accounts (with time-locked funds) |
-| `2` | **Markets** | Pairs (every Quainance market — main pools, graduated launches, tokens on their bonding curves — with candles and a live flow of every swap) · Launches (Quainance's launch zone: tokens on their bonding curve with where they stand on it, buy/sell/claim on the curve) · Pools (liquidity positions and gauge staking) |
-| `3` | **Trade** | Exchange (Swap, Convert QUAI ↔ Qi and Wrap on one card) · Orders (limit orders) · PnL |
-| `4` | **NFTs** | Collected · Explore (collections) · Listings (Bazarr) |
-| `5` | **People** | Contacts · Channels · Board (on-chain messages) |
+| `1` | **Home** | Portfolio (total, 7-day value, the full holdings table, NFT strip, attention items, recent activity) · Qi coins (cash drawer, aggregate and sweep; Pro) · Accounts (with time-locked funds) |
+| `2` | **Markets** (Pro) | Pairs (every Quainance market — main pools, graduated launches, tokens on their bonding curves — with candles and a live flow of every swap) · Launches (Quainance's launch zone: tokens on their bonding curve with where they stand on it, buy/sell/claim on the curve) · Pools (liquidity positions and gauge staking) |
+| `3` | **Trade** | Exchange (Swap, Convert QUAI ↔ Qi and Wrap on one card) · Orders (limit orders; Pro) · PnL (Pro) |
+| `4` | **NFTs** | Collected · Explore (collections; Pro) · Listings (Bazarr; Pro) |
+| `5` | **People** | Contacts (with the payment channels to them beneath) · Board (on-chain messages; with messaging on, `5` opens its inbox) |
 | `6` | **Activity** | All · Sends · Receipts · Trades · NFTs |
-| `0` | **System** | Wallets (switch, create, import) · Network (node health, hashrate per algorithm, transactions and gas paid per hour) · Settings · Data sources |
+| `0` | **System** | Wallets (switch, create, import) · Network (node health, hashrate per algorithm, transactions and gas paid per hour; Pro) · Settings · Data sources (Pro) |
+
+**Simple and Pro.** A new install starts in **Simple**: Home and Accounts, the Exchange, Collected NFTs, Contacts and messages, Activity, Wallets and Settings. **Pro** adds the trader's views (Markets, Pools, Launches, Orders, PnL), the NFT marketplace, the Qi coin list, Network and Data sources. Switch in System › Settings › Mode, with `:pro` / `:simple` in the command palette, or `quai-terminal config set mode pro`. A configuration from before this choice existed stays Pro. Simple's exchange speaks of QUAI and Qi: WQUAI and WQI are steps a route takes, offered to pick only when you hold them.
 
 Every screen uses the same keys for the same things. `space` opens the actions for what is selected, with that screen's own letters (on Pools, `h` harvests), and `?` lists the keys for the screen you are on. The mouse works too: click, scroll and hover. The wallet has the mouse, so the terminal's own link handling doesn't see it: on an address or transaction hash, ctrl+click opens it in the explorer and alt+click copies it (hovering shows which). Hold shift to select text with the terminal instead.
 
@@ -124,6 +133,7 @@ Every screen uses the same keys for the same things. `space` opens the actions f
 | `/` / `,` / `.` / `f` | search / sort / view / flip |
 | `R` / `ctrl-r` | reload / full refresh |
 | `N` / `W` / `$` | notifications / wallets / hide or show the balance |
+| `@` | the account that acts: cards, sends and trades start from it (`account use N` on the command line) |
 | `ctrl-l` | lock |
 | `?` | the rest of this screen's keys, and what its words mean (`g` for the whole glossary) |
 | `q` | quit |
@@ -152,7 +162,17 @@ Every screen uses the same keys for the same things. `space` opens the actions f
 
 **Layouts.** Settings › Layout: `auto` (the trader layout from 200 columns), `standard`, `trader` (Markets beside the swap card from 140 columns, so the chart stays in view while you trade) or `focus` (no section sidebar).
 
-**Chat while you trade.** On the Board, `P` pins a channel or a sealed conversation beside every other screen (a column on the right when the terminal is wide, a strip along the bottom otherwise), and it has its own message box: Tab reaches it after the screen's last pane or card field (or `` ` `` jumps straight in), typing goes into the box, Enter posts it through the usual review, and Tab or Esc return to the screen with an unsent draft kept. `n` subscribes: each new message from someone else becomes a notification saying who said what (`●` marks subscribed chats). Channels already followed start subscribed. The daemon checks channels every poll, even when locked, and sealed conversations while unlocked; without a daemon the TUI checks every 30 seconds. `board subscribe NAME` (`--dm` for a payment code or contact), `board subscriptions`, `board pin`, `board news`.
+**Private messages.** Messaging is off until you turn it on (System › Settings), and its cryptography has not yet had an independent review. People › Board lists private conversations under the public channels. Each message is encrypted to one person (HPKE with weekly keys). On chain, anyone sees that your messaging address sent something, when, and roughly how big, but not who it was for. How it works:
+
+- **Its own account.** Messages and board posts go from an account you choose for messaging, never your main one, so they are not tied to what that account holds. Choose it on the Board: the *messaging account* row lists your other accounts (or makes a new one), and shows its balance, fingerprint and this week's key. `F` funds it from there. That transfer is public and links the two accounts.
+- **Keys never leave this computer.** They are not in backups: a restore starts a new messaging identity with no history.
+- **Weekly keys.** A new key is published in any week you use messaging (`K`, or automatically before your first message that week). Old keys are deleted two weeks after they are replaced, so a key stolen later cannot read what was sent before.
+- **Anyone can write to you.** People you have not accepted wait under *requests*. They never notify, and their messages show only when you open them: `a` accepts, `B` blocks.
+- **Fingerprints.** Compare them with `v`. If someone's identity key changes, sending stops until you accept the change (`T`).
+
+Accepted conversations notify with "who and how many", never the text. CLI: `message setup ACCOUNT`, `status`, `fund AMOUNT`, `keys`, `send PEER` (the text is typed or piped, never an argument), `read`, `list`, `requests`, `accept`, `block`, `unblock`, `verify`, `trust`, `sync`. Conversations from before this format (payment codes) stay readable under *old · read-only* (`board inbox`). Nothing new is written in that format.
+
+**Chat while you trade.** On the Board, `P` pins a channel or a private conversation beside every other screen (a column on the right when the terminal is wide, a strip along the bottom otherwise), and it has its own message box: Tab reaches it after the screen's last pane or card field (or `` ` `` jumps straight in), typing goes into the box, Enter posts it through the usual review, and Tab or Esc return to the screen with an unsent draft kept. `n` subscribes a channel: each new message from someone else becomes a notification saying who said what (`●` marks subscribed chats). Private conversations need no subscription. The daemon checks channels every poll, even when locked, and private conversations while unlocked; without a daemon the TUI checks every 30 seconds. `board subscribe NAME`, `board subscriptions`, `board pin`, `board news`.
 
 **Wallets at a glance.** System › Wallets shows every wallet on this computer with its value, QUAI, Qi and largest holdings, and their total, without unlocking any of them. QUAI is read live from each wallet's public addresses; the rest is from when that wallet was last priced.
 
@@ -178,7 +198,7 @@ Every screen uses the same keys for the same things. `space` opens the actions f
 - **Encrypted backups:** keys, custody state, contacts and history in one file. `wallet backup`, `verify-backup` and `restore`.
 - **Quai accounts:** add, label, archive, discover used accounts; token import, balances, transfers, approvals, allowances, revocation.
 - **Qi:** gap-50 and deep scans, coin view with denominations, fresh single-use and mining addresses, imported Qi keys, denomination-preserving and aggregate consolidation.
-- **Private payments (BIP47 payment codes):** send to a code (with optional mailbox notification), peers and channel scans. While unlocked, the TUI and daemon read the Pelagus mailbox every ~90 s and rescan known channels for later payments (`payment sync` does it on demand). Mailbox announcements are unauthenticated, so a sender you have never added is not registered on its own: if Qi is waiting on its channel it becomes an **offer** in People › Channels (`payment offers`), which you accept (`enter`, `payment accept CODE`) or decline (`x`, `payment decline CODE`). You are notified of an offer once 1 Qi or more is waiting; smaller offers are listed quietly.
+- **Private payments (BIP47 payment codes):** send to a code (with optional mailbox notification), peers and channel scans. While unlocked, the TUI and daemon read the Pelagus mailbox every ~90 s and rescan known channels for later payments (`payment sync` does it on demand). Mailbox announcements are unauthenticated, so a sender you have never added is not registered on its own: if Qi is waiting on its channel it becomes an **offer** in People › Contacts, in the channels pane (`payment offers`), which you accept (`enter`, `payment accept CODE`) or decline (`x`, `payment decline CODE`). You are notified of an offer once 1 Qi or more is waiting; smaller offers are listed quietly.
 - **Conversions:** quotes with the node's discounted estimate (also for watch-only wallets), batch-discount (refund-risk) scenarios, suggested slippage and, on mainnet, the explorer's step-by-step preview (flow discount, kQuai, 10% floor); QUAI→Qi and Qi→QUAI; settlement and lock tracking.
 - **Wrapping:** Qi → WQI in two steps, as in Pelagus: a Qi transaction to the WQI contract, then `claimDeposit` once the protocol backing settles (Home shows "ready to claim"). WQI → Qi redeems whole Qi to a fresh Qi address, where it arrives locked. QUAI ↔ WQUAI deposit and withdraw. On mainnet the WQI and WQUAI bytecode is checked against pinned hashes before any review. `wrap status/qi/claim/unwrap-qi/quai/unwrap-quai`.
 - **Portfolio:** every holding with a USD price and value, allocation, 24h change, 7-day value history, token icons and trust markers (`✓` verified or curated, `⚠` unverified, `◈` protocol-derived Qi price, `◔` stale). Discovered token balances are re-read on-chain. NFTs are listed separately and never added to the total. `portfolio`, `price`, `token discover`.
@@ -192,7 +212,7 @@ Every screen uses the same keys for the same things. `space` opens the actions f
 - **Transactions:** journaled operations, confirmation and settlement tracking, rebroadcast, speed-up by replacement, incoming activity. A rejected review releases its nonce; the next account transaction reuses it automatically (`tx fill-gap` fills one explicitly, e.g. before a conversion).
 - **Networks:** mainnet and Orchard built in; custom networks are pinned by chain id and genesis, with node health checks and fee caps. `network monitor <id> <url>` adds a monitoring endpoint (your own node, say) that every read goes to; it must report the same chain id and genesis, and broadcasts always go to the main RPC. Reviews read from it too, and a review warns first when it is 3 or more blocks behind the main RPC.
 - **Scripting:** `--json` on any command (same as `--output json`). `send batch FILE.csv` sends to many recipients: `to,amount[,asset]` per line; it prepares and shows every send, with its warnings and what leaves in total, asks once, sends in order and stops at the first failure (`--dry-run` signs nothing).
-- **Daemon:** there is nothing to set up. Opening the terminal starts a background daemon that watches every wallet on this computer (balances, activity, Qi, alerts, subscribed chats, desktop notifications, the status file), and each wallet you unlock in the terminal is unlocked in the daemon too, so its interval conversions and sealed chats keep going after you quit. Quitting leaves it running and says so; `quai-terminal daemon stop` stops it. A daemon left over from an older build is replaced automatically by the next terminal you open (wallets it held unlocked are locked by the restart and handed over again as you unlock them). The password hand-off is checked before anything is sent: the socket and its directory must be yours alone, and the process on the other end must run as you (the kernel's `SO_PEERCRED`) and be the daemon holding the lock; it is sent once, never stored, and wiped from memory on both sides, and the daemon answers only its own user (Linux; elsewhere `daemon run` asks in its own terminal). For the rest there are commands, none of them needed: `daemon status`, `start`, `stop`, `unlock` / `lock` (by hand, `-w NAME` for one wallet), `run` (the same loop in the foreground) and `unit` (a systemd user unit). Settings can turn off the autostart or the hand-off. Its log is `daemon.log` in the data directory. OSC 9/99 terminal notifications and `notify-send`; `status --format waybar` for Waybar.
+- **Daemon:** there is nothing to set up. Opening the terminal starts a background daemon, and the terminal is its client: the wallet engine runs in the daemon, so your password is checked there and the unlocked keys are held there for that terminal alone, never in the terminal's own process (`--standalone` keeps the engine in the terminal instead). The daemon also reads markets, NFTs and prices for every open terminal, with one set of caches and request budgets between them, and watches every wallet on this computer (balances, activity, Qi, alerts, subscribed chats, desktop notifications, the status file). A wallet unlocked in the terminal is unlocked for that watch too, so its interval conversions and private messages keep going after you quit; Settings can turn that off. If the daemon stops, the terminal locks at once, says why and reconnects. Quitting leaves the daemon running and says so; `quai-terminal daemon stop` stops it. A daemon left over from an older build is replaced by the next terminal you open. The socket and its directory must be yours alone, every connection's peer must run as you (the kernel's `SO_PEERCRED`), and the terminal talks only to the daemon holding the lock; the password is sent once, never stored, and wiped on both sides. For the rest there are commands, none of them needed: `daemon status`, `start`, `stop`, `unlock` / `lock` (by hand, `-w NAME` for one wallet), `run` (the same loop in the foreground) and `unit` (a systemd user unit). Its log is `daemon.log` in the data directory. OSC 9/99 terminal notifications and `notify-send`; `status --format waybar` for Waybar.
 
 ## Data and security
 
@@ -200,7 +220,8 @@ Every screen uses the same keys for the same things. `space` opens the actions f
 - **Layout:** each wallet has a vault, public metadata, and per-network SQLite stores. Stores are scoped by chain id and genesis, so data from one network can never be used on another.
 - **Shared market cache:** `shared.sqlite` at the data root holds the market data that is the same for every wallet — prices, the pool directories, listings and their previews, candles, the DEX tape — so several wallets (and the daemon) fetch it once. It never holds anything that says which wallet asked: holdings, history, a wallet's NFTs and everything else address-linked stay in that wallet's own files. Delete it any time; it refills.
 - **Vault encryption:** Argon2id (256 MiB, t=3, p=4 for new vaults; a re-seal never lowers a vault's cost) with XChaCha20-Poly1305. The file is written atomically with mode 0600.
-- **Locking:** keys stay in memory only while the wallet is unlocked, and are zeroized on lock.
+- **Locking:** keys stay in memory only while the wallet is unlocked, in the daemon's engine (or the terminal's, with `--standalone`), and are zeroized on lock.
+- **Pictures:** every image from the explorer, IPFS or a token list is decoded in a fresh helper process that holds no keys, with resource limits and, on Linux, a seccomp allowlist. The wallet takes back raw pixels only, checks their size and encodes them itself; a picture that crashes or stalls the helper shows a monogram.
 - **Displayed data:** token names, symbols and other on-chain strings are treated as untrusted display text.
 - **Reviews read the chain:** nothing a review asserts comes from a cache. Pinned contract bytecode, pair addresses, balances and allowances are read first-hand every time a review is prepared.
 - **Third-party data:** explorer.qu.ai (mainnet) and orchard.quaiscan.io (Orchard) see the addresses you look up and your IP; the first mainnet use says so once. Requests go through per-host budgets (explorer.qu.ai 60/min, the Bazarr indexer 30/min), with 2 MB JSON and 8 MB image caps. Indexer data never reaches signing: reviews use node state, and contract calls carry a node-discovered access list shown in the review.
@@ -211,7 +232,7 @@ Decided, and not planned for a later release:
 
 - **Bridging.** Quainance's Symbiosis routes need a signature on Base or Ethereum. This wallet holds Quai keys only, and taking custody of EVM keys would change its threat model.
 - **Launching tokens.** Launches can be browsed and traded on their bonding curves (Trade › Launches), but the wallet does not create them.
-- **Sealed messages from unlinked addresses.** A sealed message is posted from one of your own accounts, so the board shows which address sent it, even though no one else can read it. Posting from an address with no on-chain link to you would need gas that reaches it without leaving a link, and the wallet does not attempt that.
+- **Private messages from unlinked addresses.** A private message is posted from your messaging account. That account is not your main one, but funding it links the two on chain. Posting from an address with no on-chain link to you would need gas that reaches it without leaving a link, and the wallet does not attempt that.
 
 ## Known limitations
 
@@ -228,8 +249,14 @@ Decided, and not planned for a later release:
 ## Repository layout
 
 ```
-crates/wallet-vault   encrypted vault, atomic private file writes
-crates/wallet-core    sessions, registry, operations, tracking, backups, explorer, portfolio,
-                      swaps, routing, liquidity, gauge staking, NFT market, media pipeline (CLI/TUI shared)
-crates/quai-terminal    the binary: clap CLI, daemon, notifications, ratatui TUI
+crates/quai-model      domain types: amounts, chain, errors, the operation journal
+crates/quai-venues     the venue table, capabilities and pinned contracts (no node, no store)
+crates/quai-feeds      untrusted inputs: HTTP, explorer, IPFS, pictures (decoded in a sandboxed helper)
+crates/quai-messaging  the message board format and the private-message wire format
+crates/wallet-vault    encrypted vault, atomic private file writes
+crates/wallet-core     sessions, registry, custody, operations, tracking, backups, portfolio,
+                       swaps, routing, liquidity, gauge staking, NFT market
+crates/quai-engine     the engine: worker, plans, resources, the socket protocol the daemon serves
+crates/quai-terminal   the binary: clap CLI, daemon, notifications, ratatui TUI
 ```
+Each crate depends only on those below it; a test enforces that.

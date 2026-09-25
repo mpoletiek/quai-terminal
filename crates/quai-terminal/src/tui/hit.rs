@@ -29,6 +29,8 @@ pub enum ListId {
     Glossary,
     /// The wallet switcher.
     Wallets,
+    /// The account picker.
+    Accounts,
     /// The action sheet.
     Sheet,
 }
@@ -45,6 +47,8 @@ pub enum ReviewPart {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderPart {
     Wallet,
+    /// The account that acts, beside the wallet's name.
+    Account,
     Network,
     Unread,
 }
@@ -95,7 +99,7 @@ pub enum Target {
     },
     Button(Button),
     /// A go-to destination.
-    Route(super::app::Screen),
+    Route(super::keymap::Place),
     /// Inside a modal, nothing clickable: the click is used up.
     Swallow,
     /// Outside the open modal.

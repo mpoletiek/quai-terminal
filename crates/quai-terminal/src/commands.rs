@@ -124,7 +124,7 @@ impl Ctx {
             self.out.review(&review);
             eprintln!("  reads: {} · broadcast: {}", network::rpc_origin(read_url), network::rpc_origin(&session.network.rpc_url));
         }
-        let validation = (|| -> Result<()> {
+        let validation = (|| -> Result<Option<String>> {
             self.config.require_execution_transport(&session.network)?;
             if let Some(path) = &self.global.authorization_policy {
                 let mut bytes = Vec::new();
@@ -135,13 +135,44 @@ impl Ctx {
                 let policy: AuthorizationPolicy = serde_json::from_slice(&bytes)?;
                 policy.check(&session.meta.id, &session.network, &op, &review, now())?;
             }
-            prompt::confirm("Sign and broadcast?", "yes", self.global.yes)
+            match &review.confirm {
+                // A risky review: the words replace the plain "yes".
+                Some(phrase) => {
+                    // The words given on the command line are the typed confirmation, checked by
+                    // the commit like any other.
+                    if let Some(words) = &self.global.confirm_words {
+                        return Ok(Some(words.clone()));
+                    }
+                    if !self.global.yes {
+                        eprintln!("  this review {}", review.risks.join("; "));
+                        return Ok(Some(prompt::line(&format!("Type `{phrase}` to sign (anything else cancels)"))?));
+                    }
+                    // `--yes` alone never signs a risky review: the script must also say it accepts
+                    // the risk, or hold an authorization policy naming this exact digest.
+                    if self.global.accept_risk || self.global.authorization_policy.is_some() {
+                        return Ok(Some(phrase.clone()));
+                    }
+                    Err(CoreError::Rejected(format!(
+                        "this review needs its typed confirmation: add --confirm \"{phrase}\" (or --accept-risk) to --yes"
+                    )))
+                }
+                None => prompt::confirm("Sign and broadcast?", "yes", self.global.yes).map(|()| None),
+            }
         })();
-        if let Err(e) = validation {
-            let _ = session.discard(&review.op_id);
-            return Err(e);
+        let typed = match validation {
+            Ok(typed) => typed,
+            Err(e) => {
+                let _ = session.discard(&review.op_id);
+                return Err(e);
+            }
+        };
+        match session.commit_with(&review.op_id, typed.as_deref()).await {
+            Err(e @ CoreError::Rejected(_)) if review.confirm.is_some() => {
+                let _ = session.discard(&review.op_id);
+                Err(e)
+            }
+            other => other,
         }
-        session.commit(&review.op_id).await
     }
 
     pub fn print_submitted(&self, command: &str, s: &Submitted) {
@@ -199,7 +230,7 @@ impl AuthorizationPolicy {
             || !self.genesis.eq_ignore_ascii_case(&network.genesis)
             || self.network_id != op.network
             || !has(&self.accounts, &op.account)
-            || !self.kinds.contains(&op.kind)
+            || !self.kinds.iter().any(|kind| kind == op.kind.as_str())
             || op.kind != review.kind
             || !has(&self.destinations, &review.to)
             || digest.is_empty()
@@ -427,7 +458,7 @@ pub async fn wallet(ctx: &mut Ctx, cmd: WalletCmd) -> Result<()> {
             let ks_password = prompt::new_secret("Keystore password", 8)?;
             let encrypted = wallet_core::sdk::keystore::encrypt(&key, wallet_core::sdk::keystore::Password::Text(&ks_password))
                 .map_err(|e| CoreError::Invalid(format!("keystore: {e}")))?;
-            wallet_vault::write_private_atomic(&out, encrypted.as_json().as_bytes())?;
+            wallet_vault::write_private_atomic(&out, encrypted.as_json().as_bytes()).map_err(|e| CoreError::Storage(e.to_string()))?;
             done(ctx, "wallet export-keystore", json!({"file": out}), &format!("wrote {}", out.display()))
         }
         WalletCmd::ImportKey { label } => {
@@ -613,8 +644,18 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
     match cmd {
         AccountCmd::List { all } => {
             let meta = ctx.meta()?;
+            let active = meta.default_quai_account().ok().map(|a| a.address.clone());
+            let is_active = |a: &wallet_core::registry::QuaiAccount| active.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(&a.address));
             let rows: Vec<_> = meta.quai_accounts.iter().filter(|a| all || !a.archived).collect();
             if ctx.out.json() {
+                let rows: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|a| {
+                        let mut v = serde_json::to_value(a).unwrap_or_default();
+                        v["active"] = json!(is_active(a));
+                        v
+                    })
+                    .collect();
                 ctx.out.emit("account list", &rows);
                 return Ok(());
             }
@@ -623,7 +664,7 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
                 .enumerate()
                 .map(|(i, a)| {
                     vec![
-                        (i + 1).to_string(),
+                        if is_active(a) { format!("{}*", i + 1) } else { (i + 1).to_string() },
                         a.label.clone(),
                         a.address.clone(),
                         a.hd_index.map_or("imported".into(), |i| format!("m/44'/994'/0'/0/{i}")),
@@ -643,6 +684,16 @@ pub async fn account(ctx: &Ctx, cmd: AccountCmd) -> Result<()> {
             let mut s = ctx.session().await?;
             let address = s.add_watch_address(&address, label.as_deref())?;
             done(ctx, "account watch", json!({"address": address}), &format!("watching {address}"))
+        }
+        AccountCmd::Use { account } => {
+            let mut s = ctx.session().await?;
+            let chosen = s.set_active_account(&account)?;
+            done(
+                ctx,
+                "account use",
+                json!({"active": chosen.address, "label": chosen.label}),
+                &format!("{} acts from now on", chosen.label),
+            )
         }
         AccountCmd::Rename { account, label } => {
             let mut s = ctx.session().await?;
@@ -1440,10 +1491,8 @@ pub async fn tx(ctx: &Ctx, cmd: TxCmd) -> Result<()> {
                 );
             }
             println!("  created    {}", ts(op.created));
-            if let Some(obj) = op.detail.as_object() {
-                for (k, v) in obj {
-                    println!("  {:<10} {}", k, v);
-                }
+            for (k, v) in op.detail.entries() {
+                println!("  {:<10} {}", k, v);
             }
             Ok(())
         }
@@ -2386,7 +2435,7 @@ mod tests {
         let mut op = wallet_core::appdb::Operation {
             id: "op".into(),
             network: network.id.clone(),
-            kind: "send_quai".into(),
+            kind: wallet_core::journal::OpKind::SendQuai,
             store: "quai".into(),
             account: "0x0011".into(),
             status: OpStatus::Prepared,
@@ -2395,7 +2444,7 @@ mod tests {
             amount: "100".into(),
             counterparty: "0x0022".into(),
             fee: "10".into(),
-            detail: json!({}),
+            detail: json!({}).into(),
             created: 100,
             updated: 100,
         };
@@ -2417,6 +2466,8 @@ mod tests {
             visuals: vec![],
             fee_over_policy: false,
             changes: vec![],
+            risks: vec![],
+            confirm: None,
         };
         let policy: AuthorizationPolicy = serde_json::from_value(json!({
             "version": 1, "wallet_id": "wallet", "network_id": network.id, "chain_id": network.chain_id,

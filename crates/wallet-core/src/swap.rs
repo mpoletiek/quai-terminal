@@ -13,7 +13,9 @@ use crate::appdb::AppDb;
 use crate::chain::{addr, interface};
 use crate::data::{DataCtx, READ_CALLER, Trust, verify_pinned_all, with_access_list};
 use crate::error::{CoreError, Result};
+use crate::journal::OpKind;
 use crate::markets::Venue;
+use crate::network::PinTrust;
 use crate::network::{NetworkProfile, Node, PinnedContract};
 use crate::registry::now;
 use crate::session::Session;
@@ -516,25 +518,12 @@ struct VenueRouter {
 
 /// The pins of an exchange's router and factory on a network.
 pub fn venue_pins(network: &NetworkProfile, venue: Venue) -> Option<(&PinnedContract, &PinnedContract)> {
-    let eco = &network.ecosystem;
-    match venue {
-        Venue::Main => Some((eco.quainance_router.as_ref()?, eco.quainance_factory.as_ref()?)),
-        Venue::LaunchAmm => Some((eco.launch_amm_router.as_ref()?, eco.launch_amm_factory.as_ref()?)),
-        Venue::Legacy => Some((eco.legacy_router.as_ref()?, eco.legacy_factory.as_ref()?)),
-        Venue::HartiiAmm => Some((eco.hartii_amm_router.as_ref()?, eco.hartii_amm_factory.as_ref()?)),
-        Venue::Curve => None,
-    }
+    crate::venues::kind(venue).pins(&network.ecosystem)
 }
 
-/// Where a UniswapV2 factory keeps `getPair[a][b]`: slot 2 on Quainance and the legacy exchange,
-/// slot 4 on the launch AMM and Hartii's. Read against `getPair` at the same block on mainnet
-/// (2026-09-23); the live test `a_route_s_output_is_proven_from_its_pools` reads it again.
+/// Where a UniswapV2 factory keeps `getPair[a][b]` (`venues::Amm::get_pair_slot`).
 pub fn get_pair_slot(venue: Venue) -> Option<u64> {
-    match venue {
-        Venue::Main | Venue::Legacy => Some(2),
-        Venue::LaunchAmm | Venue::HartiiAmm => Some(4),
-        Venue::Curve => None,
-    }
+    crate::venues::amm(venue).map(|a| a.get_pair_slot)
 }
 /// A UniswapV2 pair's `token0`, `token1`, and `reserve0 | reserve1 | blockTimestampLast` packed
 /// 112/112/32; the same on every venue here.
@@ -730,16 +719,14 @@ impl<'a> Router<'a> {
                 verify_venue(app, node, network, venue, router, factory, wquai, trust).await.map(Some)
             }
         };
-        let (main, launch, legacy, hartii, multicall) = futures::join!(
-            verify(Venue::Main),
-            verify(Venue::LaunchAmm),
-            verify(Venue::Legacy),
-            verify(Venue::HartiiAmm),
+        let every: Vec<Venue> = crate::venues::routable().collect();
+        let (verified, multicall) = futures::join!(
+            futures::future::join_all(every.iter().map(|v| verify(*v))),
             crate::multicall::Multicall::on(app, node, network, trust),
         );
         let mut venues = Vec::new();
         let mut verification_warnings = Vec::new();
-        for (venue, result) in [(Venue::Main, main), (Venue::LaunchAmm, launch), (Venue::Legacy, legacy), (Venue::HartiiAmm, hartii)] {
+        for (venue, result) in every.into_iter().zip(verified) {
             match result {
                 Ok(Some(router)) => venues.push(router),
                 Ok(None) => {}
@@ -1723,14 +1710,14 @@ impl Session {
             let call = Erc20::new(addr(address)?, &self.node.provider)?.approve(addr(&quote.router)?, allowance)?;
             let call = with_access_list(&self.node.provider, addr(&owner.address)?, call).await?;
             return self.prepare_account(AccountRequest {
-                from: owner, intent: call.into_account_intent(), kind: "approve".into(),
+                from: owner, intent: call.into_account_intent(), kind: OpKind::Approve,
                 title: if reset { format!("Clear {symbol} allowance before exact-output swap") } else { format!("Approve {symbol} exact-output input cap") },
                 asset: symbol.clone(), amount: allowance, decimals: *decimals, counterparty: quote.router.clone(),
                 fields: vec![field("Token contract", address.clone()), field("Spender", quote.router.clone()),
                     field("Allowance", format!("{} {symbol}", amount::format_amount(allowance, *decimals))),
                     field("Maximum swap input", amount::format_amount(maximum, *decimals))],
                 warnings: vec!["This approval does not execute the swap; review again after its receipt. Unspent authorized allowance may remain after execution.".into()],
-                detail: json!({"token": address, "decimals": decimals, "purpose": "swap_exact_output", "spender": quote.router}),
+                detail: json!({"token": address, "decimals": decimals, "purpose": "swap_exact_output", "spender": quote.router}).into(),
                 max_gas: 120_000, max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
             }).await;
         }
@@ -1751,7 +1738,7 @@ impl Session {
             "Only required input is transferred; the unused cap remains in your wallet and some allowance may remain."
         };
         self.prepare_account(AccountRequest {
-            from: owner, intent: call.into_account_intent(), kind: "swap_exact_output".into(),
+            from: owner, intent: call.into_account_intent(), kind: OpKind::SwapExactOutput,
             title: format!("Receive exactly {} {}", amount::format_amount(u(&quote.amount_out), quote.to.decimals()), quote.to.symbol()),
             asset: quote.from.symbol().into(), amount: maximum, decimals: quote.from.decimals(), counterparty: quote.router.clone(),
             fields: vec![field("Mode", "Exact output; atomic maximum input"),
@@ -1770,7 +1757,7 @@ impl Session {
                         "amount": quote.maximum_input, "estimated": false, "note": "at most; unused input stays or is refunded"},
                     {"direction": "in", "asset": quote.to.symbol(), "token": token(&quote.to), "decimals": quote.to.decimals(),
                         "amount": quote.amount_out, "minimum": quote.amount_out, "estimated": false, "note": "exact recipient output"}
-                ]}),
+                ]}).into(),
             max_gas: 400_000 + 150_000 * quote.path.len().saturating_sub(1) as u64,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         }).await
@@ -1907,16 +1894,38 @@ impl Session {
             let approved = if reset { U256::ZERO } else { input };
             let call = Erc20::new(addr(address)?, &self.node.provider)?.approve(addr(&quote.router)?, approved)?;
             let call = with_access_list(&self.node.provider, addr(&owner.address)?, call).await?;
-            return self.prepare_account(AccountRequest {
-                from: owner, intent: call.into_account_intent(), kind: "approve".into(),
-                title: format!("{} {} for split allocation {} of {}", if reset { "Clear allowance for" } else { "Approve" }, symbol, index + 1, plan.allocations.len()),
-                asset: symbol.clone(), amount: approved, decimals: *decimals, counterparty: quote.router.clone(),
-                fields: vec![field("Token contract", address.clone()), field("Spender", quote.router.clone()),
-                    field("Exact allowance", amount::format_amount(approved, *decimals)), field("Split allocation", format!("{} of {}", index + 1, plan.allocations.len()))],
-                warnings: vec!["This is a separately reviewed sequential allocation; earlier confirmed fills cannot be rolled back.".into()],
-                detail: json!({"token": address, "decimals": decimals, "spender": quote.router, "purpose": "split_swap", "split": context}),
-                max_gas: 120_000, max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
-            }).await;
+            return self
+                .prepare_account(AccountRequest {
+                    from: owner,
+                    intent: call.into_account_intent(),
+                    kind: OpKind::Approve,
+                    title: format!(
+                        "{} {} for split allocation {} of {}",
+                        if reset { "Clear allowance for" } else { "Approve" },
+                        symbol,
+                        index + 1,
+                        plan.allocations.len()
+                    ),
+                    asset: symbol.clone(),
+                    amount: approved,
+                    decimals: *decimals,
+                    counterparty: quote.router.clone(),
+                    fields: vec![
+                        field("Token contract", address.clone()),
+                        field("Spender", quote.router.clone()),
+                        field("Exact allowance", amount::format_amount(approved, *decimals)),
+                        field("Split allocation", format!("{} of {}", index + 1, plan.allocations.len())),
+                    ],
+                    warnings: vec![
+                        "This is a separately reviewed sequential allocation; earlier confirmed fills cannot be rolled back.".into(),
+                    ],
+                    detail:
+                        json!({"token": address, "decimals": decimals, "spender": quote.router, "purpose": "split_swap", "split": context})
+                            .into(),
+                    max_gas: 120_000,
+                    max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
+                })
+                .await;
         }
         quote.warnings.push(format!(
             "Split allocation {} of {}: independently confirmed; no atomic combined-output guarantee. Preserve earlier fills on failure.",
@@ -2014,7 +2023,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from: from_account,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: format!("Approve {symbol} for swap (step 1 of 2)"),
             asset: symbol.clone(),
             amount: atoms,
@@ -2026,7 +2035,7 @@ impl Session {
                 field("Allowance", format!("exactly {} {symbol}", amount::format_amount(atoms, decimals))),
             ],
             warnings: quote.warnings.clone(),
-            detail: json!({"token": address, "decimals": decimals, "purpose": "swap", "spender": router.to_string()}),
+            detail: json!({"token": address, "decimals": decimals, "purpose": "swap", "spender": router.to_string()}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })
@@ -2179,7 +2188,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from: from_account,
             intent: call.into_account_intent(),
-            kind: "swap".into(),
+            kind: OpKind::Swap,
             title: format!("Swap {} → {}", quote.from.symbol(), quote.to.symbol()),
             asset: quote.from.symbol().to_string(),
             amount: amount_in,
@@ -2205,7 +2214,7 @@ impl Session {
                     {"direction":"in","asset":quote.to.symbol(),"token":to_address,"decimals":to_decimals,"amount":quote.amount_out,"minimum":quote.minimum_out,"estimated":true,"note":"router enforces received balance"}
                 ],
                 "split": split,
-            }),
+            }).into(),
             max_gas: 400_000 + 150_000 * quote.pools.len() as u64,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
         })

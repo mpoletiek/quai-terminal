@@ -10,29 +10,29 @@ pub fn draw_wallets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::registry::WalletKind;
     use wallet_core::sdk::U256;
     // QUAI's price, to carry a wallet's summary forward to its live QUAI balance.
-    let quai_usd = app.eco.portfolio.as_ref().and_then(|p| p.rows.iter().find(|r| r.key == AssetKey::Quai)).and_then(|r| r.price_usd);
+    let quai_usd = app.eco.feeds.portfolio.value().and_then(|p| p.rows.iter().find(|r| r.key == AssetKey::Quai)).and_then(|r| r.price_usd);
     // Value: the last priced total, moved by however much QUAI has changed since.
     let value = |id: &str| -> Option<f64> {
-        let s = app.wallet_summaries.get(id)?;
+        let s = app.cockpit.summaries.get(id)?;
         let then = amount::to_f64(s.quai.parse::<U256>().unwrap_or_default(), 18);
-        let now = app.wallet_quai.get(id).map(|q| amount::to_f64(*q, 18));
+        let now = app.cockpit.quai.get(id).map(|q| amount::to_f64(*q, 18));
         Some(match (now, quai_usd) {
             (Some(n), Some(price)) => (s.total_usd + (n - then) * price).max(0.0),
             _ => s.total_usd,
         })
     };
-    let total: f64 = app.wallets.iter().filter_map(|w| value(&w.id)).sum();
-    let title = if app.wallets.len() > 1 && total > 0.0 {
-        format!("wallets on this computer · {} · {} together", app.wallets.len(), amount::usd(total))
+    let total: f64 = app.cockpit.list.iter().filter_map(|w| value(&w.id)).sum();
+    let title = if app.cockpit.list.len() > 1 && total > 0.0 {
+        format!("wallets on this computer · {} · {} together", app.cockpit.list.len(), amount::usd(total))
     } else {
         "wallets on this computer".to_string()
     };
     // The list takes the rows it has; the selected wallet's detail goes beside it on a wide
     // terminal and under it otherwise.
     let (area, column) = super::super::ui::with_inspector(app, area);
-    let list_h = if app.wallets.is_empty() { 7 } else { app.wallets.len() as u16 + 3 }.min(area.height);
+    let list_h = if app.cockpit.list.is_empty() { 7 } else { app.cockpit.list.len() as u16 + 3 }.min(area.height);
     let [area, rest] = Layout::vertical([Constraint::Length(list_h), Constraint::Min(0)]).areas(area);
-    if let Some(w) = app.wallets.get(app.selected) {
+    if let Some(w) = app.cockpit.list.get(app.nav.selected) {
         match column {
             Some(column) => draw_wallet_inspector(f, app, t, column, w, value(&w.id)),
             None if rest.height >= 8 => draw_wallet_inspector(f, app, t, rest, w, value(&w.id)),
@@ -42,17 +42,21 @@ pub fn draw_wallets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, &title, true);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if app.wallets.is_empty() {
+    if app.cockpit.list.is_empty() {
         return empty(f, inner, t, Icon::Wallet, "No wallets yet.", &[("a", "create one"), ("space i", "import a phrase")]);
     }
     let open = app.meta.as_ref().map(|m| m.id.clone());
     let wide = inner.width >= 120;
     let now = wallet_core::registry::now();
     let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-    let offset = app.list_window(app.main_list(), app.selected, app.wallets.len(), body.height as usize);
-    app.hits.borrow_mut().rows(app.main_list(), body, offset, app.wallets.len(), |i| app.wallets.get(i).map(|w| w.id.clone()));
+    let offset = app.list_window(app.main_list(), app.nav.selected, app.cockpit.list.len(), body.height as usize);
+    app.input
+        .hits
+        .borrow_mut()
+        .rows(app.main_list(), body, offset, app.cockpit.list.len(), |i| app.cockpit.list.get(i).map(|w| w.id.clone()));
     let rows: Vec<Row> = app
-        .wallets
+        .cockpit
+        .list
         .iter()
         .enumerate()
         .skip(offset)
@@ -70,8 +74,8 @@ pub fn draw_wallets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 _ => Span::styled("", t.dim_style()),
             };
             let kind = if wide { kind } else { kind.split(' ').next_back().unwrap_or(kind) };
-            let summary = app.wallet_summaries.get(&w.id);
-            let live = app.wallet_quai.get(&w.id);
+            let summary = app.cockpit.summaries.get(&w.id);
+            let live = app.cockpit.quai.get(&w.id);
             let quai = match (live, summary) {
                 (Some(q), _) => Span::styled(amount::group_thousands(&amount::format_amount_short(*q, 18, 2)), t.text_style()),
                 (None, Some(s)) => Span::styled(
@@ -99,7 +103,7 @@ pub fn draw_wallets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             }
             cells.push(Cell::from(note));
             let row = Row::new(cells);
-            if i == app.selected.min(app.wallets.len() - 1) { row.style(t.selected()) } else { row }
+            if i == app.nav.selected.min(app.cockpit.list.len() - 1) { row.style(t.selected()) } else { row }
         })
         .collect();
     let mut widths = vec![
@@ -156,7 +160,7 @@ fn draw_wallet_inspector(f: &mut Frame, app: &App, t: &Theme, area: Rect, w: &wa
         holds.push(format!("{} watched", amount::count(w.watch.len(), "address|addresses")));
     }
     lines.push(kv("holds", plain(holds.join(" · "))));
-    let summary = app.wallet_summaries.get(&w.id);
+    let summary = app.cockpit.summaries.get(&w.id);
     if let Some(v) = value {
         lines.push(kv("value", vec![Span::styled(amount::usd(v), t.strong_style())]));
     }

@@ -1,6 +1,7 @@
 //! Owner-scoped pending financial commitments shared by all sessions under one data root.
 use crate::appdb::{AppDb, Operation};
 use crate::error::{CoreError, Result};
+use crate::journal::{Detail, OpKind};
 use crate::session::Session;
 use crate::tx::FinancialEffect;
 use quai_sdk::{BlockTag, QuaiAddress, U256};
@@ -23,12 +24,13 @@ fn add(a: U256, b: U256) -> Result<U256> {
     a.checked_add(b).ok_or_else(|| CoreError::Insufficient("pending commitments exceed supported amount range".into()))
 }
 impl Commitments {
-    pub(crate) fn from_intent(kind: &str, amount: &str, native: U256, fee: U256, detail: &serde_json::Value) -> Result<Self> {
+    pub(crate) fn from_intent(kind: &OpKind, amount: &str, native: U256, fee: U256, detail: &Detail) -> Result<Self> {
         let mut out = Self { native_value: native.to_string(), fee: fee.to_string(), ..Self::default() };
-        if kind == "approve" || kind.starts_with("approve_") {
+        if *kind == OpKind::Approve || matches!(kind, OpKind::Other(name) if name.starts_with("approve_")) {
             return Ok(out);
         }
-        if let Some(effects) = detail.get("financial_effects") {
+        let effects = detail.financial_effects();
+        if !effects.is_null() {
             for effect in serde_json::from_value::<Vec<FinancialEffect>>(effects.clone())? {
                 if effect.direction != "out" || effect.token.eq_ignore_ascii_case("quai") || effect.token.is_empty() {
                     continue;
@@ -42,40 +44,36 @@ impl Commitments {
             return Ok(out);
         }
         let field = match kind {
-            "send_token" | "curve_sell" => Some("token"),
-            "swap" | "swap_exact_output" => Some("from_token"),
-            "stake" | "remove_liquidity" => Some("pair"),
-            "incentivize" => Some("reward"),
-            "unwrap_wqi" | "unwrap_quai" => Some("contract"),
+            OpKind::SendToken | OpKind::CurveSell => Some(detail.token()),
+            OpKind::Swap | OpKind::SwapExactOutput => Some(detail.from_token()),
+            OpKind::Stake | OpKind::RemoveLiquidity => Some(detail.pair()),
+            OpKind::Incentivize => Some(detail.reward()),
+            OpKind::UnwrapWqi | OpKind::UnwrapQuai => Some(detail.contract()),
             _ => None,
         };
         if let Some(field) = field {
-            match detail.get(field).and_then(|v| v.as_str()) {
+            match field.as_str() {
                 Some(token) if token.eq_ignore_ascii_case("quai") => (),
                 Some(token) => {
                     let token: QuaiAddress = token.parse().map_err(|_| CoreError::Storage("invalid pending debit token".into()))?;
-                    let debit = if kind == "unwrap_wqi" { quai_sdk::wrappers::qits_to_wqi_atoms(atoms(amount)?)? } else { atoms(amount)? };
+                    let debit =
+                        if *kind == OpKind::UnwrapWqi { quai_sdk::wrappers::qits_to_wqi_atoms(atoms(amount)?)? } else { atoms(amount)? };
                     out.tokens.insert(token.to_string().to_lowercase(), debit.to_string());
                 }
                 None => out.unknown_assets = true,
             }
         }
-        if matches!(kind, "contract_call" | "recovered") {
+        if matches!(kind, OpKind::ContractCall | OpKind::Recovered) {
             out.unknown_assets = true;
         }
         Ok(out)
     }
     pub(crate) fn from_operation(op: &Operation) -> Result<Self> {
-        let mut value = if let Some(saved) = op.detail.get("commitments") {
+        let saved = op.detail.commitments();
+        let mut value = if !saved.is_null() {
             serde_json::from_value(saved.clone())?
         } else {
-            Self::from_intent(
-                &op.kind,
-                &op.amount,
-                atoms(op.detail.get("native_value").and_then(|v| v.as_str()).unwrap_or("0"))?,
-                atoms(&op.fee)?,
-                &op.detail,
-            )?
+            Self::from_intent(&op.kind, &op.amount, atoms(op.detail.native_value().as_str().unwrap_or("0"))?, atoms(&op.fee)?, &op.detail)?
         };
         // Fee replacement candidates are mutually exclusive. One family reserves the largest fee.
         value.fee = atoms(&value.fee)?.max(atoms(&op.fee)?).to_string();
@@ -184,7 +182,7 @@ impl Session {
                     }
                     // Only a same-block observed consumed nonce proves this debit is already
                     // reflected by the observed balance; cached receipt status is insufficient.
-                    let nonce = op.detail.get("nonce").and_then(|n| n.as_u64()).or_else(|| nonces.get(&op.id).copied());
+                    let nonce = op.detail.nonce().as_u64().or_else(|| nonces.get(&op.id).copied());
                     if nonce.zip(confirmed_nonce).is_some_and(|(nonce, confirmed)| nonce < confirmed) {
                         continue;
                     }
@@ -381,31 +379,44 @@ mod tests {
     #[test]
     fn legacy_wqi_redemption_commitment_uses_token_atoms_not_qits() {
         let token = "0x00000000000000000000000000000000000000ab";
-        let legacy = Commitments::from_intent("unwrap_wqi", "2000", U256::ZERO, U256::ZERO, &json!({"contract":token})).unwrap();
+        let legacy = Commitments::from_intent(
+            &crate::journal::OpKind::UnwrapWqi,
+            "2000",
+            U256::ZERO,
+            U256::ZERO,
+            &crate::journal::Detail::from(json!({"contract":token})),
+        )
+        .unwrap();
         assert_eq!(legacy.tokens[token], "2000000000000000000");
-        let effects =
-            json!({"financial_effects":[{"direction":"out","asset":"WQI","token":token,"decimals":18,"amount":"2000000000000000000"}]});
-        assert_eq!(Commitments::from_intent("unwrap_wqi", "2000", U256::ZERO, U256::ZERO, &effects).unwrap().tokens, legacy.tokens);
+        let effects = crate::journal::Detail::from(
+            json!({"financial_effects":[{"direction":"out","asset":"WQI","token":token,"decimals":18,"amount":"2000000000000000000"}]}),
+        );
+        assert_eq!(
+            Commitments::from_intent(&crate::journal::OpKind::UnwrapWqi, "2000", U256::ZERO, U256::ZERO, &effects).unwrap().tokens,
+            legacy.tokens
+        );
     }
 
     #[test]
     fn exact_token_debits_native_value_and_replacement_fee_are_not_approvals_or_double_counted() {
-        let detail = json!({"financial_effects":[
+        let detail = crate::journal::Detail::from(json!({"financial_effects":[
             {"direction":"out","asset":"QUAI","token":"quai","decimals":18,"amount":"100"},
             {"direction":"out","asset":"T","token":TOKEN,"decimals":6,"amount":"50"},
             {"direction":"out","asset":"T","token":TOKEN,"decimals":6,"amount":"20"},
-            {"direction":"in","asset":"T","token":TOKEN,"decimals":6,"amount":"999"}]});
-        let effects = Commitments::from_intent("swap_exact_output", "70", U256::from(100), U256::from(5), &detail).unwrap();
+            {"direction":"in","asset":"T","token":TOKEN,"decimals":6,"amount":"999"}]}));
+        let effects =
+            Commitments::from_intent(&crate::journal::OpKind::SwapExactOutput, "70", U256::from(100), U256::from(5), &detail).unwrap();
         assert_eq!(effects.native().unwrap(), U256::from(105));
         assert_eq!(effects.tokens[TOKEN], "70");
-        let approval = Commitments::from_intent("approve", &U256::MAX.to_string(), U256::ZERO, U256::from(3), &detail).unwrap();
+        let approval =
+            Commitments::from_intent(&crate::journal::OpKind::Approve, &U256::MAX.to_string(), U256::ZERO, U256::from(3), &detail).unwrap();
         assert!(approval.tokens.is_empty());
         assert_eq!(approval.native().unwrap(), U256::from(3));
         let (_dir, session) = fixture();
         let owner = &session.meta.quai_accounts[0].address;
         let mut op = session.new_op(
             ReservationId([1; 16]),
-            "swap_exact_output",
+            OpKind::SwapExactOutput,
             "quai",
             owner,
             "T",
@@ -425,7 +436,7 @@ mod tests {
         for (n, status) in [(1, OpStatus::Prepared), (2, OpStatus::Unknown), (3, OpStatus::Cancelled), (4, OpStatus::Confirmed)] {
             let mut op = session.new_op(
                 ReservationId([n; 16]),
-                "send_token",
+                OpKind::SendToken,
                 "quai",
                 &owner,
                 "T",
@@ -437,7 +448,14 @@ mod tests {
             op.status = status;
             session.journal(op).unwrap();
         }
-        let wanted = Commitments::from_intent("send_token", "50", U256::ZERO, U256::from(3), &json!({"token":TOKEN})).unwrap();
+        let wanted = Commitments::from_intent(
+            &crate::journal::OpKind::SendToken,
+            "50",
+            U256::ZERO,
+            U256::from(3),
+            &crate::journal::Detail::from(json!({"token":TOKEN})),
+        )
+        .unwrap();
         let second =
             Session::open(session.registry.clone(), session.config.clone(), session.meta.clone(), session.network.clone()).unwrap();
         let (native, tokens) = second.pending_commitments(&owner, "new", &wanted).unwrap();
@@ -455,11 +473,26 @@ mod tests {
     fn unknown_contract_debits_block_other_prepared_spends() {
         let (_dir, session) = fixture();
         let owner = &session.meta.quai_accounts[0].address;
-        let mut op =
-            session.new_op(ReservationId([9; 16]), "contract_call", "quai", owner, "QUAI", U256::ZERO, TOKEN, json!({"native_value":"0"}));
+        let mut op = session.new_op(
+            ReservationId([9; 16]),
+            OpKind::ContractCall,
+            "quai",
+            owner,
+            "QUAI",
+            U256::ZERO,
+            TOKEN,
+            json!({"native_value":"0"}),
+        );
         op.fee = "5".into();
         session.journal(op).unwrap();
-        let wanted = Commitments::from_intent("send_quai", "1", U256::from(1), U256::from(1), &json!({})).unwrap();
+        let wanted = Commitments::from_intent(
+            &crate::journal::OpKind::SendQuai,
+            "1",
+            U256::from(1),
+            U256::from(1),
+            &crate::journal::Detail::from(json!({})),
+        )
+        .unwrap();
         assert!(session.pending_commitments(owner, "new", &wanted).unwrap_err().to_string().contains("unknown asset debits"));
     }
 
@@ -469,7 +502,14 @@ mod tests {
         let owner = session.meta.quai_accounts[0].address.clone();
         let id = ReservationId([50; 16]);
         session.quai_store.reserve_nonce(id, owner.parse().unwrap(), 0).unwrap();
-        let wanted = Commitments::from_intent("send_quai", "1", U256::from(1), U256::from(1), &json!({})).unwrap();
+        let wanted = Commitments::from_intent(
+            &crate::journal::OpKind::SendQuai,
+            "1",
+            U256::from(1),
+            U256::from(1),
+            &crate::journal::Detail::from(json!({})),
+        )
+        .unwrap();
         assert!(session.pending_commitments(&owner, "new", &wanted).unwrap_err().to_string().contains("no financial journal"));
         session.quai_store.release_unsigned(id).unwrap();
         assert_eq!(session.pending_commitments(&owner, "new", &wanted).unwrap().0, U256::from(2));
@@ -487,7 +527,7 @@ mod tests {
         use crate::anchor::tests::PROVEN_OWNER;
         let mut op = session.new_op(
             ReservationId([n; 16]),
-            "send_quai",
+            OpKind::SendQuai,
             "quai",
             PROVEN_OWNER,
             "QUAI",
@@ -513,7 +553,9 @@ mod tests {
         use crate::anchor::tests::PROVEN_OWNER;
         let (_dir, session, log) = proving().await;
         let quai = U256::from(10u64).pow(U256::from(18));
-        let wanted = Commitments::from_intent("send_quai", "1", quai, U256::ZERO, &json!({})).unwrap();
+        let wanted =
+            Commitments::from_intent(&crate::journal::OpKind::SendQuai, "1", quai, U256::ZERO, &crate::journal::Detail::from(json!({})))
+                .unwrap();
         session.check_commitments(PROVEN_OWNER, "new", &wanted).await.unwrap();
         let asked = methods(&log);
         assert!(asked.contains(&"quai_getProof".to_string()), "{asked:?}");
@@ -537,7 +579,14 @@ mod tests {
         use crate::anchor::tests::{PROVEN_OWNER, TOKEN_BALANCE};
         let (_dir, session, log) = proving().await;
         let spend = |atoms: u64| {
-            Commitments::from_intent("send_token", &atoms.to_string(), U256::ZERO, U256::ZERO, &json!({"token": TOKEN})).unwrap()
+            Commitments::from_intent(
+                &crate::journal::OpKind::SendToken,
+                &atoms.to_string(),
+                U256::ZERO,
+                U256::ZERO,
+                &crate::journal::Detail::from(json!({"token": TOKEN})),
+            )
+            .unwrap()
         };
         session.check_commitments(PROVEN_OWNER, "new", &spend(TOKEN_BALANCE)).await.unwrap();
         let block = crate::anchor::tests::captured()["header"]["woHeader"]["number"].as_str().unwrap().to_string();
@@ -642,7 +691,8 @@ mod tests {
         let mut plan =
             crate::plans::TradePlan::new(session.network.id.clone(), owner.clone(), "order".into(), json!({"client":"order"})).unwrap();
         session.app.save_trade_plan(&mut plan).unwrap();
-        let mut op = session.new_op(ReservationId([60; 16]), "swap", "quai", &owner, "T", U256::from(5), TOKEN, json!({"plan_id":plan.id}));
+        let mut op =
+            session.new_op(ReservationId([60; 16]), OpKind::Swap, "quai", &owner, "T", U256::from(5), TOKEN, json!({"plan_id":plan.id}));
         op.fee = "3".into();
         let id = op.id.clone();
         session.journal(op).unwrap();

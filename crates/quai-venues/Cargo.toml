@@ -1,0 +1,13 @@
+[package]
+name = "quai-venues"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Quai Terminal's venues: where a trade can happen, what each venue can do, and the contracts each is pinned to. Tables only: no node, no store, no keys."
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

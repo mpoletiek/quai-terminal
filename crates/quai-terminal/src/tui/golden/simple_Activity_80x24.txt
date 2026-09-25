@@ -1,0 +1,24 @@
+ ◆  PREVIEW │ 1 3 4 5 6 Activity 0 │ ● Local dev │ watch-only     ● 1 unread N
+ Activity ·  All   Sends   Receipts   Trades   NFTs   [ ]
+┌ ▸ activity · all ────────────────────────────────────────────────────────────┐
+│   when   what                     status                   gas tx            │
+│ 0 2h   ↘ received Quai Miners #12 ✓ received                   0x1           │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ detail ──────────────────────────────────────────────────────────────────────┐
+│ ↘ received <0.0001 QM                                                        │
+│ to            0x00                                                           │
+│ value         ◌ reading…                                                     │
+│ gas           ◌ reading…                                                     │
+│ tx            0x1                                                            │
+│ block         1                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter detail  y copy  space actions  : palette  ? more

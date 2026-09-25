@@ -14,7 +14,9 @@
 use crate::chain::{addr, interface};
 use crate::data::{DataCtx, READ_CALLER};
 use crate::error::{CoreError, Result, approval_needed};
+use crate::journal::OpKind;
 use crate::multicall::{Arg, Call, Multicall, word};
+use crate::network::PinTrust;
 use crate::network::PinnedContract;
 use crate::session::Session;
 use crate::tx::{AccountRequest, Review, field};
@@ -494,7 +496,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "curve_buy".into(),
+            kind: OpKind::CurveBuy,
             title: format!("Buy {symbol} on its bonding curve"),
             asset: "QUAI".into(),
             amount: gross,
@@ -506,7 +508,7 @@ impl Session {
                 {"direction":"out","asset":"QUAI","token":"quai","decimals":18,"amount":gross.to_string(),"estimated":false,"note":"maximum payment including fees and any credit retained on the curve"},
                 {"direction":"in","asset":symbol,"token":token,"decimals":decimals,"amount":tokens.to_string(),"minimum":min_tokens.to_string(),"estimated":true,"note":"tokens delivered to signer"},
                 {"direction":"in","asset":"QUAI curve credit","token":"quai","decimals":18,"amount":excess.to_string(),"estimated":true,"note":"requires a separate claim"}
-            ]}),
+            ]}).into(),
             max_gas: 400_000,
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -572,7 +574,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "curve_sell".into(),
+            kind: OpKind::CurveSell,
             title: format!("Sell {symbol} to its bonding curve"),
             asset: symbol.to_string(),
             amount: atoms,
@@ -594,7 +596,7 @@ impl Session {
             detail: json!({"expires_at": deadline, "token": token, "curve": address.to_string(), "decimals": decimals, "recipient":owner.to_string(), "financial_effects":[
                 {"direction":"out","asset":symbol,"token":token,"decimals":decimals,"amount":atoms.to_string(),"estimated":false,"note":"maximum tokens sold; unused tokens remain"},
                 {"direction":"in","asset":"QUAI curve credit","token":"quai","decimals":18,"amount":credit.to_string(),"minimum":min_credit.to_string(),"estimated":true,"note":"requires a separate claim"}
-            ]}),
+            ]}).into(),
             max_gas: 300_000,
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -627,7 +629,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from,
             intent: call.into_account_intent(),
-            kind: "approve".into(),
+            kind: OpKind::Approve,
             title: format!("Approve {symbol} for its curve (step 1 of 2)"),
             asset: symbol.to_string(),
             amount: atoms,
@@ -639,7 +641,7 @@ impl Session {
                 field("Allowance", format!("exactly {} {symbol}", crate::amount::format_amount(atoms, decimals))),
             ],
             warnings: vec![],
-            detail: json!({"token": token, "purpose": "curve_sell", "spender": address.to_string(), "decimals": decimals}),
+            detail: json!({"token": token, "purpose": "curve_sell", "spender": address.to_string(), "decimals": decimals}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })
@@ -673,7 +675,7 @@ impl Session {
         self.prepare_account(AccountRequest {
             from: from.clone(),
             intent: call.into_account_intent(),
-            kind: "curve_claim".into(),
+            kind: OpKind::CurveClaim,
             title: format!("Claim QUAI from {symbol}'s curve"),
             asset: "QUAI".into(),
             amount: owed,
@@ -687,7 +689,7 @@ impl Session {
             warnings: vec![],
             detail: json!({"token": token, "curve": address.to_string(), "recipient":owner.to_string(), "financial_effects":[
                 {"direction":"in","asset":"QUAI","token":"quai","decimals":18,"amount":owed.to_string(),"estimated":true,"note":"claim of current curve credit"}
-            ]}),
+            ]}).into(),
             max_gas: 120_000,
             max_fee: self.parse_fee_cap(max_fee, crate::amount::QUAI_DECIMALS)?,
         })

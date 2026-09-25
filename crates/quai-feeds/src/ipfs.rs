@@ -27,7 +27,7 @@
 //! commits to the raw bytes (a `raw` block hashed with SHA-256, the common `bafkrei…` form), what
 //! comes back is checked against it, and content that does not match is refused.
 
-use crate::error::{CoreError, Result};
+use quai_model::error::{CoreError, Result};
 use sha2::Digest;
 use std::sync::RwLock;
 
@@ -188,8 +188,8 @@ impl Cid {
 pub const UNIXFS_BLOCK: usize = 262_144;
 
 /// The dag-pb block for a small file, for tests that need to compute a CID the way IPFS would.
-#[cfg(test)]
-pub(crate) fn unixfs_block_for_test(bytes: &[u8]) -> Vec<u8> {
+#[doc(hidden)]
+pub fn unixfs_block_for_test(bytes: &[u8]) -> Vec<u8> {
     unixfs_file_block(bytes)
 }
 
@@ -381,8 +381,8 @@ fn slot(content: Content) -> &'static RwLock<Option<Gateway>> {
 }
 
 /// Tests that read or change the process-wide gateway take this, so they do not race.
-#[cfg(test)]
-pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[doc(hidden)]
+pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Use this gateway for every fetch of `content` in the process from now on (None or empty: the
 /// built-in default for that content). Unlike the proxy, it can change while running: a picture

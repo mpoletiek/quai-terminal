@@ -18,10 +18,10 @@
                       ││   Terminal bell on good news     ○ off                                    │
    [ ] tabs           ││                                                                           │
                       ││ Features                                                                  │
+                      ││   Mode                           pro  ›  adds markets, pools, launches, o │
                       ││   Messaging                      ● on · board, sealed DMs, chat dock      │
                       ││   Trading                        ● on · markets, swap, pools, launches    │
-                      ││   NFTs                           ● on · collected, explore, listings      │
-                      ││   ↓ 10 more                                                               │
+                      ││   ↓ 11 more                                                               │
                       │└───────────────────────────────────────────────────────────────────────────┘
                       │┌ environment ──────────────────────────────────────────────────────────────┐
                       ││ terminal      xterm-256color · block QR codes · 24-bit color              │

@@ -51,7 +51,7 @@ pub struct DashboardCache {
 }
 
 /// A Qi coin for display.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoinView {
     /// `txhash:index`.
     pub outpoint: String,
@@ -62,7 +62,7 @@ pub struct CoinView {
     /// Denomination index.
     pub denomination: u8,
     /// Unlock height.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub unlock_height: U256,
     /// Held by a pending wallet operation.
     pub reserved: bool,
@@ -76,7 +76,7 @@ pub struct CoinView {
 }
 
 /// Qi summary.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QiSummary {
     /// Exact buckets.
     pub balance: QiBalanceView,
@@ -87,22 +87,22 @@ pub struct QiSummary {
 }
 
 /// Serializable Qi balance buckets (Qits).
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct QiBalanceView {
     /// Total.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub total: U256,
     /// Spendable.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub spendable: U256,
     /// Reserved by pending operations.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub reserved: U256,
     /// Locked.
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub locked: U256,
     /// Expired (not evaluated without a trim profile).
-    #[serde(serialize_with = "crate::ser::u256")]
+    #[serde(serialize_with = "crate::ser::u256", deserialize_with = "crate::ser::de_u256")]
     pub expired: U256,
 }
 
@@ -159,10 +159,12 @@ pub struct Session {
     pub qi_store: SqliteStore,
     /// App database.
     pub app: AppDb,
-    pub(crate) unlocked: Option<Unlocked>,
+    /// This wallet's keys, shared with every other session of it in this process.
+    pub(crate) custody: std::sync::Arc<crate::custody::Custody>,
     pub(crate) pending: HashMap<String, crate::tx::Pending>,
     pub(crate) preparing_plan: Option<String>,
-    unlocked_at: u64,
+    /// Reviews that need a typed confirmation, by operation id: the words to type.
+    pub(crate) confirmations: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for Session {
@@ -170,8 +172,25 @@ impl std::fmt::Debug for Session {
         f.debug_struct("Session")
             .field("wallet", &self.meta.name)
             .field("network", &self.network.id)
-            .field("unlocked", &self.unlocked.is_some())
+            .field("unlocked", &self.custody.is_unlocked())
             .finish()
+    }
+}
+
+/// Open a wallet store, retrying a first open that raced another. Switching a new store to WAL
+/// needs it to itself for a moment; when another session holds it, SQLite answers with the old
+/// journal mode instead of waiting, and the SDK reports a database failure. Opening is idempotent
+/// (the schema is created in one transaction), so trying again is safe.
+fn open_store(path: &std::path::Path, scope: quai_sdk::wallet::storage::NetworkScope) -> Result<SqliteStore> {
+    let mut attempt = 0u64;
+    loop {
+        match SqliteStore::open(path, scope) {
+            Err(quai_sdk::wallet::storage::StorageError::Database) if attempt < 8 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+            }
+            other => return Ok(other?),
+        }
     }
 }
 
@@ -197,13 +216,15 @@ impl Session {
     /// Open a wallet on a network. No network access occurs.
     pub fn open(registry: Registry, config: AppConfig, meta: WalletMeta, network: NetworkProfile) -> Result<Self> {
         let meta = registry.load(&meta.id)?;
+        let id = meta.id.clone();
         let dir = registry.paths().network_dir(&meta.id, &network.id);
         crate::paths::ensure_private_dir(&dir)?;
         let scope = network.scope()?;
-        let quai_store = SqliteStore::open(dir.join("quai.sqlite"), scope)?;
-        let qi_store = SqliteStore::open(dir.join("qi.sqlite"), scope)?;
+        let quai_store = open_store(&dir.join("quai.sqlite"), scope)?;
+        let qi_store = open_store(&dir.join("qi.sqlite"), scope)?;
         let app = AppDb::open(&registry.paths().wallet_dir(&meta.id).join("app.sqlite"))?;
         let rpc = network.node()?;
+        let custody = crate::custody::for_wallet_in(registry.custody_scope(), &id);
         let mut session = Self {
             registry,
             config,
@@ -216,10 +237,10 @@ impl Session {
             quai_store,
             qi_store,
             app,
-            unlocked: None,
+            custody,
             pending: HashMap::new(),
             preparing_plan: None,
-            unlocked_at: 0,
+            confirmations: HashMap::new(),
         };
         session.sync_metadata()?;
         session.reconcile_custody()?;
@@ -329,6 +350,24 @@ impl Session {
 
     /// Register every wallet account/key with the SDK stores for this network.
     pub fn sync_metadata(&mut self) -> Result<()> {
+        // Every session of a wallet does this as it opens, and they open together (the worker
+        // and its lanes, the daemon's watcher): whoever registers the addresses first moves the
+        // store on, and the others see a stale snapshot. They re-read and find nothing missing.
+        for attempt in 1..=8u64 {
+            if self.sync_metadata_once()? {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5 * attempt));
+        }
+        Err(CoreError::Storage("wallet state: another session kept changing it".into()))
+    }
+
+    /// One try at [`Session::sync_metadata`]: false when another session registered first.
+    fn sync_metadata_once(&mut self) -> Result<bool> {
+        let stale = |e: quai_sdk::wallet::storage::StorageError| match e {
+            quai_sdk::wallet::storage::StorageError::StaleSnapshot => Ok(false),
+            other => Err(CoreError::from(other)),
+        };
         let registered: std::collections::HashSet<Address> = self.quai_store.addresses()?.iter().map(PublicAddress::address).collect();
         let quai_account = self.meta.quai_account()?;
         let mut missing = Vec::new();
@@ -352,7 +391,9 @@ impl Session {
         }
         if !missing.is_empty() {
             let generation = self.quai_store.snapshot()?.generation;
-            self.quai_store.import_metadata(generation, &missing)?;
+            if let Err(e) = self.quai_store.import_metadata(generation, &missing) {
+                return stale(e);
+            }
         }
         let registered_qi: std::collections::HashSet<Address> = self.qi_store.addresses()?.iter().map(PublicAddress::address).collect();
         let mut missing_qi = Vec::new();
@@ -366,9 +407,11 @@ impl Session {
         }
         if !missing_qi.is_empty() {
             let generation = self.qi_store.snapshot()?.generation;
-            self.qi_store.import_metadata(generation, &missing_qi)?;
+            if let Err(e) = self.qi_store.import_metadata(generation, &missing_qi) {
+                return stale(e);
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
     // ---------------- lock state ----------------
@@ -379,8 +422,7 @@ impl Session {
         let (meta, unlocked) = self.registry.unlock_current(&self.meta.id, password)?;
         self.meta = meta;
         self.sync_metadata()?;
-        self.unlocked = Some(unlocked);
-        self.unlocked_at = now();
+        self.custody.install(unlocked);
         Ok(())
     }
 
@@ -388,43 +430,61 @@ impl Session {
     /// this session is doing. They must come from this session's own vault: the caller matches
     /// the wallet id before handing them over.
     pub fn use_keys(&mut self, unlocked: Unlocked) {
-        self.unlocked = Some(unlocked);
-        self.unlocked_at = now();
+        self.custody.install(unlocked);
     }
 
-    /// A copy of this session's keys for another session of the same wallet (see
-    /// [`Unlocked::duplicate`]); `None` while locked.
-    pub fn duplicate_keys(&self) -> Option<Unlocked> {
-        self.keys().ok().and_then(|k| k.duplicate().ok())
+    /// [`Session::use_keys`] for keys another custody scope holds too (the daemon's, when the
+    /// user shares unlocks with it): the same keys, not a copy.
+    pub fn use_shared_keys(&mut self, unlocked: std::sync::Arc<Unlocked>) {
+        self.custody.install_shared(unlocked);
     }
 
-    /// Lock: drop keys and any unsigned pending reviews (their reservations are released).
+    /// Close this session without locking the wallet: its unsigned reviews are discarded (their
+    /// reservations released), and the keys stay for the wallet's other sessions. For a lane that
+    /// reopens on another network, or finishes a job.
+    pub fn close(&mut self) {
+        let ids: Vec<String> = self.pending.keys().cloned().collect();
+        for id in ids {
+            let _ = self.discard(&id);
+        }
+    }
+
+    /// Lock: drop the wallet's keys — for every session of it in this process — and this
+    /// session's unsigned reviews (their reservations are released).
     pub fn lock(&mut self) {
         let ids: Vec<String> = self.pending.keys().cloned().collect();
         for id in ids {
             let _ = self.discard(&id);
         }
-        self.unlocked = None;
+        self.custody.clear();
     }
 
     /// Loaded signing material, when unlocked.
-    pub fn unlocked_keys(&self) -> Option<&Unlocked> {
-        self.unlocked.as_ref()
+    pub fn unlocked_keys(&self) -> Option<std::sync::Arc<Unlocked>> {
+        self.custody.get()
+    }
+
+    /// The keys, counted, for as long as one operation needs them (`None` while locked).
+    pub(crate) fn held(&self) -> Option<std::sync::Arc<Unlocked>> {
+        self.custody.get()
     }
 
     /// Whether keys are loaded.
     pub fn is_unlocked(&self) -> bool {
-        self.unlocked.is_some()
+        self.custody.is_unlocked()
     }
 
     /// Unix time of the last unlock.
     pub fn unlocked_at(&self) -> u64 {
-        self.unlocked_at
+        self.custody.unlocked_at()
     }
 
-    pub(crate) fn keys(&self) -> Result<&Unlocked> {
-        let keys = self.unlocked.as_ref().ok_or_else(|| CoreError::Locked("wallet is locked; unlock with your password".into()))?;
-        if keys.vault_generation != Some(self.registry.load(&self.meta.id)?.generation) {
+    pub(crate) fn keys(&self) -> Result<std::sync::Arc<Unlocked>> {
+        let keys = self.custody.get().ok_or_else(|| CoreError::Locked("wallet is locked; unlock with your password".into()))?;
+        let current = self.registry.load(&self.meta.id)?;
+        // Keys from before the vault last changed (a new password, an imported key) are refused;
+        // a public change since (a new account, a label) leaves them this wallet's keys.
+        if keys.vault_generation.is_none_or(|g| g < current.custody_generation) {
             return Err(CoreError::Locked("wallet changed in another session; unlock again before signing".into()));
         }
         Ok(keys)
@@ -533,6 +593,33 @@ impl Session {
             }
         });
         futures::future::try_join_all(reads).await
+    }
+
+    /// Make an account the one that acts when none is named (label, address or 1-based index).
+    /// Public metadata only: keys, reviews and other sessions' unlocks are untouched.
+    pub fn set_active_account(&mut self, selector: &str) -> Result<QuaiAccount> {
+        // A watch-only wallet's addresses act too (for what they can do: quotes, views).
+        let watched = || {
+            self.meta.watch.iter().find(|w| w.address.eq_ignore_ascii_case(selector) || w.label.eq_ignore_ascii_case(selector)).map(|w| {
+                QuaiAccount { address: w.address.clone(), label: w.label.clone(), hd_index: None, archived: false, public_key: None }
+            })
+        };
+        let account = match self.meta.find_quai_account(selector) {
+            Ok(a) => a.clone(),
+            Err(e) => watched().ok_or(e)?,
+        };
+        if account.archived {
+            return Err(CoreError::Invalid(format!("{} is archived; unarchive it first", account.label)));
+        }
+        let address = account.address.clone();
+        let mut meta = self.meta.clone();
+        self.registry.update_meta(&mut meta, |m| {
+            m.active_account = Some(address);
+            Ok(())
+        })?;
+        self.meta = meta;
+        self.sync_metadata()?;
+        Ok(account)
     }
 
     /// Add the next HD Quai account.
@@ -732,7 +819,8 @@ impl Session {
     pub fn payment_exposures(&self) -> Result<HashMap<Address, String>> {
         let mut map = HashMap::new();
         let cache_key = format!("payment_exposures:{}", self.network.id);
-        let Some(keys) = self.unlocked.as_ref().and_then(|u| u.payment.as_ref()) else {
+        let held = self.held();
+        let Some(keys) = held.as_deref().and_then(|u| u.payment.as_ref()) else {
             // Locked: use the public mapping cached the last time the wallet was unlocked.
             if let Some(text) = self.app.kv(&cache_key)?
                 && let Ok(cached) = serde_json::from_str::<HashMap<String, String>>(&text)
@@ -803,31 +891,29 @@ impl Session {
     // ---------------- journal helpers ----------------
 
     pub(crate) fn journal(&self, op: Operation) -> Result<()> {
-        self.app.remove_cancelled_operation(&op.id)?;
+        self.app.remove_unsigned_operation(&op.id)?;
         self.app.insert_operation(&op)
     }
 
     pub(crate) fn new_op(
         &self,
         id: ReservationId,
-        kind: &str,
+        kind: crate::journal::OpKind,
         store: &str,
         account: &str,
         asset: &str,
         amount: U256,
         counterparty: &str,
-        mut detail: serde_json::Value,
+        detail: impl Into<crate::journal::Detail>,
     ) -> Operation {
+        let mut detail = detail.into();
         if let Some(plan) = &self.preparing_plan {
-            if !detail.is_object() {
-                detail = serde_json::json!({});
-            }
-            detail["plan_id"] = plan.clone().into();
+            detail.set_plan_id(plan.clone());
         }
         Operation {
             id: op_hex(id),
             network: self.network.id.clone(),
-            kind: kind.into(),
+            kind,
             store: store.into(),
             account: account.into(),
             status: OpStatus::Prepared,
@@ -888,6 +974,29 @@ pub fn short_address(address: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The TUI holds two sessions of one wallet: one adds an account, the other signs. Adding an
+    /// account used to make the signer's keys look stale ("wallet changed in another session"),
+    /// so funding a new account failed until the wallet was unlocked again. A new password still
+    /// does make them stale.
+    #[test]
+    fn a_new_account_leaves_another_session_s_keys_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap();
+        let registry = Registry::fast(paths);
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let meta = registry.create_hd("bob", phrase, "english", "", "password123", true).unwrap();
+        let network = crate::network::NetworkProfile::builtins().into_iter().next().unwrap();
+        let mut worker = Session::open(registry.clone(), crate::config::AppConfig::default(), meta.clone(), network.clone()).unwrap();
+        worker.unlock("password123").unwrap();
+        let signer = Session::open(registry.clone(), crate::config::AppConfig::default(), meta, network).unwrap();
+        // The same wallet in the same process: the signer already shares the worker's keys.
+        worker.add_account(Some("messaging")).unwrap();
+        assert!(worker.keys().is_ok(), "the session that added it");
+        assert!(signer.keys().is_ok(), "and the one that signs");
+        registry.change_password(&worker.meta, "password123", "rotatedpassword").unwrap();
+        assert!(signer.keys().is_err(), "a new password still asks for the unlock again");
+    }
 
     /// Every way a Qi read goes stale is retried: the tip moving across it, another writer
     /// committing to the same store first (what the daemon and the terminal do to each other),

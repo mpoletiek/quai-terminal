@@ -7,6 +7,10 @@ license.workspace = true
 
 [dependencies]
 wallet-vault = { path = "../wallet-vault" }
+quai-model = { path = "../quai-model" }
+quai-feeds = { path = "../quai-feeds" }
+quai-messaging = { path = "../quai-messaging" }
+quai-venues = { path = "../quai-venues" }
 quai-sdk.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -26,6 +30,16 @@ hkdf.workspace = true
 chacha20poly1305.workspace = true
 futures = "0.3"
 hmac = "0.12"
+# Sealed messages v3 (docs/MESSAGING_V3.md): HPKE (RFC 9180) with X25519 and ChaCha20-Poly1305,
+# and Ed25519 for signed key announcements. Only the features that suite needs.
+
+# The picture-decoding helper shuts itself in before touching untrusted bytes (media_helper.rs).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["process", "thread", "std"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = "0.5"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

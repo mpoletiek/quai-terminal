@@ -3,6 +3,7 @@
 
 use crate::appdb::{OpStatus, Operation};
 use crate::error::{CoreError, Result};
+use crate::journal::OpKind;
 use crate::registry::now;
 use crate::session::{Session, op_hex};
 use quai_sdk::consensus::{SignedQiOperation, SignedQuaiTransaction};
@@ -83,7 +84,7 @@ impl Session {
                     let mut op = existing.clone().unwrap_or_else(|| Operation {
                         id: id.clone(),
                         network: self.network.id.clone(),
-                        kind: "recovered".into(),
+                        kind: OpKind::Recovered,
                         store: if qi { "qi" } else { "quai" }.into(),
                         account: owner,
                         status: OpStatus::Prepared,
@@ -92,13 +93,10 @@ impl Session {
                         amount: "0".into(),
                         counterparty: String::new(),
                         fee: "0".into(),
-                        detail: serde_json::json!({"recovered": true, "amount_unknown": true}),
+                        detail: serde_json::json!({"recovered": true, "amount_unknown": true}).into(),
                         created: now(),
                         updated: now(),
                     });
-                    if !op.detail.is_object() {
-                        op.detail = serde_json::json!({});
-                    }
                     if existing.is_none() {
                         // Preserve the signed account call identity even if its UI review was lost.
                         if !qi && let Some(bytes) = &signed {
@@ -106,22 +104,22 @@ impl Session {
                             op.account = tx.from().to_string();
                             op.amount = tx.transaction().value.to_string();
                             op.counterparty = tx.transaction().to.map(|a| a.to_string()).unwrap_or_default();
-                            op.detail["native_value"] = serde_json::json!(op.amount);
+                            op.detail.set_native_value(serde_json::json!(op.amount));
                         }
                         self.app.insert_operation(&op)?;
                         repaired += 1;
                     }
                     if let Some(hash) = latest {
-                        let patch = serde_json::json!({
+                        let patch = crate::journal::Detail::from(serde_json::json!({
                             "original_tx": hashes.first(), "candidates": hashes,
                             "recovered_signed": true
-                        });
+                        }));
                         let status = if op.status == OpStatus::Prepared { OpStatus::Signed } else { op.status };
                         let preserve_inclusion = status.is_terminal() || matches!(status, OpStatus::Settling | OpStatus::Locked);
                         let hash_update = (!preserve_inclusion).then_some(hash.as_str());
                         if (!preserve_inclusion && op.tx_hash.as_ref() != Some(&hash))
                             || op.status != status
-                            || op.detail["candidates"] != patch["candidates"]
+                            || op.detail.candidates() != patch.candidates()
                         {
                             self.app.transition_operation(&id, op.status, status, hash_update, None, Some(&patch))?;
                             repaired += 1;
@@ -169,7 +167,7 @@ mod tests {
         let account = s.meta.quai_accounts[0].clone();
         let address = account.address.parse().unwrap();
         s.quai_store.reserve_nonce(id, address, 0).unwrap();
-        let op = s.new_op(id, "send_quai", "quai", &account.address, "QUAI", U256::from(1), &account.address, serde_json::json!({}));
+        let op = s.new_op(id, OpKind::SendQuai, "quai", &account.address, "QUAI", U256::from(1), &account.address, serde_json::json!({}));
         s.app.insert_operation(&op).unwrap();
         let signer = s.keys().unwrap().quai_signer(address.into(), account.hd_index, s.network.chain_id).unwrap();
         let signed = signer
@@ -217,7 +215,7 @@ mod tests {
         replacement_tx.gas_price = U256::from(2);
         let replacement = signer.sign_quai(&replacement_tx).unwrap();
         s.quai_store.commit_quai_replacement(id, signed.hash().unwrap(), &replacement).unwrap();
-        let mut op=s.new_op(id,"send_quai","quai",&account.address,"QUAI",U256::from(1),&account.address,serde_json::json!({
+        let mut op=s.new_op(id,OpKind::SendQuai,"quai",&account.address,"QUAI",U256::from(1),&account.address,serde_json::json!({
             "canonical_tx":signed.hash().unwrap().to_string(),"included_block":10,"included_hash":"fixture-anchor","actual_out":"receipt-credit"}));
         op.status = OpStatus::Confirmed;
         op.tx_hash = Some(signed.hash().unwrap().to_string());
@@ -228,9 +226,9 @@ mod tests {
         assert_eq!(recovered.status, OpStatus::Confirmed);
         assert_eq!(recovered.tx_hash, op.tx_hash);
         assert_eq!(recovered.fee, "actual-fee");
-        assert_eq!(recovered.detail["actual_out"], "receipt-credit");
+        assert_eq!(*recovered.detail.actual_out(), "receipt-credit");
         assert_eq!(
-            recovered.detail["candidates"],
+            *recovered.detail.candidates(),
             serde_json::json!([signed.hash().unwrap().to_string(), replacement.hash().unwrap().to_string()])
         );
         assert_eq!(restarted.reconcile_custody().unwrap(), 0, "second restart/recovery is idempotent");
@@ -267,7 +265,7 @@ mod tests {
         let (_dir, s) = fixture();
         let mut op = s.new_op(
             ReservationId([45; 16]),
-            "send_quai",
+            OpKind::SendQuai,
             "quai",
             &s.meta.quai_accounts[0].address,
             "QUAI",

@@ -15,6 +15,7 @@
 //! - **first time** — never sent to, not a contact, not one of the wallet's accounts. A plain note:
 //!   most first sends are fine, but it is the moment to check.
 
+use crate::journal::OpKind;
 use serde::Serialize;
 
 /// Where a known address came from, which is also what the warning names it by.
@@ -104,10 +105,10 @@ fn lookalike(a: &str, b: &str) -> bool {
 /// Whether an incoming transfer is a trivial amount: zero, or under a millionth of a whole token
 /// at the token's own scale. An NFT is never dust — one token is the whole thing.
 pub fn is_dust(a: &crate::appdb::Activity) -> bool {
-    if !a.detail["token_id"].is_null() {
+    if !a.detail.token_id().is_null() {
         return false;
     }
-    let decimals = a.detail["decimals"].as_u64().unwrap_or(18).min(77) as i32;
+    let decimals = a.detail.decimals().as_u64().unwrap_or(18).min(77) as i32;
     let value: f64 = a.amount.parse().unwrap_or(0.0);
     value == 0.0 || value / 10f64.powi(decimals) < 1e-6
 }
@@ -132,7 +133,10 @@ impl crate::session::Session {
         let network = &self.network.id;
         for op in self.app.operations(network, 10_000).unwrap_or_default() {
             let signed = !matches!(op.status, crate::appdb::OpStatus::Prepared | crate::appdb::OpStatus::Cancelled);
-            if signed && op.counterparty.starts_with("0x") && (op.kind.starts_with("send") || op.kind == "nft_transfer") {
+            if signed
+                && op.counterparty.starts_with("0x")
+                && matches!(op.kind, OpKind::SendQuai | OpKind::SendQi | OpKind::SendToken | OpKind::NftTransfer)
+            {
                 known.push(Known { address: op.counterparty.to_lowercase(), source: Source::SentTo });
             }
         }
@@ -143,7 +147,7 @@ impl crate::session::Session {
         // Trusting that switched off the very warning this check exists for.
         let mut received = Vec::new();
         for a in self.app.activity(network, 5_000).unwrap_or_default() {
-            let Some(other) = a.detail["counterparty"].as_str().map(str::to_lowercase) else { continue };
+            let Some(other) = a.detail.counterparty().as_str().map(str::to_lowercase) else { continue };
             if a.direction != "out" {
                 received.push(Received { from: other, dust: is_dust(&a) });
             }
@@ -222,7 +226,7 @@ mod tests {
             address: REAL.into(),
             tx_hash: None,
             block: None,
-            detail,
+            detail: detail.into(),
             observed: 0,
         };
         assert!(!is_dust(&at("1", serde_json::json!({"token_id": "12"}))), "one NFT");
@@ -258,7 +262,7 @@ mod tests {
             .insert_operation(&crate::appdb::Operation {
                 id: "aa000000000000000000000000000001".into(),
                 network: net.clone(),
-                kind: "send_quai".into(),
+                kind: OpKind::SendQuai,
                 store: "quai".into(),
                 account: "0x00aa".into(),
                 status: crate::appdb::OpStatus::Confirmed,
@@ -267,7 +271,7 @@ mod tests {
                 amount: "1".into(),
                 counterparty: REAL.into(),
                 fee: String::new(),
-                detail: serde_json::json!({}),
+                detail: serde_json::json!({}).into(),
                 created: 1,
                 updated: 1,
             })
@@ -283,7 +287,7 @@ mod tests {
                 address: "0x00aa".into(),
                 tx_hash: Some("0xbad".into()),
                 block: Some(1),
-                detail: serde_json::json!({"counterparty": FORGED, "source": "explorer"}),
+                detail: serde_json::json!({"counterparty": FORGED, "source": "explorer"}).into(),
                 observed: 2,
             })
             .unwrap();

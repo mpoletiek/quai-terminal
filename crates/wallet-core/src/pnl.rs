@@ -15,8 +15,9 @@
 
 use crate::appdb::{OpStatus, Operation};
 use crate::error::Result;
+use crate::journal::OpKind;
 use crate::session::Session;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Operation kinds that are trades.
@@ -26,7 +27,7 @@ pub const TRADE_KINDS: [&str; 6] = ["swap", "swap_exact_output", "curve_buy", "c
 const DUST: f64 = 1e-12;
 
 /// One token's side of a fill.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Leg {
     /// Contract (lowercase).
     pub token: String,
@@ -37,12 +38,12 @@ pub struct Leg {
 }
 
 /// One confirmed trade.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Fill {
     pub op_id: String,
     pub at: u64,
     pub tx: Option<String>,
-    pub kind: String,
+    pub kind: OpKind,
     pub account: String,
     /// QUAI received when positive, paid when negative (WQUAI included).
     pub quai: f64,
@@ -66,7 +67,7 @@ impl Fill {
 }
 
 /// One token's standing.
-#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Position {
     pub token: String,
     pub symbol: String,
@@ -100,7 +101,7 @@ pub struct Position {
 }
 
 /// Performance across every token this wallet traded.
-#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Pnl {
     /// Open positions first, largest first; closed ones after, by realized PnL.
     pub positions: Vec<Position>,
@@ -198,8 +199,8 @@ pub fn fills(ops: &[Operation], wquai: &str) -> (Vec<Fill>, f64) {
 }
 
 /// A buy paid for in native QUAI, whose curve names the token bought as `token`.
-fn buys_on_curve(kind: &str) -> bool {
-    matches!(kind, "curve_buy" | "hartii_buy")
+fn buys_on_curve(kind: &OpKind) -> bool {
+    matches!(kind, OpKind::CurveBuy | OpKind::HartiiBuy)
 }
 
 /// Trades recorded before reviews listed their effects: what was paid is the operation's own
@@ -208,33 +209,33 @@ fn buys_on_curve(kind: &str) -> bool {
 fn legacy_effects(op: &Operation) -> Option<Vec<serde_json::Value>> {
     let detail = &op.detail;
     let native = buys_on_curve(&op.kind) || op.asset.eq_ignore_ascii_case("QUAI");
-    let paid = if native { "quai".to_string() } else { detail["from_token"].as_str()?.to_lowercase() };
-    let received = detail["to_token"].as_str().or_else(|| buys_on_curve(&op.kind).then(|| detail["token"].as_str()).flatten())?;
+    let paid = if native { "quai".to_string() } else { detail.from_token().as_str()?.to_lowercase() };
+    let received = detail.to_token().as_str().or_else(|| buys_on_curve(&op.kind).then(|| detail.token().as_str()).flatten())?;
     Some(vec![
-        serde_json::json!({"direction": "out", "asset": op.asset, "token": paid, "decimals": if native { 18 } else { detail["decimals"].as_u64().unwrap_or(18) }, "amount": op.amount}),
-        serde_json::json!({"direction": "in", "asset": detail["to_symbol"].as_str().unwrap_or("?"), "token": received.to_lowercase(),
-            "decimals": detail["to_decimals"].as_u64().unwrap_or(18), "amount": detail["expected_out"].as_str()?, "estimated": true}),
+        serde_json::json!({"direction": "out", "asset": op.asset, "token": paid, "decimals": if native { 18 } else { detail.decimals().as_u64().unwrap_or(18) }, "amount": op.amount}),
+        serde_json::json!({"direction": "in", "asset": detail.to_symbol().as_str().unwrap_or("?"), "token": received.to_lowercase(),
+            "decimals": detail.to_decimals().as_u64().unwrap_or(18), "amount": detail.expected_out().as_str()?, "estimated": true}),
     ])
 }
 
 fn fill(op: &Operation, wquai: &str, fee: f64) -> Option<Fill> {
     let detail = &op.detail;
     let legacy;
-    let effects = match detail["financial_effects"].as_array() {
+    let effects = match detail.financial_effects().as_array() {
         Some(effects) => effects,
         None => {
             legacy = legacy_effects(op)?;
             &legacy
         }
     };
-    let text = |key: &str| detail[key].as_str().map(str::to_lowercase);
-    let to_token = text("to_token").or_else(|| buys_on_curve(&op.kind).then(|| text("token")).flatten());
-    let (mut actual_out, mut actual_in) = (text("actual_out"), text("actual_in"));
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_lowercase);
+    let to_token = text(detail.to_token()).or_else(|| buys_on_curve(&op.kind).then(|| text(detail.token())).flatten());
+    let (mut actual_out, mut actual_in) = (text(detail.actual_out()), text(detail.actual_in()));
     // An exact-output swap spends at most its cap; the quote's input is the better figure.
-    if op.kind == "swap_exact_output" && actual_in.is_none() {
-        actual_in = text("required_input");
+    if op.kind == OpKind::SwapExactOutput && actual_in.is_none() {
+        actual_in = text(detail.required_input());
     }
-    let mut estimated = op.kind == "swap_exact_output" && detail["actual_in"].is_null();
+    let mut estimated = op.kind == OpKind::SwapExactOutput && detail.actual_in().is_null();
     let mut quai = 0.0;
     let mut legs: Vec<Leg> = Vec::new();
     for effect in effects {
@@ -475,10 +476,11 @@ mod tests {
     const WQUAI: &str = "0x00wquai";
 
     fn op(id: &str, at: u64, kind: &str, status: OpStatus, detail: serde_json::Value) -> Operation {
+        let kind = OpKind::parse(kind);
         Operation {
             id: id.into(),
             network: "mainnet".into(),
-            kind: kind.into(),
+            kind,
             store: String::new(),
             account: "0xME".into(),
             status,
@@ -487,7 +489,7 @@ mod tests {
             amount: String::new(),
             counterparty: String::new(),
             fee: "1000000000000000".into(),
-            detail,
+            detail: detail.into(),
             created: at,
             updated: at,
         }
@@ -503,14 +505,14 @@ mod tests {
 
     /// A swap buying `tokens` MOON for `quai` QUAI, the receipt saying `actual` arrived.
     fn buy(id: &str, at: u64, quai: u64, tokens: u64, actual: Option<u64>) -> Operation {
-        let mut detail = json!({"to_token": "0xmoon", "financial_effects": [
+        let mut detail = crate::journal::Detail::from(json!({"to_token": "0xmoon", "financial_effects": [
             effect("out", "QUAI", "quai", e18(quai), false),
             effect("in", "MOON", "0xmoon", e18(tokens), true),
-        ]});
+        ]}));
         if let Some(a) = actual {
-            detail["actual_out"] = json!(e18(a));
+            detail.set_actual_out(json!(e18(a)));
         }
-        op(id, at, "swap", OpStatus::Confirmed, detail)
+        op(id, at, "swap", OpStatus::Confirmed, detail.into_json())
     }
 
     fn sell(id: &str, at: u64, tokens: u64, quai: u64) -> Operation {
@@ -576,7 +578,7 @@ mod tests {
             ]}),
         );
         let failed = op("f1", 2, "swap", OpStatus::Failed, json!({}));
-        let pending = op("p1", 3, "swap", OpStatus::Submitted, buy("x", 3, 1, 1, None).detail);
+        let pending = op("p1", 3, "swap", OpStatus::Submitted, buy("x", 3, 1, 1, None).detail.into_json());
         let (fills, failed_fees) = fills(&[wquai_buy, failed, pending], WQUAI);
         assert_eq!(fills.len(), 1);
         assert!(close(fills[0].quai, -10.0), "paid in WQUAI is paid in QUAI");

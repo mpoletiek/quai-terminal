@@ -1,0 +1,21 @@
+[package]
+name = "quai-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Quai Terminal's domain types: amounts, operations and their kinds, journal details and receipts, errors. Depends on nothing of the terminal's own."
+
+[dependencies]
+quai-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

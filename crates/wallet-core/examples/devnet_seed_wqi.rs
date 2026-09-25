@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .prepare_account(AccountRequest {
                 from: owner.clone(),
                 intent: call.into_account_intent(),
-                kind: if method == "approve" { "approve" } else { "fixture_seed" }.into(),
+                kind: wallet_core::journal::OpKind::parse(if method == "approve" { "approve" } else { "fixture_seed" }),
                 title: format!("Isolated fixture {method}"),
                 asset: "WQI".into(),
                 amount: deposit,
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 counterparty: target,
                 fields: vec![],
                 warnings: vec!["Synthetic local test liquidity only".into()],
-                detail,
+                detail: detail.into(),
                 max_gas: 4_000_000,
                 max_fee: None,
             })

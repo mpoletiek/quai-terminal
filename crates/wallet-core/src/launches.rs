@@ -315,7 +315,7 @@ fn merge_hartii(rows: &mut [Launch], onchain: &[crate::hartii::HartiiLaunch]) {
 /// (`ipfs.io` answers every CID with a notice page), and this is what Quainance's own launch pages
 /// read. The wallet builds every URL here itself from a CID; nothing a token says is fetched as
 /// a URL.
-pub const MEDIA_PROXY: &str = "https://www.quainance.com/api/media";
+pub use quai_feeds::media::MEDIA_PROXY;
 
 /// Image types the wallet accepts from the proxy, and the most it will show.
 const LOGO_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];

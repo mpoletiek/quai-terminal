@@ -1,6 +1,7 @@
 //! The core screens: activity, accounts, Qi coins, locks, contacts and channels, network, settings.
 
 use super::*;
+use wallet_core::journal::OpKind;
 
 // ---------------------------------------------------------------- screens
 
@@ -10,7 +11,7 @@ pub(crate) fn incoming_text(a: &Activity) -> String {
         "QI" => format!("{} Qi", qi(v)),
         "QUAI" => format!("{} QUAI", q(v)),
         other => {
-            let dec = a.detail.get("decimals").and_then(|d| d.as_u64()).unwrap_or(18) as u8;
+            let dec = a.detail.decimals().as_u64().unwrap_or(18) as u8;
             format!("{} {other}", super::super::num::short(v, dec, 4))
         }
     }
@@ -31,23 +32,25 @@ pub(crate) fn contact_matching<'a>(app: &'a App, key: &str) -> Option<&'a str> {
 
 /// The contact an operation was with: its payment-code peer, else its counterparty.
 pub(crate) fn op_contact<'a>(app: &'a App, op: &Operation) -> Option<&'a str> {
-    op.detail["peer"].as_str().and_then(|p| contact_matching(app, p)).or_else(|| contact_matching(app, &op.counterparty))
+    op.detail.peer().as_str().and_then(|p| contact_matching(app, p)).or_else(|| contact_matching(app, &op.counterparty))
 }
 
 /// The contact who sent an incoming payment, when the channel is known.
 pub(crate) fn activity_contact<'a>(app: &'a App, a: &Activity) -> Option<&'a str> {
-    if let Some(peer) = a.detail["peer"].as_str() {
+    if let Some(peer) = a.detail.peer().as_str() {
         return contact_matching(app, peer);
     }
     // Rows recorded before the full code was kept only carry `payment from <short code>`.
-    let short = a.detail["origin"].as_str()?.strip_prefix("payment from ")?;
+    let short = a.detail.origin().as_str()?.strip_prefix("payment from ")?;
     app.dash.contacts.iter().find(|c| c.payment_code.as_deref().is_some_and(|code| short_code(code) == short)).map(|c| c.name.as_str())
 }
 
 /// Icon for the token, NFT collection or native coin an activity row is about.
-pub(crate) fn row_badge(app: &App, t: &Theme, symbol: &str, detail: &serde_json::Value) -> Option<Span<'static>> {
-    let Some(contract) =
-        ["contract", "token", "to_token"].iter().find_map(|k| detail[*k].as_str().filter(|c| c.starts_with("0x"))).map(str::to_lowercase)
+pub(crate) fn row_badge(app: &App, t: &Theme, symbol: &str, detail: &wallet_core::journal::Detail) -> Option<Span<'static>> {
+    let Some(contract) = [detail.contract(), detail.token(), detail.to_token()]
+        .into_iter()
+        .find_map(|v| v.as_str().filter(|c| c.starts_with("0x")))
+        .map(str::to_lowercase)
     else {
         return match symbol.to_ascii_lowercase().as_str() {
             native @ ("quai" | "qi") => Some(super::super::images::native_span(app, t, native)),
@@ -55,8 +58,8 @@ pub(crate) fn row_badge(app: &App, t: &Theme, symbol: &str, detail: &serde_json:
         };
     };
     // NFTs are badged by collection name; fungible tokens by symbol (their name may differ).
-    let nft = detail["token_id"].as_str().is_some_and(|id| !id.is_empty());
-    let name = detail["name"].as_str().filter(|n| nft && !n.is_empty()).unwrap_or(symbol);
+    let nft = detail.token_id().as_str().is_some_and(|id| !id.is_empty());
+    let name = detail.name().as_str().filter(|n| nft && !n.is_empty()).unwrap_or(symbol);
     let icon = app.asset_icon_url(&contract);
     Some(super::super::images::badge_span(app, t, icon.as_deref(), name, &contract))
 }
@@ -76,7 +79,7 @@ pub(crate) fn confirmations(op: &Operation, head: u64) -> Option<(u64, u64)> {
     if !matches!(op.status, OpStatus::Confirmed | OpStatus::Settled | OpStatus::Settling | OpStatus::Locked) {
         return None;
     }
-    let included = op.detail["included_block"].as_u64()?;
+    let included = op.detail.included_block().as_u64()?;
     let n = head.checked_sub(included)? + 1;
     (n < CONFIRM_TARGET + 1).then_some((n.min(CONFIRM_TARGET), CONFIRM_TARGET))
 }
@@ -86,7 +89,7 @@ pub(crate) fn confirmations(op: &Operation, head: u64) -> Option<(u64, u64)> {
 /// (Full and Vivid): the news where it is, then still. `None` when nothing is lit.
 pub(crate) fn tally_lit(app: &App, t: &Theme, op: &Operation) -> Option<Line<'static>> {
     // Lit as long as the header's block pulse, which ends it with the same redraw.
-    let fresh = app.beat.is_some_and(|b| b.elapsed() < BEAT_PULSE);
+    let fresh = app.fx.beat.is_some_and(|b| b.elapsed() < BEAT_PULSE);
     if !fresh || !app.motion().effects() {
         return None;
     }
@@ -107,7 +110,7 @@ pub(crate) fn tally(n: u64, target: u64) -> String {
 
 /// What is happening with an unfinished operation, and whether it waits on the user.
 pub(crate) fn op_next_step(op: &Operation, head: u64) -> String {
-    let unlock = op.detail["unlock_height"].as_u64().filter(|u| *u > head);
+    let unlock = op.detail.unlock_height().as_u64().filter(|u| *u > head);
     match op.status {
         OpStatus::Prepared | OpStatus::Signed => "not sent yet · it is submitted when you approve the review".into(),
         // Both ledgers can be replaced now, so neither arm singles one out. A Qi replacement pays
@@ -135,7 +138,7 @@ pub(crate) fn op_row_parts(app: &App, t: &Theme, op: &Operation) -> (Span<'stati
     };
     let icon_color = if op.asset.eq_ignore_ascii_case("QI") { t.qi } else { t.quai };
     let what = match op_contact(app, op) {
-        Some(name) if op.kind != "notify" => format!("{} → {name}", describe(op)),
+        Some(name) if op.kind != OpKind::Notify => format!("{} → {name}", describe(op)),
         Some(name) => format!("mailbox notify to {name}"),
         None => describe(op),
     };
@@ -164,7 +167,7 @@ pub(crate) fn cost_lines(app: &App, t: &Theme, op: Option<&Operation>, seen: Opt
     let Some(a) = seen else { return Vec::new() };
     let incoming = a.direction == "in";
     let qi = a.asset == "QI";
-    let known = a.tx_hash.as_ref().and_then(|h| app.eco.tx_costs.get(h));
+    let known = a.tx_hash.as_ref().and_then(|h| app.eco.feeds.tx_costs.get(h)).and_then(|r| r.latest());
     let reading = || Span::styled(format!("{} reading…", spinner()), dim);
     // A native row states its own value; a token row's native value comes from the transaction.
     let value = match (a.asset.as_str(), known) {
@@ -197,7 +200,7 @@ pub(crate) fn fee_cell(app: &App, t: &Theme, op: Option<&Operation>, seen: Optio
         };
     }
     match seen {
-        Some(a) if a.direction == "out" => match a.tx_hash.as_ref().and_then(|h| app.eco.tx_costs.get(h)) {
+        Some(a) if a.direction == "out" => match a.tx_hash.as_ref().and_then(|h| app.eco.feeds.tx_costs.get(h)).and_then(|r| r.latest()) {
             Some(Ok(c)) => c.fee.map_or_else(|| Span::raw(""), |f| Span::styled(c.text(f), t.dim_style())),
             _ => Span::raw(""),
         },
@@ -210,7 +213,7 @@ pub(crate) fn fee_cell(app: &App, t: &Theme, op: Option<&Operation>, seen: Optio
 /// mark alone — the full words, gas and hash are on the Activity screen.
 pub(crate) fn activity_table_rows<'a>(app: &App, t: &Theme, limit: usize, labels: bool, compact: Option<usize>) -> Vec<Row<'a>> {
     let rows = app.activity_rows();
-    let offset = if labels { app.list_window(app.main_list(), app.selected, rows.len(), limit) } else { 0 };
+    let offset = if labels { app.list_window(app.main_list(), app.nav.selected, rows.len(), limit) } else { 0 };
     rows.iter()
         .enumerate()
         .skip(offset)
@@ -288,8 +291,8 @@ pub(crate) fn activity_table_rows<'a>(app: &App, t: &Theme, limit: usize, labels
             // only; the text keeps its colors).
             // An arrival lights its new row the same way.
             let flash_key = if *is_op { &app.dash.ops[*idx].id } else { &app.dash.activity[*idx].key };
-            let flash = app.row_flash.get(flash_key).map(|s| s.elapsed().as_millis());
-            if labels && i == app.selected {
+            let flash = app.fx.row_flash.get(flash_key).map(|s| s.elapsed().as_millis());
+            if labels && i == app.nav.selected {
                 row.style(t.selected())
             } else if let Some(bg) = flash.and_then(|ms| super::super::edge::flash_bg(t, t.ok, ms)) {
                 row.style(Style::default().bg(bg))
@@ -325,8 +328,11 @@ pub(crate) fn draw_accounts(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     } else {
         // It scrolls: a wallet can have more accounts than the panel has rows.
         let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-        let offset = app.list_window(app.main_list(), app.selected, n_accounts, body.height as usize);
-        app.hits.borrow_mut().rows(app.main_list(), body, offset, n_accounts, |i| app.dash.accounts.get(i).map(|a| a.address.clone()));
+        let offset = app.list_window(app.main_list(), app.nav.selected, n_accounts, body.height as usize);
+        app.input
+            .hits
+            .borrow_mut()
+            .rows(app.main_list(), body, offset, n_accounts, |i| app.dash.accounts.get(i).map(|a| a.address.clone()));
         let rows: Vec<Row> = app
             .dash
             .accounts
@@ -347,7 +353,7 @@ pub(crate) fn draw_accounts(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     Cell::from(if a.locked.is_zero() { String::new() } else { format!("{} {}", t.icon(Icon::Locked), q(a.locked)) }),
                     Cell::from(Span::styled(a.nonce.to_string(), t.dim_style())),
                 ]);
-                if i == app.selected { row.style(t.selected()) } else { row }
+                if i == app.nav.selected { row.style(t.selected()) } else { row }
             })
             .collect();
         let addr_w = if narrow { 13 } else { 44 };
@@ -390,10 +396,10 @@ pub(crate) fn draw_activity(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         let [l, d] = Layout::vertical([Constraint::Min(6), Constraint::Length(11)]).areas(area);
         (l, d)
     };
-    let title = if app.jump_pending.is_some() {
+    let title = if app.nav.jump_pending.is_some() {
         "activity · press a label".to_string()
     } else {
-        format!("activity · {}", app.activity_filter.title().to_lowercase())
+        format!("activity · {}", app.nav.activity_filter.title().to_lowercase())
     };
     let block = panel(t, &title, true);
     let inner = block.inner(list);
@@ -436,12 +442,15 @@ pub(crate) fn draw_activity(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         f.render_widget(table, inner);
         let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
         let all = app.activity_rows();
-        app.hits.borrow_mut().rows(app.main_list(), body, app.view_offset(), all.len(), |i| all.get(i).map(|r| app.activity_row_key(r)));
+        app.input
+            .hits
+            .borrow_mut()
+            .rows(app.main_list(), body, app.view_offset(), all.len(), |i| all.get(i).map(|r| app.activity_row_key(r)));
     }
     let rows = app.activity_rows();
     let mut lines: Vec<Line> = Vec::new();
     let kv = |k: &str, v: String| super::super::widgets::kv(t, k, vec![Span::raw(v)]);
-    match rows.get(app.selected) {
+    match rows.get(app.nav.selected) {
         Some((_, true, i)) => {
             let op = &app.dash.ops[*i];
             let contact = op_contact(app, op);
@@ -468,11 +477,9 @@ pub(crate) fn draw_activity(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     lines.push(kv("explorer", format!("{}/tx/{h}", e.trim_end_matches('/'))));
                 }
             }
-            if let Some(obj) = op.detail.as_object() {
-                // `native_value` is stated above as the value, in QUAI rather than wei.
-                for (k, v) in obj.iter().filter(|(k, _)| k.as_str() != "native_value").take(10) {
-                    lines.push(kv(k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())));
-                }
+            // `native_value` is stated above as the value, in QUAI rather than wei.
+            for (k, v) in op.detail.entries().filter(|(k, _)| *k != "native_value").take(10) {
+                lines.push(kv(k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())));
             }
             if !op.status.is_terminal() {
                 let head = app.dash.health.as_ref().map(|h| h.height).unwrap_or(0);
@@ -564,11 +571,11 @@ pub(crate) fn draw_qi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let mut tray = vec![Span::styled("drawer ", t.dim_style())];
     let mut stacks = vec![Span::styled("       ", t.dim_style())];
     for (i, n) in held.iter().enumerate().filter(|(_, n)| **n > 0) {
-        let lit = app.drawer_flash.get(&(i as u8)).and_then(|s| super::super::edge::flash_bg(t, t.qi, s.elapsed().as_millis()));
+        let lit = app.fx.drawer_flash.get(&(i as u8)).and_then(|s| super::super::edge::flash_bg(t, t.qi, s.elapsed().as_millis()));
         let bg = lit.or_else(|| super::super::edge::tint(t, t.qi, 0.22)).unwrap_or(t.raised);
         // A coin that landed since Qi was last looked at is marked until it is (every motion
         // level: the flash above is only the moving half of the news).
-        let fresh = if app.drawer_new.contains(&(i as u8)) { "•" } else { " " };
+        let fresh = if app.fx.drawer_new.contains(&(i as u8)) { "•" } else { " " };
         let label = format!("{fresh}{} ×{n} ", super::super::num::qi(U256::from(values[i])));
         // Small coins cost the most fee to spend, so they read in the attention color once a
         // stack is deep enough to be worth consolidating.
@@ -596,7 +603,7 @@ pub(crate) fn draw_qi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     } else {
         Layout::horizontal([Constraint::Min(40), Constraint::Length(0)]).areas(rest)
     };
-    let title = if app.jump_pending.is_some() { "coins · press a label" } else { "coins" };
+    let title = if app.nav.jump_pending.is_some() { "coins · press a label" } else { "coins" };
     let block = panel(t, title, true);
     let inner = block.inner(coins_area);
     f.render_widget(block, coins_area);
@@ -611,8 +618,8 @@ pub(crate) fn draw_qi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         );
     } else {
         let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-        let offset = app.list_window(app.main_list(), app.selected, s.coins.len(), body.height as usize);
-        app.hits.borrow_mut().rows(app.main_list(), body, offset, s.coins.len(), |i| s.coins.get(i).map(|c| c.outpoint.clone()));
+        let offset = app.list_window(app.main_list(), app.nav.selected, s.coins.len(), body.height as usize);
+        app.input.hits.borrow_mut().rows(app.main_list(), body, offset, s.coins.len(), |i| s.coins.get(i).map(|c| c.outpoint.clone()));
         let head = app.dash.health.as_ref().map(|h| h.height).unwrap_or(0);
         let rows: Vec<Row> = s
             .coins
@@ -639,7 +646,7 @@ pub(crate) fn draw_qi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     Cell::from(c.label.clone().unwrap_or_else(|| c.origin.clone())),
                     Cell::from(Span::styled(short_address(&c.address), t.dim_style())),
                 ]);
-                if i == app.selected { row.style(t.selected()) } else { row }
+                if i == app.nav.selected { row.style(t.selected()) } else { row }
             })
             .collect();
         let table = Table::new(
@@ -708,7 +715,10 @@ pub(crate) fn draw_qi(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(panel(t, "receive & mining addresses", false)), addr_area);
 }
 
-pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, channels: bool) {
+/// Contacts, and under them the payment channels with them: two lists, one with the keys, and
+/// the details of what it has selected beside them.
+pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let channels = app.nav.pane == 1;
     let code = app.meta.as_ref().and_then(|m| m.payment_code.clone());
     let inner_w = area.width.saturating_sub(4).max(1) as usize;
     let code_rows = code.as_ref().map_or(1, |c| c.chars().count().div_ceil(inner_w));
@@ -732,20 +742,24 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
         Layout::horizontal([Constraint::Min(40), Constraint::Length(0)]).areas(list_row)
     };
     let contacts_focused = !channels;
-    let (contacts_area, channels_area) = if channels { (Rect::default(), list_area) } else { (list_area, Rect::default()) };
+    // Each list takes what it needs up to half, and the other the rest.
+    let wanted = |n: usize| (n.max(2) + 3) as u16;
+    let contacts_rows = wanted(app.dash.contacts.len())
+        .min(list_area.height / 2)
+        .max(list_area.height.saturating_sub(wanted(app.dash.offers.len() + app.dash.peers.len())));
+    let [contacts_area, channels_area] = Layout::vertical([Constraint::Length(contacts_rows), Constraint::Min(4)]).areas(list_area);
+    let contacts_list = super::super::hit::ListId::Screen(Screen::Contacts, 0);
     let block = panel(t, &format!("contacts · {}", app.dash.contacts.len()), contacts_focused);
     let inner = block.inner(contacts_area);
-    if !channels {
-        f.render_widget(block, contacts_area);
-    }
-    if channels {
-    } else if app.dash.contacts.is_empty() {
+    f.render_widget(block, contacts_area);
+    if app.dash.contacts.is_empty() {
         empty(f, inner, t, Icon::People, "No contacts yet. Save people by address, payment code, or both.", &[("a", "add contact")]);
     } else {
         let n = app.dash.contacts.len();
         let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-        let offset = app.list_window(app.main_list(), app.selected, n, body.height as usize);
-        app.hits.borrow_mut().rows(app.main_list(), body, offset, n, |i| app.dash.contacts.get(i).map(|c| c.name.clone()));
+        let selected = if contacts_focused { app.nav.selected } else { 0 };
+        let offset = app.list_window(contacts_list, selected, n, body.height as usize);
+        app.input.hits.borrow_mut().rows(contacts_list, body, offset, n, |i| app.dash.contacts.get(i).map(|c| c.name.clone()));
         let rows: Vec<Row> = app
             .dash
             .contacts
@@ -774,7 +788,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
                     }),
                     Cell::from(Span::styled(truncate(&c.note, 24), t.dim_style())),
                 ]);
-                if contacts_focused && i == app.selected { row.style(t.selected()) } else { row }
+                if contacts_focused && i == app.nav.selected { row.style(t.selected()) } else { row }
             })
             .collect();
         f.render_widget(
@@ -793,7 +807,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
         f.render_widget(block, detail_area);
         let mut lines: Vec<Line> = Vec::new();
         let label = |k: &str| Line::from(Span::styled(k.to_string(), t.dim_style()));
-        let selected_contact = if !channels { app.dash.contacts.get(app.selected).cloned() } else { None };
+        let selected_contact = if !channels { app.dash.contacts.get(app.nav.selected).cloned() } else { None };
         let selected_peer = if channels { app.channel_peer() } else { None };
         let selected_offer = if channels { app.channel_offer() } else { None };
         if let Some(c) = &selected_contact {
@@ -823,7 +837,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
                     .dash
                     .activity
                     .iter()
-                    .filter(|a| a.detail["counterparty"].as_str().is_some_and(|cp| cp.eq_ignore_ascii_case(addr)))
+                    .filter(|a| a.detail.counterparty().as_str().is_some_and(|cp| cp.eq_ignore_ascii_case(addr)))
                     .take(4)
                     .collect();
                 if !with.is_empty() {
@@ -885,10 +899,8 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
-    if !channels {
-        return;
-    }
-    let channels_focused = true;
+    let channels_focused = channels;
+    let channels_list = super::super::hit::ListId::Screen(Screen::Contacts, 1);
     let offered = if app.dash.offers.is_empty() { String::new() } else { format!(" · {} offered", app.dash.offers.len()) };
     let block = panel(t, &format!("payment channels · {}{offered}", app.dash.peers.len()), channels_focused);
     let inner = block.inner(channels_area);
@@ -908,8 +920,9 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
         let offers = app.dash.offers.len();
         let n = offers + app.dash.peers.len();
         let body = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-        let offset = app.list_window(app.main_list(), app.selected, n, body.height as usize);
-        app.hits.borrow_mut().rows(app.main_list(), body, offset, n, |i| app.row_key(app.main_list(), i));
+        let selected = if channels_focused { app.nav.selected } else { 0 };
+        let offset = app.list_window(channels_list, selected, n, body.height as usize);
+        app.input.hits.borrow_mut().rows(channels_list, body, offset, n, |i| app.row_key(channels_list, i));
         let offer_rows = app.dash.offers.iter().enumerate().map(|(i, o)| {
             let row = Row::new(vec![
                 Cell::from(Span::styled(app::jump_label(i.wrapping_sub(offset)).to_string(), jump_style(app, t))),
@@ -918,7 +931,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
                 Cell::from(format!("{} Qi", super::super::num::qi(o.found))),
                 Cell::from(""),
             ]);
-            if channels_focused && i == app.selected { row.style(t.selected()) } else { row }
+            if channels_focused && i == app.nav.selected { row.style(t.selected()) } else { row }
         });
         let rows: Vec<Row> = offer_rows
             .chain(app.dash.peers.iter().enumerate().map(|(i, p)| (i + offers, p)).map(|(i, p)| {
@@ -933,7 +946,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
                     Cell::from(format!("↘ {}", p.receive_addresses)),
                     Cell::from(format!("↗ {}", p.send_addresses)),
                 ]);
-                if channels_focused && i == app.selected { row.style(t.selected()) } else { row }
+                if channels_focused && i == app.nav.selected { row.style(t.selected()) } else { row }
             }))
             .skip(offset)
             .take(body.height as usize)
@@ -953,7 +966,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect, cha
 /// The wallet's time locks, a line each, under the accounts. Converted coins wait here with a
 /// countdown until they can be spent; nothing to do but wait.
 fn draw_locks(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let agrees = match &app.eco.lockups {
+    let agrees = match &app.eco.feeds.lockups {
         Some(Ok(total)) if (*total == 0) == app.dash.locks.iter().all(|l| l.unlocked) => {
             &format!(" · {} explorer agrees", t.icon(Icon::Ok))
         }
@@ -1016,13 +1029,13 @@ fn draw_locks(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 /// The selected account, beside the list at `Wide`: its address in groups of four to check
 /// against, its numbers, and a QR code to receive on it.
 fn draw_account_inspector(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let Some(a) = app.dash.accounts.get(app.selected) else { return };
+    let Some(a) = app.dash.accounts.get(app.nav.selected) else { return };
     let block = panel(t, &format!("account · {}", a.label), false);
     let frame_h = area.height.saturating_sub(block.inner(area).height);
     let inner = block.inner(area);
     // A QR code to receive on it: beside the details when the panel is wide, under them when it
     // is tall, and left out when it would not fit whole.
-    let qr = (app.caps.tier != Tier::Text && !app.plain).then(|| super::super::terminal::qr_modules(&a.address, 2)).flatten();
+    let qr = (app.term.caps.tier != Tier::Text && !app.term.plain).then(|| super::super::terminal::qr_modules(&a.address, 2)).flatten();
     let (qr_w, qr_h) = qr.as_ref().map_or((0, 0), |(size, _)| (*size as u16, size.div_ceil(2) as u16));
     let kv = |k: &str, v: Vec<Span<'static>>| super::super::widgets::kv(t, k, v);
     let mut lines = vec![kv("balance", vec![Span::styled(format!("{} QUAI", q(a.balance)), t.strong_style().fg(t.quai))])];
@@ -1130,7 +1143,7 @@ pub(crate) fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         spans.extend(v);
         Line::from(spans)
     };
-    let lines = match &app.eco.chain_stats {
+    let lines = match app.eco.feeds.chain_stats.shown() {
         None => vec![Line::from(Span::styled(format!("{} reading network statistics…", spinner()), t.dim_style()))],
         Some(Err(e)) => vec![
             Line::from(Span::styled(format!("{} {}", t.icon(Icon::Info), truncate(&app::friendly_error(e), 80)), t.dim_style())),
@@ -1201,7 +1214,7 @@ pub(crate) fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 pub(crate) fn draw_chain_charts(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let [hash, txs, gas] =
         Layout::horizontal([Constraint::Percentage(36), Constraint::Percentage(32), Constraint::Percentage(32)]).areas(area);
-    let stats = app.eco.chain_stats.as_ref().and_then(|r| r.as_ref().ok());
+    let stats = app.eco.feeds.chain_stats.value();
     // Hashrate: one row per algorithm, each on its own scale — they differ by six orders of
     // magnitude, so one shared axis would draw two flat lines and a wall.
     let block = panel(t, &format!("{}hashrate · 24h", t.lead(Icon::Mining)), false);
@@ -1288,7 +1301,7 @@ pub(crate) fn spark_with_axis(f: &mut Frame, app: &App, t: &Theme, inner: Rect, 
 
 /// What a chart shows before its data arrives, or when there is none for this network.
 pub(crate) fn chart_placeholder(f: &mut Frame, app: &App, t: &Theme, inner: Rect) {
-    let text = match &app.eco.chain_stats {
+    let text = match app.eco.feeds.chain_stats.shown() {
         None => format!("{} loading…", spinner()),
         Some(Err(_)) => format!("{} no statistics for this network", t.icon(Icon::Info)),
         Some(Ok(_)) => format!("{} no history yet", t.icon(Icon::Info)),
@@ -1344,7 +1357,7 @@ pub(crate) fn draw_node(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             lines.push(kv("genesis", h.genesis.clone()));
             lines.push(kv("height", amount::group_thousands(&h.height.to_string())));
             // What `:poem` is about, in one still line: the smallest head hash seen this session.
-            if let Some((hash, at)) = &app.lowest_hash {
+            if let Some((hash, at)) = &app.fx.lowest_hash {
                 let zeros = hash.trim_start_matches("0x").chars().take_while(|c| *c == '0').count();
                 lines.push(kv(
                     "lowest hash",
@@ -1407,15 +1420,15 @@ pub(crate) fn draw_node(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 Cell::from(name.clone()),
                 Cell::from(Span::styled(if id == "mainnet" { "real funds" } else { "" }, Style::default().fg(t.attention))),
             ]);
-            if i == app.selected { row.style(t.selected()) } else { row }
+            if i == app.nav.selected { row.style(t.selected()) } else { row }
         })
         .collect();
     let block = panel(t, "networks · enter to switch", true);
     let inner = block.inner(nets);
     f.render_widget(block, nets);
     let n = rows.len();
-    let offset = app.list_window(app.main_list(), app.selected, n, inner.height as usize);
-    app.hits.borrow_mut().rows(app.main_list(), inner, offset, n, |i| app.dash.networks.get(i).map(|(id, _)| id.clone()));
+    let offset = app.list_window(app.main_list(), app.nav.selected, n, inner.height as usize);
+    app.input.hits.borrow_mut().rows(app.main_list(), inner, offset, n, |i| app.dash.networks.get(i).map(|(id, _)| id.clone()));
     let rows: Vec<Row> = rows.into_iter().skip(offset).collect();
     f.render_widget(Table::new(rows, [Constraint::Length(1), Constraint::Length(16), Constraint::Min(10), Constraint::Length(12)]), inner);
 }
@@ -1504,6 +1517,7 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     "standard" => "standard".into(),
                     _ => "auto · trader from 200 columns".into(),
                 },
+                "mode" => format!("{}  ›  {}", c.mode.key(), super::super::app::mode_note(c.mode)),
                 "feature:messaging" => feature_value(t, c.features.messaging, "board, sealed DMs, chat dock"),
                 "feature:trading" => feature_value(t, c.features.trading, "markets, swap, pools, launches"),
                 "feature:nfts" => feature_value(t, c.features.nfts, "collected, explore, listings"),
@@ -1545,7 +1559,7 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 _ => t.icon(Icon::Disclosure).into(),
             };
             let row = Row::new(vec![Cell::from(format!("  {label}")), Cell::from(super::super::views::value_line(t, value))]);
-            (*id, if i == app.selected { row.style(t.selected()) } else { row })
+            (*id, if i == app.nav.selected { row.style(t.selected()) } else { row })
         })
         .collect();
     // Grouped: a heading wherever the group changes. Display lines are headings and rows; the
@@ -1570,7 +1584,7 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     // A short terminal cannot show every line: the list scrolls with the cursor, and says when
     // there is more below.
     let n = lines.len();
-    let at = lines.iter().position(|(i, _)| *i == Some(app.selected)).unwrap_or(0);
+    let at = lines.iter().position(|(i, _)| *i == Some(app.nav.selected)).unwrap_or(0);
     let mut visible = (inner.height as usize).max(1);
     let more_below = |offset: usize, visible: usize| n.saturating_sub(offset + visible);
     let mut offset = app.list_window(app.main_list(), at, n, visible);
@@ -1579,7 +1593,7 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         offset = app.list_window(app.main_list(), at, n, visible);
     }
     {
-        let mut hits = app.hits.borrow_mut();
+        let mut hits = app.input.hits.borrow_mut();
         for (k, (i, _)) in lines.iter().enumerate().skip(offset).take(visible) {
             if let Some(i) = i {
                 let rect = Rect::new(inner.x, inner.y + (k - offset) as u16, inner.width, 1);
@@ -1593,7 +1607,7 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         shown.push(Row::new(vec![Cell::from(Span::styled(format!("  ↓ {below} more"), t.dim_style()))]));
     }
     f.render_widget(Table::new(shown, [Constraint::Length(32), Constraint::Min(20)]), inner);
-    let caps = &app.caps;
+    let caps = &app.term.caps;
     let lines = vec![
         Line::from(vec![
             Span::styled("terminal      ", t.dim_style()),

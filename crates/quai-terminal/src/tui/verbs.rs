@@ -10,8 +10,8 @@
 //! (`Do::Act`). Keeping that one step of indirection means the keys moved without the behaviour
 //! moving with them; the per-screen modules of the next phase turn them into typed actions.
 
-use super::super::keymap::Verb;
-use super::{App, ConfirmAction, Detail, FormKind, Modal, OnboardKind, Screen};
+use super::super::keymap::{Place, Verb};
+use super::{App, Card, ConfirmAction, Detail, FormKind, Modal, OnboardKind, Screen};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// How a view carries out a verb or a sheet item.
@@ -337,7 +337,13 @@ const BOARD: ViewKeys = ViewKeys {
     footer: &[Open, Add, Filter, Sheet],
     sheet: &[
         it('p', "write", V(ch('p'))),
-        it('a', "follow a channel", V(ch('a'))),
+        it('m', "new private message", V(ch('m'))),
+        it('a', "follow a channel · accept a request", V(ch('a'))),
+        it('v', "compare fingerprints", V(ch('v'))),
+        it('T', "accept a new identity", V(ch('T'))),
+        it('B', "block", V(ch('B'))),
+        it('K', "publish this week's key", V(ch('K'))),
+        it('F', "fund the messaging account", V(ch('F'))),
         it('i', "pin beside every screen", V(ch('P'))),
         it('n', "notify me", V(ch('n'))),
         it('c', "save the sender as a contact", V(ch('c'))),
@@ -346,9 +352,13 @@ const BOARD: ViewKeys = ViewKeys {
 };
 
 const ACTIVITY: ViewKeys = ViewKeys {
-    overrides: &[ov(Open, "detail", Act(App::screen_enter_pub))],
+    overrides: &[ov(Open, "detail", Act(App::screen_enter_pub)), ov(ViewMode, "this account / all", Act(App::toggle_activity_account))],
     footer: &[Open, Copy, CopyLink, Sheet],
-    sheet: &[it('u', "speed up", Run("speedup")), it('p', "resume the trade", Act(App::resume_trade_plan))],
+    sheet: &[
+        it('u', "speed up", Run("speedup")),
+        it('p', "resume the trade", Act(App::resume_trade_plan)),
+        it('o', "only the account that acts, or all (.)", Act(App::toggle_activity_account)),
+    ],
 };
 
 const ORDERS: ViewKeys = ViewKeys {
@@ -443,8 +453,8 @@ const COLLECTION: ViewKeys = ViewKeys {
 
 const ACTIVITY_DETAIL: ViewKeys = ViewKeys { overrides: &[], footer: &[Copy, CopyLink], sheet: &[] };
 
-/// The keys of the open view: its detail if one is open, else its screen.
-pub fn view_keys(screen: Screen, detail: Option<&Detail>) -> &'static ViewKeys {
+/// The keys of the open view: its detail if one is open, else its place (the exchange's card).
+pub fn view_keys(place: Place, detail: Option<&Detail>) -> &'static ViewKeys {
     match detail {
         Some(Detail::Asset(_)) => return &ASSET,
         Some(Detail::Nft(..)) => return &NFT,
@@ -452,15 +462,21 @@ pub fn view_keys(screen: Screen, detail: Option<&Detail>) -> &'static ViewKeys {
         Some(Detail::Activity(_)) => return &ACTIVITY_DETAIL,
         None => {}
     }
+    let screen = match place {
+        Place::Card(Card::Swap) => return &SWAP,
+        Place::Card(Card::Convert) => return &CONVERT,
+        Place::Card(Card::Wrap) => return &WRAP,
+        Place::Pane(Screen::Contacts, 1) => return &CHANNELS,
+        Place::Screen(s) | Place::Pane(s, _) => s,
+    };
     match screen {
         Screen::Home => &HOME,
         Screen::Qi => &QI,
         Screen::Accounts => &ACCOUNTS,
         Screen::Markets => &MARKETS,
-        Screen::Swap => &SWAP,
+        // The exchange's keys are its card's.
+        Screen::Exchange => &SWAP,
         Screen::Pools => &POOLS,
-        Screen::Convert => &CONVERT,
-        Screen::Wrap => &WRAP,
         Screen::Launches => &LAUNCHES,
         Screen::Pnl => &PNL,
         Screen::Orders => &ORDERS,
@@ -468,7 +484,6 @@ pub fn view_keys(screen: Screen, detail: Option<&Detail>) -> &'static ViewKeys {
         Screen::Explore => &EXPLORE,
         Screen::Listings => &LISTINGS,
         Screen::Contacts => &CONTACTS,
-        Screen::Channels => &CHANNELS,
         Screen::Board => &BOARD,
         Screen::Activity => &ACTIVITY,
         Screen::Wallets => &WALLETS,
@@ -485,7 +500,7 @@ fn key(code: KeyCode) -> KeyEvent {
 impl App {
     /// The keys of what is on screen now.
     pub(crate) fn keys_here(&self) -> &'static ViewKeys {
-        view_keys(self.screen, self.detail.last())
+        view_keys(self.place(), self.nav.detail.last())
     }
 
     /// Carry out one table entry.
@@ -512,8 +527,8 @@ impl App {
     pub(crate) fn verb(&mut self, verb: Verb, size: (u16, u16)) {
         // Tab reaches the pinned chat after the screen's last pane, whichever screen it is: this
         // comes before a screen's own Tab, or Markets and Pools would keep it to themselves.
-        if verb == PaneNext && self.dock_shown && self.tab_reaches_dock() {
-            self.dock_focus = true;
+        if verb == PaneNext && self.dock.shown && self.tab_reaches_dock() {
+            self.dock.focus = true;
             return;
         }
         if let Some(o) = self.keys_here().overrides.iter().find(|o| o.verb == verb)
@@ -558,35 +573,37 @@ impl App {
             TabNext => self.change_tab(1),
             PaneNext | PanePrev => {
                 // Tab reaches the pinned chat after the screen's last pane.
-                if verb == PaneNext && self.dock_shown && self.tab_reaches_dock() {
-                    self.dock_focus = true;
+                if verb == PaneNext && self.dock.shown && self.tab_reaches_dock() {
+                    self.dock.focus = true;
                     return;
                 }
-                let n = self.screen.panes().max(1);
-                self.pane = if verb == PaneNext { (self.pane + 1) % n } else { (self.pane + n - 1) % n };
+                let n = self.nav.screen.panes().max(1);
+                self.nav.pane = if verb == PaneNext { (self.nav.pane + 1) % n } else { (self.nav.pane + n - 1) % n };
+                // Panes can list different things: the cursor stays inside the one it moved to.
+                self.nav.selected = self.nav.selected.min(self.list_len().saturating_sub(1));
             }
             Down => self.move_selection(1),
             Up => self.move_selection(-1),
             Left | Right => {}
-            Top => self.selected = 0,
-            Bottom => self.selected = self.list_len().saturating_sub(1),
+            Top => self.nav.selected = 0,
+            Bottom => self.nav.selected = self.list_len().saturating_sub(1),
             PageDown => self.move_selection(10),
             PageUp => self.move_selection(-10),
-            Jump => self.jump_pending = Some('\''),
+            Jump => self.nav.jump_pending = Some('\''),
             Filter => self.info("nothing to search here"),
             Open => self.screen_enter(),
             Previous => self.go_back(),
             Back => {
-                if !self.detail.is_empty() {
-                    self.detail.pop();
-                    self.detail_selected = 0;
-                    self.kitty.clear(self.caps.tmux);
+                if !self.nav.detail.is_empty() {
+                    self.nav.detail.pop();
+                    self.nav.detail_selected = 0;
+                    self.term.kitty.clear(self.term.caps.tmux);
                 }
             }
             GoTo => self.modal = Modal::GoTo,
             Palette => self.open_palette(),
             Help => {
-                self.help_scroll = 0;
+                self.nav.help_scroll = 0;
                 self.modal = Modal::Help;
             }
             Notifications => {
@@ -594,6 +611,7 @@ impl App {
                 self.send(super::Cmd::MarkRead);
             }
             Wallets => self.open_wallet_switcher(),
+            Account => self.open_account_picker(),
             Privacy => {
                 self.config.balance_in_bar = !self.config.balance_in_bar;
                 self.save_config();
@@ -609,21 +627,17 @@ impl App {
                 }
             }
             Sheet => self.open_sheet(),
-            Dock if self.dock_shown => self.dock_focus = true,
+            Dock if self.dock.shown => self.dock.focus = true,
             Dock => self.write_pinned(),
-            Send => self.run_action(if matches!(self.screen, Screen::Qi | Screen::Contacts | Screen::Channels) {
-                "send_qi"
-            } else {
-                "send_quai"
-            }),
+            Send => self.run_action(if matches!(self.nav.screen, Screen::Qi | Screen::Contacts) { "send_qi" } else { "send_quai" }),
             Receive => {
-                let qi = matches!(self.screen, Screen::Qi | Screen::Contacts | Screen::Channels);
+                let qi = matches!(self.nav.screen, Screen::Qi | Screen::Contacts);
                 self.modal = Modal::Receive { asset_qi: qi, account: 0 };
             }
             Trade => self.run_action("trade"),
             Buy | Sell => self.toast("buy and sell on Markets, Launches, Listings and an asset's detail", false),
             Convert => self.run_action("convert_quai_qi"),
-            Wrap => self.switch(Screen::Wrap),
+            Wrap => self.show_card(Card::Wrap),
             Add | Edit | Remove => self.info("nothing here to change · space shows what you can do"),
             Copy => match self.selected_value() {
                 Some(v) => self.copy(super::super::clipboard::PublicText::shown(v), "value"),
@@ -647,12 +661,12 @@ impl App {
     }
 
     fn receive_on_account(&mut self) {
-        let account = self.selected.min(self.dash.accounts.len().saturating_sub(1));
+        let account = self.nav.selected.min(self.dash.accounts.len().saturating_sub(1));
         self.modal = Modal::Receive { asset_qi: false, account };
     }
 
     fn rename_account(&mut self) {
-        if let Some(a) = self.dash.accounts.get(self.selected) {
+        if let Some(a) = self.dash.accounts.get(self.nav.selected) {
             let (addr, label) = (a.address.clone(), a.label.clone());
             self.open_form(FormKind::RenameAccount(addr));
             if let Modal::Form(f) = &mut self.modal {
@@ -677,7 +691,7 @@ impl App {
     /// Markets Enter: on the flow, the chart goes to that swap's pair; on the pairs, the pair's
     /// actions. Enter never opens a money form, and a pair on its curve would have opened a buy.
     fn markets_open(&mut self) {
-        if self.pane == 1 {
+        if self.nav.pane == 1 {
             self.view_key(key(KeyCode::Enter));
         } else {
             self.open_sheet();
@@ -686,18 +700,18 @@ impl App {
 
     /// Markets `.`: the chart's timeframe on the pair list, the dust floor on the flow.
     fn markets_view_mode(&mut self) {
-        self.view_key(key(ch(if self.pane == 1 { 'm' } else { 'T' })));
+        self.view_key(key(ch(if self.nav.pane == 1 { 'm' } else { 'T' })));
     }
 
     fn edit_contact(&mut self) {
-        if let Some(c) = self.dash.contacts.get(self.selected) {
+        if let Some(c) = self.dash.contacts.get(self.nav.selected) {
             let name = c.name.clone();
             self.open_form(FormKind::Contact(Some(name)));
         }
     }
 
     fn remove_contact(&mut self) {
-        if let Some(c) = self.dash.contacts.get(self.selected) {
+        if let Some(c) = self.dash.contacts.get(self.nav.selected) {
             self.modal = Modal::Confirm {
                 title: "Remove contact".into(),
                 body: format!("Remove `{}` from your address book? Payment-channel history is kept.", c.name),
@@ -707,7 +721,7 @@ impl App {
     }
 
     fn send_quai_to_contact(&mut self) {
-        match self.dash.contacts.get(self.selected).and_then(|c| c.address.clone()) {
+        match self.dash.contacts.get(self.nav.selected).and_then(|c| c.address.clone()) {
             Some(address)
                 if wallet_core::registry::parse_any_address(&address).is_ok_and(|a| a.ledger() == wallet_core::sdk::Ledger::Quai) =>
             {
@@ -722,8 +736,8 @@ impl App {
     }
 
     fn notify_peer(&mut self) {
-        let code = if self.screen == Screen::Contacts {
-            self.dash.contacts.get(self.selected).and_then(|c| c.payment_code.clone())
+        let code = if self.nav.screen == Screen::Contacts && !self.on_channels() {
+            self.dash.contacts.get(self.nav.selected).and_then(|c| c.payment_code.clone())
         } else {
             self.channel_peer().map(|p| p.code.clone())
         };
@@ -779,7 +793,7 @@ impl App {
     }
 
     fn rename_wallet(&mut self) {
-        if let Some(w) = self.wallets.get(self.selected).cloned() {
+        if let Some(w) = self.cockpit.list.get(self.nav.selected).cloned() {
             self.open_form(FormKind::RenameWallet(w.id));
         }
     }
@@ -796,7 +810,10 @@ mod tests {
         let known: Vec<&str> = super::super::ACTIONS.iter().map(|a| a.id).collect();
         let mut named: Vec<&str> = Vec::new();
         let details = [Detail::Asset("quai".into()), Detail::Nft("0x1".into(), "1".into()), Detail::Collection("0x1".into())];
-        let views = Screen::ALL.iter().map(|s| view_keys(*s, None)).chain(details.iter().map(|d| view_keys(Screen::Home, Some(d))));
+        let views = Place::all()
+            .into_iter()
+            .map(|p| view_keys(p, None))
+            .chain(details.iter().map(|d| view_keys(Place::Screen(Screen::Home), Some(d))));
         for v in views {
             for how in v.overrides.iter().map(|o| o.how).chain(v.sheet.iter().map(|i| i.how)) {
                 if let Do::Run(id) = how {
@@ -821,9 +838,9 @@ mod tests {
             Some(Detail::Collection("0x1".into())),
             Some(Detail::Activity("k".into())),
         ];
-        let mut views: Vec<(&str, &ViewKeys)> = Screen::ALL.iter().map(|s| (s.title(), view_keys(*s, None))).collect();
+        let mut views: Vec<(&str, &ViewKeys)> = Place::all().into_iter().map(|p| (p.title(), view_keys(p, None))).collect();
         for d in &details {
-            views.push(("detail", view_keys(Screen::Home, d.as_ref())));
+            views.push(("detail", view_keys(Place::Screen(Screen::Home), d.as_ref())));
         }
         for (name, v) in views {
             let mut letters: Vec<char> = v.sheet.iter().map(|i| i.key).collect();
@@ -839,6 +856,15 @@ mod tests {
             for f in v.footer {
                 assert!(super::super::super::keymap::binding(*f).is_some(), "{name}: footer verb {f:?} has no key");
             }
+            // `@` is the account that acts, on every view: none takes it for its own.
+            assert!(!v.sheet.iter().any(|i| i.key == '@'), "{name}: a sheet item takes @");
+            assert!(!v.overrides.iter().any(|o| o.verb == Account), "{name}: overrides what @ does");
+            assert!(
+                !v.overrides.iter().any(|o| matches!(o.how, Do::View(KeyCode::Char('@')) | Do::Detail(KeyCode::Char('@')))),
+                "{name}: hands @ to the view"
+            );
         }
+        let at = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
+        assert_eq!(super::super::super::keymap::resolve(&at, &[], true), Some(Account), "@ means the account that acts");
     }
 }

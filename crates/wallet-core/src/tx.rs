@@ -3,6 +3,7 @@
 use crate::amount;
 use crate::appdb::{OpStatus, Operation};
 use crate::error::{CoreError, Result};
+use crate::journal::{Detail, OpKind};
 use crate::registry::QuaiAccount;
 use crate::session::{Session, op_hex, parse_op_id, qi_stale, stale_pause};
 use quai_sdk::U256;
@@ -17,7 +18,7 @@ use quai_sdk::qi::{PreparedQiOperation, PreparedQiReplacement, PreparedQiTransac
 use serde::{Deserialize, Serialize};
 
 /// One row of a review.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Field {
     /// Label.
     pub label: String,
@@ -26,7 +27,7 @@ pub struct Field {
 }
 
 /// A Qi input or output line.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoinLine {
     /// Address or outpoint.
     pub address: String,
@@ -37,12 +38,12 @@ pub struct CoinLine {
 }
 
 /// Everything shown before authorization, generated from the frozen payload.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Review {
     /// Operation id (used to commit or discard).
     pub op_id: String,
     /// Operation kind.
-    pub kind: String,
+    pub kind: OpKind,
     /// Title for display.
     pub title: String,
     /// Network id and chain.
@@ -77,10 +78,17 @@ pub struct Review {
     /// the fee. The one place a review says it in a single glance.
     #[serde(default)]
     pub changes: Vec<BalanceChange>,
+    /// Why this review needs a typed confirmation (`review_decoder::Risk`), in words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risks: Vec<String>,
+    /// The words to type before this review can be signed, when it is risky. The commit refuses
+    /// without them ([`Session::commit_with`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
 }
 
 /// One asset's movement in a review.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BalanceChange {
     /// `out`, `in`, `fee`, or `none` (nothing moves, e.g. an approval).
     pub direction: String,
@@ -108,8 +116,11 @@ pub struct FinancialEffect {
     pub note: String,
 }
 
-fn financial_effects(detail: &serde_json::Value) -> Result<Option<Vec<FinancialEffect>>> {
-    let Some(value) = detail.get("financial_effects") else { return Ok(None) };
+fn financial_effects(detail: &Detail) -> Result<Option<Vec<FinancialEffect>>> {
+    let value = detail.financial_effects();
+    if value.is_null() {
+        return Ok(None);
+    }
     let effects: Vec<FinancialEffect> = serde_json::from_value(value.clone())?;
     for effect in &effects {
         if !matches!(effect.direction.as_str(), "in" | "out")
@@ -127,18 +138,19 @@ fn financial_effects(detail: &serde_json::Value) -> Result<Option<Vec<FinancialE
 }
 
 /// Kinds whose `amount` is a token leaving the wallet (native QUAI is read from the value).
-const TOKEN_OUT: &[&str] = &["send_token", "swap", "curve_sell", "unwrap_wqi", "unwrap_quai", "stake", "incentivize"];
+const TOKEN_OUT: &[OpKind] =
+    &[OpKind::SendToken, OpKind::Swap, OpKind::CurveSell, OpKind::UnwrapWqi, OpKind::UnwrapQuai, OpKind::Stake, OpKind::Incentivize];
 
 /// The balance changes of an account or Qi operation, from what the review already knows:
 /// the native value (exact), the amount and its kind, the op detail's expected output, and the fee.
 pub fn balance_changes(
-    kind: &str,
+    kind: &OpKind,
     asset: &str,
     amount_base: U256,
     decimals: u8,
     native_value: U256,
     fee: (U256, &str, u8),
-    detail: &serde_json::Value,
+    detail: &Detail,
 ) -> Vec<BalanceChange> {
     let show = |v: U256, d: u8| amount::group_thousands(&amount::format_amount_short(v, d, 6));
     let change = |direction: &str, asset: &str, amount: String, note: &str| BalanceChange {
@@ -147,14 +159,14 @@ pub fn balance_changes(
         amount,
         note: note.into(),
     };
-    let base = |k: &str| -> Option<U256> {
-        match &detail[k] {
+    let base = |v: &serde_json::Value| -> Option<U256> {
+        match v {
             serde_json::Value::String(s) => U256::from_str_radix(s, 10).ok(),
             serde_json::Value::Number(n) => n.as_u64().map(U256::from),
             _ => None,
         }
     };
-    let text = |k: &str| detail[k].as_str().unwrap_or_default().to_string();
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
     let mut out = Vec::new();
     match financial_effects(detail) {
         Ok(Some(effects)) => {
@@ -185,35 +197,37 @@ pub fn balance_changes(
         out.push(change("out", "QUAI", show(native_value, amount::QUAI_DECIMALS), ""));
     }
     let token = !asset.eq_ignore_ascii_case("QUAI") && !asset.eq_ignore_ascii_case("QI");
-    if token && !amount_base.is_zero() && TOKEN_OUT.contains(&kind) {
+    if token && !amount_base.is_zero() && TOKEN_OUT.contains(kind) {
         out.push(change("out", asset, show(amount_base, decimals), ""));
     }
-    if matches!(kind, "send_qi" | "wrap_qi" | "convert_qi_to_quai") && !amount_base.is_zero() {
+    if matches!(kind, OpKind::SendQi | OpKind::WrapQi | OpKind::ConvertQiToQuai) && !amount_base.is_zero() {
         out.push(change("out", "Qi", show(amount_base, amount::QI_DECIMALS), ""));
     }
-    let nft = || detail["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("#{}", text("token_id")));
+    let nft =
+        || detail.name().as_str().filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("#{}", text(detail.token_id())));
     match kind {
-        "nft_transfer" => out.push(change("out", &nft(), "1".into(), "NFT")),
-        "nft_buy" => out.push(change("in", &nft(), "1".into(), "NFT")),
-        "swap" | "curve_buy" => {
-            let d = detail["to_decimals"].as_u64().unwrap_or(18) as u8;
-            if let Some(v) = base("expected_out") {
-                let floor = base("minimum_out").map(|m| format!("at least {} {}", show(m, d), text("to_symbol"))).unwrap_or_default();
-                out.push(change("in", &text("to_symbol"), format!("≈ {}", show(v, d)), &floor));
+        OpKind::NftTransfer => out.push(change("out", &nft(), "1".into(), "NFT")),
+        OpKind::NftBuy => out.push(change("in", &nft(), "1".into(), "NFT")),
+        OpKind::Swap | OpKind::CurveBuy => {
+            let d = detail.to_decimals().as_u64().unwrap_or(18) as u8;
+            if let Some(v) = base(detail.expected_out()) {
+                let floor =
+                    base(detail.minimum_out()).map(|m| format!("at least {} {}", show(m, d), text(detail.to_symbol()))).unwrap_or_default();
+                out.push(change("in", &text(detail.to_symbol()), format!("≈ {}", show(v, d)), &floor));
             }
         }
-        "wrap_quai" => out.push(change("in", "WQUAI", show(amount_base, decimals), "1:1")),
-        "unwrap_quai" => out.push(change("in", "QUAI", show(amount_base, decimals), "1:1")),
-        "unwrap_wqi" => out.push(change("in", "Qi", show(amount_base, decimals), "whole Qi, 1:1")),
+        OpKind::WrapQuai => out.push(change("in", "WQUAI", show(amount_base, decimals), "1:1")),
+        OpKind::UnwrapQuai => out.push(change("in", "QUAI", show(amount_base, decimals), "1:1")),
+        OpKind::UnwrapWqi => out.push(change("in", "Qi", show(amount_base, decimals), "whole Qi, 1:1")),
         // What the node expects to arrive after the protocol's discount, not the spot rate: at size
         // the two differ by an order of magnitude. The floor is where the slippage refunds instead.
-        "convert_quai_to_qi" | "convert_qi_to_quai" => {
-            let (unit, d, expected, spot) = if kind == "convert_quai_to_qi" {
-                ("Qi", amount::QI_DECIMALS, base("expected_qits"), base("quoted_qits"))
+        OpKind::ConvertQuaiToQi | OpKind::ConvertQiToQuai => {
+            let (unit, d, expected, spot) = if *kind == OpKind::ConvertQuaiToQi {
+                ("Qi", amount::QI_DECIMALS, base(detail.expected_qits()), base(detail.quoted_qits()))
             } else {
-                ("QUAI", 18, base("expected_its"), base("quoted_its"))
+                ("QUAI", 18, base(detail.expected_its()), base(detail.quoted_its()))
             };
-            let floor = spot.zip(detail["slippage_bps"].as_u64()).map(|(spot, bps)| {
+            let floor = spot.zip(detail.slippage_bps().as_u64()).map(|(spot, bps)| {
                 let kept = U256::from(10_000u64.saturating_sub(bps.min(10_000)));
                 format!("; refunded if under {}", show(spot * kept / U256::from(10_000u64), d))
             });
@@ -236,7 +250,7 @@ pub fn balance_changes(
         _ => {}
     }
     if out.is_empty() {
-        let why = if kind == "approve" {
+        let why = if *kind == OpKind::Approve {
             "an allowance only: nothing leaves until it is used"
         } else {
             "asset changes unknown; inspect operation details"
@@ -248,7 +262,7 @@ pub fn balance_changes(
 }
 
 /// An asset a review can picture. Amounts stay text; pictures never carry meaning alone.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReviewVisual {
     /// `pay`, `receive`, `token` or `nft`.
     pub role: String,
@@ -261,8 +275,8 @@ pub struct ReviewVisual {
 }
 
 /// What a review pictures, from the operation kind and its journal detail.
-pub fn review_visuals(kind: &str, asset: &str, detail: &serde_json::Value) -> Vec<ReviewVisual> {
-    let text = |k: &str| detail[k].as_str().map(str::to_string);
+pub fn review_visuals(kind: &OpKind, asset: &str, detail: &Detail) -> Vec<ReviewVisual> {
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_string);
     let visual = |role: &str, symbol: String, contract: String, token_id: Option<String>| ReviewVisual {
         role: role.into(),
         symbol,
@@ -270,24 +284,28 @@ pub fn review_visuals(kind: &str, asset: &str, detail: &serde_json::Value) -> Ve
         token_id,
     };
     match kind {
-        "swap" => {
-            let mut out = vec![visual("pay", asset.to_string(), text("from_token").unwrap_or_else(|| "quai".into()), None)];
-            if let (Some(symbol), Some(to)) = (text("to_symbol"), text("to_token")) {
+        OpKind::Swap => {
+            let mut out = vec![visual("pay", asset.to_string(), text(detail.from_token()).unwrap_or_else(|| "quai".into()), None)];
+            if let (Some(symbol), Some(to)) = (text(detail.to_symbol()), text(detail.to_token())) {
                 out.push(visual("receive", symbol, to, None));
             }
             out
         }
-        "nft_buy" | "nft_transfer" | "nft_list" | "nft_reprice" | "nft_unlist" => match (text("contract"), text("token_id")) {
+        k if k.is_nft() => match (text(detail.contract()), text(detail.token_id())) {
             (Some(c), Some(id)) => {
-                vec![visual("nft", text("name").filter(|n| !n.is_empty()).unwrap_or_else(|| format!("#{id}")), c, Some(id))]
+                vec![visual("nft", text(detail.name()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("#{id}")), c, Some(id))]
             }
             _ => vec![],
         },
-        "send_quai" | "wrap_quai" => vec![visual("token", "QUAI".into(), "quai".into(), None)],
-        "send_qi" | "wrap_qi" | "sweep_qi" | "aggregate_qi" => vec![visual("token", "Qi".into(), "qi".into(), None)],
-        "convert_quai_to_qi" => vec![visual("pay", "QUAI".into(), "quai".into(), None), visual("receive", "Qi".into(), "qi".into(), None)],
-        "convert_qi_to_quai" => vec![visual("pay", "Qi".into(), "qi".into(), None), visual("receive", "QUAI".into(), "quai".into(), None)],
-        _ => match text("token").filter(|t| t.starts_with("0x")) {
+        OpKind::SendQuai | OpKind::WrapQuai => vec![visual("token", "QUAI".into(), "quai".into(), None)],
+        OpKind::SendQi | OpKind::WrapQi | OpKind::SweepQi | OpKind::AggregateQi => vec![visual("token", "Qi".into(), "qi".into(), None)],
+        OpKind::ConvertQuaiToQi => {
+            vec![visual("pay", "QUAI".into(), "quai".into(), None), visual("receive", "Qi".into(), "qi".into(), None)]
+        }
+        OpKind::ConvertQiToQuai => {
+            vec![visual("pay", "Qi".into(), "qi".into(), None), visual("receive", "QUAI".into(), "quai".into(), None)]
+        }
+        _ => match text(detail.token()).filter(|t| t.starts_with("0x")) {
             Some(token) => vec![visual("token", asset.to_string(), token, None)],
             None => vec![],
         },
@@ -295,7 +313,7 @@ pub fn review_visuals(kind: &str, asset: &str, detail: &serde_json::Value) -> Ve
 }
 
 /// Result of committing a reviewed operation.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Submitted {
     /// Operation id.
     pub op_id: String,
@@ -326,7 +344,7 @@ pub struct AccountRequest {
     /// Intent (destination, value, calldata, access list).
     pub intent: AccountIntent,
     /// Journal kind.
-    pub kind: String,
+    pub kind: OpKind,
     /// Display title.
     pub title: String,
     /// Asset label for the journal.
@@ -341,12 +359,27 @@ pub struct AccountRequest {
     pub fields: Vec<Field>,
     /// Extra warnings.
     pub warnings: Vec<String>,
-    /// JSON detail stored in the journal.
-    pub detail: serde_json::Value,
+    /// Detail stored in the journal.
+    pub detail: Detail,
     /// Gas ceiling.
     pub max_gas: u64,
     /// Optional total fee cap (base units).
     pub max_fee: Option<U256>,
+}
+
+/// What the journal keeps when a review field is private (a sealed message's text).
+pub const PRIVATE_FIELD: &str = "(private: shown in the review, never stored)";
+
+/// The review as the operation journal keeps it. The journal is plain text in the wallet's
+/// database, which backups copy, so a field the request names in `detail.private_fields` is shown
+/// to the user once and stored as [`PRIVATE_FIELD`].
+fn journaled_review(review: &Review, detail: &Detail) -> Review {
+    let private: Vec<&str> = detail.private_fields().as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+    let mut kept = review.clone();
+    for f in kept.fields.iter_mut().filter(|f| private.contains(&f.label.as_str())) {
+        f.value = PRIVATE_FIELD.into();
+    }
+    kept
 }
 
 pub(crate) fn field(label: &str, value: impl Into<String>) -> Field {
@@ -358,18 +391,18 @@ fn map_account_error(e: AccountError) -> CoreError {
 }
 
 /// Apply the same contract-identity warning to every account review family.
-fn canonical_identity_warnings(network: &crate::network::NetworkProfile, asset: &str, detail: &serde_json::Value) -> Vec<String> {
+fn canonical_identity_warnings(network: &crate::network::NetworkProfile, asset: &str, detail: &Detail) -> Vec<String> {
     let known = crate::swap::canonical_tokens(network);
     let mut identities = Vec::new();
-    for key in ["token", "from_token"] {
-        if let Some(address) = detail[key].as_str() {
+    for value in [detail.token(), detail.from_token()] {
+        if let Some(address) = value.as_str() {
             identities.push((asset, address));
         }
     }
-    if let (Some(symbol), Some(address)) = (detail["to_symbol"].as_str(), detail["to_token"].as_str()) {
+    if let (Some(symbol), Some(address)) = (detail.to_symbol().as_str(), detail.to_token().as_str()) {
         identities.push((symbol, address));
     }
-    if let Some(effects) = detail["financial_effects"].as_array() {
+    if let Some(effects) = detail.financial_effects().as_array() {
         for effect in effects {
             if let (Some(symbol), Some(address)) = (effect["asset"].as_str(), effect["token"].as_str()) {
                 identities.push((symbol, address));
@@ -388,8 +421,9 @@ fn canonical_identity_warnings(network: &crate::network::NetworkProfile, asset: 
     warnings
 }
 
-fn validate_review_expiry(detail: &serde_json::Value, now: u64) -> Result<()> {
-    if let Some(deadline) = detail.get("expires_at") {
+fn validate_review_expiry(detail: &Detail, now: u64) -> Result<()> {
+    let deadline = detail.expires_at();
+    if !deadline.is_null() {
         let deadline = deadline.as_u64().ok_or_else(|| CoreError::Invalid("invalid frozen review expiry".into()))?;
         if now >= deadline {
             return Err(CoreError::Rejected("review expired; discard it and request a fresh review".into()));
@@ -451,11 +485,11 @@ impl Session {
         // Anything that sends value somewhere says what the wallet knows about that somewhere —
         // lookalikes and dust-only senders first, above every other warning (`recipient.rs`).
         let mut req = req;
-        if req.kind == "approve" && req.amount.is_zero() {
+        if req.kind == OpKind::Approve && req.amount.is_zero() {
             req.title = format!("Clear {} allowance", req.asset);
             req.warnings.push("This transaction sets allowance to zero. Any new allowance requires a separate review.".into());
         }
-        if matches!(req.kind.as_str(), "send_quai" | "send_token" | "nft_transfer") {
+        if matches!(req.kind, OpKind::SendQuai | OpKind::SendToken | OpKind::NftTransfer) {
             let mut first = self.recipient_warnings(&req.counterparty);
             first.append(&mut req.warnings);
             req.warnings = first;
@@ -536,15 +570,41 @@ impl Session {
             self.quai_store.release_unsigned(id)?;
             return Err(error);
         }
-        if !req.detail.is_object() {
-            req.detail = serde_json::json!({});
-        }
-        req.detail["commitments"] = serde_json::to_value(commitments)?;
-        let result = self.finish_account_review(id, prepared, req);
+        req.detail.set_commitments(serde_json::to_value(commitments)?);
+        let large = self.large_share(&req.from.address, prepared.transaction().value).await;
+        let result = self.finish_account_review(id, prepared, req).map(|review| self.with_large_share(review, large));
         if result.is_err() {
             self.quai_store.release_unsigned(id)?;
         }
         result
+    }
+
+    /// Whether `value` is half or more of the account's QUAI (a typed-confirmation risk). A read
+    /// that fails is not a risk found: the review goes on without it.
+    async fn large_share(&self, owner: &str, value: U256) -> bool {
+        if value.is_zero() {
+            return false;
+        }
+        let Ok(address) = owner.parse::<quai_sdk::QuaiAddress>() else { return false };
+        match self.provider().balance(address, quai_sdk::BlockTag::Latest).await {
+            Ok(balance) => !balance.is_zero() && value.saturating_mul(U256::from(2)) >= balance,
+            Err(_) => false,
+        }
+    }
+
+    /// Add the large-share risk to a review, and the confirmation it needs.
+    fn with_large_share(&mut self, mut review: Review, large: bool) -> Review {
+        if !large {
+            return review;
+        }
+        review.risks.push(crate::review_decoder::Risk::LargeShare.describe().to_string());
+        if review.confirm.is_none() {
+            review.confirm = crate::review_decoder::confirm_phrase(&[crate::review_decoder::Risk::LargeShare], &review.to);
+        }
+        if let Some(phrase) = &review.confirm {
+            self.confirmations.insert(review.op_id.clone(), phrase.clone());
+        }
+        review
     }
 
     /// Prepare a Quai→Qi conversion from an account.
@@ -606,11 +666,9 @@ impl Session {
             self.quai_store.release_unsigned(id)?;
             return Err(error);
         }
-        if !req.detail.is_object() {
-            req.detail = serde_json::json!({});
-        }
-        req.detail["commitments"] = serde_json::to_value(commitments)?;
-        let result = self.finish_account_review(id, prepared, req);
+        req.detail.set_commitments(serde_json::to_value(commitments)?);
+        let large = self.large_share(&req.from.address, prepared.transaction().value).await;
+        let result = self.finish_account_review(id, prepared, req).map(|review| self.with_large_share(review, large));
         if result.is_err() {
             self.quai_store.release_unsigned(id)?;
         }
@@ -625,6 +683,22 @@ impl Session {
     ) -> Result<Review> {
         let tx: &QuaiTransaction = prepared.transaction();
         let max_fee = prepared.maximum_fee();
+        // Independently of the builder: decode the exact bytes to be signed and hold them to what
+        // this review declares. Nothing is journaled or shown when they disagree.
+        let decoded = crate::review_decoder::decode(tx.to.map(|a| a.to_string()).as_deref(), tx.value, &tx.data)
+            .map_err(|why| CoreError::Rejected(format!("the transaction's bytes do not decode: {why}")))?;
+        let decoded_lines = crate::review_decoder::check(
+            &decoded,
+            &crate::review_decoder::Declared {
+                kind: &req.kind,
+                owner: &req.from.address,
+                counterparty: &req.counterparty,
+                amount: req.amount,
+                detail: &req.detail,
+                wquai: self.network.wquai.as_deref(),
+            },
+        )
+        .map_err(|mismatch| CoreError::Rejected(mismatch.to_string()))?;
         let mut fields = req.fields;
         fields.extend([
             field("Nonce", tx.nonce.to_string()),
@@ -637,6 +711,9 @@ impl Session {
         }
         if !tx.access_list.is_empty() {
             fields.push(field("Access list", tx.access_list.iter().map(|a| a.address.to_string()).collect::<Vec<_>>().join(", ")));
+        }
+        for line in decoded_lines {
+            fields.push(field("Decoded", line));
         }
         fields.push(field("Signing digest", prepared.signing_digest().to_string()));
         let fee_bps = if req.asset == "QUAI" { amount::bps(max_fee, req.amount) } else { None };
@@ -653,6 +730,17 @@ impl Session {
             warnings.push(format!("maximum fee is {}.{:02}% of the amount", bps / 100, bps % 100));
         }
         let to = tx.to.map(|a| a.to_string()).unwrap_or_else(|| "(contract creation)".into());
+        let mut risks = Vec::new();
+        if matches!(decoded.call, crate::review_decoder::Call::Unknown { .. }) {
+            risks.push(crate::review_decoder::Risk::UnknownContract);
+        }
+        if matches!(decoded.call, crate::review_decoder::Call::Approve { amount, .. } if amount == U256::MAX) {
+            risks.push(crate::review_decoder::Risk::UnlimitedApproval);
+        }
+        if warnings.iter().any(|w| w.starts_with("first time sending")) {
+            risks.push(crate::review_decoder::Risk::FirstPayment);
+        }
+        let confirm = crate::review_decoder::confirm_phrase(&risks, &to);
         let visuals = review_visuals(&req.kind, &req.asset, &req.detail);
         let changes = balance_changes(
             &req.kind,
@@ -663,14 +751,11 @@ impl Session {
             (max_fee, "QUAI", amount::QUAI_DECIMALS),
             &req.detail,
         );
-        let mut op = self.new_op(id, &req.kind, "quai", &req.from.address, &req.asset, req.amount, &req.counterparty, req.detail);
+        let mut op = self.new_op(id, req.kind.clone(), "quai", &req.from.address, &req.asset, req.amount, &req.counterparty, req.detail);
         op.fee = max_fee.to_string();
         // What the transaction itself carries, so activity can state it for any kind of call.
-        if !op.detail.is_object() {
-            op.detail = serde_json::json!({});
-        }
-        op.detail["native_value"] = serde_json::json!(tx.value.to_string());
-        op.detail["nonce"] = serde_json::json!(tx.nonce);
+        op.detail.set_native_value(serde_json::json!(tx.value.to_string()));
+        op.detail.set_nonce(serde_json::json!(tx.nonce));
         let mut review = Review {
             op_id: op_hex(id),
             kind: req.kind.clone(),
@@ -689,15 +774,20 @@ impl Session {
             visuals,
             fee_over_policy: fee_note.is_some(),
             changes,
+            risks: risks.iter().map(|r| r.describe().to_string()).collect(),
+            confirm,
         };
         for warning in canonical_identity_warnings(&self.network, &op.asset, &op.detail) {
             if !review.warnings.contains(&warning) {
                 review.warnings.push(warning);
             }
         }
-        op.detail["review_version"] = serde_json::json!(1);
-        op.detail["review"] = serde_json::to_value(&review)?;
+        op.detail.set_review_version(serde_json::json!(1));
+        op.detail.set_review(serde_json::to_value(journaled_review(&review, &op.detail))?);
         self.journal(op.clone())?;
+        if let Some(phrase) = &review.confirm {
+            self.confirmations.insert(review.op_id.clone(), phrase.clone());
+        }
         self.pending.insert(review.op_id.clone(), Pending::Account { prepared, from: req.from, op });
         Ok(review)
     }
@@ -772,6 +862,8 @@ impl Session {
                 (fee, "Qi", amount::QI_DECIMALS),
                 &op.detail,
             ),
+            risks: vec![],
+            confirm: None,
         })
     }
 
@@ -782,6 +874,17 @@ impl Session {
 
     /// Authorize: sign, persist and broadcast a reviewed operation.
     pub async fn commit(&mut self, op_id: &str) -> Result<Submitted> {
+        self.commit_with(op_id, None).await
+    }
+
+    /// [`Session::commit`], with the typed confirmation a risky review asked for
+    /// ([`Review::confirm`]). A risky review is refused without the exact words.
+    pub async fn commit_with(&mut self, op_id: &str, typed: Option<&str>) -> Result<Submitted> {
+        if let Some(phrase) = self.confirmations.get(op_id)
+            && typed.map(str::trim) != Some(phrase.as_str())
+        {
+            return Err(CoreError::Rejected(format!("this review needs its typed confirmation: type `{phrase}` to sign it")));
+        }
         self.keys()?;
         self.require_execution_source()?;
         let pending_ref = self.pending.get(op_id).ok_or_else(|| CoreError::NotFound(format!("no pending review {op_id}")))?;
@@ -796,7 +899,7 @@ impl Session {
             Pending::Account { op, .. } => Some((op.account.clone(), op.id.clone(), crate::commitments::Commitments::from_operation(op)?)),
             Pending::Replacement { prepared, from, op_id } => {
                 let op = self.app.operation(op_id)?.ok_or_else(|| CoreError::NotFound("replacement operation".into()))?;
-                if let Some(plan) = op.detail["plan_id"].as_str().map(|id| self.app.trade_plan(id)).transpose()?.flatten()
+                if let Some(plan) = op.detail.plan_id().as_str().map(|id| self.app.trade_plan(id)).transpose()?.flatten()
                     && plan.intent["client"] == "order"
                 {
                     return Err(CoreError::Rejected(
@@ -832,6 +935,7 @@ impl Session {
         };
         let _operation_guard = self.operation_lock(reservation)?;
         // Signed and sent through the RPC endpoint, never the monitoring node: it has no hashrate.
+        self.confirmations.remove(op_id);
         let pending = self.pending.remove(op_id).ok_or_else(|| CoreError::NotFound(format!("no pending review {op_id}")))?;
         match pending {
             Pending::Account { prepared, from, op } => {
@@ -881,9 +985,9 @@ impl Session {
             }
             Pending::Qi { prepared, op } => {
                 let id = prepared.reservation_id();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -910,9 +1014,9 @@ impl Session {
             }
             Pending::QiPortable { prepared, op } => {
                 let id = prepared.reservation_id();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let signing_started = std::time::Instant::now();
@@ -938,9 +1042,9 @@ impl Session {
             }
             Pending::QiSpecial { prepared, op } => {
                 let id = prepared.reservation_id();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -967,9 +1071,9 @@ impl Session {
             Pending::QiReplacement { prepared, op_id } => {
                 let id = prepared.reservation_id();
                 let fee = prepared.fee().to_string();
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -978,9 +1082,9 @@ impl Session {
                 drop(session);
                 drop(keys);
                 self.record_candidate(&op_id, hash.to_string(), Some(&fee))?;
-                let keys = self
-                    .unlocked
-                    .as_ref()
+                let held = self.held();
+                let keys = held
+                    .as_deref()
                     .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
                     .qi_keyring_with_channels(&self.qi_store)?;
                 let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
@@ -1052,7 +1156,7 @@ impl Session {
                 Err(e) => Ok(submitted(OpStatus::Submitted, format!("submitted; the journal will catch up ({e})"))),
             },
             Err(BroadcastOutcome::Broadcast(b)) if b.acceptance_is_ambiguous() => {
-                let patch = serde_json::json!({"submission_error": b.to_string()});
+                let patch = Detail::from(serde_json::json!({"submission_error": b.to_string()}));
                 if !self.app.transition_operation(op_id, from, OpStatus::Unknown, Some(&hash), None, Some(&patch))?
                     && let Some(now) = moved_on(&self.app)
                 {
@@ -1064,7 +1168,7 @@ impl Session {
                 ))
             }
             Err(BroadcastOutcome::Broadcast(b)) => {
-                let patch = serde_json::json!({"submission_error": b.to_string()});
+                let patch = Detail::from(serde_json::json!({"submission_error": b.to_string()}));
                 if !self.app.transition_operation(op_id, from, OpStatus::Signed, Some(&hash), None, Some(&patch))?
                     && let Some(now) = moved_on(&self.app)
                 {
@@ -1076,7 +1180,7 @@ impl Session {
                 )))
             }
             Err(BroadcastOutcome::Other(e)) => {
-                let patch = serde_json::json!({"submission_error": e.to_string()});
+                let patch = Detail::from(serde_json::json!({"submission_error": e.to_string()}));
                 if !self.app.transition_operation(op_id, from, OpStatus::Signed, Some(&hash), None, Some(&patch))?
                     && let Some(now) = moved_on(&self.app)
                 {
@@ -1091,6 +1195,7 @@ impl Session {
     /// hands its change addresses back as well: they never reached a signed payload, so keeping
     /// them burned would push later change past the gap a seed-only restore scans.
     pub fn discard(&mut self, op_id: &str) -> Result<()> {
+        self.confirmations.remove(op_id);
         let pending = self.pending.remove(op_id).ok_or_else(|| CoreError::NotFound(format!("no pending review {op_id}")))?;
         let (store_is_qi, id, journal_id) = match &pending {
             Pending::Account { prepared, op, .. } => (false, Some(prepared.reservation_id()), op.id.clone()),
@@ -1197,11 +1302,9 @@ impl Session {
                 }),
             )
         } else {
-            let keys = self
-                .unlocked
-                .as_ref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let held = self.held();
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let mut session = QiSession::with_keys(&self.rpc.provider, &keys, &mut self.qi_store);
             let target = hash.parse().map_err(|_| CoreError::Storage("bad hash".into()))?;
             let result = session.broadcast_candidate(id, target).await;
@@ -1223,7 +1326,7 @@ impl Session {
     pub async fn prepare_speed_up(&mut self, op_selector: &str, bump_percent: u16) -> Result<Review> {
         self.require_execution_source()?;
         let op = self.app.find_operation(&self.network.id, op_selector)?;
-        if let Some(plan_id) = op.detail.get("plan_id").and_then(|v| v.as_str())
+        if let Some(plan_id) = op.detail.plan_id().as_str()
             && self.app.trade_plan(plan_id)?.is_some_and(|plan| plan.intent["client"] == "order")
         {
             return Err(CoreError::Rejected("an automated order's saved fee budget does not authorize replacement fees; rebroadcast its existing signed candidate or create a separately authorized order".into()));
@@ -1263,13 +1366,13 @@ impl Session {
             op.status,
             None,
             None,
-            Some(&serde_json::json!({"commitments":commitments})),
+            Some(&crate::journal::Detail::from(serde_json::json!({"commitments":commitments}))),
         )? {
             return Err(CoreError::Invalid("operation changed while reserving replacement fee".into()));
         }
         let review = Review {
             op_id: format!("{}-r{}", op.id, candidates.len()),
-            kind: "speed_up".into(),
+            kind: OpKind::SpeedUp,
             title: "Speed up transaction".into(),
             network: self.network_label(),
             from: format!("{} ({})", from.address, from.label),
@@ -1296,14 +1399,16 @@ impl Session {
             visuals: vec![],
             fee_over_policy: self.network.fee_policy_note(tx.gas_price, tx.gas_price.saturating_mul(U256::from(tx.gas_limit))).is_some(),
             changes: balance_changes(
-                "speed_up",
+                &OpKind::SpeedUp,
                 "QUAI",
                 U256::ZERO,
                 amount::QUAI_DECIMALS,
                 tx.value,
                 (tx.gas_price.saturating_mul(U256::from(tx.gas_limit)), "QUAI", amount::QUAI_DECIMALS),
-                &serde_json::Value::Null,
+                &Detail::new(),
             ),
+            risks: vec![],
+            confirm: None,
         };
         self.pending.insert(review.op_id.clone(), Pending::Replacement { prepared, from, op_id: op.id });
         Ok(review)
@@ -1338,8 +1443,8 @@ impl Session {
         // The newest candidate is the one to beat: every replacement returns less change than the
         // candidate it replaces, so building on an older one would not be strictly lower than the
         // newest and the SDK would refuse it.
-        let keys =
-            self.unlocked.as_ref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
+        let held = self.held();
+        let keys = held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
         let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
         let candidates = session.signed_candidates(id);
         drop(session);
@@ -1403,11 +1508,9 @@ impl Session {
             if special {
                 intent = intent.aggregating_destination();
             }
-            let keys = self
-                .unlocked
-                .as_ref()
-                .ok_or_else(|| CoreError::Locked("wallet is locked".into()))?
-                .qi_keyring_with_channels(&self.qi_store)?;
+            let held = self.held();
+            let keys =
+                held.as_deref().ok_or_else(|| CoreError::Locked("wallet is locked".into()))?.qi_keyring_with_channels(&self.qi_store)?;
             let mut session = QiSession::with_keys(&self.node.provider, &keys, &mut self.qi_store);
             let result = session.prepare_replacement(id, intent, policy, profile).await;
             drop(session);
@@ -1485,7 +1588,7 @@ impl Session {
         let amount_q: U256 = op.amount.parse().unwrap_or(U256::ZERO);
         let review = Review {
             op_id: format!("{}-r{}", op.id, candidates.len()),
-            kind: "speed_up".into(),
+            kind: OpKind::SpeedUp,
             title: "Speed up transaction".into(),
             network: self.network_label(),
             from: "Qi wallet".into(),
@@ -1503,7 +1606,7 @@ impl Session {
             // Only the added fee is new money: the amount left the wallet when the parent was
             // signed, and whichever candidate wins, it leaves once.
             changes: balance_changes(
-                "speed_up",
+                &OpKind::SpeedUp,
                 "QI",
                 U256::ZERO,
                 amount::QI_DECIMALS,
@@ -1511,6 +1614,8 @@ impl Session {
                 (new_fee.checked_sub(parent_fee).unwrap_or(U256::ZERO), "Qi", amount::QI_DECIMALS),
                 &op.detail,
             ),
+            risks: vec![],
+            confirm: None,
         };
         self.pending.insert(review.op_id.clone(), Pending::QiReplacement { prepared, op_id: op.id });
         Ok(review)
@@ -1605,42 +1710,48 @@ mod tests {
     fn canonical_identity_applies_to_approvals_lp_and_curve_effects() {
         let network = crate::network::NetworkProfile::builtins().remove(0);
         let fake = "0x00000000000000000000000000000000000000ab";
-        let approval = canonical_identity_warnings(&network, "USDT", &json!({"token":fake}));
+        let approval = canonical_identity_warnings(&network, "USDT", &Detail::from(json!({"token":fake})));
         assert_eq!(approval.len(), 1);
         for (symbol, key) in [("USDT", "lp"), ("UЅDT", "curve")] {
-            let effects = json!({"kind":key,"financial_effects":[{"asset":symbol,"token":fake},{"asset":symbol,"token":fake}]});
+            let effects = crate::journal::Detail::from(
+                json!({"kind":key,"financial_effects":[{"asset":symbol,"token":fake},{"asset":symbol,"token":fake}]}),
+            );
             assert_eq!(canonical_identity_warnings(&network, "LP", &effects).len(), 1);
         }
         let canonical = network.ecosystem.usdt.unwrap().address;
         let network = crate::network::NetworkProfile::builtins().remove(0);
-        assert!(canonical_identity_warnings(&network, "USDT", &json!({"token":canonical})).is_empty());
+        assert!(canonical_identity_warnings(&network, "USDT", &Detail::from(json!({"token":canonical}))).is_empty());
     }
 
     #[test]
     fn frozen_review_expiry_is_checked_without_mutating_the_payload() {
-        let detail = json!({"expires_at":100});
+        let detail = crate::journal::Detail::from(json!({"expires_at":100}));
         assert!(validate_review_expiry(&detail, 99).is_ok());
         assert!(validate_review_expiry(&detail, 100).is_err());
         assert!(validate_review_expiry(&detail, 101).is_err());
-        assert!(validate_review_expiry(&json!({"expires_at":"100"}), 99).is_err());
-        assert_eq!(detail, json!({"expires_at":100}));
+        assert!(validate_review_expiry(&Detail::from(json!({"expires_at":"100"})), 99).is_err());
+        assert_eq!(detail, json!({"expires_at":100}).into());
     }
 
     #[test]
     fn visuals_follow_the_operation() {
-        let swap = review_visuals("swap", "WQI", &json!({"from_token": "0x002b", "to_symbol": "USDT", "to_token": "0x0049"}));
+        let swap =
+            review_visuals(&OpKind::Swap, "WQI", &Detail::from(json!({"from_token": "0x002b", "to_symbol": "USDT", "to_token": "0x0049"})));
         assert_eq!(swap.len(), 2);
         assert_eq!((swap[0].role.as_str(), swap[0].contract.as_str()), ("pay", "0x002b"));
         assert_eq!((swap[1].role.as_str(), swap[1].symbol.as_str()), ("receive", "USDT"));
         // Older journal rows without from_token picture native QUAI.
-        assert_eq!(review_visuals("swap", "QUAI", &json!({"to_symbol": "USDT", "to_token": "0x0049"}))[0].contract, "quai");
-        let nft = review_visuals("nft_buy", "QUAI", &json!({"contract": "0x004d", "token_id": "7", "name": ""}));
+        assert_eq!(
+            review_visuals(&OpKind::Swap, "QUAI", &Detail::from(json!({"to_symbol": "USDT", "to_token": "0x0049"})))[0].contract,
+            "quai"
+        );
+        let nft = review_visuals(&OpKind::NftBuy, "QUAI", &Detail::from(json!({"contract": "0x004d", "token_id": "7", "name": ""})));
         assert_eq!((nft[0].role.as_str(), nft[0].symbol.as_str(), nft[0].token_id.as_deref()), ("nft", "#7", Some("7")));
-        assert_eq!(review_visuals("approve", "USDT", &json!({"token": "0x0049"}))[0].role, "token");
-        assert_eq!(review_visuals("send_quai", "QUAI", &json!({}))[0].contract, "quai");
-        let convert = review_visuals("convert_qi_to_quai", "QI", &json!({}));
+        assert_eq!(review_visuals(&OpKind::Approve, "USDT", &Detail::from(json!({"token": "0x0049"})))[0].role, "token");
+        assert_eq!(review_visuals(&OpKind::SendQuai, "QUAI", &Detail::from(json!({})))[0].contract, "quai");
+        let convert = review_visuals(&OpKind::ConvertQiToQuai, "QI", &Detail::from(json!({})));
         assert_eq!((convert[0].contract.as_str(), convert[1].contract.as_str()), ("qi", "quai"));
-        assert!(review_visuals("fill_gap", "QUAI", &json!({})).is_empty());
+        assert!(review_visuals(&OpKind::FillGap, "QUAI", &Detail::from(json!({}))).is_empty());
     }
 }
 
@@ -1655,19 +1766,23 @@ mod balance_change_tests {
     #[test]
     fn a_conversion_headline_is_the_discounted_amount() {
         let fee = (U256::ZERO, "QUAI", 18);
-        let detail = json!({"quoted_qits": "75964", "expected_qits": "7582", "slippage_bps": 9000});
-        let c = balance_changes("convert_quai_to_qi", "QUAI", e18(10_000), 18, U256::ZERO, fee, &detail);
+        let detail = crate::journal::Detail::from(json!({"quoted_qits": "75964", "expected_qits": "7582", "slippage_bps": 9000}));
+        let c = balance_changes(&OpKind::ConvertQuaiToQi, "QUAI", e18(10_000), 18, U256::ZERO, fee, &detail);
         let arrives = c.iter().find(|r| r.direction == "in").unwrap();
         assert_eq!((arrives.asset.as_str(), arrives.amount.as_str()), ("Qi", "≈ 7.582"));
         assert!(arrives.note.contains("refunded if under 7.596"), "{}", arrives.note);
         // Without the node's estimate the spot figure is shown as a ceiling, and said to be one.
-        let spot_only = balance_changes("convert_quai_to_qi", "QUAI", e18(100), 18, U256::ZERO, fee, &json!({"quoted_qits": "759"}));
+        let spot_only =
+            balance_changes(&OpKind::ConvertQuaiToQi, "QUAI", e18(100), 18, U256::ZERO, fee, &Detail::from(json!({"quoted_qits": "759"})));
         let arrives = spot_only.iter().find(|r| r.direction == "in").unwrap();
         assert_eq!(arrives.amount, "≤ 0.759");
         assert!(arrives.note.contains("spot rate"));
         // Qi → QUAI says what arrives too; it used to show nothing.
-        let back = json!({"quoted_its": e18(12).to_string(), "expected_its": e18(11).to_string(), "slippage_bps": 300});
-        let c = balance_changes("convert_qi_to_quai", "QI", U256::from(1_000_000u64), 3, U256::ZERO, (U256::from(36u64), "QI", 3), &back);
+        let back = crate::journal::Detail::from(
+            json!({"quoted_its": e18(12).to_string(), "expected_its": e18(11).to_string(), "slippage_bps": 300}),
+        );
+        let c =
+            balance_changes(&OpKind::ConvertQiToQuai, "QI", U256::from(1_000_000u64), 3, U256::ZERO, (U256::from(36u64), "QI", 3), &back);
         let arrives = c.iter().find(|r| r.direction == "in").unwrap();
         assert_eq!((arrives.asset.as_str(), arrives.amount.as_str()), ("QUAI", "≈ 11"));
     }
@@ -1678,8 +1793,10 @@ mod balance_change_tests {
 
     #[test]
     fn a_swap_shows_what_leaves_what_arrives_and_the_fee() {
-        let detail = json!({"to_symbol": "USDT", "to_decimals": 6, "expected_out": "51940000", "minimum_out": "51680000"});
-        let c = balance_changes("swap", "WQI", e18(50), 18, U256::ZERO, (U256::from(2_100_000_000_000_000u64), "QUAI", 18), &detail);
+        let detail = crate::journal::Detail::from(
+            json!({"to_symbol": "USDT", "to_decimals": 6, "expected_out": "51940000", "minimum_out": "51680000"}),
+        );
+        let c = balance_changes(&OpKind::Swap, "WQI", e18(50), 18, U256::ZERO, (U256::from(2_100_000_000_000_000u64), "QUAI", 18), &detail);
         fn row(c: &BalanceChange) -> (&str, &str, &str) {
             (c.direction.as_str(), c.asset.as_str(), c.amount.as_str())
         }
@@ -1692,14 +1809,14 @@ mod balance_change_tests {
     #[test]
     fn native_value_is_the_quai_that_leaves() {
         // Swapping from QUAI: the amount is the value, and it is counted once.
-        let c = balance_changes("swap", "QUAI", e18(3), 18, e18(3), (U256::ZERO, "QUAI", 18), &json!({}));
+        let c = balance_changes(&OpKind::Swap, "QUAI", e18(3), 18, e18(3), (U256::ZERO, "QUAI", 18), &Detail::from(json!({})));
         assert_eq!(c.iter().filter(|c| c.direction == "out").count(), 1);
         assert_eq!(c[0].amount, "3");
     }
 
     #[test]
     fn an_approval_moves_nothing_but_the_fee() {
-        let c = balance_changes("approve", "WQI", e18(50), 18, U256::ZERO, (U256::from(1u8), "QUAI", 18), &json!({}));
+        let c = balance_changes(&OpKind::Approve, "WQI", e18(50), 18, U256::ZERO, (U256::from(1u8), "QUAI", 18), &Detail::from(json!({})));
         assert_eq!(c[0].direction, "none");
         assert!(c[0].note.contains("allowance only"));
         assert_eq!(c[1].direction, "fee");
@@ -1708,20 +1825,28 @@ mod balance_change_tests {
     #[test]
     fn an_nft_transfer_is_one_item_out() {
         let c = balance_changes(
-            "nft_transfer",
+            &OpKind::NftTransfer,
             "Quai Pepe",
             U256::from(1u8),
             0,
             U256::ZERO,
             (U256::ZERO, "QUAI", 18),
-            &json!({"name": "Quai Pepe #212", "token_id": "212"}),
+            &Detail::from(json!({"name": "Quai Pepe #212", "token_id": "212"})),
         );
         assert_eq!((c[0].direction.as_str(), c[0].asset.as_str(), c[0].amount.as_str()), ("out", "Quai Pepe #212", "1"));
     }
 
     #[test]
     fn qi_sends_count_in_qi() {
-        let c = balance_changes("send_qi", "QI", U256::from(2_500u64), 3, U256::ZERO, (U256::from(5u8), "Qi", 3), &json!({}));
+        let c = balance_changes(
+            &OpKind::SendQi,
+            "QI",
+            U256::from(2_500u64),
+            3,
+            U256::ZERO,
+            (U256::from(5u8), "Qi", 3),
+            &Detail::from(json!({})),
+        );
         assert_eq!((c[0].asset.as_str(), c[0].amount.as_str()), ("Qi", "2.5"));
         assert_eq!((c[1].asset.as_str(), c[1].amount.as_str()), ("Qi", "0.005"));
     }
@@ -1747,7 +1872,7 @@ mod broadcast_race_tests {
         let op = Operation {
             id: id.into(),
             network: s.network.id.clone(),
-            kind: "send_quai".into(),
+            kind: OpKind::SendQuai,
             store: "quai".into(),
             account: "0x00aa".into(),
             status,
@@ -1756,7 +1881,7 @@ mod broadcast_race_tests {
             amount: "1".into(),
             counterparty: "0x00bb".into(),
             fee: String::new(),
-            detail: serde_json::json!({}),
+            detail: serde_json::json!({}).into(),
             created: 1,
             updated: 1,
         };
@@ -1803,7 +1928,9 @@ mod broadcast_race_tests {
                         status,
                         Some(winner),
                         Some("receipt-fee"),
-                        Some(&serde_json::json!({"original_tx":"0x01", "canonical_tx":winner, "actual_out":"1000"})),
+                        Some(&crate::journal::Detail::from(
+                            serde_json::json!({"original_tx":"0x01", "canonical_tx":winner, "actual_out":"1000"}),
+                        )),
                     )
                     .unwrap();
                 s.record_candidate(id, "0x02".into(), Some("replacement-fee")).unwrap();
@@ -1812,9 +1939,9 @@ mod broadcast_race_tests {
                 assert_eq!(current.status, status);
                 assert_eq!(current.tx_hash.as_deref(), Some(winner));
                 assert_eq!(current.fee, "receipt-fee");
-                assert_eq!(current.detail["actual_out"], "1000");
-                assert_eq!(current.detail["original_tx"], "0x01");
-                assert_eq!(current.detail["candidates"], serde_json::json!(["0x02"]));
+                assert_eq!(*current.detail.actual_out(), "1000");
+                assert_eq!(*current.detail.original_tx(), "0x01");
+                assert_eq!(*current.detail.candidates(), serde_json::json!(["0x02"]));
                 let late: std::result::Result<(), BroadcastOutcome> =
                     Err(BroadcastOutcome::Other(CoreError::Network("lost response".into())));
                 let returned = s.finish_broadcast(id, OpStatus::Submitted, "0x02".into(), late).unwrap();

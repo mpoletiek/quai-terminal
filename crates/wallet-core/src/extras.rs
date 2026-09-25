@@ -4,6 +4,7 @@ use crate::amount;
 use crate::appdb::{AppDb, OpStatus};
 use crate::error::{CoreError, Result};
 use crate::paths::Paths;
+use crate::registry::VaultExt;
 use crate::registry::{Registry, WalletMeta, now};
 use crate::session::Session;
 use base64::Engine;
@@ -170,10 +171,10 @@ pub fn create_backup(
         custom_networks: config.networks.clone(),
     };
     let bytes = zeroize::Zeroizing::new(serde_json::to_vec(&archive)?);
-    let sealed = VaultFile::seal_bytes(&bytes, password, registry.kdf_params(), BACKUP_LIMIT)?;
-    let sealed = VaultFile::from_json_limited(&sealed.to_json()?, BACKUP_LIMIT)?;
-    sealed.open_bytes(password, registry.insecure_kdf(), BACKUP_LIMIT)?;
-    wallet_vault::write_private_atomic(out, sealed.to_json()?.as_bytes())?;
+    let sealed = VaultFile::seal_bytes(&bytes, password, registry.kdf_params(), BACKUP_LIMIT).vault()?;
+    let sealed = VaultFile::from_json_limited(&sealed.to_json().vault()?, BACKUP_LIMIT).vault()?;
+    sealed.open_bytes(password, registry.insecure_kdf(), BACKUP_LIMIT).vault()?;
+    wallet_vault::write_private_atomic(out, sealed.to_json().vault()?.as_bytes()).vault()?;
     Ok(info(&archive))
 }
 
@@ -190,10 +191,10 @@ fn info(a: &Archive) -> BackupInfo {
 
 fn read_archive(registry: &Registry, path: &Path, password: &str) -> Result<Archive> {
     let text = std::fs::read_to_string(path)?;
-    let file = VaultFile::from_json_limited(&text, BACKUP_LIMIT)?;
+    let file = VaultFile::from_json_limited(&text, BACKUP_LIMIT).vault()?;
     let bytes = file.open_bytes(password, registry.insecure_kdf(), BACKUP_LIMIT).map_err(|e| match e {
         wallet_vault::VaultError::Authentication => CoreError::Locked("incorrect backup password or corrupted backup".into()),
-        other => other.into(),
+        other => crate::registry::vault_error(other),
     })?;
     let archive: Archive = serde_json::from_slice(&bytes).map_err(|_| CoreError::Invalid("backup content is malformed".into()))?;
     if archive.format != BACKUP_FORMAT || archive.version != 1 {
@@ -228,7 +229,7 @@ pub fn restore_backup(
             return Ok(());
         }
         let bytes = b64.decode(data).map_err(|_| CoreError::Invalid("backup database encoding".into()))?;
-        wallet_vault::write_private_atomic(dest, &bytes)?;
+        wallet_vault::write_private_atomic(dest, &bytes).vault()?;
         Ok(())
     };
     let result = (|| -> Result<()> {
@@ -327,7 +328,7 @@ pub fn read_status(paths: &Paths) -> Option<PublicStatus> {
 
 /// Write the status file atomically.
 pub fn write_status(paths: &Paths, status: &PublicStatus) -> Result<()> {
-    wallet_vault::write_private_atomic(&paths.status_file(), serde_json::to_string(status)?.as_bytes())?;
+    wallet_vault::write_private_atomic(&paths.status_file(), serde_json::to_string(status)?.as_bytes()).vault()?;
     Ok(())
 }
 

@@ -19,43 +19,43 @@ pub(crate) fn draw_lock(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
     // moment one ends, in the background too; off, the screen rests after one, since effects
     // chained forever hold about a fifth of a core. Either way it goes still the moment a
     // password is being typed, and picks up again (`App::tick`) once the field is empty.
-    let typing = !app.lock_input.is_empty() || app.unlocking;
-    let last_frame = |app: &App| app.ambient.as_ref().and_then(|c| c.frame()).map(|f| (f.to_string(), std::time::Instant::now()));
+    let typing = !app.lock.input.is_empty() || app.lock.unlocking;
+    let last_frame = |app: &App| app.fx.ambient.as_ref().and_then(|c| c.frame()).map(|f| (f.to_string(), std::time::Instant::now()));
     let rest = |app: &mut App| {
-        app.lock_fade = last_frame(app);
-        app.ambient = None;
-        app.lock_rested = true;
+        app.lock.fade = last_frame(app);
+        app.fx.ambient = None;
+        app.lock.rested = true;
     };
-    if let Some(c) = app.ambient.as_mut() {
+    if let Some(c) = app.fx.ambient.as_mut() {
         if typing {
             rest(app);
         } else if !c.advance() {
             // Looping: the next effect starts in this very frame, with the one that just ended
             // dissolving over it, so there is no held last frame between them. Whether or not
             // the window has the focus: the lock screen is a screensaver.
-            let ended = app.ambient.as_ref().and_then(|c| c.frame()).map(str::to_string);
-            app.ambient = None;
+            let ended = app.fx.ambient.as_ref().and_then(|c| c.frame()).map(str::to_string);
+            app.fx.ambient = None;
             if app.config.lock_loop {
                 app.start_lock_ceremony((area.width, area.height));
             }
             // Timed from here, once the next effect exists: building it can take longer than the
             // dissolve on a slow machine, which would use the whole handover up before a frame
             // of it was drawn.
-            app.lock_fade = ended.map(|frame| (frame, std::time::Instant::now()));
-            if app.ambient.is_none() {
-                app.lock_rested = true;
+            app.lock.fade = ended.map(|frame| (frame, std::time::Instant::now()));
+            if app.fx.ambient.is_none() {
+                app.lock.rested = true;
             }
         }
     }
-    if let Some(c) = &app.ambient {
+    if let Some(c) = &app.fx.ambient {
         c.render(art, f.buffer_mut(), t.base().fg(accent));
         // The effect that just ended thins away on top of the one that began.
-        if let Some((frame, at)) = app.lock_fade.take() {
+        if let Some((frame, at)) = app.lock.fade.take() {
             let ms = at.elapsed().as_millis();
             if ms < HANDOVER_MS {
                 let keep = 1.0 - ms as f32 / HANDOVER_MS as f32;
                 super::super::fx::paint_dissolve(&frame, art, f.buffer_mut(), t.base().fg(accent), keep);
-                app.lock_fade = Some((frame, at));
+                app.lock.fade = Some((frame, at));
             }
         }
     } else {
@@ -69,19 +69,19 @@ pub(crate) fn draw_lock(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         }
         // The effect's last frame thins away over the resting wordmark, so the end is a
         // cross-fade rather than a cut. Typing cuts it short: nothing moves near a password.
-        if let Some((frame, at)) = app.lock_fade.take() {
+        if let Some((frame, at)) = app.lock.fade.take() {
             let ms = at.elapsed().as_millis();
             if ms < HANDOVER_MS && !typing {
                 let keep = 1.0 - ms as f32 / HANDOVER_MS as f32;
                 super::super::fx::paint_dissolve(&frame, art, f.buffer_mut(), t.base().fg(accent), keep);
-                app.lock_fade = Some((frame, at));
+                app.lock.fade = Some((frame, at));
             }
         }
     }
     let rect = centered(form, 58, 8);
     let inner = modal_frame(f, rect, t, "locked");
     let name = app.meta.as_ref().map(|m| m.name.clone()).unwrap_or_default();
-    let dots = "•".repeat(app.lock_input.chars().count().min(40));
+    let dots = "•".repeat(app.lock.input.chars().count().min(40));
     let lines = vec![
         Line::from(vec![
             super::super::images::native_span(app, t, "quai"),
@@ -98,10 +98,10 @@ pub(crate) fn draw_lock(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
         password_rule(app, t, inner.width.saturating_sub(10) as usize).alignment(Alignment::Right),
         // What this screen is doing, in its own words: the unlock it was asked for beats any
         // background work, and an answer that came back beats the hint.
-        Line::from(match (app.unlocking, &app.lock_error) {
+        Line::from(match (app.lock.unlocking, &app.lock.error) {
             (true, _) => Span::styled(format!("{} unlocking…", spinner()), Style::default().fg(t.pending)),
             (false, Some(e)) => Span::styled(format!("{} {e}", t.icon(Icon::Danger)), Style::default().fg(t.danger)),
-            (false, None) if app.wallets.len() > 1 => {
+            (false, None) if app.cockpit.list.len() > 1 => {
                 Span::styled("enter unlock · ctrl-w another wallet · esc clear · ctrl-c quit", t.dim_style())
             }
             (false, None) => Span::styled("enter unlock · esc clear · ctrl-c quit", t.dim_style()),
@@ -116,12 +116,15 @@ pub(crate) fn draw_lock(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
 fn password_rule(app: &App, t: &Theme, width: usize) -> Line<'static> {
     const LAP_MS: u128 = 900;
     const LIGHT: usize = 6;
-    if app.lock_error.is_some() {
+    if app.lock.error.is_some() {
         return Line::from(Span::styled("▔".repeat(width), Style::default().fg(t.danger)));
     }
-    let lit = app.unlocking && app.motion().effects() && width > LIGHT;
-    let Some(since) = app.unlocking_since.filter(|_| lit) else {
-        return Line::from(Span::styled("▔".repeat(width), if app.unlocking { Style::default().fg(t.pending) } else { t.dim_style() }));
+    let lit = app.lock.unlocking && app.motion().effects() && width > LIGHT;
+    let Some(since) = app.lock.unlocking_since.filter(|_| lit) else {
+        return Line::from(Span::styled(
+            "▔".repeat(width),
+            if app.lock.unlocking { Style::default().fg(t.pending) } else { t.dim_style() },
+        ));
     };
     let head = (since.elapsed().as_millis() % LAP_MS) as usize * (width + LIGHT) / LAP_MS as usize;
     let start = head.saturating_sub(LIGHT).min(width);
@@ -454,7 +457,7 @@ pub(crate) fn draw_onboarding(f: &mut Frame, app: &mut App, t: &Theme, area: Rec
                 lines.push(Line::from(""));
             }
             let _ = push_fields(&mut lines, t, fields, *focus, None, None, inner.width);
-            if let Some(b) = &app.busy {
+            if let Some(b) = &app.status.busy {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(format!("{} {b}", spinner()), Style::default().fg(t.pending))));
             }

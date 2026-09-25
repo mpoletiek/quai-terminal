@@ -5,7 +5,7 @@
 //! entry never signs anything: sends open a filled form and swaps a filled card, and the review
 //! still decides.
 
-use super::app::{ACTIONS, Action, App, FormKind, Modal, Screen};
+use super::app::{ACTIONS, Action, App, Card, FormKind, Modal, Screen};
 use wallet_core::config::Feature;
 use wallet_core::swap::SwapAsset;
 
@@ -132,7 +132,7 @@ impl App {
     /// Actions, screens, contacts, holdings and markets.
     fn palette_candidates(&self) -> Vec<Entry> {
         let mut out: Vec<Entry> = ACTIONS.iter().map(action_entry).collect();
-        for s in super::app::Section::ALL.iter().flat_map(|sec| sec.screens(&self.config.features)) {
+        for s in super::app::Section::ALL.iter().flat_map(|sec| sec.screens(&self.shown())) {
             out.push(Entry {
                 tag: "go",
                 label: format!("Go to {} › {}", s.section().title(), s.title()),
@@ -199,7 +199,7 @@ impl App {
                 run: Run::Subscribe(target, label),
             });
         }
-        for a in &self.eco.alerts {
+        for a in self.eco.alerts.list.value().into_iter().flatten() {
             out.push(Entry {
                 tag: "alert",
                 label: format!("Remove alert: {}", a.describe()),
@@ -221,7 +221,7 @@ impl App {
                 run: Run::Term(i),
             });
         }
-        if let Some(p) = &self.eco.portfolio {
+        if let Some(p) = self.eco.feeds.portfolio.value() {
             for r in &p.rows {
                 let asset = match &r.key {
                     wallet_core::portfolio::AssetKey::Quai => SwapAsset::Quai,
@@ -239,7 +239,7 @@ impl App {
                 });
             }
         }
-        if let Some(Ok((pools, _))) = &self.eco.markets_view.pools {
+        if let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() {
             for p in pools {
                 let base0 = self.pool_base0(p);
                 let (b, q) = if base0 { (&p.token0, &p.token1) } else { (&p.token1, &p.token0) };
@@ -335,7 +335,7 @@ impl App {
         match word {
             "quai" => Some(SendAsset::Quai),
             "qi" => Some(SendAsset::Qi),
-            _ => self.eco.portfolio.as_ref()?.rows.iter().find_map(|r| {
+            _ => self.eco.feeds.portfolio.value()?.rows.iter().find_map(|r| {
                 (matches!(r.key, wallet_core::portfolio::AssetKey::Token(_)) && r.symbol.eq_ignore_ascii_case(word))
                     .then(|| SendAsset::Token(r.symbol.clone()))
             }),
@@ -347,7 +347,7 @@ impl App {
         if word == "quai" {
             return Some(SwapAsset::Quai);
         }
-        let held = self.eco.portfolio.as_ref().and_then(|p| {
+        let held = self.eco.feeds.portfolio.value().and_then(|p| {
             p.rows.iter().find_map(|r| match &r.key {
                 wallet_core::portfolio::AssetKey::Token(a) if r.symbol.eq_ignore_ascii_case(word) => {
                     Some(SwapAsset::Token { address: a.to_lowercase(), symbol: r.symbol.clone(), decimals: r.decimals })
@@ -356,7 +356,7 @@ impl App {
             })
         });
         held.or_else(|| {
-            let Some(Ok((pools, _))) = &self.eco.markets_view.pools else { return None };
+            let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return None };
             pools.iter().flat_map(|p| [&p.token0, &p.token1]).find_map(|t| {
                 (t.symbol.eq_ignore_ascii_case(word) || self.market_symbol(t).eq_ignore_ascii_case(word)).then(|| SwapAsset::Token {
                     address: t.address.to_lowercase(),
@@ -385,16 +385,16 @@ impl App {
             Run::Go(screen) => self.switch(screen),
             Run::Market(address) => {
                 self.switch(Screen::Markets);
-                if let Some(Ok((pools, _))) = &self.eco.markets_view.pools
+                if let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown()
                     && let Some(i) = pools.iter().position(|p| p.address == address)
                 {
-                    self.pane = 0;
-                    self.selected = i;
+                    self.nav.pane = 0;
+                    self.nav.selected = i;
                     self.eco.markets_view.pair_selected = i;
                 }
             }
             Run::Swap { from, to, amount } => {
-                self.switch(Screen::Swap);
+                self.show_card(Card::Swap);
                 let card = &mut self.eco.swap;
                 card.from = from;
                 if to.is_some() {
@@ -440,17 +440,16 @@ impl App {
     }
 
     /// Recents for the open wallet (one key per line, in the wallet's own directory).
+    /// Read off this thread; [`App::poll_persist`] takes them when they arrive.
     pub fn load_palette_recent(&mut self) {
-        self.palette_recent = self
-            .palette_recent_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|s| s.lines().filter(|l| !l.is_empty()).take(RECENTS).map(str::to_string).collect())
-            .unwrap_or_default();
+        if let (Some(path), Some(meta)) = (self.palette_recent_path(), self.meta.as_ref()) {
+            self.persist.read(super::persist::Read::PaletteRecent { wallet: meta.id.clone() }, vec![path]);
+        }
     }
 
     fn save_palette_recent(&self) {
         if let Some(p) = self.palette_recent_path() {
-            let _ = std::fs::write(p, self.palette_recent.join("\n"));
+            self.persist.write(p, self.palette_recent.join("\n"));
         }
     }
 }
@@ -478,6 +477,7 @@ pub fn keys_for(id: &str) -> String {
         "convert_quai_qi" => Some(Verb::Convert),
         "lock" => Some(Verb::Lock),
         "notifications" => Some(Verb::Notifications),
+        "switch_account" => Some(Verb::Account),
         "help" => Some(Verb::Help),
         "quit" => Some(Verb::Quit),
         "refresh" => Some(Verb::RefreshAll),
@@ -486,9 +486,9 @@ pub fn keys_for(id: &str) -> String {
     if let Some(v) = verb {
         return keymap::key_of(v);
     }
-    for screen in super::app::Screen::ALL_SCREENS {
-        let keys = view_keys(screen, None);
-        let chord = keymap::chord(screen);
+    for place in keymap::Place::all() {
+        let keys = view_keys(place, None);
+        let chord = keymap::chord_to(place);
         if let Some(o) = keys.overrides.iter().find(|o| matches!(o.how, Do::Run(r) if r == id)) {
             return format!("{chord} {}", keymap::key_of(o.verb));
         }
@@ -507,8 +507,8 @@ pub fn keys_for(id: &str) -> String {
         "contacts" => Some(super::app::Screen::Contacts),
         "data_sources" => Some(super::app::Screen::DataSources),
         "network" => Some(super::app::Screen::Network),
-        "wrap_qi" | "claim_wqi" | "unwrap_wqi" | "wrap_quai" | "unwrap_quai" => Some(super::app::Screen::Wrap),
-        "quote" | "convert_qi_quai" => Some(super::app::Screen::Convert),
+        "wrap_qi" | "claim_wqi" | "unwrap_wqi" | "wrap_quai" | "unwrap_quai" => return keymap::chord_to(keymap::Place::Card(Card::Wrap)),
+        "quote" | "convert_qi_quai" => return keymap::chord_to(keymap::Place::Card(Card::Convert)),
         _ => None,
     };
     screen.map(keymap::chord).unwrap_or_default()

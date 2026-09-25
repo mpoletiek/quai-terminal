@@ -73,6 +73,11 @@ pub struct WalletMeta {
     /// Monotonically increasing committed wallet revision (legacy wallets start at zero).
     #[serde(default)]
     pub generation: u64,
+    /// The generation at which the encrypted custody (the vault) last changed: a password change
+    /// or an imported key. Keys unlocked before it must be unlocked again; keys unlocked before a
+    /// public change (a new account, a label) are still this wallet's keys.
+    #[serde(default)]
+    pub custody_generation: u64,
     /// Stable random identifier.
     pub id: String,
     /// Unique display name.
@@ -99,6 +104,10 @@ pub struct WalletMeta {
     pub qi_imported: Vec<QiImported>,
     /// Watch-only addresses (both ledgers).
     pub watch: Vec<WatchAddress>,
+    /// The account that acts when none is named (its address): what `@` chooses in the TUI and
+    /// `account use` on the command line. Unset, or archived, means the first active account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_account: Option<String>,
 }
 
 impl WalletMeta {
@@ -146,27 +155,36 @@ impl WalletMeta {
 
     /// Default (first active) Quai account.
     pub fn default_quai_account(&self) -> Result<&QuaiAccount> {
-        self.quai_accounts.iter().find(|a| !a.archived).ok_or_else(|| CoreError::NotFound("wallet has no Quai accounts".into()))
+        let active = self.active_account.as_deref();
+        self.quai_accounts
+            .iter()
+            .find(|a| !a.archived && active.is_some_and(|x| a.address.eq_ignore_ascii_case(x)))
+            .or_else(|| self.quai_accounts.iter().find(|a| !a.archived))
+            .ok_or_else(|| CoreError::NotFound("wallet has no Quai accounts".into()))
     }
 }
 
-/// Current unix time in seconds.
-pub fn now() -> u64 {
-    if let Some(at) = FROZEN.with(std::cell::Cell::get) {
-        return at;
+pub use quai_model::time::{freeze_clock, now};
+
+/// A vault's error, as the rest of the wallet speaks. Only the modules that may reach the vault
+/// convert its errors (see the architecture test).
+pub(crate) fn vault_error(e: wallet_vault::VaultError) -> CoreError {
+    match e {
+        wallet_vault::VaultError::Authentication => CoreError::Locked(e.to_string()),
+        wallet_vault::VaultError::WeakPassword => CoreError::Invalid(e.to_string()),
+        _ => CoreError::Storage(e.to_string()),
     }
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-thread_local! {
-    static FROZEN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+/// `.vault()?` on a vault call.
+pub(crate) trait VaultExt<T> {
+    fn vault(self) -> Result<T>;
 }
 
-/// Hold [`now`] at `at` on this thread only (`None` lets it run again). For snapshot tests,
-/// whose screens are dated from now: other threads, and so other tests, keep the real clock.
-#[doc(hidden)]
-pub fn freeze_clock(at: Option<u64>) {
-    FROZEN.with(|f| f.set(at));
+impl<T> VaultExt<T> for std::result::Result<T, wallet_vault::VaultError> {
+    fn vault(self) -> Result<T> {
+        self.map_err(vault_error)
+    }
 }
 
 fn random_id() -> Result<String> {
@@ -185,6 +203,9 @@ pub struct Registry {
     paths: Paths,
     kdf: KdfParams,
     allow_weak_kdf: bool,
+    /// Whose keys sessions opened through this registry share ([`crate::custody::for_wallet_in`]):
+    /// empty for this process's own, or one engine client's.
+    custody_scope: std::sync::Arc<str>,
 }
 
 /// The journal contains public metadata and an already authenticated encrypted vault only.
@@ -218,13 +239,29 @@ impl Registry {
             && ["QUAI_TERMINAL_INSECURE_FAST_KDF", "QUAI_WALLET_INSECURE_FAST_KDF"]
                 .iter()
                 .any(|name| std::env::var(name).is_ok_and(|v| v == "1"));
-        Self { paths, kdf: if fast { KdfParams::INSECURE_TEST } else { KdfParams::DEFAULT }, allow_weak_kdf: fast }
+        Self {
+            paths,
+            kdf: if fast { KdfParams::INSECURE_TEST } else { KdfParams::DEFAULT },
+            allow_weak_kdf: fast,
+            custody_scope: "".into(),
+        }
     }
 
     /// Registry with cheap KDF parameters, for tests elsewhere in the crate.
     #[cfg(test)]
     pub(crate) fn fast(paths: Paths) -> Self {
-        Self { paths, kdf: KdfParams::INSECURE_TEST, allow_weak_kdf: true }
+        Self { paths, kdf: KdfParams::INSECURE_TEST, allow_weak_kdf: true, custody_scope: "".into() }
+    }
+
+    /// This registry, for sessions whose keys are held apart from every other scope's: one engine
+    /// client's unlock never lets another client (or the daemon's watcher) sign.
+    pub fn scoped(&self, scope: &str) -> Self {
+        Self { custody_scope: scope.into(), ..self.clone() }
+    }
+
+    /// The custody scope sessions opened through this registry share.
+    pub fn custody_scope(&self) -> &str {
+        &self.custody_scope
     }
 
     /// Paths.
@@ -300,11 +337,11 @@ impl Registry {
             return Err(CoreError::Storage("wallet mutation lacks its encrypted custody state".into()));
         }
         if let Some(vault) = &mutation.vault {
-            vault.write_atomic(&self.vault_path(id))?;
+            vault.write_atomic(&self.vault_path(id)).vault()?;
         }
         mutation_fault("vault")?;
         let file = MetadataFile { format: METADATA_FORMAT.into(), metadata: mutation.metadata };
-        wallet_vault::write_private_atomic(&self.meta_path(id), serde_json::to_vec_pretty(&file)?.as_slice())?;
+        wallet_vault::write_private_atomic(&self.meta_path(id), serde_json::to_vec_pretty(&file)?.as_slice()).vault()?;
         mutation_fault("metadata")?;
         std::fs::remove_file(path)?;
         File::open(self.paths.wallet_dir(id))?.sync_all()?;
@@ -323,8 +360,19 @@ impl Registry {
         let mut next = meta.clone();
         next.version = META_VERSION;
         next.generation = next.generation.checked_add(1).ok_or_else(|| CoreError::Storage("wallet generation exhausted".into()))?;
+        // Every commit rewrites the vault; only a different one changes custody.
+        let custody_changed = match &vault {
+            None => false,
+            Some(v) => match VaultFile::read(&self.vault_path(&meta.id)) {
+                Ok(current) => current.to_json().vault()? != v.to_json().vault()?,
+                Err(_) => true,
+            },
+        };
+        if custody_changed {
+            next.custody_generation = next.generation;
+        }
         let mutation = Mutation { format: MUTATION_FORMAT.into(), metadata: next.clone(), vault };
-        wallet_vault::write_private_atomic(&self.journal_path(&meta.id), &serde_json::to_vec_pretty(&mutation)?)?;
+        wallet_vault::write_private_atomic(&self.journal_path(&meta.id), &serde_json::to_vec_pretty(&mutation)?).vault()?;
         mutation_fault("journal")?;
         self.recover(&meta.id)?;
         // Persist newly created wallet/parent entries as well as the files inside the wallet.
@@ -335,7 +383,7 @@ impl Registry {
     }
 
     fn current_vault(&self, meta: &WalletMeta) -> Result<Option<VaultFile>> {
-        if meta.can_sign() { Ok(Some(VaultFile::read(&self.vault_path(&meta.id))?)) } else { Ok(None) }
+        if meta.can_sign() { Ok(Some(VaultFile::read(&self.vault_path(&meta.id)).vault()?)) } else { Ok(None) }
     }
 
     fn load_locked(&self, id: &str) -> Result<WalletMeta> {
@@ -436,9 +484,9 @@ impl Registry {
         }
         ensure_private_dir(&dir)?;
         let result = (|| {
-            let vault = VaultFile::seal(secrets, password, self.kdf)?;
+            let vault = VaultFile::seal(secrets, password, self.kdf).vault()?;
             // Prove the vault opens before the encrypted recovery record becomes authoritative.
-            vault.open(password, self.allow_weak_kdf)?;
+            vault.open(password, self.allow_weak_kdf).vault()?;
             self.commit(&mut meta.clone(), Some(vault))
         })();
         if result.is_err() && !self.journal_path(&meta.id).exists() && !self.meta_path(&meta.id).exists() {
@@ -469,6 +517,7 @@ impl Registry {
         let meta = WalletMeta {
             version: META_VERSION,
             generation: 0,
+            custody_generation: 0,
             id: random_id()?,
             name: name.trim().to_string(),
             created_at: now(),
@@ -488,6 +537,7 @@ impl Registry {
             }],
             qi_imported: vec![],
             watch: vec![],
+            active_account: None,
         };
         let secrets = Secrets { mnemonic: Some(secret), imported: vec![] };
         self.write_new(&meta, &secrets, password)?;
@@ -503,6 +553,7 @@ impl Registry {
         let mut meta = WalletMeta {
             version: META_VERSION,
             generation: 0,
+            custody_generation: 0,
             id: random_id()?,
             name: name.trim().to_string(),
             created_at: now(),
@@ -516,6 +567,7 @@ impl Registry {
             quai_accounts: vec![],
             qi_imported: vec![],
             watch: vec![],
+            active_account: None,
         };
         add_public_record(&mut meta, &key, record.ledger, "Imported 1")?;
         let secrets = Secrets { mnemonic: None, imported: vec![record] };
@@ -537,6 +589,7 @@ impl Registry {
         let meta = WalletMeta {
             version: META_VERSION,
             generation: 0,
+            custody_generation: 0,
             id: random_id()?,
             name: name.trim().to_string(),
             created_at: now(),
@@ -550,6 +603,7 @@ impl Registry {
             quai_accounts: vec![],
             qi_imported: vec![],
             watch,
+            active_account: None,
         };
         if self.paths.wallet_dir(&meta.id).exists() {
             return Err(CoreError::Storage("wallet directory already exists".into()));
@@ -579,10 +633,10 @@ impl Registry {
         if meta.kind == WalletKind::Watch {
             return Err(CoreError::Locked("watch-only wallets have no keys".into()));
         }
-        let vault = VaultFile::read(&self.vault_path(&meta.id))?;
+        let vault = VaultFile::read(&self.vault_path(&meta.id)).vault()?;
         let secrets = vault.open(password, self.allow_weak_kdf).map_err(|e| match e {
             wallet_vault::VaultError::Authentication => CoreError::Locked("incorrect password".into()),
-            other => other.into(),
+            other => vault_error(other),
         })?;
         let mut unlocked = Unlocked::new(secrets)?;
         unlocked.vault_generation = Some(meta.generation);
@@ -592,20 +646,14 @@ impl Registry {
     fn seal_current(&self, meta: &WalletMeta, unlocked: &Unlocked, password: &str) -> Result<VaultFile> {
         let current = self.current_vault(meta)?.map(|v| v.kdf());
         let kdf = current.filter(|c| kdf_cost(*c) > kdf_cost(self.kdf)).unwrap_or(self.kdf);
-        let vault = VaultFile::seal(unlocked.secrets(), password, kdf)?;
-        vault.open(password, self.allow_weak_kdf)?;
+        let vault = VaultFile::seal(unlocked.secrets(), password, kdf).vault()?;
+        vault.open(password, self.allow_weak_kdf).vault()?;
         Ok(vault)
     }
 
     /// Import a key into authoritative custody, never into a stale decrypted session snapshot.
-    pub fn add_key(
-        &self,
-        meta: &mut WalletMeta,
-        unlocked: &mut Unlocked,
-        password: &str,
-        secret_hex: &str,
-        label: &str,
-    ) -> Result<Address> {
+    /// Returns the new address and the wallet's keys as re-sealed, which replace the old ones.
+    pub fn add_key(&self, meta: &mut WalletMeta, password: &str, secret_hex: &str, label: &str) -> Result<(Address, Unlocked)> {
         let key = identity::parse_secret_hex(secret_hex)?;
         let record = identity::imported_key_record(&key)?;
         let address = key.public_key().address();
@@ -624,8 +672,7 @@ impl Registry {
         self.commit(&mut current, Some(vault))?;
         fresh.vault_generation = Some(current.generation);
         *meta = current;
-        *unlocked = fresh;
-        Ok(address)
+        Ok((address, fresh))
     }
 
     /// Change the password while holding the same lock as imports and all other wallet writers.
@@ -733,7 +780,7 @@ impl Registry {
         if dir.exists() {
             return Err(CoreError::Storage("wallet directory already exists".into()));
         }
-        let vault = vault_json.map(VaultFile::from_json).transpose()?;
+        let vault = vault_json.map(VaultFile::from_json).transpose().vault()?;
         if meta.can_sign() != vault.is_some() {
             return Err(CoreError::Storage("restored wallet metadata does not match its custody envelope".into()));
         }
@@ -750,7 +797,7 @@ impl Registry {
     pub fn encrypted_snapshot(&self, id: &str) -> Result<(WalletMeta, Option<String>)> {
         let _lock = self.mutation_lock()?;
         let meta = self.load_locked(id)?;
-        let encrypted = self.current_vault(&meta)?.map(|v| v.to_json()).transpose()?;
+        let encrypted = self.current_vault(&meta)?.map(|v| v.to_json()).transpose().vault()?;
         Ok((meta, encrypted))
     }
 
@@ -811,6 +858,49 @@ pub fn parse_any_address(text: &str) -> Result<Address> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_account_that_acts_follows_the_choice_and_falls_back_to_the_first() {
+        let account = |address: &str, archived: bool| QuaiAccount {
+            address: address.into(),
+            hd_index: None,
+            public_key: None,
+            label: address.into(),
+            archived,
+        };
+        let mut meta = WalletMeta {
+            version: META_VERSION,
+            generation: 0,
+            custody_generation: 0,
+            id: "w".into(),
+            name: "w".into(),
+            created_at: 0,
+            kind: WalletKind::Hd,
+            quai_xpub: None,
+            qi_xpub: None,
+            payment_code: None,
+            word_count: None,
+            has_passphrase: false,
+            backed_up: true,
+            quai_accounts: vec![account("0xA", false), account("0xB", false), account("0xC", true)],
+            qi_imported: vec![],
+            watch: vec![],
+            active_account: None,
+        };
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xA", "nothing chosen: the first");
+        meta.active_account = Some("0xb".into());
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xB", "the choice, whatever its case");
+        meta.active_account = Some("0xC".into());
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xA", "an archived choice does not act");
+        meta.active_account = Some("0xgone".into());
+        assert_eq!(meta.default_quai_account().unwrap().address, "0xA", "an unknown choice does not act");
+        // Older builds ignore the field; this one reads metadata written without it.
+        let old = serde_json::to_value(&meta).unwrap();
+        let mut stripped = old.clone();
+        stripped.as_object_mut().unwrap().remove("active_account");
+        let read: WalletMeta = serde_json::from_value(stripped).unwrap();
+        assert_eq!(read.active_account, None);
+    }
+
     use super::*;
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -832,7 +922,7 @@ mod tests {
         assert!(reg.create_hd("main", PHRASE, "english", "", "password123", true).is_err());
         assert!(reg.create_hd("dup", PHRASE, "english", "", "password123", true).is_err());
         assert!(matches!(reg.unlock(&meta, "wrongpass1"), Err(CoreError::Locked(_))));
-        let mut unlocked = reg.unlock(&meta, "password123").unwrap();
+        let unlocked = reg.unlock(&meta, "password123").unwrap();
         let second = reg.add_quai_account(&mut meta, None).unwrap();
         assert!(second.hd_index.unwrap() > meta.quai_accounts[0].hd_index.unwrap());
         let key = unlocked.quai_key(second.address.parse().unwrap(), second.hd_index).unwrap();
@@ -849,9 +939,10 @@ mod tests {
             }
         }
         let hexkey = imported.unwrap();
-        reg.add_key(&mut meta, &mut unlocked, "password123", &hexkey, "miner").unwrap();
+        let (_, sealed) = reg.add_key(&mut meta, "password123", &hexkey, "miner").unwrap();
+        assert_eq!(sealed.secrets().imported.len(), 1, "the keys add_key returns carry the import");
         assert_eq!(meta.qi_imported.len(), 1);
-        assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &hexkey, "again").is_err());
+        assert!(reg.add_key(&mut meta, "password123", &hexkey, "again").is_err());
         let reopened = reg.unlock(&meta, "password123").unwrap();
         assert_eq!(reopened.secrets().imported.len(), 1);
         reg.change_password(&meta, "password123", "newpassword9").unwrap();
@@ -914,11 +1005,9 @@ mod tests {
         let (reg, dir) = registry();
         let mut a = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
         let mut b = a.clone();
-        let mut a_keys = reg.unlock(&a, "password123").unwrap();
-        let mut b_keys = reg.unlock(&b, "password123").unwrap();
         let keys = imported_fixture_keys();
-        let first = reg.add_key(&mut a, &mut a_keys, "password123", &keys[0], "first").unwrap();
-        let second = reg.add_key(&mut b, &mut b_keys, "password123", &keys[1], "second").unwrap();
+        let (first, _) = reg.add_key(&mut a, "password123", &keys[0], "first").unwrap();
+        let (second, b_keys) = reg.add_key(&mut b, "password123", &keys[1], "second").unwrap();
         assert_eq!(b_keys.secrets().imported.len(), 2);
         // A's metadata/key snapshot predates B, including for password rotation.
         reg.change_password(&a, "password123", "rotatedpassword").unwrap();
@@ -928,8 +1017,33 @@ mod tests {
             assert_eq!(keys.imported_key(address).unwrap().public_key().address(), address);
         }
         let before = reg.load(&a.id).unwrap();
-        assert!(reg.add_key(&mut a, &mut a_keys, "password123", &imported_fixture_keys()[0], "old password").is_err());
+        assert!(reg.add_key(&mut a, "password123", &imported_fixture_keys()[0], "old password").is_err());
         assert_eq!(reg.load(&a.id).unwrap().generation, before.generation);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A new account or a label is a public change: keys unlocked before it are still this
+    /// wallet's keys. A new password (a new vault) is not: keys from before it must unlock again.
+    #[test]
+    fn only_a_custody_change_makes_unlocked_keys_stale() {
+        let (reg, dir) = registry();
+        let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
+        let unlocked = reg.unlock(&meta, "password123").unwrap();
+        let held = unlocked.vault_generation.unwrap();
+        reg.add_quai_account(&mut meta, Some("messaging")).unwrap();
+        reg.update_meta(&mut meta, |m| {
+            m.backed_up = true;
+            Ok(())
+        })
+        .unwrap();
+        let current = reg.load(&meta.id).unwrap();
+        assert!(current.generation > held, "public changes still move the generation");
+        assert!(held >= current.custody_generation, "but not custody: the keys held stay good");
+        reg.change_password(&meta, "password123", "rotatedpassword").unwrap();
+        let current = reg.load(&meta.id).unwrap();
+        assert!(held < current.custody_generation, "a new vault makes them stale");
+        let (_, fresh) = reg.unlock_current(&meta.id, "rotatedpassword").unwrap();
+        assert!(fresh.vault_generation.unwrap() >= current.custody_generation);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -938,7 +1052,7 @@ mod tests {
         let (reg, dir) = registry();
         let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
         let unlocked = reg.unlock(&meta, "password123").unwrap();
-        let copied = unlocked.duplicate().unwrap();
+        let copied = unlocked;
         let original = meta.generation;
         reg.change_password(&meta, "password123", "rotatedpassword").unwrap();
         reg.update_meta(&mut meta, |m| {
@@ -986,17 +1100,17 @@ mod tests {
     fn failed_before_journal_keeps_prior_state_and_export_recovers_a_complete_snapshot() {
         let (reg, dir) = registry();
         let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
-        let mut unlocked = reg.unlock(&meta, "password123").unwrap();
+        let unlocked = reg.unlock(&meta, "password123").unwrap();
         let before = meta.generation;
         let keys = imported_fixture_keys();
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some("before_journal".into()));
-        assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &keys[0], "new").is_err());
+        assert!(reg.add_key(&mut meta, "password123", &keys[0], "new").is_err());
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = None);
         assert_eq!(reg.load(&meta.id).unwrap().generation, before);
         assert!(unlocked.secrets().imported.is_empty());
         assert!(!reg.journal_path(&meta.id).exists());
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some("vault".into()));
-        assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &keys[0], "new").is_err());
+        assert!(reg.add_key(&mut meta, "password123", &keys[0], "new").is_err());
         MUTATION_FAILURE.with(|f| *f.borrow_mut() = None);
         let (exported, vault) = reg.encrypted_snapshot(&meta.id).unwrap();
         let secrets = VaultFile::from_json(&vault.unwrap()).unwrap().open("password123", true).unwrap();
@@ -1011,11 +1125,11 @@ mod tests {
         for boundary in ["journal", "vault", "metadata"] {
             let (reg, dir) = registry();
             let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
-            let mut unlocked = reg.unlock(&meta, "password123").unwrap();
+            let unlocked = reg.unlock(&meta, "password123").unwrap();
             let before = meta.generation;
             let keys = imported_fixture_keys();
             MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some(boundary.into()));
-            assert!(reg.add_key(&mut meta, &mut unlocked, "password123", &keys[0], "new").is_err());
+            assert!(reg.add_key(&mut meta, "password123", &keys[0], "new").is_err());
             MUTATION_FAILURE.with(|f| *f.borrow_mut() = None);
             assert_eq!(meta.generation, before, "failed publication did not change session metadata");
             assert!(unlocked.secrets().imported.is_empty(), "failed publication did not mutate live secrets");
@@ -1092,14 +1206,14 @@ mod tests {
         let mode = std::env::var("QW_MUTATION_CHILD_MODE").unwrap();
         let reg = Registry::fast(Paths::resolve(Some(root.into())).unwrap());
         let mut meta = reg.resolve(None, None).unwrap();
-        let mut keys = reg.unlock(&meta, "password123").unwrap();
+        let _keys = reg.unlock(&meta, "password123").unwrap();
         let fixtures = imported_fixture_keys();
         if let Ok(index) = mode.parse::<usize>() {
             std::fs::write(reg.paths.root().join(format!("ready-{index}")), b"ready").unwrap();
             wait_for_file(&reg.paths.root().join("go"));
-            let imported = reg.add_key(&mut meta, &mut keys, "password123", &fixtures[index], &format!("key-{index}"));
+            let imported = reg.add_key(&mut meta, "password123", &fixtures[index], &format!("key-{index}")).map(|(address, _)| address);
             if matches!(imported, Err(CoreError::Locked(_))) {
-                reg.add_key(&mut meta, &mut keys, "rotatedpassword", &fixtures[index], &format!("key-{index}")).unwrap();
+                reg.add_key(&mut meta, "rotatedpassword", &fixtures[index], &format!("key-{index}")).unwrap();
             } else {
                 imported.unwrap();
             }
@@ -1110,7 +1224,7 @@ mod tests {
             reg.change_password(&meta, "password123", "rotatedpassword").unwrap();
         } else {
             MUTATION_FAILURE.with(|f| *f.borrow_mut() = Some(mode));
-            assert!(reg.add_key(&mut meta, &mut keys, "password123", &fixtures[0], "crash").is_err());
+            assert!(reg.add_key(&mut meta, "password123", &fixtures[0], "crash").is_err());
             // No stack unwinding: exercise lock release and recovery after process termination.
             std::process::exit(73);
         }
@@ -1149,8 +1263,8 @@ mod tests {
     fn password_rotation_races_an_import_without_losing_either_key() {
         let (reg, dir) = registry();
         let mut meta = reg.create_hd("main", PHRASE, "english", "", "password123", true).unwrap();
-        let mut keys = reg.unlock(&meta, "password123").unwrap();
-        reg.add_key(&mut meta, &mut keys, "password123", &imported_fixture_keys()[0], "prior").unwrap();
+        let _keys = reg.unlock(&meta, "password123").unwrap();
+        reg.add_key(&mut meta, "password123", &imported_fixture_keys()[0], "prior").unwrap();
         let mut import = child(&reg, "1");
         let mut rotation = child(&reg, "rotate");
         wait_for_file(&dir.join("ready-1"));

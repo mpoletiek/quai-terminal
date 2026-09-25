@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/wallet-vault", "crates/wallet-core", "crates/quai-terminal"]
+members = ["crates/quai-model", "crates/quai-feeds", "crates/quai-messaging", "crates/quai-venues", "crates/wallet-vault", "crates/wallet-core", "crates/quai-engine", "crates/quai-terminal"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -11,13 +11,13 @@ repository = "https://github.com/mpoletiek/quai-rust-cli-wallet"
 
 [workspace.dependencies]
 quai-sdk = { version = "=0.1.0-alpha.14", features = ["sqlite", "ws", "abi", "payments", "keystore", "backup"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "fs", "net", "io-util"] }
-serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "fs", "net", "io-util", "process"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = "2"
 anyhow = "1"
 toml = "0.8"
-zeroize = { version = "1.8", features = ["derive"] }
+zeroize = { version = "1.8", features = ["derive", "serde"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 argon2 = "0.6.0"
 chacha20poly1305 = "0.11.0"

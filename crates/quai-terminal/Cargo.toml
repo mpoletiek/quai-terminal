@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 wallet-core = { path = "../wallet-core" }
+quai-engine = { path = "../quai-engine" }
 wallet-vault = { path = "../wallet-vault" }
 tokio.workspace = true
 serde.workspace = true
@@ -47,6 +48,8 @@ signal-hook = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+quai-engine = { path = "../quai-engine", features = ["test-support"] }
+image.workspace = true
 
 [lints]
 workspace = true

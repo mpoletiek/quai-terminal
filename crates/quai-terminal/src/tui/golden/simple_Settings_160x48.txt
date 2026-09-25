@@ -1,0 +1,48 @@
+ ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                                                                               ● 1 unread N
+                         System ·  Wallets   Settings   [ ]
+                        ────────────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1  Home            • │┌ ▸ settings ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+                       ││ Appearance                                                                                                                           │
+  3  Trade             ││   Theme                          terminal  ›                                                                                         │
+                       ││   Motion                         off                                                                                                 │
+  4  NFTs            ◧ ││   Background                     auto · the theme's, solid                                                                           │
+                       ││   Icons                          auto · unicode                                                                                      │
+  5  People            ││   Layout                         auto · trader from 200 columns                                                                      │
+                       ││   Mouse                          auto · clicks, wheel and hover · shift-drag selects text                                            │
+  6  Activity          ││   Move with h j k l              ● on · the arrows always move                                                                       │
+                       ││   Big balance digits             ● on                                                                                                │
+                       ││   Balance in the top bar         ● on · $ toggles it                                                                                 │
+▌ 0  System            ││   Effects & celebrations         ● on                                                                                                │
+                       ││   Lock screen animation          random  ›                                                                                           │
+   [ ] tabs            ││   Loop the lock screen animation ● on · one after another                                                                            │
+                       ││   Terminal bell on good news     ○ off                                                                                               │
+                       ││                                                                                                                                      │
+                       ││ Features                                                                                                                             │
+                       ││   Mode                           simple  ›  home, send and receive, one exchange, activity, NFTs, contacts                           │
+                       ││   Messaging                      ● on · board, sealed DMs, chat dock                                                                 │
+                       ││   Trading                        ● on · markets, swap, pools, launches                                                               │
+                       ││   NFTs                           ● on · collected, explore, listings                                                                 │
+                       ││   Notifications                  ● on                                                                                                │
+                       ││                                                                                                                                      │
+                       ││ Privacy & data                                                                                                                       │
+                       ││   NFT images and token icons     ›                                                                                                   │
+                       ││   IPFS gateway · pictures        https://ipfs.qu.ai · default  ›                                                                     │
+                       ││   IPFS gateway · contracts       https://ipfs.qu.ai · default  ›                                                                     │
+                       ││   Full refresh                   ›                                                                                                   │
+                       ││                                                                                                                                      │
+                       ││ Daemon                                                                                                                               │
+                       ││   Background daemon              ● starts with the terminal · not running                                                            │
+                       │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                       │┌ environment ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+                       ││ terminal      xterm-256color · block QR codes · 24-bit color                                                                         │
+                       ││ theme         terminal · terminal palette                                                                                            │
+                       ││ data          <data>                                                                                                                 │
+                       ││                                                                                                                                      │
+                       ││ With theme = auto the wallet follows Omarchy live; T opens the showroom from anywhere.                                               │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       ││                                                                                                                                      │
+                       │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ N notifications  enter change · open  h step back  l step on  : palette  ? more

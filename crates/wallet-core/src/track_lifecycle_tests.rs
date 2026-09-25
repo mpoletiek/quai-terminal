@@ -1,5 +1,6 @@
 //! Faults exercise the production tracker interpretation and durable anchor transitions.
 use super::*;
+use crate::journal::OpKind;
 use quai_sdk::provider::{
     AddressOutpoint, ConversionObservation, ConversionOriginObservation, ConversionSpendability, EtxExecutionObservation, EtxScanResult,
     Extensions, OutPoint, QiCreditObservation, Receipt, ScanCoverage, Transaction,
@@ -43,7 +44,7 @@ fn op(status: OpStatus) -> Operation {
     Operation {
         id: "11000000000000000000000000000000".into(),
         network: "fixture".into(),
-        kind: "convert_quai_to_qi".into(),
+        kind: OpKind::ConvertQuaiToQi,
         store: "quai".into(),
         account: "fixture".into(),
         status,
@@ -57,7 +58,8 @@ fn op(status: OpStatus) -> Operation {
         detail: json!({"included_block":10, "included_hash":hash(1).to_string(), "canonical_tx":hash(3).to_string(),
             "execution_block":20, "execution_hash":hash(2).to_string(), "execution_tx":hash(4).to_string(),
             "credited_qits":"1000", "unlock_height":30, "actual_out":"1000", "scan_next":21,
-            "scan_last_number":20, "scan_last_hash":hash(2).to_string(), "finality":"unverified"}),
+            "scan_last_number":20, "scan_last_hash":hash(2).to_string(), "finality":"unverified"})
+        .into(),
     }
 }
 fn db() -> (tempfile::TempDir, crate::appdb::AppDb) {
@@ -88,9 +90,9 @@ async fn successful_failed_and_refunded_source_reorgs_reset_dependent_cursor_and
             "scan_last_hash",
             "unlock_height",
         ] {
-            assert!(changed.detail[field].is_null(), "{status:?} kept stale {field}");
+            assert!(changed.detail.test_get(field).is_null(), "{status:?} kept stale {field}");
         }
-        assert_eq!(changed.detail["finality"], "unverified");
+        assert_eq!(*changed.detail.finality(), "unverified");
         assert_eq!(report.changes.len(), 1);
         // An unanchored operation does not rediscover the same old reorg on a second pass.
         assert!(!recheck_operation_anchors(&provider(vec![]), &reopened, &changed, &mut report).await.unwrap());
@@ -108,16 +110,16 @@ async fn destination_reorg_keeps_source_and_missing_header_is_only_uncertainty()
     assert!(recheck_operation_anchors(&unavailable, &db, &original, &mut report).await.unwrap());
     let historical = db.operation(&original.id).unwrap().unwrap();
     assert_eq!(historical.status, OpStatus::Settled);
-    assert_eq!(historical.detail["credited_qits"], "1000");
-    assert_eq!(historical.detail["source_canonicality"], "unverified");
+    assert_eq!(*historical.detail.credited_qits(), "1000");
+    assert_eq!(*historical.detail.source_canonicality(), "unverified");
     assert!(report.changes.is_empty());
     let fork = provider(vec![("quai_getHeaderByNumber", header(10, 1)), ("quai_getHeaderByNumber", header(20, 9))]);
     assert!(recheck_operation_anchors(&fork, &db, &historical, &mut report).await.unwrap());
     let changed = db.operation(&original.id).unwrap().unwrap();
     assert_eq!(changed.status, OpStatus::Settling);
-    assert_eq!(changed.detail["included_hash"], hash(1).to_string());
-    assert!(changed.detail["execution_hash"].is_null());
-    assert!(changed.detail["credited_qits"].is_null());
+    assert_eq!(*changed.detail.included_hash(), hash(1).to_string());
+    assert!(changed.detail.execution_hash().is_null());
+    assert!(changed.detail.credited_qits().is_null());
 }
 
 #[tokio::test]
@@ -132,12 +134,13 @@ async fn origin_is_rechecked_after_destination_and_reincluded_anchor_remains_pro
         ("quai_getHeaderByNumber", header(10, 9)),
     ]);
     assert!(recheck_operation_anchors(&raced, &db, &original, &mut report).await.unwrap());
-    let reincluded = json!({"included_block":12,"included_hash":hash(8).to_string(),"canonical_tx":hash(3).to_string()});
+    let reincluded =
+        crate::journal::Detail::from(json!({"included_block":12,"included_hash":hash(8).to_string(),"canonical_tx":hash(3).to_string()}));
     db.transition_operation(&original.id, OpStatus::Submitted, OpStatus::Confirmed, None, None, Some(&reincluded)).unwrap();
     let current = db.operation(&original.id).unwrap().unwrap();
     let same = provider(vec![("quai_getHeaderByNumber", header(12, 8))]);
     assert!(!recheck_operation_anchors(&same, &db, &current, &mut report).await.unwrap());
-    assert_eq!(current.detail["finality"], "unverified");
+    assert_eq!(*current.detail.finality(), "unverified");
 }
 
 fn receipt(h: u8, status: u8) -> Value {
@@ -195,8 +198,8 @@ fn partial_delayed_and_previously_spent_outputs_never_become_complete_credit() {
     let (status, message, patch) = credit_status(&c);
     assert_eq!(status, OpStatus::Settling);
     assert!(message.contains("spent"));
-    assert_eq!(patch["observed_credit_qits"], "1000");
-    assert!(patch.get("credited_qits").is_none(), "partial current data must not replace earlier historical total");
+    assert_eq!(patch.observed_credit_qits(), "1000");
+    assert!(patch.credited_qits().is_null(), "partial current data must not replace earlier historical total");
     c.outputs.clear();
     c.locked_qits = U256::ZERO;
     assert_eq!(credit_status(&c).0, OpStatus::Settling);
@@ -206,13 +209,13 @@ fn partial_delayed_and_previously_spent_outputs_never_become_complete_credit() {
     c.unlocked_qits = U256::from(1000);
     let (status, _, patch) = credit_status(&c);
     assert_eq!(status, OpStatus::Settled);
-    assert_eq!(patch["spendability"], "indexed_unlocked_at_observed_head");
+    assert_eq!(patch.spendability(), "indexed_unlocked_at_observed_head");
 }
 
 #[test]
 fn account_conversion_effects_do_not_invent_operation_specific_maturity() {
     let mut op = op(OpStatus::Settling);
-    op.kind = "convert_qi_to_quai".into();
+    op.kind = crate::journal::OpKind::ConvertQiToQuai;
     for effect in [
         ConversionEffect::ConversionReported,
         ConversionEffect::ReceiptUnavailable { etx_type: 2 },
@@ -226,7 +229,7 @@ fn account_conversion_effects_do_not_invent_operation_specific_maturity() {
             settle_result(&op, SettlementEvidence { conversion: Some(&conversion), external: None, qi_credit: None }).unwrap().unwrap();
         assert_ne!(status, OpStatus::Settled);
         assert!(!message.contains("two weeks"));
-        assert_eq!(patch.unwrap()["spendability"], "unverified");
+        assert_eq!(patch.unwrap().spendability(), "unverified");
     }
 }
 
@@ -250,7 +253,7 @@ fn executed_destination() -> EtxScanResult {
 #[test]
 fn a_reported_account_conversion_rests_locked_without_claiming_a_spendable_credit() {
     let mut op = op(OpStatus::Settling);
-    op.kind = "convert_qi_to_quai".into();
+    op.kind = crate::journal::OpKind::ConvertQiToQuai;
     let conversion = ConversionObservation::new(
         ConversionOriginObservation::Unavailable,
         Some(executed_destination()),
@@ -262,14 +265,14 @@ fn a_reported_account_conversion_rests_locked_without_claiming_a_spendable_credi
     let patch = patch.unwrap();
     assert_eq!(status, OpStatus::Locked);
     assert_ne!(status, OpStatus::Settled, "the proceeds are not spendable for the length of the lockup");
-    assert_eq!(patch["account_credit"], "reported_by_destination_receipt");
-    assert_eq!(patch["spendability"], "held_by_conversion_lockup");
-    assert_eq!(patch["quai_lock"], true);
-    assert_eq!(patch["finality"], "unverified");
-    assert_eq!(patch["destination_receipt"], "succeeded");
-    assert_eq!(patch["destination_canonicality"], "observed");
-    assert_eq!(patch["execution_block"], 20);
-    assert!(patch.get("unlock_height").is_none(), "no maturity is attributable to this operation");
+    assert_eq!(patch.account_credit(), "reported_by_destination_receipt");
+    assert_eq!(patch.spendability(), "held_by_conversion_lockup");
+    assert_eq!(patch.quai_lock(), true);
+    assert_eq!(patch.finality(), "unverified");
+    assert_eq!(patch.destination_receipt(), "succeeded");
+    assert_eq!(patch.destination_canonicality(), "observed");
+    assert_eq!(patch.execution_block(), 20);
+    assert!(patch.unlock_height().is_null(), "no maturity is attributable to this operation");
     assert!(message.contains("conversion lockup"));
 
     // A locked destination receipt reaches the same resting state by the older path.
@@ -278,10 +281,10 @@ fn a_reported_account_conversion_rests_locked_without_claiming_a_spendable_credi
     let (status, _, patch) =
         settle_result(&op, SettlementEvidence { conversion: Some(&locked), external: None, qi_credit: None }).unwrap().unwrap();
     assert_eq!(status, OpStatus::Locked);
-    assert_eq!(patch.unwrap()["account_credit"], "unverified");
+    assert_eq!(patch.unwrap().account_credit(), "unverified");
 
     // The forward direction does have an attributed observation, so it still waits for one.
-    op.kind = "convert_quai_to_qi".into();
+    op.kind = crate::journal::OpKind::ConvertQuaiToQi;
     let (status, _, _) =
         settle_result(&op, SettlementEvidence { conversion: Some(&conversion), external: None, qi_credit: None }).unwrap().unwrap();
     assert_eq!(status, OpStatus::Settling);
@@ -291,18 +294,18 @@ fn a_reported_account_conversion_rests_locked_without_claiming_a_spendable_credi
 async fn legacy_destination_height_without_hash_rescans_without_inventing_finality() {
     let (_dir, db) = db();
     let mut old = op(OpStatus::Settled);
-    old.detail["execution_hash"] = Value::Null;
+    old.detail.set_execution_hash(Value::Null);
     db.insert_operation(&old).unwrap();
     let mut report = TrackReport::default();
     let source = provider(vec![("quai_getHeaderByNumber", header(10, 1))]);
     assert!(recheck_operation_anchors(&source, &db, &old, &mut report).await.unwrap());
     let current = db.operation(&old.id).unwrap().unwrap();
     assert_eq!(current.status, OpStatus::Settling);
-    assert_eq!(current.detail["legacy_destination_observation"]["credited_qits"], "1000");
-    assert!(current.detail["credited_qits"].is_null());
-    assert!(current.detail["scan_next"].is_null());
-    assert_eq!(current.detail["spendability"], "unverified");
-    assert_eq!(current.detail["finality"], "unverified");
+    assert_eq!(current.detail.legacy_destination_observation()["credited_qits"], "1000");
+    assert!(current.detail.credited_qits().is_null());
+    assert!(current.detail.scan_next().is_null());
+    assert_eq!(*current.detail.spendability(), "unverified");
+    assert_eq!(*current.detail.finality(), "unverified");
 }
 
 #[test]
@@ -319,7 +322,7 @@ fn swap_receipt_output_requires_exact_token_recipient_and_router_withdrawal() {
         U256::from(1000).to_be_bytes::<32>().to_vec(),
     );
     r.logs = vec![log.clone()];
-    let detail = json!({"recipient":recipient,"to_token":token,"router":router});
+    let detail = crate::journal::Detail::from(json!({"recipient":recipient,"to_token":token,"router":router}));
     assert_eq!(swap_output(&r, &detail, None), Some(U256::from(1000)));
     let mut fee = log.clone();
     fee.topics = vec![TRANSFER_TOPIC.parse().unwrap(), topic(recipient), topic(router)];
@@ -343,7 +346,7 @@ fn swap_receipt_output_requires_exact_token_recipient_and_router_withdrawal() {
     r.to = Some(router.parse().unwrap());
     log.topics = vec![WITHDRAWAL_TOPIC.parse().unwrap(), topic(router)];
     r.logs = vec![log.clone()];
-    let native = json!({"recipient":recipient,"to_token":"quai","router":router});
+    let native = crate::journal::Detail::from(json!({"recipient":recipient,"to_token":"quai","router":router}));
     assert_eq!(swap_output(&r, &native, Some(token)), Some(U256::from(1000)));
     r.logs[0].topics[1] = topic(recipient);
     assert_eq!(swap_output(&r, &native, Some(token)), None);
@@ -355,7 +358,7 @@ fn swap_receipt_output_requires_exact_token_recipient_and_router_withdrawal() {
 #[test]
 fn failed_redemption_records_partial_credit_without_success_or_loss_claims() {
     let mut op = op(OpStatus::Settling);
-    op.kind = "unwrap_wqi".into();
+    op.kind = crate::journal::OpKind::UnwrapWqi;
     let mut c = credit();
     c.unobserved_qits = U256::from(500);
     let external =
@@ -365,10 +368,10 @@ fn failed_redemption_records_partial_credit_without_success_or_loss_claims() {
     assert_eq!(status, OpStatus::Failed);
     assert!(message.contains("partial"));
     let patch = patch.unwrap();
-    assert_eq!(patch["observed_credit_qits"], "1000");
-    assert_eq!(patch["unobserved_qits"], "500");
-    assert_eq!(patch["credit_partial"], true);
-    assert_eq!(patch["spendability"], "unverified");
+    assert_eq!(patch.observed_credit_qits(), "1000");
+    assert_eq!(patch.unobserved_qits(), "500");
+    assert_eq!(patch.credit_partial(), true);
+    assert_eq!(patch.spendability(), "unverified");
 }
 
 #[test]
@@ -387,9 +390,9 @@ fn hartii_native_fill_requires_the_verified_curve_and_exact_event_recipient() {
     );
     receipt.logs = vec![log.clone()];
     let mut operation = op(OpStatus::Confirmed);
-    operation.kind = "hartii_sell".into();
+    operation.kind = crate::journal::OpKind::HartiiSell;
     operation.account = owner.into();
-    operation.detail = json!({"curve":curve,"recipient":owner});
+    operation.detail = json!({"curve":curve,"recipient":owner}).into();
     assert_eq!(hartii_fill(&receipt, &operation), Some((U256::from(100), U256::from(500), U256::from(1))));
     receipt.logs.push(log.clone());
     assert!(hartii_fill(&receipt, &operation).is_none(), "duplicate fills are ambiguous");

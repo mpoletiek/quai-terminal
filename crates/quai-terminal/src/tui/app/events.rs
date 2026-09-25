@@ -1,6 +1,7 @@
 //! What happens to the app: worker events, locking and unlocking, onboarding, and the celebrations.
 
 use super::*;
+use wallet_core::journal::OpKind;
 
 impl App {
     /// Ctrl-Z: a wallet suspended to the shell is locked first; it comes back to the lock screen.
@@ -11,7 +12,7 @@ impl App {
     /// Lock now: the screen locks immediately, and the worker drops the keys as soon as it
     /// reaches the command (it may still be finishing a network sync).
     pub(crate) fn lock_now(&mut self, size: Option<(u16, u16)>) {
-        if self.can_sign() && !self.locked {
+        if self.can_sign() && !self.lock.locked {
             self.send(Cmd::Lock);
             self.enter_lock(size);
             // A wallet handed to the daemon is locked there too; off the UI thread, since the daemon
@@ -27,33 +28,53 @@ impl App {
         }
     }
 
+    /// Forget every decrypted conversation and private draft, and make any read still in flight
+    /// stale. Called at lock and whenever the wallet or network changes.
+    pub(crate) fn forget_private(&mut self) {
+        self.private_epoch += 1;
+        let board = &mut self.eco.board;
+        board.dms.clear();
+        board.msg.clear();
+        board.msg_lines.clear();
+        board.msg_offered = false;
+        if self.eco.board.pin.as_deref().is_some_and(|p| p.starts_with("dm:") || p.starts_with("msg:")) {
+            self.dock.draft.clear();
+        }
+    }
+
     /// Switch the UI to the lock screen. Idempotent: the worker's `Locked` confirmation after a
     /// local lock changes nothing (and doesn't restart the animation).
     pub(crate) fn enter_lock(&mut self, size: Option<(u16, u16)>) {
-        if self.locked {
+        if self.lock.locked {
             return;
         }
-        self.locked = true;
+        self.lock.locked = true;
         self.flow_on_lock();
         // A review open when the wallet locked goes with the keys; it is said after unlocking.
         if let Modal::Review(r) = &self.modal {
-            self.dropped_review = Some(r.review.title.clone());
+            self.lock.dropped_review = Some(r.review.title.clone());
         }
-        // Keep a half-filled, non-secret form; everything else is dropped with the keys.
-        if let Modal::Form(form) = std::mem::replace(&mut self.modal, Modal::None)
+        // Keep a half-filled, non-secret form, on top or under the review it asked for;
+        // everything else is dropped with the keys. A private message is dropped too: it is
+        // exactly what a lock is meant to hide.
+        let top = std::mem::replace(&mut self.modal, Modal::None);
+        let layers = std::mem::take(&mut self.beneath);
+        if let Some(Modal::Form(form)) = std::iter::once(top).chain(layers.into_iter().rev()).find(|m| matches!(m, Modal::Form(_)))
             && !form.fields.iter().any(|f| f.is_secret())
+            && !form.kind.is_private()
         {
             let mut form = form;
             form.pending = false;
             self.parked = Some(form);
         }
+        self.forget_private();
         self.dash.unlocked = false;
         self.dash.peers.clear();
         self.dash.offers.clear();
-        self.lock_fade = None;
-        self.lock_rested = false;
-        self.unlocked_at = None;
-        self.lock_input.zeroize();
+        self.lock.fade = None;
+        self.lock.rested = false;
+        self.lock.unlocked_at = None;
+        self.lock.input.zeroize();
         // The lock screen offers the other wallets on this computer (ctrl-w).
         self.load_wallets();
         // Without a size the next tick starts the animation.
@@ -64,7 +85,7 @@ impl App {
 
     /// Start (or loop) the lock screen animation on a canvas exactly the size of the art area.
     pub fn start_lock_ceremony(&mut self, size: (u16, u16)) {
-        if self.effects_allowed() && self.locked {
+        if self.effects_allowed() && self.lock.locked {
             let (w, h) = lock_art_size(size);
             let chosen = self.config.lock_effect.as_str();
             let effect = if chosen != "random" && super::super::fx::EFFECTS.iter().any(|(n, _)| *n == chosen) {
@@ -80,7 +101,7 @@ impl App {
             };
             // A safety cap only: every effect ends on its own well before it (the longest, swarm,
             // is about 2,000 frames). One cut short froze on whatever frame the cap landed on.
-            self.ambient = Ceremony::with_args(&effect, &args, &text, w, h, 2_400).map(|c| c.at_speed(super::super::fx::LOCK_SPEED));
+            self.fx.ambient = Ceremony::with_args(&effect, &args, &text, w, h, 2_400).map(|c| c.at_speed(super::super::fx::LOCK_SPEED));
         }
     }
 
@@ -105,10 +126,10 @@ impl App {
     /// asked for sound: only while the window is in the background or has sat untouched a
     /// minute, and at most once in ten seconds. Never for the user's own confirmations.
     pub(crate) fn ring(&mut self) {
-        let away = !self.focused || self.last_input.elapsed().as_secs() >= 60;
-        if self.config.sound && away && self.last_bell.is_none_or(|at| at.elapsed().as_secs() >= 10) {
-            self.bell = true;
-            self.last_bell = Some(Instant::now());
+        let away = !self.term.focused || self.input.last_input.elapsed().as_secs() >= 60;
+        if self.config.sound && away && self.news.last_bell.is_none_or(|at| at.elapsed().as_secs() >= 10) {
+            self.fx.bell = true;
+            self.news.last_bell = Some(Instant::now());
         }
     }
 
@@ -131,15 +152,15 @@ impl App {
             }
             many => self.toast(format!("Received {} payments · Activity", many.len()), false),
         }
-        self.arrival_said = Some(now);
-        if self.screen != Screen::Activity {
-            self.arrivals_unseen = true;
+        self.news.arrival_said = Some(now);
+        if self.nav.screen != Screen::Activity {
+            self.news.arrivals_unseen = true;
         }
         if self.motion().effects() {
             self.signal(super::super::edge::Signal::Arrival);
-            self.gutter_flash = Some(now);
+            self.fx.gutter_flash = Some(now);
             for a in arrivals {
-                self.row_flash.insert(a.key.clone(), now);
+                self.fx.row_flash.insert(a.key.clone(), now);
             }
         }
         self.ring();
@@ -151,14 +172,14 @@ impl App {
         match ev {
             Ev::Head(height) => self.on_block(height),
             Ev::SplitQuote { key, result } => {
-                if self.screen != Screen::Swap || self.eco.split_request != self.swap_input_key().map(|identity| (key, identity)) {
+                if !self.on_card(Card::Swap) || self.eco.requests.split != self.swap_input_key().map(|identity| (key, identity)) {
                     return;
                 }
-                self.eco.split_request = None;
+                self.eco.requests.split = None;
                 match result {
                     Ok(result) => match result.plan {
                         Some(plan) => {
-                            let Some(account) = self.dash.accounts.first().map(|a| a.address.clone()) else {
+                            let Some(account) = self.dash.active_account().map(|a| a.address.clone()) else {
                                 return;
                             };
                             let intent = wallet_core::execution::TradingIntent {
@@ -170,32 +191,29 @@ impl App {
                                     deadline: self.eco.swap.deadline_minutes,
                                 },
                             };
-                            self.start_flow(super::super::eco::FlowKind::Steps {
-                                prepare: Box::new(Prepare::Trading { intent }),
-                                label: "split swap · separate allocations".into(),
-                            });
+                            self.start_plan("split swap · separate allocations".into(), intent, None);
                         }
                         None => self.toast(result.reason, false),
                     },
                     Err(error) => self.toast(friendly_error(&error), true),
                 }
             }
+            Ev::Plan(view) => self.on_plan(*view),
             Ev::Pnl(result) => {
-                self.eco.pnl_loading = false;
-                self.eco.pnl = Some(result.map(|p| *p));
+                self.eco.feeds.pnl.settle(result.map(|p| *p));
             }
             Ev::QiMax { key, result } => {
-                if self.eco.max_request != Some((key, self.max_identity())) {
+                if self.eco.requests.max != Some((key, self.max_identity())) {
                     return;
                 }
-                self.eco.max_request = None;
+                self.eco.requests.max = None;
                 match result {
                     Ok(q) => {
-                        if self.screen == Screen::Convert {
+                        if self.on_card(Card::Convert) {
                             self.eco.convert.amount = q.amount;
                             self.eco.convert.edited = Some(Instant::now());
                             self.eco.convert.quote = None;
-                        } else if self.screen == Screen::Wrap {
+                        } else if self.on_card(Card::Wrap) {
                             self.eco.wrap.amount = q.amount;
                         }
                         self.toast(
@@ -212,16 +230,17 @@ impl App {
             // What a send destination turned out to be. A late answer for an address that has
             // since been edited is dropped rather than shown against the wrong one.
             Ev::Contract { address, found } => {
-                if self.contract_probe.as_deref() == Some(address.as_str()) {
-                    self.contract_probe = None;
-                    self.contract_found = *found;
+                if self.tasks.contract_probe.as_deref() == Some(address.as_str()) {
+                    self.tasks.contract_probe = None;
+                    self.tasks.contract_found = *found;
                     self.refresh_form_note();
                 }
             }
             Ev::Dashboard(mut d) => {
                 // Channels is chosen by payment code: keep the cursor on the same one when offers
                 // arrive, leave or move, so a key never lands on a different sender.
-                let anchor = (self.screen == Screen::Channels)
+                let anchor = self
+                    .on_channels()
                     .then(|| self.channel_offer().map(|o| o.code.clone()).or_else(|| self.channel_peer().map(|p| p.code.clone())))
                     .flatten();
                 // The pending lane may have read the journal after this refresh did: keep its read.
@@ -234,7 +253,7 @@ impl App {
                 }
                 self.observe_changes(&d);
                 self.dash = *d;
-                if self.locked {
+                if self.lock.locked {
                     // A refresh that finished after a local lock must not bring unlocked-only data back.
                     self.dash.unlocked = false;
                     self.dash.peers.clear();
@@ -248,6 +267,7 @@ impl App {
                 // of the switch there were no accounts to ask about yet. The first dashboard that
                 // brings them is when the open view can load, so it is re-opened here.
                 if self.reload_view_on_accounts && !self.dash.accounts.is_empty() {
+                    wallet_core::diag::end("ux.wallet_switch");
                     self.reload_view_on_accounts = false;
                     self.on_view_opened();
                 }
@@ -255,11 +275,11 @@ impl App {
                     && let Some(i) =
                         self.dash.offers.iter().map(|o| &o.code).chain(self.dash.peers.iter().map(|p| &p.code)).position(|c| *c == code)
                 {
-                    self.selected = i;
+                    self.nav.selected = i;
                 }
                 // Balances changed (a swap output, a claimed WQI, a transfer): rebuild the portfolio
                 // on the views that show it, without waiting for the view to be reopened.
-                if matches!(self.screen, Screen::Home | Screen::Swap) || self.eco.portfolio.is_none() {
+                if self.nav.screen == Screen::Home || self.on_card(Card::Swap) || self.eco.feeds.portfolio.value().is_none() {
                     self.maybe_refresh_portfolio(false);
                 }
                 self.preload();
@@ -269,12 +289,12 @@ impl App {
                 if self.meta.as_ref().is_some_and(|m| m.id == wallet) && self.dash.network_id == network {
                     // Active orders first; finished ones keep their order below them.
                     rows.sort_by_key(|p| !wallet_core::orders::details(p).is_ok_and(|v| v.state.active()));
-                    if self.screen == Screen::Orders {
-                        self.selected = self.selected.min(rows.len().saturating_sub(1));
+                    if self.nav.screen == Screen::Orders {
+                        self.nav.selected = self.nav.selected.min(rows.len().saturating_sub(1));
                     }
                     // A limit that became reachable since the last look is said on screen, whoever
                     // found it (this terminal, or the daemon between two of its checks).
-                    let before = self.eco.orders.as_deref().map(super::super::order_ui::reachable).unwrap_or_default();
+                    let before = self.eco.feeds.orders.value().map(|rows| super::super::order_ui::reachable(rows)).unwrap_or_default();
                     let fresh: Vec<String> = super::super::order_ui::reachable(&rows)
                         .into_iter()
                         .filter(|(id, _)| !before.iter().any(|(b, _)| b == id))
@@ -295,15 +315,15 @@ impl App {
                         && let Ok(value) = wallet_core::orders::details(plan)
                     {
                         if !crate::daemon::daemon_running(&self.paths) {
-                            self.notices_out.push(wallet_core::orders::reachable_notice(&value));
+                            self.status.notices_out.push(wallet_core::orders::reachable_notice(&value));
                         }
                         self.ring();
                     }
-                    self.eco.orders = Some(rows);
+                    self.eco.feeds.orders.settle(Ok(rows));
                 }
             }
             Ev::OrderReview(r) => {
-                if self.locked || self.eco.flow.is_some() || matches!(self.modal, Modal::Review(_)) {
+                if self.lock.locked || self.eco.plan.is_some() || matches!(self.modal, Modal::Review(_)) {
                     self.send(Cmd::Discard(r.op_id.clone()));
                     self.toast("order review discarded because the wallet locked or another review began", true);
                 } else {
@@ -314,15 +334,25 @@ impl App {
                         viewport: 1,
                         approve_focused: false,
                         opened: Instant::now(),
+                        typed: String::new(),
                     });
                 }
             }
-            Ev::Review(r) if self.locked => self.send(Cmd::Discard(r.op_id.clone())),
-            Ev::Secret(_) | Ev::Quote(_) if self.locked => {}
+            Ev::Review(r) if self.lock.locked => self.send(Cmd::Discard(r.op_id.clone())),
+            Ev::Secret(_) | Ev::Quote(_) if self.lock.locked => {}
             Ev::Review(r) => {
                 if !self.flow_on_review(&r.op_id) {
                     self.send(Cmd::Discard(r.op_id.clone()));
                     return;
+                }
+                wallet_core::diag::end("ux.review");
+                // The form that asked for this review waits under it: rejecting the review brings it
+                // back as it was typed.
+                if matches!(&self.modal, Modal::Form(f) if f.pending)
+                    && let Modal::Form(mut form) = std::mem::replace(&mut self.modal, Modal::None)
+                {
+                    form.pending = false;
+                    self.beneath.push(Modal::Form(form));
                 }
                 self.modal = Modal::Review(ReviewState {
                     review: *r,
@@ -331,19 +361,20 @@ impl App {
                     viewport: 1,
                     approve_focused: false,
                     opened: Instant::now(),
+                    typed: String::new(),
                 });
             }
             Ev::Submitted(s) => {
-                let kind = self.committing_kind.take();
+                let kind = self.status.committing_kind.take();
                 if let Some(kind) = &kind {
                     self.after_submit(kind);
                 }
                 // A step in a sequence continues on its own; only the last step shows the result.
-                if !self.flow_on_submitted(&s.op_id, kind.as_deref().unwrap_or_default()) && !self.locked {
+                if !self.flow_on_submitted(&s.op_id, &kind.unwrap_or(OpKind::Other(String::new()))) && !self.lock.locked {
                     self.modal = Modal::Result(s);
                 }
             }
-            Ev::Quote(q) if self.screen == Screen::Convert => {
+            Ev::Quote(q) if self.on_card(Card::Convert) => {
                 let card = &self.eco.convert;
                 let direction = if card.qi_to_quai { "qi_to_quai" } else { "quai_to_qi" };
                 let decimals = if card.qi_to_quai { wallet_core::amount::QI_DECIMALS } else { 18 };
@@ -371,10 +402,8 @@ impl App {
                 self.toast(m, false);
             }
             Ev::CommitError { op_id, message, ambiguous } => {
-                if self.eco.flow.as_ref().is_some_and(|flow| flow.review_op.as_deref() == Some(&op_id)) {
-                    self.flow_on_rejected(&op_id);
-                }
-                self.committing_kind = None;
+                // A plan's step: the engine says where the plan stands (`Ev::Plan`).
+                self.status.committing_kind = None;
                 self.send(Cmd::Journal);
                 // Where the money is comes first. A toast is too small for this, and gone too soon.
                 let activity = Screen::Activity.place();
@@ -392,6 +421,8 @@ impl App {
                 self.modal = Modal::Notice { title: title.into(), body, error: true, detail: Some(op_id) };
             }
             Ev::PrepareError(m) => {
+                // The prepare answered, if only with a refusal: that is the wait being measured.
+                wallet_core::diag::end("ux.review");
                 // Said with where the money is: preparing only reads and builds.
                 let text = format!("{} · nothing was sent", friendly_error(&m).trim_end_matches('.'));
                 self.on_event(Ev::Error(text), size);
@@ -408,55 +439,98 @@ impl App {
                         form.focus = i;
                     }
                     form.error = Some(text);
-                } else if self.locked {
+                } else if self.lock.locked {
                     // Background work failing while locked (the node, a sync). A refused password
                     // is not reported here: the lock screen checks passwords itself.
-                    self.log.push_front(Toast { text, level: Severity::Danger, at: Instant::now(), id: None });
+                    self.status.log.push_front(Toast { text, level: Severity::Danger, at: Instant::now(), id: None });
                 } else {
                     self.toast(text, true);
                 }
             }
             Ev::Busy(b) => {
-                if b != self.busy {
-                    self.busy_at = b.as_ref().map(|_| Instant::now());
+                if b != self.status.busy {
+                    self.status.busy_at = b.as_ref().map(|_| Instant::now());
                 }
-                self.busy = b;
+                self.status.busy = b;
             }
             Ev::SignBusy(b) => {
-                if b != self.signing {
-                    self.signing_at = b.as_ref().map(|_| Instant::now());
+                if b != self.status.signing {
+                    self.status.signing_at = b.as_ref().map(|_| Instant::now());
                 }
-                self.signing = b;
+                self.status.signing = b;
             }
             // A watch-only wallet opened by a switch: nothing to unlock.
-            Ev::Unlocked => self.show_unlocked(),
+            Ev::Unlocked => self.unlocked_by_engine(),
+            Ev::UnlockFailed(e) => self.unlock_failed(e),
+            Ev::EngineLost(why) => {
+                self.lock.unlocking = false;
+                self.lock.unlocking_since = None;
+                self.lock.handoff_pending = None;
+                self.enter_lock(Some(size));
+                // Short enough for the lock box; the reason goes in the log.
+                self.lock.error = Some("The engine stopped; the keys went with it.".into());
+                self.toast(format!("engine stopped ({why}) · reconnecting"), true);
+            }
+            Ev::EngineBack => {
+                if self.lock.locked {
+                    self.lock.error = Some("Reconnected. Unlock to sign again.".into());
+                }
+                self.toast("reconnected to the engine".to_string(), false);
+            }
             Ev::Locked => {
                 // The confirmation of a switch this screen already locked for. If that wallet was
                 // unlocked while the worker was still getting there, it stays unlocked.
-                if !(std::mem::take(&mut self.switch_lock_pending) && !self.locked) {
+                if !(std::mem::take(&mut self.lock.switch_pending) && !self.lock.locked) {
                     self.enter_lock(Some(size));
                 }
             }
             Ev::KeysRefused => {
-                self.switch_lock_pending = false;
+                self.lock.switch_pending = false;
                 self.enter_lock(Some(size));
-                self.lock_error = Some("that wallet did not open — unlock it again".into());
+                self.lock.error = Some("that wallet did not open — unlock it again".into());
             }
             Ev::Secret(text) => {
                 self.modal = Modal::Secret { text, title: "Anyone with these words controls your funds".into() };
             }
-            Ev::Conversation { peer, result } => {
-                if self.eco.board.dm_loading.as_deref() == Some(peer.as_str()) {
-                    self.eco.board.dm_loading = None;
+            // Asked before a lock or a switch: whatever it says is no longer this screen's to show.
+            Ev::Conversation { epoch, .. } if self.lock.locked || epoch != self.private_epoch => {}
+            Ev::Messaging { epoch, .. } if self.lock.locked || epoch != self.private_epoch => {}
+            Ev::Messaging { view, open, note, .. } => {
+                use wallet_core::messaging::service::KeyNeed;
+                let board = &mut self.eco.board;
+                // This week's key is offered once per unlock, where the user will see it.
+                let offer = matches!(&view, Ok(v) if v.status.need == KeyNeed::Publish) && !board.msg_offered;
+                if offer {
+                    board.msg_offered = true;
                 }
-                self.eco.board.dm_at.insert(peer.clone(), Instant::now());
-                if result.is_ok() || !matches!(self.eco.board.dms.get(&peer), Some(Ok(_))) {
-                    self.eco.board.dms.insert(peer, result);
+                // A failed read keeps what was already shown and says so; the first one shows the error.
+                let refused = match &view {
+                    Err(e) if board.msg.value().is_some() => Some(e.clone()),
+                    _ => None,
+                };
+                board.msg.settle(view);
+                if let Some(e) = refused {
+                    self.toast(format!("private messages: {}", super::friendly_error(&e)), true);
                 }
+                if let Some((peer, lines)) = open
+                    && (lines.is_ok() || !matches!(self.eco.board.msg_lines.get(&peer), Some(Ok(_))))
+                {
+                    self.eco.board.msg_lines.insert(peer, lines);
+                }
+                if let Some(note) = note {
+                    self.toast(note, false);
+                }
+                if offer {
+                    self.toast("this week's messaging key is not published yet: Board › K", false);
+                }
+            }
+            Ev::Conversation { peer, result, .. } => {
+                // A failed read keeps the conversation on screen (`Resource::shown`).
+                self.eco.board.dms.settle(peer, result);
             }
             // An arrival already said by name (`arrive`) is not said again in the worker's words.
             Ev::Notify { title, .. }
-                if title.starts_with("Incoming payment") && self.arrival_said.is_some_and(|at| at.elapsed().as_secs() < 60) => {}
+                if title.starts_with("Incoming payment") && self.news.arrival_said.is_some_and(|at| at.elapsed().as_secs() < 60) => {}
             Ev::Notify { title, body, .. } => self.toast(format!("{title}: {body}"), false),
             Ev::Chat { subs, pin, note } => {
                 self.eco.board.subs = subs;
@@ -475,10 +549,13 @@ impl App {
                     self.on_event(Ev::Dashboard(Box::new(next)), size);
                 }
             }
-            Ev::ChatNews(news) => {
+            // News for a wallet since locked or switched away is not this screen's to say.
+            Ev::ChatNews { epoch, .. } if self.lock.locked || epoch != self.private_epoch => {}
+            Ev::ChatNews { news, .. } => {
+                self.eco.board.news.confirm();
                 // A chat already on screen (open on the Board, or pinned) is being read; the rest also
                 // goes to the desktop. Notice titles are the chat's label (`#general`, `Alice · sealed`).
-                let open = (self.screen == Screen::Board).then(|| self.board_row().map(|r| App::chat_target(&r).0)).flatten();
+                let open = (self.nav.screen == Screen::Board).then(|| self.board_row().map(|r| App::chat_target(&r).0)).flatten();
                 let on_screen: Vec<String> = open.iter().chain(self.eco.board.pin.iter()).map(|t| self.chat_label(t)).collect();
                 for (title, body) in news {
                     let visible = on_screen.iter().any(|l| title == *l || title.starts_with(&format!("{l} ·")));
@@ -498,17 +575,17 @@ impl App {
             && h.height > old_height
         {
             if old_height > 0 {
-                self.beat = Some(Instant::now());
-                self.beat_order = h.order.unwrap_or(2);
+                self.fx.beat = Some(Instant::now());
+                self.fx.beat_order = h.order.unwrap_or(2);
             }
             // The session's entropy minimum: the smallest head hash seen (all the same length).
-            if self.lowest_hash.as_ref().is_none_or(|(low, _)| h.head_hash.to_lowercase() < low.to_lowercase()) {
-                self.lowest_hash = Some((h.head_hash.clone(), h.height));
+            if self.fx.lowest_hash.as_ref().is_none_or(|(low, _)| h.head_hash.to_lowercase() < low.to_lowercase()) {
+                self.fx.lowest_hash = Some((h.head_hash.clone(), h.height));
             }
-            if self.recent_hashes.back() != Some(&h.head_hash) {
-                self.recent_hashes.push_back(h.head_hash.clone());
-                while self.recent_hashes.len() > 24 {
-                    self.recent_hashes.pop_front();
+            if self.fx.recent_hashes.back() != Some(&h.head_hash) {
+                self.fx.recent_hashes.push_back(h.head_hash.clone());
+                while self.fx.recent_hashes.len() > 24 {
+                    self.fx.recent_hashes.pop_front();
                 }
             }
         }
@@ -516,8 +593,8 @@ impl App {
             return;
         }
         let now = Instant::now();
-        self.row_flash.retain(|_, s| s.elapsed().as_millis() < super::super::edge::FLASH_MS);
-        self.drawer_flash.retain(|_, s| s.elapsed().as_millis() < super::super::edge::FLASH_MS);
+        self.fx.row_flash.retain(|_, s| s.elapsed().as_millis() < super::super::edge::FLASH_MS);
+        self.fx.drawer_flash.retain(|_, s| s.elapsed().as_millis() < super::super::edge::FLASH_MS);
         if self.motion().effects() {
             // Confirmations: a row lights once when it reaches the target.
             let new_height = next.health.as_ref().map(|h| h.height).unwrap_or(old_height);
@@ -525,7 +602,7 @@ impl App {
                 let before = super::super::ui::confirmations(op, old_height).map(|(n, _)| n).unwrap_or(0);
                 let after = super::super::ui::confirmations(op, new_height).map(|(n, _)| n).unwrap_or(0);
                 if old_height > 0 && before < super::super::ui::CONFIRM_TARGET && after >= super::super::ui::CONFIRM_TARGET {
-                    self.row_flash.insert(op.id.clone(), now);
+                    self.fx.row_flash.insert(op.id.clone(), now);
                     self.signal(super::super::edge::Signal::Settled);
                 }
             }
@@ -537,7 +614,7 @@ impl App {
                     let arrived = !old.coins.iter().any(|o| o.outpoint == coin.outpoint);
                     let opened = old_height > 0 && coin.unlock_height > was && coin.unlock_height <= is;
                     if arrived || opened {
-                        self.drawer_flash.insert(coin.denomination, now);
+                        self.fx.drawer_flash.insert(coin.denomination, now);
                     }
                 }
             }
@@ -545,7 +622,7 @@ impl App {
         // The static half of the drawer's news, at every motion level: which slots got a coin
         // (arrived or unlocked) since Qi was last on screen.
         if let (Some(old), Some(new)) = (&self.dash.qi, &next.qi)
-            && self.screen != Screen::Qi
+            && self.nav.screen != Screen::Qi
         {
             let new_height = next.health.as_ref().map(|h| h.height).unwrap_or(old_height);
             let (was, is) = (wallet_core::sdk::U256::from(old_height), wallet_core::sdk::U256::from(new_height));
@@ -553,7 +630,7 @@ impl App {
                 let arrived = !old.coins.iter().any(|o| o.outpoint == coin.outpoint);
                 let opened = old_height > 0 && coin.unlock_height > was && coin.unlock_height <= is;
                 if arrived || opened {
-                    self.drawer_new.insert(coin.denomination);
+                    self.fx.drawer_new.insert(coin.denomination);
                 }
             }
         }
@@ -562,7 +639,7 @@ impl App {
             let was_locked =
                 self.dash.locks.iter().any(|o| !o.unlocked && o.source == l.source && o.amount == l.amount && o.asset == l.asset);
             if was_locked {
-                self.unlocked_news.push(format!("{} {} unlocked · spendable now", l.amount, super::super::num::unit(&l.asset)));
+                self.news.unlocked_news.push(format!("{} {} unlocked · spendable now", l.amount, super::super::num::unit(&l.asset)));
             }
         }
         // A transaction leaving the pending pill is said where the pill was, for a moment.
@@ -582,9 +659,9 @@ impl App {
                     format!("{} mined · {}{tally}", self.theme.icon(Icon::Ok), describe(op))
                 }
             };
-            self.pill_resolved = Some((text, now));
+            self.fx.pill_resolved = Some((text, now));
         }
-        let confirmed: Vec<String> = next
+        let confirmed: Vec<OpKind> = next
             .ops
             .iter()
             .filter(|op| {
@@ -603,7 +680,7 @@ impl App {
             .ops
             .iter()
             .filter(|op| {
-                matches!(op.kind.as_str(), "swap" | "swap_exact_output")
+                matches!(op.kind, OpKind::Swap | OpKind::SwapExactOutput)
                     && matches!(op.status, OpStatus::Confirmed | OpStatus::Settled)
                     && self.dash.ops.iter().any(|o| o.id == op.id && !o.status.is_terminal())
             })
@@ -614,7 +691,7 @@ impl App {
         }
         let newest_seen = self.dash.notifications.iter().map(|n| n.id).max().unwrap_or(0);
         if next.notifications.iter().any(|n| n.id > newest_seen && n.title == "NFT sold") {
-            self.eco.nfts = None;
+            self.eco.nft.nfts.clear();
             self.load_my_listings();
             self.ring();
             return;
@@ -627,7 +704,7 @@ impl App {
             .collect();
         if !arrivals.is_empty() && !self.config.first_receive_celebrated {
             self.config.first_receive_celebrated = true;
-            self.first_payment = arrivals.first().map(|a| a.key.clone());
+            self.news.first_payment = arrivals.first().map(|a| a.key.clone());
             self.save_config();
         }
         self.arrive(&arrivals);
@@ -645,15 +722,16 @@ impl App {
         if wallet_core::registry::now().saturating_sub(a.observed) > RECENT_SECS {
             return false;
         }
-        match a.detail["token"].as_str() {
+        match a.detail.token().as_str() {
             // Native QUAI and Qi carry no token contract.
             None => matches!(a.asset.as_str(), "QUAI" | "QI" | "Qi"),
             Some(token) => {
                 let token = token.to_lowercase();
                 let verified = self
                     .eco
+                    .feeds
                     .portfolio
-                    .as_ref()
+                    .value()
                     .and_then(|p| p.rows.iter().find(|r| r.key.id().to_lowercase() == token))
                     .is_some_and(|r| r.trust == wallet_core::portfolio::Trust::Verified);
                 verified
@@ -668,10 +746,10 @@ impl App {
 
     /// Finish an IPFS gateway test.
     pub fn poll_ipfs_check(&mut self) {
-        let Some(rx) = &self.ipfs_check else { return };
+        let Some(rx) = &self.tasks.ipfs_check else { return };
         let Ok((content, gateway, result)) = rx.try_recv() else { return };
-        self.ipfs_check = None;
-        self.busy = None;
+        self.tasks.ipfs_check = None;
+        self.status.busy = None;
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(e) => return self.toast(format!("IPFS gateway not saved: {e}"), true),
@@ -684,7 +762,7 @@ impl App {
         let _ = wallet_core::ipfs::set_gateway(content, stored.as_deref());
         self.save_config();
         // Pictures that failed on the old gateway get another chance on this one.
-        self.eco.images.retain(|_, slot| !matches!(slot, super::super::eco::ImageSlot::Failed(_)));
+        self.eco.media.images.retain(|_, slot| !matches!(slot, super::super::eco::ImageSlot::Failed(_)));
         match outcome {
             wallet_core::ipfs::TestOutcome::Verified(ms) => {
                 self.toast(format!("IPFS via {} · test file verified against its CID in {ms} ms", gateway.display()), false)
@@ -697,10 +775,10 @@ impl App {
 
     /// Finish a monitoring endpoint check.
     pub fn poll_monitor_check(&mut self) {
-        let Some(rx) = &self.monitor_check else { return };
+        let Some(rx) = &self.tasks.monitor_check else { return };
         let Ok((network, endpoint, result)) = rx.try_recv() else { return };
-        self.monitor_check = None;
-        self.busy = None;
+        self.tasks.monitor_check = None;
+        self.status.busy = None;
         match result {
             Ok(()) => {
                 let url = endpoint.rpc_url.clone();
@@ -724,79 +802,64 @@ impl App {
 
     /// The wallets on this computer, newest last, for the Wallets screen.
     pub fn load_wallets(&mut self) {
-        self.wallets = self.registry.list().unwrap_or_default();
+        self.cockpit.list = self.registry.list().unwrap_or_default();
+        // Read off this thread: one small file per wallet ([`App::poll_persist`] takes them).
         let network = self.network_id.clone();
-        self.wallet_summaries = self
-            .wallets
-            .iter()
-            .filter_map(|w| wallet_core::cockpit::load_summary(&self.paths, &w.id, &network).map(|s| (w.id.clone(), s)))
-            .collect();
-        let addresses: Vec<(String, Vec<String>)> = self.wallets.iter().map(|w| (w.id.clone(), w.quai_owner_addresses())).collect();
+        let wallets: Vec<String> = self.cockpit.list.iter().map(|w| w.id.clone()).collect();
+        let paths = wallets.iter().map(|w| wallet_core::cockpit::summary_path(&self.paths, w, &network)).collect();
+        self.persist.read(super::super::persist::Read::Summaries { network, wallets }, paths);
+        let addresses: Vec<(String, Vec<String>)> = self.cockpit.list.iter().map(|w| (w.id.clone(), w.quai_owner_addresses())).collect();
         if !addresses.is_empty() {
             self.send_data(super::super::data::DataCmd::WalletQuai(addresses));
         }
     }
 
-    /// Check a password on its own thread. The lock screen says it is unlocking meanwhile, and
-    /// [`App::poll_unlock`] takes the answer.
+    /// Hand a password to the engine, which checks it where the keys will live (the daemon, or
+    /// this process when standalone) off every UI path. The lock screen says it is unlocking
+    /// meanwhile; [`Ev::Unlocked`] or [`Ev::UnlockFailed`] is the answer.
     pub fn begin_unlock(&mut self, password: Zeroizing<String>) {
         let Some(meta) = self.meta.clone() else { return };
-        self.unlocking = true;
-        self.unlocking_since = Some(Instant::now());
-        self.lock_error = None;
+        self.lock.error = None;
         self.dirty = true;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let registry = self.registry.clone();
-        let wallet = meta.id.clone();
-        let spawned = std::thread::Builder::new().name("wallet-unlock".into()).spawn(move || {
-            let answer = registry.unlock(&meta, &password).map(|keys| (keys, password)).map_err(|e| e.to_string());
-            let _ = tx.send(answer);
-        });
-        match spawned {
-            Ok(_) => self.unlock_check = Some((wallet, rx)),
-            Err(e) => {
-                self.unlocking = false;
-                self.unlocking_since = None;
-                self.lock_error = Some(format!("could not start unlocking: {e}"));
-            }
-        }
+        let Some(engine) = &self.worker else {
+            self.lock.error = Some("the wallet is still starting — try again in a moment".into());
+            return;
+        };
+        wallet_core::diag::begin("ux.unlock");
+        self.lock.unlocking = true;
+        self.lock.unlocking_since = Some(Instant::now());
+        // Standalone, the daemon gets the password too when the user shares unlocks with it
+        // (once it opens the wallet here); a daemon-hosted engine shares the keys itself.
+        let starting = crate::daemon::STARTING.load(std::sync::atomic::Ordering::SeqCst);
+        self.lock.handoff_pending = (!engine.is_remote()
+            && self.config.daemon_share_unlock
+            && (starting || crate::daemon::state(&self.paths).is_some_and(|d| !d.unlocked(&meta.id))))
+        .then(|| (meta.id.clone(), password.clone()));
+        engine.unlock(meta.id, password);
     }
 
-    /// Take a finished password check: unlock the screen and hand the keys to the worker, or say
-    /// why not.
-    pub fn poll_unlock(&mut self) {
-        let Some((wallet, rx)) = &self.unlock_check else { return };
-        let answer = match rx.try_recv() {
-            Ok(answer) => answer,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("unlocking stopped unexpectedly — try again".into()),
-        };
-        let wallet = wallet.clone();
-        self.unlock_check = None;
-        self.unlocking = false;
-        self.unlocking_since = None;
+    /// The engine opened the wallet: hand a standalone unlock to the daemon if asked to.
+    fn unlocked_by_engine(&mut self) {
+        if let Some((wallet, password)) = self.lock.handoff_pending.take()
+            && self.meta.as_ref().is_some_and(|m| m.id == wallet)
+        {
+            self.hand_to_daemon(wallet, password);
+        }
+        self.show_unlocked();
+    }
+
+    /// The password did not open the wallet: say why, and stay locked.
+    fn unlock_failed(&mut self, error: String) {
+        self.lock.handoff_pending = None;
+        self.lock.unlocking = false;
+        self.lock.unlocking_since = None;
         self.dirty = true;
-        // Checked for a wallet that is no longer the open one: its keys are dropped here.
-        if !self.locked || self.meta.as_ref().is_none_or(|m| m.id != wallet) {
+        if !self.lock.locked {
             return;
         }
-        match answer {
-            Ok((keys, password)) => {
-                // A daemon still starting (or being replaced) is waited for in the hand-off task.
-                let starting = crate::daemon::STARTING.load(std::sync::atomic::Ordering::SeqCst);
-                if self.config.daemon_share_unlock && (starting || crate::daemon::state(&self.paths).is_some_and(|d| !d.unlocked(&wallet)))
-                {
-                    self.hand_to_daemon(wallet.clone(), password.clone());
-                }
-                self.send(Cmd::UseKeys { wallet, keys: Box::new(keys), password });
-                self.show_unlocked();
-            }
-            Err(e) => {
-                let text = friendly_error(&e);
-                self.lock_error = Some(text.clone());
-                self.log.push_front(Toast { text, level: Severity::Danger, at: Instant::now(), id: None });
-            }
-        }
+        let text = friendly_error(&error);
+        self.lock.error = Some(text.clone());
+        self.status.log.push_front(Toast { text, level: Severity::Danger, at: Instant::now(), id: None });
     }
 
     /// Give the running daemon this wallet's password, off the UI thread. The copy lives only in
@@ -819,39 +882,40 @@ impl App {
             drop(password);
             let _ = tx.send(answer);
         });
-        self.handoff = Some(rx);
+        self.lock.handoff = Some(rx);
     }
 
     /// Say how a hand-off to the daemon went.
     pub(crate) fn poll_handoff(&mut self) {
-        let Some(rx) = &self.handoff else { return };
+        let Some(rx) = &self.lock.handoff else { return };
         match rx.try_recv() {
             Ok(Ok(name)) => {
-                self.handoff = None;
+                self.lock.handoff = None;
                 self.toast(format!("{name} is unlocked in the daemon too · quai-terminal daemon lock"), false);
             }
             Ok(Err(e)) => {
-                self.handoff = None;
+                self.lock.handoff = None;
                 self.toast(e, true);
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.handoff = None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.lock.handoff = None,
         }
     }
 
     /// Leave the lock screen for the dashboard.
     pub(crate) fn show_unlocked(&mut self) {
-        self.locked = false;
-        self.unlocking = false;
-        self.unlocking_since = None;
-        self.lock_input.zeroize();
-        self.lock_error = None;
-        self.ambient = None;
+        wallet_core::diag::end("ux.unlock");
+        self.lock.locked = false;
+        self.lock.unlocking = false;
+        self.lock.unlocking_since = None;
+        self.lock.input.zeroize();
+        self.lock.error = None;
+        self.fx.ambient = None;
         if let Some(form) = self.parked.take() {
             self.modal = Modal::Form(form);
         }
-        self.unlocked_at = Some(Instant::now());
-        if let Some(title) = self.dropped_review.take() {
+        self.lock.unlocked_at = Some(Instant::now());
+        if let Some(title) = self.lock.dropped_review.take() {
             self.toast_as(
                 format!("the wallet locked with a review open ({title}); it was discarded and nothing was signed"),
                 Severity::Info,
@@ -867,19 +931,19 @@ impl App {
 
     /// Finish background wallet creation.
     pub fn poll_creation(&mut self) {
-        let Some(rx) = &self.creating else { return };
+        let Some(rx) = &self.tasks.creating else { return };
         match rx.try_recv() {
             Ok(Ok((meta, password))) => {
-                self.creating = None;
-                self.busy = None;
+                self.tasks.creating = None;
+                self.status.busy = None;
                 if self.config.default_wallet.is_none() {
                     self.config.default_wallet = Some(meta.name.clone());
                 }
                 self.config.default_network = self.network_id.clone();
                 self.config.onboarded = true;
                 self.save_config();
-                self.locked = meta.kind != WalletKind::Watch;
-                self.pending_unlock = password;
+                self.lock.locked = meta.kind != WalletKind::Watch;
+                self.lock.pending = password;
                 // The safety act is the one celebrated: a phrase verified is the only way back in.
                 let said = match (meta.kind, meta.backed_up) {
                     (WalletKind::Hd, true) => {
@@ -900,7 +964,7 @@ impl App {
                     let id = meta.id.clone();
                     self.switch_wallet(&id);
                     // They typed this password a moment ago; do not ask for it again.
-                    if let Some(p) = self.pending_unlock.take() {
+                    if let Some(p) = self.lock.pending.take() {
                         self.begin_unlock(p);
                     }
                 } else {
@@ -910,15 +974,15 @@ impl App {
                 self.dirty = true;
             }
             Ok(Err(e)) => {
-                self.creating = None;
-                self.busy = None;
+                self.tasks.creating = None;
+                self.status.busy = None;
                 self.toast(e, true);
                 self.dirty = true;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.creating = None;
-                self.busy = None;
+                self.tasks.creating = None;
+                self.status.busy = None;
             }
         }
     }
@@ -930,18 +994,18 @@ pub(crate) fn swap_receipt(op: &wallet_core::appdb::Operation) -> String {
     use wallet_core::sdk::U256;
     let d = &op.detail;
     let atoms = |v: &serde_json::Value| v.as_str().and_then(|s| U256::from_str_radix(s, 10).ok()).or_else(|| v.as_u64().map(U256::from));
-    let from_decimals = d["decimals"].as_u64().unwrap_or(18) as u8;
-    let to_decimals = d["to_decimals"].as_u64().unwrap_or(18) as u8;
-    let to = d["to_symbol"].as_str().unwrap_or("?");
+    let from_decimals = d.decimals().as_u64().unwrap_or(18) as u8;
+    let to_decimals = d.to_decimals().as_u64().unwrap_or(18) as u8;
+    let to = d.to_symbol().as_str().unwrap_or("?");
     let paid = U256::from_str_radix(&op.amount, 10).ok().map(|v| super::super::num::short(v, from_decimals, 6));
-    let pair = match (paid, atoms(&d["actual_out"])) {
+    let pair = match (paid, atoms(d.actual_out())) {
         (Some(paid), Some(out)) => {
             format!("{paid} {} → {} {to}", super::super::num::unit(&op.asset), super::super::num::short(out, to_decimals, 6))
         }
         _ => format!("{} → {to}", super::super::num::unit(&op.asset)),
     };
     let f = |v: U256| wallet_core::amount::to_f64(v, to_decimals);
-    let versus = match (atoms(&d["actual_out"]), atoms(&d["expected_out"]), atoms(&d["minimum_out"])) {
+    let versus = match (atoms(d.actual_out()), atoms(d.expected_out()), atoms(d.minimum_out())) {
         (Some(out), Some(expected), minimum) if !expected.is_zero() => {
             let delta = (f(out) - f(expected)) / f(expected) * 100.0;
             if delta >= 0.005 {
