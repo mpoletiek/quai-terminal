@@ -56,6 +56,36 @@ fn palette_reads_a_send_and_fills_the_form() {
     assert_eq!(app.palette_recent.first().map(String::as_str), Some("do:Send 5 QUAI to Alice"));
 }
 
+/// "send bob 5 trump" works for a token that is held but not in the token list: the form gets its
+/// contract, which a send takes without importing; a listed token keeps its symbol.
+#[test]
+fn palette_sends_a_held_token_by_its_contract_when_it_is_not_listed() {
+    use super::super::palette::Run;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let trump = "0x00467a4e83ec81848735c200ebbbaed6c98dd34d";
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
+        rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token(trump.into()), "TRUMP", "5", true)],
+        ..Default::default()
+    });
+    let entry = app.palette_entries("send bob 5 trump").into_iter().next().unwrap();
+    assert_eq!(entry.label, "Send 5 TRUMP to bob");
+    assert!(matches!(&entry.run, Run::Send { kind: FormKind::SendToken, token: Some(t), .. } if t == trump), "by its contract");
+    app.dash.tokens = vec![wallet_core::ops::TokenBalance {
+        token: wallet_core::appdb::Token {
+            network: "mainnet".into(),
+            address: trump.into(),
+            symbol: "TRUMP".into(),
+            name: "Trump Coin".into(),
+            decimals: 18,
+            hidden: false,
+        },
+        owner: "0x004dd9afaa2768642b5cde15c24f37bf19d842e4".into(),
+        balance: wallet_core::sdk::U256::from(5u8),
+    }];
+    let entry = app.palette_entries("send bob 5 trump").into_iter().next().unwrap();
+    assert!(matches!(&entry.run, Run::Send { token: Some(t), .. } if t == "TRUMP"), "a listed token by its symbol");
+}
+
 /// "swap 10 wqi to usdt" sets the swap card's pair and amount.
 #[test]
 fn palette_reads_a_swap() {
