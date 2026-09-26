@@ -169,8 +169,20 @@ impl App {
         }
     }
 
+    /// The orders the list shows: those of the account that acts (an order's plan is owned by
+    /// the account it trades from, which its terms must name too).
+    pub fn order_rows(&self) -> Vec<&TradePlan> {
+        let owners = self.viewed_owners();
+        self.eco
+            .feeds
+            .orders
+            .value()
+            .map(|rows| rows.iter().filter(|p| owners.iter().any(|o| o.eq_ignore_ascii_case(&p.owner))).collect())
+            .unwrap_or_default()
+    }
+
     fn order_selected(&self) -> Option<TradePlan> {
-        self.eco.feeds.orders.value().and_then(|rows| rows.get(self.nav.selected)).cloned()
+        self.order_rows().get(self.nav.selected).map(|p| (*p).clone())
     }
 
     /// Read the orders again, as they were last checked.
@@ -228,7 +240,7 @@ pub fn reachable(rows: &[TradePlan]) -> Vec<(String, String)> {
 /// Trade › Orders: every limit order, the one under the cursor in full, and what it may cost.
 pub fn draw_screen(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use super::app::Screen;
-    let rows: &[TradePlan] = app.eco.feeds.orders.value().map_or(&[], Vec::as_slice);
+    let rows: Vec<&TradePlan> = app.order_rows();
     // On a wide terminal the selected order's terms go in a column beside the list.
     let (area, column) = super::ui::with_inspector(app, area);
     let (area, column) = match column {

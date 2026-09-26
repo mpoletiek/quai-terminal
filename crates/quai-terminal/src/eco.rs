@@ -189,7 +189,11 @@ pub fn disclose(ctx: &mut Ctx, network_id: &str) {
 pub async fn pnl(ctx: &Ctx, args: PnlArgs) -> Result<()> {
     use wallet_core::pnl::{price_text, quai_text, signed_text, units_text};
     let mut s = ctx.session().await?;
-    let pnl = s.pnl().await?;
+    let only = match args.account.as_deref() {
+        Some(a) => Some(s.account(Some(a))?.address),
+        None => None,
+    };
+    let pnl = s.pnl(only.as_deref()).await?;
     if ctx.out.json() {
         ctx.out.emit("pnl", &pnl);
         return Ok(());

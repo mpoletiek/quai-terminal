@@ -396,9 +396,13 @@ fn entry<'a>(book: &'a mut HashMap<String, Position>, leg: &Leg, estimated: bool
 }
 
 impl Session {
-    /// This wallet's trading performance in QUAI (see the module notes).
-    pub async fn pnl(&mut self) -> Result<Pnl> {
-        let ops = self.app.operations(&self.network.id, 10_000)?;
+    /// This wallet's trading performance in QUAI (see the module notes): one account's, when
+    /// `only` names it, else every account's.
+    pub async fn pnl(&mut self, only: Option<&str>) -> Result<Pnl> {
+        let mut ops = self.app.operations(&self.network.id, 10_000)?;
+        if let Some(account) = only {
+            ops.retain(|o| o.account.eq_ignore_ascii_case(account));
+        }
         let wquai = self.network.wquai.clone().unwrap_or_default().to_lowercase();
         let (fills, failed_fees) = fills(&ops, &wquai);
         // Marks come from the market directory, cached like every other read of it. Without it

@@ -1517,7 +1517,7 @@ impl App {
                 help_scroll: 0,
                 help_moved: false,
                 activity_filter: ActivityFilter::All,
-                activity_account_only: false,
+                activity_account_only: true,
             },
         }
     }
@@ -1591,8 +1591,10 @@ impl App {
     /// wallet's metadata, where the command line (`account use`) and the daemon read it too.
     pub fn use_account(&mut self, index: usize) {
         let Some(account) = self.dash.accounts.get(index).cloned() else { return };
-        // Each account messages as itself: another one's conversations are not this one's.
-        if self.dash.active_account().is_some_and(|a| !a.address.eq_ignore_ascii_case(&account.address)) {
+        // Each account messages as itself, and holds what it holds: another one's conversations
+        // and holdings are not this one's.
+        let changed = self.dash.active_account().is_some_and(|a| !a.address.eq_ignore_ascii_case(&account.address));
+        if changed {
             self.forget_private();
         }
         for meta in [self.dash.meta.as_mut(), self.meta.as_mut()].into_iter().flatten() {
@@ -1600,6 +1602,9 @@ impl App {
         }
         self.send(Cmd::UseAccount(account.address.clone()));
         self.toast(format!("{} acts now", account.label), false);
+        if changed {
+            self.reload_viewed_holdings();
+        }
         // Cards quote for their owner, so they are asked again for this one.
         self.on_view_opened();
     }

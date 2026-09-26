@@ -259,6 +259,7 @@ mod tests {
                     18,
                     wallet_core::sdk::U256::from(10u64).pow(wallet_core::sdk::U256::from(30u8)),
                 )],
+                qi_shared: true,
             })),
             ClientMsg::Data(DataCmd::Configure {
                 network: wallet_core::network::NetworkProfile::builtins().remove(0),

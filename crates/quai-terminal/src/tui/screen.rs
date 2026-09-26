@@ -215,7 +215,7 @@ impl ScreenView for Orders {
         true
     }
     fn list_len(&self, app: &App) -> usize {
-        app.eco.feeds.orders.value().map_or(0, Vec::len)
+        app.order_rows().len()
     }
     fn on_open(&self, app: &mut App) {
         app.orders_list();

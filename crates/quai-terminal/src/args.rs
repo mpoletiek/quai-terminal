@@ -524,6 +524,9 @@ pub struct PortfolioArgs {
 
 #[derive(Args, Debug)]
 pub struct PnlArgs {
+    /// One account's trades (label, address or number); every account's by default.
+    #[arg(long)]
+    pub account: Option<String>,
     /// Also list the trades behind it, newest first.
     #[arg(long)]
     pub trades: bool,

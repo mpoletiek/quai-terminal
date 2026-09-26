@@ -357,7 +357,7 @@ const ACTIVITY: ViewKeys = ViewKeys {
     sheet: &[
         it('u', "speed up", Run("speedup")),
         it('p', "resume the trade", Act(App::resume_trade_plan)),
-        it('o', "only the account that acts, or all (.)", Act(App::toggle_activity_account)),
+        it('o', "every account, or the one that acts again (.)", Act(App::toggle_activity_account)),
     ],
 };
 

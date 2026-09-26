@@ -108,12 +108,15 @@ impl App {
         }
     }
 
-    /// Exact balances the portfolio starts from, taken from the wallet worker's dashboard.
+    /// Exact balances the portfolio starts from, taken from the wallet worker's dashboard: the
+    /// account that acts, not the wallet's sum. Qi belongs to no Quai account, so it is the
+    /// wallet's on every account, and said to be.
     pub fn known_from_dash(&self) -> Known {
-        let owners: Vec<String> = self.dash.accounts.iter().map(|a| a.address.clone()).collect();
-        let quai = self.dash.accounts.iter().fold(U256::ZERO, |s, a| s.saturating_add(a.balance));
+        let owners = self.viewed_owners();
+        let viewed = |address: &str| owners.iter().any(|o| o.eq_ignore_ascii_case(address));
+        let quai = self.dash.accounts.iter().filter(|a| viewed(&a.address)).fold(U256::ZERO, |s, a| s.saturating_add(a.balance));
         let mut tokens: std::collections::BTreeMap<String, (String, String, u8, U256)> = std::collections::BTreeMap::new();
-        for t in &self.dash.tokens {
+        for t in self.dash.tokens.iter().filter(|t| viewed(&t.owner)) {
             let e = tokens.entry(t.token.address.to_lowercase()).or_insert((
                 t.token.symbol.clone(),
                 t.token.name.clone(),
@@ -123,6 +126,7 @@ impl App {
             e.3 = e.3.saturating_add(t.balance);
         }
         Known {
+            qi_shared: self.dash.accounts.len() > 1,
             owners,
             quai,
             qi: self.dash.qi.as_ref().map(|q| q.balance.total),
@@ -136,8 +140,14 @@ impl App {
             return;
         }
         let known = self.known_from_dash();
-        let signature =
-            format!("{}:{}:{:?}:{:?}", self.dash.network_id, known.quai, known.qi, known.tokens.iter().map(|t| t.4).collect::<Vec<_>>());
+        let signature = format!(
+            "{}:{:?}:{}:{:?}:{:?}",
+            self.dash.network_id,
+            known.owners,
+            known.quai,
+            known.qi,
+            known.tokens.iter().map(|t| t.4).collect::<Vec<_>>()
+        );
         // Balances that changed are a new question; otherwise prices go stale by the clock.
         let changed = self.eco.feeds.portfolio_signature.as_deref() != Some(signature.as_str());
         if force || changed {
@@ -270,6 +280,36 @@ impl App {
         // The launch zone brings its tokens' logos, which Markets uses for graduated and on-curve
         // tokens too: loaded now, both screens open with their pictures.
         self.load_launches(false);
+    }
+
+    /// The accounts the holdings screens show (portfolio, NFTs, pools, PnL, orders, activity):
+    /// the one that acts. Every account's, only before the dashboard says which that is.
+    pub fn viewed_owners(&self) -> Vec<String> {
+        match self.dash.active_account() {
+            Some(a) => vec![a.address.clone()],
+            None => self.owner_addresses(),
+        }
+    }
+
+    /// Reload what the holdings screens show for the account that acts now. What the last one
+    /// held is dropped first, so nothing of it is shown under the new name.
+    pub(crate) fn reload_viewed_holdings(&mut self) {
+        self.eco.feeds.portfolio.clear();
+        self.eco.feeds.portfolio_signature = None;
+        self.eco.feeds.pnl.clear();
+        self.eco.nft.nfts.clear();
+        self.eco.nft.mine.clear();
+        self.eco.pools_view.positions.clear();
+        self.nav.selected = 0;
+        self.maybe_refresh_portfolio(true);
+        if self.config.features.nfts {
+            self.load_nfts(false);
+            self.load_my_listings();
+        }
+        if self.config.features.trading {
+            self.tick_pools();
+            self.load_pnl(true);
+        }
     }
 
     /// The wallet's Quai addresses: from the dashboard once it has loaded, else from the wallet

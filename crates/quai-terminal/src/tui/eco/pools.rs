@@ -18,7 +18,7 @@ impl App {
         // when a launch-zone gauge was paying rewards on it — CHEEZ/QUAI being the case that found
         // this. A curve holds no LP at all, so it stays out.
         let pools: Vec<_> = pools.iter().filter(|p| p.venue.routable()).cloned().collect();
-        let owners = self.owner_addresses();
+        let owners = self.viewed_owners();
         if owners.is_empty() {
             return;
         }
