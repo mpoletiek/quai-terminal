@@ -507,7 +507,7 @@ impl App {
             ListId::Screen(Screen::Launches, _) => self.launch_rows().get(index).map(|l| l.token.clone()),
             ListId::Screen(Screen::Explore, _) => self.eco.collections_filtered().get(index).map(|c| c.address.clone()),
             ListId::Screen(Screen::Listings, _) => self.eco.visible_listings().get(index).map(|l| format!("{}:{}", l.contract, l.token_id)),
-            ListId::Screen(Screen::Orders, _) => self.eco.feeds.orders.value().and_then(|o| o.get(index)).map(|p| p.id.clone()),
+            ListId::Screen(Screen::Orders, _) => self.order_rows().get(index).map(|p| p.id.clone()),
             ListId::Palette => match &self.modal {
                 Modal::Palette { query, .. } => self.palette_entries(query).get(index).map(|e| e.label.clone()),
                 _ => None,

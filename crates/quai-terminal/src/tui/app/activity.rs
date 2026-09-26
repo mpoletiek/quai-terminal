@@ -32,14 +32,13 @@ impl App {
         rows
     }
 
-    /// The account Activity is narrowed to, when it is (`.`), lowercase.
+    /// The account activity is narrowed to (the one that acts), unless `.` asked for every
+    /// account, lowercase. Everywhere activity is listed, Home included.
     fn activity_only(&self) -> Option<String> {
-        (self.nav.activity_account_only && self.nav.screen == Screen::Activity)
-            .then(|| self.dash.active_account().map(|a| a.address.to_lowercase()))
-            .flatten()
+        self.nav.activity_account_only.then(|| self.dash.active_account().map(|a| a.address.to_lowercase())).flatten()
     }
 
-    /// `.` on Activity: only the account that acts, or every account again.
+    /// `.` on Activity: every account, or only the account that acts again.
     pub fn toggle_activity_account(&mut self) {
         self.nav.activity_account_only = !self.nav.activity_account_only;
         self.nav.selected = 0;
@@ -52,7 +51,11 @@ impl App {
 
     pub(crate) fn build_activity_rows(&self, filter: ActivityFilter) -> Vec<(u64, bool, usize)> {
         let only = self.activity_only();
-        let mine = |address: &str| only.as_deref().is_none_or(|a| address.eq_ignore_ascii_case(a));
+        // Qi belongs to the wallet, not to a Quai account: its operations and addresses show
+        // whichever account acts.
+        let accounts: Vec<String> = self.dash.accounts.iter().map(|a| a.address.to_lowercase()).collect();
+        let mine =
+            |address: &str| only.as_deref().is_none_or(|a| address.eq_ignore_ascii_case(a)) || !accounts.contains(&address.to_lowercase());
         let mut rows: Vec<(u64, bool, usize)> = self
             .dash
             .ops

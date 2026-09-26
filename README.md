@@ -133,7 +133,7 @@ Every screen uses the same keys for the same things. `space` opens the actions f
 | `/` / `,` / `.` / `f` | search / sort / view / flip |
 | `R` / `ctrl-r` | reload / full refresh |
 | `N` / `W` / `$` | notifications / wallets / hide or show the balance |
-| `@` | the account that acts: cards, sends and trades start from it (`account use N` on the command line) |
+| `@` | the account that acts: cards, sends and trades start from it, and Home's portfolio, NFTs, Pools, Orders, PnL and Activity show only what it holds and did (`.` on Activity shows every account's). Qi belongs to the whole wallet and shows with every account. `account use N` on the command line |
 | `ctrl-l` | lock |
 | `?` | the rest of this screen's keys, and what its words mean (`g` for the whole glossary) |
 | `q` | quit |

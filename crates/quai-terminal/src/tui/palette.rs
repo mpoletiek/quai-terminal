@@ -280,7 +280,7 @@ impl App {
                 let to = self.palette_recipient(&who);
                 let (kind, token, label_asset) = match asset.and_then(|a| self.palette_send_asset(a)) {
                     Some(SendAsset::Qi) => (FormKind::SendQi, None, "Qi".to_string()),
-                    Some(SendAsset::Token(sym)) => (FormKind::SendToken, Some(sym.clone()), sym),
+                    Some(SendAsset::Token(selector, sym)) => (FormKind::SendToken, Some(selector), sym),
                     _ => (FormKind::SendQuai, None, "QUAI".to_string()),
                 };
                 let what = if amount.is_empty() { label_asset.clone() } else { format!("{amount} {label_asset}") };
@@ -335,9 +335,15 @@ impl App {
         match word {
             "quai" => Some(SendAsset::Quai),
             "qi" => Some(SendAsset::Qi),
+            // Anything held: by its symbol when it is in the token list, else by its contract, which
+            // a send takes without importing.
             _ => self.eco.feeds.portfolio.value()?.rows.iter().find_map(|r| {
-                (matches!(r.key, wallet_core::portfolio::AssetKey::Token(_)) && r.symbol.eq_ignore_ascii_case(word))
-                    .then(|| SendAsset::Token(r.symbol.clone()))
+                let wallet_core::portfolio::AssetKey::Token(address) = &r.key else { return None };
+                if !r.symbol.eq_ignore_ascii_case(word) {
+                    return None;
+                }
+                let listed = self.dash.tokens.iter().any(|t| t.token.address.eq_ignore_ascii_case(address));
+                Some(SendAsset::Token(if listed { r.symbol.clone() } else { address.clone() }, r.symbol.clone()))
             }),
         }
     }
@@ -455,7 +461,8 @@ impl App {
 enum SendAsset {
     Quai,
     Qi,
-    Token(String),
+    /// What the form's token field takes (a listed symbol, or a contract), and how it reads.
+    Token(String, String),
 }
 
 fn action_entry(a: &'static Action) -> Entry {

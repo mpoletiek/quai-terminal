@@ -3,6 +3,27 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
+## What's new in 0.1.0-alpha.12
+
+- **Contract calls no longer run out of gas where the node said they would not.** On Quai, a
+  transaction pays more for each contract and storage slot it touches without declaring it in an
+  access list, and the node's own gas estimate leaves that out. Token transfers, approvals, NFT
+  transfers and other calls were sent without a list, so a token whose transfer reaches a second
+  contract could fail on chain, using all its gas, while every estimate said it would succeed.
+  Every contract call is now signed with the list the node suggests (swaps, liquidity, curves and
+  the marketplace already were). A token transfer that had failed this way has since gone through
+  on mainnet with this change.
+- **Send a token you hold without importing it first.** Give its contract address: its name and
+  decimals are read from the contract, and the review says it is not in your token list. The
+  command palette's `send bob 5 trump` does this for a held token that is not in the list.
+- **Every holdings screen shows the account you are using.** Home's portfolio, NFTs, Pools,
+  Orders, PnL and Activity follow the account chosen with `@`, not the whole wallet (`.` on
+  Activity still shows every account's; `pnl --account` on the command line). Qi belongs to the
+  whole wallet, so it shows with every account and says so. Every limit order is still watched,
+  whichever account it is for.
+
+0.1.0-alpha.11 is below.
+
 ## What's new in 0.1.0-alpha.11
 
 - **Private messages go from the account you are using.** There is no messaging account to set up
@@ -26,7 +47,7 @@ in it" below before doing anything with real money.
 - **Picking a trade in Markets' flow charts that trade's pair.** With the pairs list sorted, or a
   pair watched, it charted a different one.
 
-Everything else is 0.1.0-alpha.10, below.
+0.1.0-alpha.10 is below.
 
 ## What's new in 0.1.0-alpha.10
 

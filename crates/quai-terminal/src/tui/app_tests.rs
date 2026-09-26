@@ -56,6 +56,36 @@ fn palette_reads_a_send_and_fills_the_form() {
     assert_eq!(app.palette_recent.first().map(String::as_str), Some("do:Send 5 QUAI to Alice"));
 }
 
+/// "send bob 5 trump" works for a token that is held but not in the token list: the form gets its
+/// contract, which a send takes without importing; a listed token keeps its symbol.
+#[test]
+fn palette_sends_a_held_token_by_its_contract_when_it_is_not_listed() {
+    use super::super::palette::Run;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let trump = "0x00467a4e83ec81848735c200ebbbaed6c98dd34d";
+    app.eco.feeds.portfolio.set(wallet_core::portfolio::Portfolio {
+        rows: vec![asset_row(wallet_core::portfolio::AssetKey::Token(trump.into()), "TRUMP", "5", true)],
+        ..Default::default()
+    });
+    let entry = app.palette_entries("send bob 5 trump").into_iter().next().unwrap();
+    assert_eq!(entry.label, "Send 5 TRUMP to bob");
+    assert!(matches!(&entry.run, Run::Send { kind: FormKind::SendToken, token: Some(t), .. } if t == trump), "by its contract");
+    app.dash.tokens = vec![wallet_core::ops::TokenBalance {
+        token: wallet_core::appdb::Token {
+            network: "mainnet".into(),
+            address: trump.into(),
+            symbol: "TRUMP".into(),
+            name: "Trump Coin".into(),
+            decimals: 18,
+            hidden: false,
+        },
+        owner: "0x004dd9afaa2768642b5cde15c24f37bf19d842e4".into(),
+        balance: wallet_core::sdk::U256::from(5u8),
+    }];
+    let entry = app.palette_entries("send bob 5 trump").into_iter().next().unwrap();
+    assert!(matches!(&entry.run, Run::Send { token: Some(t), .. } if t == "TRUMP"), "a listed token by its symbol");
+}
+
 /// "swap 10 wqi to usdt" sets the swap card's pair and amount.
 #[test]
 fn palette_reads_a_swap() {
@@ -1466,21 +1496,30 @@ fn the_account_that_acts_is_chosen_with_at_and_followed_everywhere() {
     press(&mut app, KeyCode::Char('h'));
     let got = prepared.recv_timeout(std::time::Duration::from_secs(5)).expect("a harvest");
     assert!(matches!(&got, Prepare::Harvest { account: Some(a), .. } if a == two), "prepared from account 2: {got:?}");
-    // Activity narrows to it, and back.
+    // Activity is its own, with the wallet's Qi; `.` shows every account's, and back.
     app.dash.ops = vec![
         op("a1", "send_quai", wallet_core::appdb::OpStatus::Confirmed),
         op("a2", "send_quai", wallet_core::appdb::OpStatus::Confirmed),
+        op("q1", "send_qi", wallet_core::appdb::OpStatus::Confirmed),
     ];
     app.dash.ops[0].account = one.into();
     app.dash.ops[1].account = two.into();
+    app.dash.ops[2].account = "qi".into();
     app.switch(Screen::Activity);
-    assert_eq!(app.activity_rows().len(), 2);
+    let ids = |app: &App| app.activity_rows().iter().map(|r| app.dash.ops[r.2].id.clone()).collect::<Vec<_>>();
+    let mut shown = ids(&app);
+    shown.sort();
+    assert_eq!(shown, ["a2", "q1"], "account 2's, and the wallet's Qi");
     app.toggle_activity_account();
-    let rows = app.activity_rows();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(app.dash.ops[rows[0].2].id, "a2");
+    assert_eq!(app.activity_rows().len(), 3, "every account");
     app.toggle_activity_account();
     assert_eq!(app.activity_rows().len(), 2);
+    // The portfolio starts from its balances alone; the wallet's Qi says it is the wallet's.
+    app.dash.accounts[0].balance = U256::from(700u64);
+    app.dash.accounts[1].balance = U256::from(5u64);
+    let known = app.known_from_dash();
+    assert_eq!((known.owners.as_slice(), known.quai), ([two.to_string()].as_slice(), U256::from(5u64)));
+    assert!(known.qi_shared);
 }
 
 /// h, s and e are also the app's left, send and edit; on Pools they must still act on the
@@ -4492,6 +4531,37 @@ fn order_plan(app: &App, state: wallet_core::orders::State, notified: Option<u64
     };
     wallet_core::plans::TradePlan::new(network, account, "limit trigger".into(), serde_json::json!({"client": "order", "order": record}))
         .unwrap()
+}
+
+/// Orders lists the account that acts; another account's orders are still watched.
+#[test]
+fn orders_list_the_account_that_acts() {
+    use wallet_core::orders::State;
+    let (_dir, mut app) = test_app(WalletKind::Hd);
+    let (one, two) = ("0x002360bc8e2a359be7335b06de43f1c7f040f15a", "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5");
+    let account = |label: &str, address: &str| wallet_core::session::AccountBalance {
+        address: address.into(),
+        label: label.into(),
+        hd_index: None,
+        balance: U256::ZERO,
+        locked: U256::ZERO,
+        nonce: 0,
+    };
+    app.dash.accounts = vec![account("Main", one), account("Trading", two)];
+    app.dash.meta = app.meta.clone();
+    let mine = order_plan(&app, State::Armed, None);
+    let mut theirs = order_plan(&app, State::Armed, None);
+    let mut record = wallet_core::orders::details(&theirs).unwrap();
+    record.spec.account = two.into();
+    theirs.intent["order"] = serde_json::to_value(&record).unwrap();
+    theirs.owner = two.into();
+    assert!(wallet_core::orders::details(&theirs).is_ok(), "a well-formed order of the second account");
+    app.eco.feeds.orders.settle(Ok(vec![mine.clone(), theirs.clone()]));
+    let ids = |app: &App| app.order_rows().iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&app), std::slice::from_ref(&mine.id), "the first account acts");
+    app.use_account(1);
+    assert_eq!(ids(&app), std::slice::from_ref(&theirs.id), "then the second's");
+    assert_eq!(app.eco.feeds.orders.value().map(Vec::len), Some(2), "both are still watched");
 }
 
 /// Reachable is said on screen whoever found it; the desktop hears it once. The terminal puts its

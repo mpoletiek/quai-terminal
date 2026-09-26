@@ -163,6 +163,9 @@ pub struct Known {
     /// Tokens imported locally (address, symbol, name, decimals) with exact balances summed.
     #[serde(with = "known_tokens")]
     pub tokens: Vec<(String, String, String, u8, U256)>,
+    /// `owners` are some of the wallet's accounts while Qi is the whole wallet's: its row says so.
+    #[serde(default)]
+    pub qi_shared: bool,
 }
 
 /// [`Known::tokens`] with each balance as a decimal string.
@@ -306,7 +309,7 @@ pub async fn build(ctx: &DataCtx, known: &Known) -> Result<Portfolio> {
         p.rows.push(row(
             AssetKey::Qi,
             "Qi",
-            "Qi",
+            if known.qi_shared { "Qi · whole wallet" } else { "Qi" },
             qits,
             QI_DECIMALS,
             true,
@@ -574,6 +577,7 @@ impl crate::session::Session {
             quai,
             qi,
             tokens: tokens.into_iter().map(|(a, (s, n, d, b))| (a, s, n, d, b)).collect(),
+            qi_shared: false,
         })
     }
 }
@@ -630,9 +634,12 @@ mod tests {
             quai: U256::from(5u128 * 10u128.pow(18)),
             qi: Some(U256::from(1500)),
             tokens: vec![("0x002b2596ecf05c93a31ff916e8b456df6c77c750".into(), "WQI".into(), "Wrapped Qi".into(), 18, U256::from(7))],
+            qi_shared: true,
         };
         let p = build(&ctx, &known).await.unwrap();
         assert_eq!(p.rows.len(), 3);
+        let qi = p.rows.iter().find(|r| r.key == AssetKey::Qi).unwrap();
+        assert_eq!(qi.name, "Qi · whole wallet", "one account's portfolio says whose Qi it is");
         assert_eq!(p.total_usd, 0.0);
         assert_eq!(p.unpriced, 3);
         assert!(p.history.is_empty() && p.prices.is_none());

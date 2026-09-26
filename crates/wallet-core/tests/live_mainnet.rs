@@ -644,7 +644,7 @@ async fn portfolio_and_images_from_the_explorer() {
     let owner = address.to_string();
     let owner = owner.as_str();
     let quai = ctx.node.provider.balance(address, BlockTag::Latest).await.unwrap();
-    let known = Known { owners: vec![owner.into()], quai, qi: None, tokens: vec![] };
+    let known = Known { owners: vec![owner.into()], quai, qi: None, tokens: vec![], qi_shared: false };
     let p = build(&ctx, &known).await.unwrap();
     for r in &p.rows {
         eprintln!(

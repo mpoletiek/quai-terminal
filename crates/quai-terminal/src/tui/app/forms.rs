@@ -97,7 +97,7 @@ impl App {
                 "Send token",
                 vec![
                     account("From"),
-                    Field::new("Token", "symbol or contract"),
+                    Field::new("Token", "symbol in your list, or any contract address"),
                     Field::new("To", "address or contact name"),
                     Field::new("Amount", "token units").amount("TOKEN"),
                 ],
@@ -106,7 +106,7 @@ impl App {
             FormKind::Approve => (
                 "Approve spender",
                 vec![
-                    Field::new("Token", "symbol or contract"),
+                    Field::new("Token", "symbol in your list, or any contract address"),
                     Field::new("Spender", "contract address"),
                     Field::new("Amount", "exact cap · type `unlimited` for no cap · 0 revokes"),
                 ],

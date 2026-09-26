@@ -1939,7 +1939,11 @@ async fn run(
                 let result = session.quote_qi_special_max(wrapping, account.as_deref(), slippage, None).await.map_err(|e| e.to_string());
                 send(Ev::QiMax { key, result });
             }
-            Cmd::Pnl => send(Ev::Pnl(session.pnl().await.map(Box::new).map_err(|e| e.to_string()))),
+            // The account that acts: PnL follows it as every holdings screen does.
+            Cmd::Pnl => {
+                let only = session.account(None).ok().map(|a| a.address);
+                send(Ev::Pnl(session.pnl(only.as_deref()).await.map(Box::new).map_err(|e| e.to_string())))
+            }
             Cmd::SplitQuote { key, account, from, to, amount, slippage } => {
                 let result = session
                     .swap_split_quote(account.as_deref(), &from, &to, &amount, slippage, 20)

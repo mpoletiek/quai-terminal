@@ -419,6 +419,14 @@ impl Session {
 
     /// Import an ERC-20 token by contract address, reading its metadata.
     pub async fn import_token(&mut self, address: &str) -> Result<Token> {
+        let token = self.read_token(address).await?;
+        self.app.upsert_token(&token)?;
+        self.app.token(&self.network.id, &token.address)
+    }
+
+    /// An ERC-20 token's metadata read from its contract, without adding it to the list. Its
+    /// decimals are held to the network RPC's answer, as an import holds them.
+    pub async fn read_token(&self, address: &str) -> Result<Token> {
         let contract: QuaiAddress =
             address.trim().parse().map_err(|_| CoreError::Invalid("token address must be a Cyprus-1 Quai address".into()))?;
         let caller = self.caller()?;
@@ -454,15 +462,13 @@ impl Session {
                 Some(theirs) if theirs == decimals => {}
                 Some(theirs) => {
                     return Err(CoreError::Rejected(format!(
-                        "your monitoring node says this token has {decimals} decimals and {rpc} says {theirs}; refusing to import it"
+                        "your monitoring node says this token has {decimals} decimals and {rpc} says {theirs}; refusing to use it"
                     )));
                 }
                 None => return Err(CoreError::Network(format!("could not confirm this token's decimals with {rpc}; try again"))),
             }
         }
-        let token = Token { network: self.network.id.clone(), address: contract.to_string(), symbol, name, decimals, hidden: false };
-        self.app.upsert_token(&token)?;
-        self.app.token(&self.network.id, &token.address)
+        Ok(Token { network: self.network.id.clone(), address: contract.to_string().to_lowercase(), symbol, name, decimals, hidden: false })
     }
 
     /// Ensure the default wrapped tokens are listed for this network.
@@ -649,12 +655,31 @@ impl Session {
         max_fee: Option<&str>,
     ) -> Result<Review> {
         self.ensure_default_tokens()?;
-        let token = self.app.token(&self.network.id, token)?;
+        // A token in the list by symbol or address; one that is not, by its contract address:
+        // holding a token is reason enough to send it, and importing is only for the list.
+        let (token, listed) = match self.app.token(&self.network.id, token) {
+            Ok(t) => (t, true),
+            Err(CoreError::NotFound(_)) if token.trim().starts_with("0x") => (self.read_token(token).await?, false),
+            Err(CoreError::NotFound(_)) => {
+                return Err(CoreError::NotFound(format!(
+                    "`{}` is not in your token list: give its contract address (0x…) to send it",
+                    token.trim()
+                )));
+            }
+            Err(e) => return Err(e),
+        };
         let from = self.account(from)?;
         let recipient = match self.resolve_recipient(to)? {
             Recipient::Quai(a) => a,
             _ => return Err(CoreError::Invalid("token recipients must be Quai addresses".into())),
         };
+        let mut warnings = Vec::new();
+        if !listed {
+            warnings.push(format!(
+                "{} is not in your token list: its name and symbol are whatever its contract says, so check the contract address is the one you mean",
+                token.symbol
+            ));
+        }
         let atoms = amount::parse_amount(value, token.decimals)?;
         let contract: QuaiAddress = token.address.parse().map_err(|_| CoreError::Storage("bad token".into()))?;
         let erc = Erc20::new(contract, &self.node.provider)?;
@@ -674,7 +699,7 @@ impl Session {
             decimals: token.decimals,
             counterparty: recipient.to_string(),
             fields: vec![field("Token contract", token.address.clone()), field("Call", format!("transfer({recipient}, {atoms})"))],
-            warnings: vec![],
+            warnings,
             detail: serde_json::json!({"token": token.address, "decimals": token.decimals}).into(),
             max_gas: 200_000,
             max_fee: self.parse_fee_cap(max_fee, QUAI_DECIMALS)?,
@@ -2461,6 +2486,27 @@ mod tests {
                 Err(CoreError::Rejected(text)) => assert!(!imports && text.contains("18 decimals") && text.contains("says 6"), "{text}"),
                 Err(e) => panic!("{e}"),
             }
+        }
+    }
+
+    /// A token can be read for a send without joining the list, and a send names a token that is
+    /// not in the list by its contract: a symbol alone says nothing about which contract it is.
+    #[tokio::test]
+    async fn an_unlisted_token_is_read_without_joining_the_list() {
+        use crate::anchor::tests::{Kind, network, serve};
+        let dir = tempfile::tempdir().unwrap();
+        let registry = crate::registry::Registry::new(crate::paths::Paths::resolve(Some(dir.path().to_path_buf())).unwrap());
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let meta = registry.create_hd("w", phrase, "english", "", "password123", true).unwrap();
+        let (node, _) = serve(Kind::Honest).await;
+        let mut session = Session::open(registry, crate::config::AppConfig::default(), meta, network(&node)).unwrap();
+        let token = "0x0000000000000000000000000000000000000abc";
+        let read = session.read_token(token).await.unwrap();
+        assert_eq!((read.address.as_str(), read.decimals), (token, 18));
+        assert!(session.app.token(&session.network.id, token).is_err(), "reading is not importing");
+        match session.review_send_token(None, "TRUMP", "0x002360bc8e2a359be7335b06de43f1c7f040f15a", "1", None).await {
+            Err(CoreError::NotFound(text)) => assert!(text.contains("contract address"), "{text}"),
+            other => panic!("an unlisted symbol asks for the contract: {other:?}"),
         }
     }
 

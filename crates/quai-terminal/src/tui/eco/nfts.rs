@@ -5,7 +5,7 @@ use super::*;
 impl App {
     /// Fetch this wallet's own listings.
     pub fn load_my_listings(&mut self) {
-        let sellers = self.owner_addresses();
+        let sellers = self.viewed_owners();
         if !sellers.is_empty() {
             self.send_data(DataCmd::MyListings { sellers });
         }
@@ -41,7 +41,7 @@ impl App {
     }
 
     pub fn load_nfts(&mut self, refresh: bool) {
-        let owners = self.owner_addresses();
+        let owners = self.viewed_owners();
         if owners.is_empty() || !self.config.features.nfts {
             return;
         }
