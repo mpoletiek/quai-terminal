@@ -419,6 +419,11 @@ pub(crate) mod tests {
             }
             // Any token's `balanceOf`: 1000 atoms.
             "quai_call" => json!(format!("0x{:064x}", TOKEN_BALANCE)),
+            // Every call touches WQUAI and one of its slots.
+            "quai_createAccessList" => json!({
+                "accessList": [{"address": WQUAI, "storageKeys": [format!("0x{:064x}", 1)]}],
+                "gasUsed": "0x5208",
+            }),
             other => panic!("unexpected {other}"),
         };
         json!({"jsonrpc": "2.0", "id": call["id"], "result": result})
@@ -550,5 +555,29 @@ pub(crate) mod tests {
         assert_eq!(field, entry + U256::from(1));
         let word = U256::from_str_radix("39d1b1275c2329e3c54164f52674936fcb8a40", 16).unwrap();
         assert_eq!(word_address(word), "0x0039d1b1275c2329e3c54164f52674936fcb8a40");
+    }
+
+    /// A contract call is signed with the node's access list, so go-quai never charges it for
+    /// accounts it did not declare (what ran a proxy token's transfers out of gas on chain). A plain
+    /// transfer needs none, and a call that already names its list keeps it: neither asks the node.
+    #[tokio::test]
+    async fn contract_calls_get_the_nodes_access_list() {
+        use quai_sdk::accounts::AccountIntent;
+        let (url, log) = serve(Kind::Honest).await;
+        let node = network(&url).node().unwrap();
+        let from: quai_sdk::QuaiAddress = PROVEN_OWNER.parse().unwrap();
+        let to: quai_sdk::QuaiAddress = WQUAI.parse().unwrap();
+        let call =
+            AccountIntent::new(to, quai_sdk::U256::ZERO).with_data(quai_sdk::provider::RpcData::new(vec![0xa9, 0x05, 0x9c, 0xbb]).unwrap());
+        let listed = crate::data::intent_with_access_list(&node.provider, from, call.clone()).await.unwrap();
+        assert_eq!(listed.access_list.len(), 1);
+        assert_eq!(listed.access_list[0].storage_keys.len(), 1);
+        let asked = || log.lock().unwrap().iter().filter(|c| c.contains("quai_createAccessList")).count();
+        assert_eq!(asked(), 1);
+        let transfer = AccountIntent::new(to, quai_sdk::U256::from(1u8));
+        assert!(crate::data::intent_with_access_list(&node.provider, from, transfer).await.unwrap().access_list.is_empty());
+        let kept = crate::data::intent_with_access_list(&node.provider, from, listed.clone()).await.unwrap();
+        assert_eq!(kept.access_list, listed.access_list);
+        assert_eq!(asked(), 1, "neither a transfer nor a call with its own list asks the node");
     }
 }

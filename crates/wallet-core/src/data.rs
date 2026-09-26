@@ -458,6 +458,28 @@ pub async fn with_access_list<T: quai_sdk::rpc::Transport>(
     Ok(call.with_access_list(list)?)
 }
 
+/// [`with_access_list`] for any account intent: the node's access list for a call that carries
+/// none. A call that names one already keeps it.
+pub async fn intent_with_access_list<T: quai_sdk::rpc::Transport>(
+    provider: &quai_sdk::Provider<T>,
+    from: QuaiAddress,
+    mut intent: quai_sdk::accounts::AccountIntent,
+) -> Result<quai_sdk::accounts::AccountIntent> {
+    if intent.data.bytes().is_empty() || !intent.access_list.is_empty() {
+        return Ok(intent);
+    }
+    let mut request = quai_sdk::provider::CallRequest::new(from, intent.to);
+    request.value = Some(intent.value);
+    request.input = intent.data.clone();
+    let estimate = provider.create_access_list(&request, BlockTag::Latest).await?;
+    intent.access_list = estimate
+        .access_list
+        .into_iter()
+        .map(|item| quai_sdk::consensus::AccessTuple { address: item.address, storage_keys: item.storage_keys })
+        .collect();
+    Ok(intent)
+}
+
 /// How long a verified bytecode pin is trusted before it is read from the chain again, on a
 /// display path. A review path ([`Trust::FirstHand`]) never uses the memo at all.
 pub const PIN_RECHECK_SECS: u64 = 86_400;

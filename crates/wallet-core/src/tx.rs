@@ -494,6 +494,16 @@ impl Session {
             first.append(&mut req.warnings);
             req.warnings = first;
         }
+        // Every contract call carries the node's access list. go-quai charges accounts and slots a
+        // transaction touches without declaring them more than its own simulation and estimate
+        // do, so a call to a proxy token (which reaches its implementation) ran out of gas on
+        // chain while every simulation passed. Without a list the SDK's estimate still decides.
+        let sender: quai_sdk::QuaiAddress =
+            req.from.address.parse().map_err(|_| CoreError::Invalid(format!("not a Quai account: {}", req.from.address)))?;
+        match crate::data::intent_with_access_list(&self.node.provider, sender, req.intent.clone()).await {
+            Ok(intent) => req.intent = intent,
+            Err(e) => crate::ops::trace(format!("access list for {}: {e}", req.kind)),
+        }
         let gap = self.nonce_gaps(&req.from).await?.first().copied();
         let id = match gap {
             Some((_, gap_id)) => gap_id,
