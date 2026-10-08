@@ -2105,3 +2105,25 @@ async fn private_messages_speak_to_the_mainnet_board() {
     let logs = ctx.node.provider.logs_served_through(&filter).await.expect("a full page is served");
     eprintln!("kind-3 logs in the last {} blocks: {}", wallet_core::messaging::service::LOG_PAGE, logs.len());
 }
+
+/// The Chain screen's headers: a batch of the newest blocks parses whole, heights run without a
+/// gap, each block's parent is the block before it, and the prime and region numbers never go
+/// backwards up the zone chain.
+#[tokio::test]
+#[ignore = "network"]
+async fn chain_heads_arrive_whole_and_linked() {
+    let ctx = mainnet();
+    let node = ctx.network.node().unwrap();
+    let blocks = wallet_core::blocks::since(&node, None, 24).await.unwrap();
+    assert_eq!(blocks.len(), 24, "every block parsed");
+    for pair in blocks.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        assert_eq!(b.height, a.height + 1);
+        assert_eq!(b.parent, a.hash, "#{} follows #{}", b.height, a.height);
+        assert!(b.prime >= a.prime && b.region >= a.region);
+        assert!(b.order <= 2);
+    }
+    let newest = blocks.last().unwrap().height;
+    let more = wallet_core::blocks::since(&node, Some(newest - 2), 24).await.unwrap();
+    assert!(more.first().is_some_and(|b| b.height == newest - 1), "a poll fills from the gap");
+}

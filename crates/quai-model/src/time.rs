@@ -8,6 +8,14 @@ pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// [`now`] with its fraction of a second, for a clock read in tenths. A frozen clock has none.
+pub fn now_f64() -> f64 {
+    if let Some(at) = FROZEN.with(std::cell::Cell::get) {
+        return at as f64;
+    }
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
 thread_local! {
     static FROZEN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }

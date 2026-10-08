@@ -3,6 +3,7 @@
 pub mod alerts;
 pub mod anchor;
 pub mod appdb;
+pub mod blocks;
 pub mod capabilities;
 pub mod chainstats;
 pub mod chat;

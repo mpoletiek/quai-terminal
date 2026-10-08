@@ -164,7 +164,7 @@ impl WalletMeta {
     }
 }
 
-pub use quai_model::time::{freeze_clock, now};
+pub use quai_model::time::{freeze_clock, now, now_f64};
 
 /// A vault's error, as the rest of the wallet speaks. Only the modules that may reach the vault
 /// convert its errors (see the architecture test).
