@@ -635,6 +635,12 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
             }
         }
     }
+    // Cell effects, over the header and the screen but under the footer, modals and toasts.
+    // Dropped rather than paused: one that waited would play late, over something else.
+    if modal_open || !app.term.focused || app.lock.locked || !app.motion().effects() {
+        app.fx.shots.clear();
+    }
+    super::tfx::play(&mut app.fx.shots, f.buffer_mut(), std::time::Instant::now());
     draw_footer(f, app, &t, footer);
     // Before the modal, so its glass dims them with the page.
     draw_scrollbars(f.buffer_mut(), app, &t);

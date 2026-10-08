@@ -410,6 +410,7 @@ pub fn probe_fonts() {
     std::thread::spawn(|| {
         let remote = std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some();
         let console = std::env::var("TERM").is_ok_and(|t| t == "linux");
+        super::kana::probe(!remote && !console);
         let covered = !remote
             && !console
             && (cfg!(target_os = "macos")

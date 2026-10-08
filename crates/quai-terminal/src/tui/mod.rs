@@ -13,6 +13,7 @@ pub mod glyphfont;
 pub mod hit;
 pub mod icons;
 pub mod images;
+pub mod kana;
 pub mod keymap;
 pub mod links;
 pub mod num;

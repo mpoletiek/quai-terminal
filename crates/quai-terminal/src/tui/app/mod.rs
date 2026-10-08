@@ -1178,6 +1178,8 @@ pub struct Lock {
 pub struct Fx {
     /// Whole-main-area ambient effect (lock screen, easter egg).
     pub ambient: Option<Ceremony>,
+    /// Cell effects running on the frame (`tfx`): the header height's decode.
+    pub shots: Vec<super::tfx::Shot>,
     /// Border draw-in started on the last screen change.
     pub edge_intro: Option<Instant>,
     /// Order of the block behind the last heartbeat: 0 prime, 1 region, 2 zone.
@@ -1453,6 +1455,7 @@ impl App {
             },
             fx: Fx {
                 ambient: None,
+                shots: Vec::new(),
                 edge_intro: None,
                 beat_order: 2,
                 recent_hashes: std::collections::VecDeque::new(),
@@ -1723,6 +1726,7 @@ impl App {
             || self.fx.drawer_flash.values().any(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
             || self.fx.gutter_flash.is_some_and(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
             || self.fx.ambient.is_some()
+            || !self.fx.shots.is_empty()
             || self.lock.fade.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() < 500)
             || matches!(self.modal, Modal::Effects(_))
     }

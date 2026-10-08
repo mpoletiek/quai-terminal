@@ -1,25 +1,88 @@
-//! tachyonfx trial (docs/VISUAL_PLAN_2026-10-08.md §S0): the questions are whether its effects
-//! keep two-cell glyphs (katakana) whole on a real terminal, whether a cell filter keeps money
-//! still, and whether a frame with an effect running stays inside the frame budget.
+//! Cell effects (tachyonfx) on the drawn frame: what plays, where, and what it may never touch.
 //!
-//! Everything here runs on the wallet's clock (the caller passes elapsed time) and a fixed seed,
-//! so a frame is a pure function of `(content, seed, elapsed)`.
+//! A [`Shot`] is one running effect. `ui::draw_frame` steps every shot after the screen is drawn
+//! and before the footer, modals and toasts, so nothing plays over them; the shots are dropped,
+//! not paused, when a modal opens, the window loses focus, the wallet locks or motion is below
+//! Full. Each frame is a pure function of `(content, seed, elapsed)`: shots carry a fixed seed
+//! and step by the clock. Everything an effect writes goes through [`apply`], which keeps the
+//! cells it is told to keep (amounts, addresses, fees) and never lets a control character out.
+//! docs/VISUAL_PLAN_2026-10-08.md §5 has what the trial of tachyonfx found.
 
-// Nothing draws through this yet: S0 wires it into the frame (modal gate, motion levels).
+// The glitch and the filter are for the Chain screen (docs/VISUAL_PLAN_2026-10-08.md S1).
 #![cfg_attr(not(test), allow(dead_code))]
+
+use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use tachyonfx::{CellFilter, Duration, Effect, Interpolation, IntoEffect, SimpleRng, fx};
 use unicode_width::UnicodeWidthStr;
 
-/// Full-width katakana for the decode, all two cells wide (ア カ サ タ ナ ハ マ ヤ ラ ワ イ キ シ
-/// チ ニ ヒ ミ リ ウ ク). Escapes: the glyph test keeps CJK out of the source's literals.
-const KANA: [&str; 20] = [
-    "\u{30A2}", "\u{30AB}", "\u{30B5}", "\u{30BF}", "\u{30CA}", "\u{30CF}", "\u{30DE}", "\u{30E4}", "\u{30E9}", "\u{30EF}", "\u{30A4}",
-    "\u{30AD}", "\u{30B7}", "\u{30C1}", "\u{30CB}", "\u{30D2}", "\u{30DF}", "\u{30EA}", "\u{30A6}", "\u{30AF}",
-];
+use super::kana::DECODE as KANA;
+
 const HEX: &[u8; 16] = b"0123456789abcdef";
+
+/// The header height's decode when a block lands: long enough to read as a decode, short enough
+/// to be over before the eye goes back to work.
+pub const HEIGHT_DECODE_MS: u32 = 320;
+
+/// Where a shot plays: a fixed area, or wherever `text` is drawn on `row` this frame. A header
+/// segment moves when others drop, and the shot ends when its text is gone.
+pub enum Spot {
+    Area(Rect),
+    Text { row: u16, text: String },
+}
+
+impl Spot {
+    fn find(&self, buf: &Buffer) -> Option<Rect> {
+        match self {
+            Spot::Area(r) => Some(r.intersection(buf.area)).filter(|r| !r.is_empty()),
+            Spot::Text { row, text } => {
+                let w = text.chars().count() as u16;
+                if w == 0 || *row >= buf.area.bottom() || w > buf.area.width {
+                    return None;
+                }
+                (buf.area.left()..=buf.area.right() - w)
+                    .find(|&x| text.chars().enumerate().all(|(i, c)| buf[(x + i as u16, *row)].symbol().chars().eq(std::iter::once(c))))
+                    .map(|x| Rect::new(x, *row, w, 1))
+            }
+        }
+    }
+}
+
+/// One running effect: what it is (`tag`, so a newer one can replace it), where it plays and
+/// what it keeps.
+pub struct Shot {
+    pub tag: &'static str,
+    effect: Effect,
+    spot: Spot,
+    keep: Vec<Rect>,
+    last: Option<Instant>,
+}
+
+impl Shot {
+    pub fn new(tag: &'static str, effect: Effect, spot: Spot) -> Self {
+        Shot { tag, effect, spot, keep: Vec::new(), last: None }
+    }
+
+    /// Cells the effect must leave exactly as drawn.
+    pub fn keeping(mut self, keep: Vec<Rect>) -> Self {
+        self.keep = keep;
+        self
+    }
+}
+
+/// Step every shot by the clock, not per frame (keys arriving mid-effect don't speed it up; a
+/// stall is capped at 250 ms), and drop the ones that finished or lost their spot.
+pub fn play(shots: &mut Vec<Shot>, buf: &mut Buffer, now: Instant) {
+    shots.retain_mut(|s| {
+        let Some(area) = s.spot.find(buf) else { return false };
+        let dt = s.last.map_or(0, |at| now.saturating_duration_since(at).as_millis().min(250) as u32);
+        s.last = Some(now);
+        apply(&mut s.effect, dt, buf, area, &s.keep);
+        !s.effect.done()
+    });
+}
 
 /// The same rects as a tachyonfx filter, for effects that honour one. Not a guarantee:
 /// `Effect::with_filter` is ignored by an effect that already has a filter, and `Glitch` always
@@ -372,6 +435,39 @@ mod tests {
             lines.push(format!("{name}: mean {} peak {peak} cells of 7680", total / frames.max(1)));
         }
         eprintln!("{}", lines.join("\n"));
+    }
+
+    /// A text spot follows its text and ends with it; the shot ends when its effect does.
+    #[test]
+    fn a_shot_plays_where_its_text_is_and_ends() {
+        let mut shots = vec![Shot::new("height", decode(300, 1, true), Spot::Text { row: 2, text: "APPROVED".into() })];
+        let mut buf = base();
+        let start = Instant::now();
+        play(&mut shots, &mut buf, start);
+        assert_eq!(shots.len(), 1);
+        let row = |b: &Buffer| intended(b, 2);
+        let mut changed = false;
+        for ms in [100, 200] {
+            let mut b = base();
+            play(&mut shots, &mut b, start + std::time::Duration::from_millis(ms));
+            changed |= row(&b) != row(&base());
+            assert_eq!(row(&b)[..20], row(&base())[..20], "left of the text is untouched");
+        }
+        assert!(changed, "the decode showed");
+        let mut b = base();
+        play(&mut shots, &mut b, start + std::time::Duration::from_millis(400));
+        assert!(shots.is_empty(), "done after its 300 ms");
+        assert_eq!(row(&b), row(&base()), "and the text is back");
+        // An area spot keeps what it is told to keep.
+        let mut area = vec![Shot::new("a", decode(300, 1, true), Spot::Area(Rect::new(0, 4, W, 1))).keeping(money().to_vec())];
+        for ms in [0, 100, 200] {
+            let mut b = base();
+            play(&mut area, &mut b, start + std::time::Duration::from_millis(ms));
+            assert!(money().iter().flat_map(|r| r.positions()).all(|p| b[p] == base()[p]));
+        }
+        let mut gone = vec![Shot::new("x", decode(300, 1, true), Spot::Text { row: 2, text: "NOT THERE".into() })];
+        play(&mut gone, &mut base(), start);
+        assert!(gone.is_empty());
     }
 
     /// Same seed, same frames.

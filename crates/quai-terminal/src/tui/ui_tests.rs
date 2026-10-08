@@ -1719,9 +1719,11 @@ fn glyphs_stay_in_the_nerd_font_set() {
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|e| e == "rs") {
+                // CJK lives in `kana.rs` alone, drawn where a font covers it (see there).
+                let kana = p.file_name().is_some_and(|n| n == "kana.rs");
                 for (n, line) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
                     let code = line.split("//").next().unwrap_or("");
-                    for ch in code.chars().filter(|c| !c.is_ascii() && !ALLOWED.contains(*c)) {
+                    for ch in code.chars().filter(|c| !c.is_ascii() && !ALLOWED.contains(*c) && !(kana && super::super::kana::is_cjk(*c))) {
                         offenders.push(format!("{}:{} {ch} U+{:04X}", p.display(), n + 1, ch as u32));
                     }
                 }
@@ -2620,6 +2622,77 @@ fn frame_budget() {
     }
     eprintln!("{}", report.join("\n"));
     assert!(over.is_empty(), "over the frame budget:\n{}", over.join("\n"));
+}
+
+/// A new block decodes the header's height and nothing else on that row; the decode is over in
+/// well under half a second and leaves the plain header behind.
+#[test]
+fn a_new_block_decodes_the_header_height_and_nothing_else() {
+    let (_dir, mut app) = populated_app();
+    app.config.motion = Motion::Vivid;
+    app.term.focused = true;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let mut next = app.dash.clone();
+    let h = next.health.as_mut().expect("the fixture has a head");
+    h.height += 1;
+    h.order = Some(2);
+    let height = h.height;
+    app.observe_changes(&next);
+    app.dash = next;
+    // The header glyph's own pulse is another signal; hold it still for the comparison.
+    app.fx.beat = None;
+    assert_eq!(app.fx.shots.len(), 1, "a zone block at Vivid decodes the height");
+    let row = |b: &Buffer| (0..b.area.width).map(|x| b[(x, 0)].symbol().to_string()).collect::<Vec<_>>();
+    let shots = std::mem::take(&mut app.fx.shots);
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let plain = row(term.backend().buffer());
+    app.fx.shots = shots;
+    let text: Vec<String> = format!("#{}", wallet_core::amount::group_thousands(&height.to_string())).chars().map(String::from).collect();
+    let x0 = (0..plain.len() - text.len()).find(|&x| plain[x..x + text.len()] == text[..]).expect("the header shows the height");
+    let span = x0..x0 + text.len();
+    let mut changed = false;
+    for _ in 0..12 {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let now = row(term.backend().buffer());
+        for x in (0..plain.len()).filter(|x| !span.contains(x)) {
+            assert_eq!(now[x], plain[x], "header cell {x} moved while the height decoded");
+        }
+        changed |= now[span.clone()] != plain[span.clone()];
+    }
+    assert!(changed, "the decode showed");
+    assert!(app.fx.shots.is_empty(), "and finished");
+    assert_eq!(row(term.backend().buffer()), plain, "leaving the plain header");
+}
+
+/// The decode follows the heartbeat's rules: zone blocks only at Vivid, region and prime from
+/// Full; nothing below Full; and a modal drops what is playing.
+#[test]
+fn the_height_decode_keeps_to_the_motion_level_and_never_plays_under_a_modal() {
+    let (_dir, mut app) = populated_app();
+    app.term.focused = true;
+    let block = |app: &mut App, order: u8| {
+        app.fx.shots.clear();
+        let mut next = app.dash.clone();
+        let h = next.health.as_mut().unwrap();
+        h.height += 1;
+        h.order = Some(order);
+        app.observe_changes(&next);
+        app.dash = next;
+        app.fx.shots.len()
+    };
+    app.config.motion = Motion::Full;
+    assert_eq!(block(&mut app, 2), 0, "a zone block whispers below Vivid");
+    assert_eq!(block(&mut app, 0), 1, "a prime block decodes at Full");
+    app.config.motion = Motion::Reduced;
+    assert_eq!(block(&mut app, 0), 0, "nothing below Full");
+    app.config.motion = Motion::Vivid;
+    assert_eq!(block(&mut app, 2), 1);
+    app.modal = Modal::Help;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.fx.shots.is_empty(), "a modal drops it");
 }
 
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every

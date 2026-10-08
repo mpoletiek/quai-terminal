@@ -581,6 +581,17 @@ impl App {
             if old_height > 0 {
                 self.fx.beat = Some(Instant::now());
                 self.fx.beat_order = h.order.unwrap_or(2);
+                // The header's height decodes as it changes, gated like the heartbeat: zone
+                // blocks come every few seconds, so only at Vivid. Katakana where a font has them.
+                let order = h.order.unwrap_or(2);
+                if (order < 2 && self.motion().effects()) || self.motion() == Motion::Vivid {
+                    let shown = h.height.max(self.eco.clock.head);
+                    let text = format!("#{}", wallet_core::amount::group_thousands(&shown.to_string()));
+                    let effect =
+                        super::super::tfx::decode(super::super::tfx::HEIGHT_DECODE_MS, shown as u32, super::super::kana::renders());
+                    self.fx.shots.retain(|s| s.tag != "height");
+                    self.fx.shots.push(super::super::tfx::Shot::new("height", effect, super::super::tfx::Spot::Text { row: 0, text }));
+                }
             }
             // The session's entropy minimum: the smallest head hash seen (all the same length).
             if self.fx.lowest_hash.as_ref().is_none_or(|(low, _)| h.head_hash.to_lowercase() < low.to_lowercase()) {
