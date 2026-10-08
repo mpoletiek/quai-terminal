@@ -424,6 +424,8 @@ impl App {
                 }
             }
             DataEv::ChainHeads(result) => self.settle_chain_heads(result),
+            DataEv::ChainHead(height) => self.chain_head(height),
+            DataEv::ChainWatch(result) => self.chain_watch_ended(result),
             DataEv::ChainStats(result) => {
                 // A failed refresh keeps the last good figures (`Resource::shown`).
                 self.eco.feeds.chain_stats.settle(result.map(|b| *b));
@@ -826,6 +828,8 @@ impl App {
         if self.nav.screen == Screen::Chain && !self.lock.locked {
             self.tick_chain_heads();
             self.tick_chain_stats();
+        } else {
+            self.end_chain_watch();
         }
         // PnL is re-read on its own freshness window while it is on screen, not only when opened.
         if self.nav.screen == Screen::Pnl && !self.lock.locked {

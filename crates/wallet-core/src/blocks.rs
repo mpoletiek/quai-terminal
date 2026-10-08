@@ -136,6 +136,46 @@ pub async fn since(node: &Node, after: Option<u64>, max: usize) -> Result<Vec<Bl
     heads(node, &want).await
 }
 
+/// Where a node's WebSocket may be, from its JSON-RPC URL, in the order to try: the same URL
+/// with a `ws(s)` scheme (gateways serve both on one path), then, for a plain node on go-quai's
+/// default ports, the WebSocket port beside the HTTP one (9200 → 8200).
+pub fn ws_urls(http: &str) -> Vec<String> {
+    let Some((scheme, rest)) = http.split_once("://") else { return Vec::new() };
+    let ws = match scheme {
+        "https" | "wss" => "wss",
+        "http" | "ws" => "ws",
+        _ => return Vec::new(),
+    };
+    let mut out = vec![format!("{ws}://{rest}")];
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    if let Some((host, port)) = authority.rsplit_once(':')
+        && let Ok(port) = port.parse::<u16>()
+        && (9000..10000).contains(&port)
+    {
+        let slash = if path.is_empty() { "" } else { "/" };
+        out.push(format!("{ws}://{host}:{}{slash}{path}", port - 1000));
+    }
+    out
+}
+
+/// Follow a node's new heads over its WebSocket: `on_head` gets each announced zone height and
+/// returns whether to keep listening. Ends `Ok` when told to stop or when the node closes the
+/// subscription, and with the error when the connection fails.
+pub async fn watch_heads(url: &str, mut on_head: impl FnMut(u64) -> bool) -> Result<()> {
+    use quai_sdk::rpc::{WsConfig, WsSubscriptionKind, WsTransport};
+    let endpoint = quai_sdk::Endpoint::parse(url).map_err(|e| CoreError::Invalid(format!("websocket {url}: {e}")))?;
+    let ws = WsTransport::connect(endpoint, WsConfig::default()).await?;
+    let mut heads = ws.subscribe(WsSubscriptionKind::NewHeads).await?;
+    while let Some(head) = heads.recv().await? {
+        if let Some(height) = hex_u64(&head["woHeader"]["number"])
+            && !on_head(height)
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +206,14 @@ mod tests {
         let mut v = fixture();
         v["header"]["number"] = json!([]);
         assert!(parse(&v).is_none());
+    }
+
+    #[test]
+    fn websocket_urls_follow_the_rpc_url() {
+        assert_eq!(ws_urls("https://rpc.quai.network/cyprus1"), vec!["wss://rpc.quai.network/cyprus1"]);
+        assert_eq!(ws_urls("http://10.0.0.12:9200"), vec!["ws://10.0.0.12:9200", "ws://10.0.0.12:8200"]);
+        assert_eq!(ws_urls("http://node:9200/x"), vec!["ws://node:9200/x", "ws://node:8200/x"]);
+        assert!(ws_urls("file:///etc").is_empty());
     }
 
     #[test]

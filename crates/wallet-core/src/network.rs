@@ -499,6 +499,11 @@ impl Node {
         Ok(self.transport.request(&self.endpoint, method, params).await?)
     }
 
+    /// The JSON-RPC URL this node answers on.
+    pub fn endpoint_url(&self) -> &str {
+        self.endpoint.as_str()
+    }
+
     /// Several raw calls in one JSON-RPC batch: one answer per request, in order. None when the
     /// transport does not batch (call [`Node::raw`] for each instead).
     pub async fn raw_batch(&self, requests: Vec<(&str, serde_json::Value)>) -> Option<Result<Vec<Result<serde_json::Value>>>> {

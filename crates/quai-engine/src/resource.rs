@@ -78,6 +78,12 @@ pub mod fresh {
     /// Markets: the pool directory every 30 s; reserves, the tape and LP positions with the chain.
     pub const MARKET_DIRECTORY: Freshness =
         Freshness::TtlRetry(Duration::from_secs(wallet_core::markets::DIRECTORY_TTL), super::BLOCK_POLL);
+    /// System › Chain's block headers: every 2 s while polled, every 15 s as a safety net while
+    /// new heads arrive by subscription, 30 s after a failure.
+    pub const CHAIN_HEADS: Freshness = Freshness::TtlRetry(Duration::from_secs(2), Duration::from_secs(30));
+    pub const CHAIN_HEADS_LIVE: Freshness = Freshness::TtlRetry(Duration::from_secs(15), Duration::from_secs(30));
+    /// Following new heads over the node's WebSocket: asked again 30 s after it ended.
+    pub const CHAIN_WATCH: Freshness = secs(30);
     /// A pair's ready-made candles from the indexer, while its chart is on screen.
     pub const CANDLES: Freshness = secs(5);
     /// A pair's own trades (its chart and tape).

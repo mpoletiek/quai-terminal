@@ -177,6 +177,9 @@ pub enum DataCmd {
         after: Option<u64>,
         max: u16,
     },
+    /// Follow (or stop following) the node's new heads over its WebSocket, for System › Chain:
+    /// each one is a `DataEv::ChainHead`. Dropped whenever the worker changes node.
+    ChainWatch(bool),
     /// Live QUAI for every wallet on this computer: (wallet id, its public Quai addresses).
     WalletQuai(Vec<(String, Vec<String>)>),
     /// Read or change this wallet's alerts and watchlist, or check the alerts.
@@ -270,6 +273,10 @@ pub enum DataEv {
     ChainStats(Result<Box<wallet_core::chainstats::ChainStats>, String>),
     /// Headers oldest first; empty when nothing is newer than what was asked after.
     ChainHeads(Result<Vec<wallet_core::blocks::BlockHead>, String>),
+    /// The node announced a new head at this height.
+    ChainHead(u64),
+    /// Following new heads ended: the node closed it (`Ok`) or it failed.
+    ChainWatch(Result<(), String>),
     WalletQuai(#[serde(with = "wallet_core::ser::u256_pairs")] Vec<(String, wallet_core::sdk::U256)>),
     /// The alerts and watchlist as stored after the operation; what fired; a line to show.
     Alerts {
@@ -508,12 +515,38 @@ fn flight_key(cmd: &DataCmd) -> Option<String> {
         DataCmd::SwapQuote { .. } => "quote".into(),
         DataCmd::LiquidityQuote { .. } => "liquidity_quote".into(),
         DataCmd::QiRoutes { .. } => "qi_routes".into(),
-        DataCmd::Images(_) | DataCmd::Configure { .. } | DataCmd::Shutdown | DataCmd::Focus(_) => return None,
+        DataCmd::Images(_) | DataCmd::Configure { .. } | DataCmd::Shutdown | DataCmd::Focus(_) | DataCmd::ChainWatch(_) => return None,
     })
 }
 
 type Job = std::pin::Pin<Box<dyn std::future::Future<Output = (usize, Option<String>)>>>;
 type MonitorJob = std::pin::Pin<Box<dyn std::future::Future<Output = (u64, Option<DataCtx>)>>>;
+
+/// Following a node's new heads (`DataCmd::ChainWatch`) until it ends.
+type HeadWatch = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>;
+
+/// Follow `ctx`'s node over its WebSocket, sending each new head's height. The places a node's
+/// WebSocket may be are tried in order until one connects.
+fn head_watch(ctx: &DataCtx, events: &Sender<DataEv>) -> HeadWatch {
+    let urls = wallet_core::blocks::ws_urls(ctx.node.endpoint_url());
+    let events = events.clone();
+    Box::pin(async move {
+        let mut last = Err("this endpoint has no WebSocket".to_string());
+        for url in urls {
+            last = wallet_core::blocks::watch_heads(&url, |height| {
+                let open = events.send(DataEv::ChainHead(height)).is_ok();
+                crate::wake();
+                open
+            })
+            .await
+            .map_err(|e| e.to_string());
+            if last.is_ok() {
+                break;
+            }
+        }
+        last
+    })
+}
 
 /// Images from one source loading at once. A slow, strictly paced source (a public IPFS gateway)
 /// holds one slot, so it cannot block images from the explorer or the local cache. The user's own
@@ -571,6 +604,7 @@ async fn run(
     let mut monitor_tick = tokio::time::interval(std::time::Duration::from_secs(60));
     monitor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut monitor_job: Option<MonitorJob> = None;
+    let mut heads: Option<HeadWatch> = None;
     let mut ticks = 0u64;
     // Old third-party data is cleared once per run, after the first screens have loaded.
     let prune = tokio::time::sleep(std::time::Duration::from_secs(20));
@@ -622,7 +656,13 @@ async fn run(
                 ctx = Rc::new(c);
                 cache = Rc::new(cached);
                 generation.set(generation.get() + 1);
+                // Another node: whoever wanted its heads asks again.
+                heads = None;
             }
+        }
+        while let Some(i) = queue.iter().position(|c| matches!(c, DataCmd::ChainWatch(_))) {
+            let DataCmd::ChainWatch(on) = queue.remove(i) else { continue };
+            heads = on.then(|| head_watch(&ctx, &events));
         }
         for batch in queue.iter_mut().filter_map(|c| match c {
             DataCmd::Images(w) => Some(std::mem::take(w)),
@@ -789,7 +829,16 @@ async fn run(
                             follow(&mut cached, &next);
                             ctx = Rc::new(next);
                             cache = Rc::new(cached);
+                            if heads.take().is_some() {
+                                let _ = events.send(DataEv::ChainWatch(Ok(())));
+                                crate::wake();
+                            }
                         }
+                    }
+                    ended = async { heads.as_mut().expect("guarded head watch").await }, if heads.is_some() => {
+                        heads = None;
+                        let _ = events.send(DataEv::ChainWatch(ended));
+                        crate::wake();
                     }
                     Some((l, key)) = running.next(), if !running.is_empty() => {
                         busy[l] -= 1;
@@ -1044,6 +1093,8 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
                 note,
             });
         }
+        // Control: taken off the queue before jobs start.
+        DataCmd::ChainWatch(_) => {}
         DataCmd::ChainHeads { after, max } => {
             let r = wallet_core::blocks::since(&ctx.node, after, usize::from(max)).await.map_err(|e| e.to_string());
             send(DataEv::ChainHeads(r));
@@ -1207,6 +1258,7 @@ fn cmd_name(cmd: &DataCmd) -> &'static str {
         DataCmd::Launches => "launches",
         DataCmd::ChainStats => "chain_stats",
         DataCmd::ChainHeads { .. } => "chain_heads",
+        DataCmd::ChainWatch(_) => "chain_watch",
         DataCmd::WalletQuai(_) => "wallet_quai",
         DataCmd::Alerts(_) => "alerts",
         DataCmd::CurveMarket { .. } => "curve_market",

@@ -2127,3 +2127,22 @@ async fn chain_heads_arrive_whole_and_linked() {
     let more = wallet_core::blocks::since(&node, Some(newest - 2), 24).await.unwrap();
     assert!(more.first().is_some_and(|b| b.height == newest - 1), "a poll fills from the gap");
 }
+
+/// New heads arrive over the public RPC's WebSocket, one height after another.
+#[tokio::test]
+#[ignore = "network"]
+async fn new_heads_are_announced_over_the_websocket() {
+    let ctx = mainnet();
+    let urls = wallet_core::blocks::ws_urls(ctx.network.node().unwrap().endpoint_url());
+    let mut heights = Vec::new();
+    let watched = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        wallet_core::blocks::watch_heads(&urls[0], |h| {
+            heights.push(h);
+            heights.len() < 2
+        }),
+    )
+    .await;
+    assert!(matches!(watched, Ok(Ok(()))), "{watched:?}");
+    assert!(heights[1] > heights[0], "{heights:?}");
+}

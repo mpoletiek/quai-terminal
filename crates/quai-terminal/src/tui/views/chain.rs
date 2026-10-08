@@ -80,7 +80,11 @@ pub fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     if hint {
         f.render_widget(
             Paragraph::new(Span::styled(
-                format!("{}public RPC, read every 2 s · m reads from your own node instead", t.lead(Icon::Info)),
+                format!(
+                    "{}public RPC, {} · m reads from your own node instead",
+                    t.lead(Icon::Info),
+                    if app.eco.chain.live { "new heads by subscription" } else { "read every 2 s" }
+                ),
                 t.dim_style(),
             )),
             foot,
@@ -90,7 +94,7 @@ pub fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 /// What the screen says before its first block, in a panel's inner area.
 fn waiting(f: &mut Frame, app: &App, t: &Theme, inner: Rect) {
-    let text = match &app.eco.chain.error {
+    let text = match app.eco.chain.error() {
         Some(e) => format!("{} {}", t.icon(Icon::Info), truncate(&app::friendly_error(e), inner.width as usize)),
         None => format!("{} reading blocks…", spinner()),
     };
@@ -366,7 +370,12 @@ fn draw_base_fee(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 /// Every block read, newest first.
 fn draw_feed(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let block = panel(t, &titled("blocks", "blocks"), false);
+    let how = match (app.eco.chain.live, app.eco.chain.watch.error()) {
+        (true, _) => " · live",
+        (false, Some(_)) => " · polled (no WebSocket)",
+        (false, None) => "",
+    };
+    let block = panel(t, &format!("{}{how}", titled("blocks", "blocks")), false);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if app.eco.chain.blocks.is_empty() {
