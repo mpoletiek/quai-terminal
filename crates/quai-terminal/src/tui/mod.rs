@@ -24,6 +24,7 @@ pub mod pointer;
 pub mod screen;
 pub mod term;
 pub mod terminal;
+pub mod tfx;
 pub mod theme;
 pub mod themes;
 pub mod ui;

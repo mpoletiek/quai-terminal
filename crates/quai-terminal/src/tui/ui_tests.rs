@@ -2618,6 +2618,83 @@ fn frame_budget() {
     assert!(over.is_empty(), "over the frame budget:\n{}", over.join("\n"));
 }
 
+/// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
+/// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
+/// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus
+/// ratatui's diff. Run with `cargo test --release -p quai-terminal-cli frame_budget_with_effects
+/// -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn frame_budget_with_effects() {
+    use super::super::tfx;
+    use tachyonfx::{SimpleRng, fx};
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.truecolor = true;
+    app.config.motion = Motion::Vivid;
+    app.term.focused = true;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    let at = |mut v: Vec<u128>, q: usize| {
+        v.sort_unstable();
+        v[v.len() * q / 100]
+    };
+    type Make = fn() -> tachyonfx::Effect;
+    let effects: Vec<(&str, Make)> = vec![
+        ("none", || fx::sleep(1_000_000)),
+        ("dissolve", || fx::dissolve(600).with_rng(SimpleRng::new(3))),
+        ("coalesce", || fx::coalesce(600).with_rng(SimpleRng::new(3))),
+        ("glitch", || tfx::glitch(7, 0.05)),
+        ("evolve_into", || fx::evolve_into(fx::EvolveSymbolSet::Shaded, 600)),
+        ("sweep_in", || fx::sweep_in(tachyonfx::Motion::LeftToRight, 12, 0, ratatui::style::Color::Black, 600)),
+        ("hsl_shift", || fx::hsl_shift(Some([90.0, 0.0, 0.0]), None, 600)),
+        ("decode_kana", || tfx::decode(600, 11, true)),
+    ];
+    // Twenty kept rects, as a busy screen's amounts would be.
+    let keep: Vec<Rect> = (0..20).map(|i| Rect::new(40 + (i % 4) * 30, 6 + i / 4 * 8, 14, 1)).collect();
+    let mut report = Vec::new();
+    let mut worst: Vec<(u128, String)> = Vec::new();
+    for screen in Screen::ALL {
+        app.switch(screen);
+        app.fx.edge_intro = None;
+        app.modal = Modal::None;
+        for _ in 0..3 {
+            term.draw(|f| draw(f, &mut app)).unwrap();
+        }
+        let mut line = format!("{screen:?}:");
+        for (name, make) in &effects {
+            let mut p90 = u128::MAX;
+            let mut p50 = u128::MAX;
+            for round in 0..3u64 {
+                let mut effect = make();
+                let mut times = Vec::new();
+                for i in 0..40u64 {
+                    app.eco.anim.ms = 1_000 + (round * 40 + i) * 150;
+                    if effect.done() {
+                        effect = make();
+                    }
+                    let t = std::time::Instant::now();
+                    term.draw(|f| {
+                        draw(f, &mut app);
+                        let area = f.area();
+                        tfx::apply(&mut effect, 33, f.buffer_mut(), area, &keep);
+                    })
+                    .unwrap();
+                    times.push(t.elapsed().as_micros());
+                }
+                p50 = p50.min(at(times.clone(), 50));
+                p90 = p90.min(at(times, 90));
+            }
+            line.push_str(&format!(" {name} {p50}/{p90}"));
+            worst.push((p90, format!("{screen:?} {name}")));
+        }
+        report.push(line);
+    }
+    worst.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    eprintln!("p50/p90 us per frame\n{}\nworst: {:?}", report.join("\n"), &worst[..5]);
+    let over: Vec<_> = worst.iter().filter(|(us, _)| *us > 4_000).collect();
+    assert!(over.is_empty(), "over the 4 ms frame budget: {over:?}");
+}
+
 /// What the wallet owns is on Home: liquidity positions are holdings rows, their value is in the
 /// total (and said to be), and Enter on one opens it on Pools, under the cursor.
 #[test]
