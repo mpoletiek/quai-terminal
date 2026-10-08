@@ -313,51 +313,7 @@ pub(crate) fn empty_state(f: &mut Frame, area: Rect, t: &Theme, glyph: &str, tex
 
 // ---------------------------------------------------------------- big digits
 
-const DIGITS: [[&str; 3]; 10] = [
-    ["█▀█", "█ █", "▀▀▀"],
-    ["▀█ ", " █ ", "▀▀▀"],
-    ["▀▀█", "█▀▀", "▀▀▀"],
-    ["▀▀█", " ▀█", "▀▀▀"],
-    ["█ █", "▀▀█", "  ▀"],
-    ["█▀▀", "▀▀█", "▀▀▀"],
-    ["█▀▀", "█▀█", "▀▀▀"],
-    ["▀▀█", "  █", "  ▀"],
-    ["█▀█", "█▀█", "▀▀▀"],
-    ["█▀█", "▀▀█", "▀▀▀"],
-];
-
-/// Three-row block digits for the whole part of a grouped number (e.g. "179,071").
-pub fn big_digits(text: &str) -> [String; 3] {
-    let mut rows = [String::new(), String::new(), String::new()];
-    for (i, c) in text.chars().enumerate() {
-        if i > 0 {
-            for r in &mut rows {
-                r.push(' ');
-            }
-        }
-        match c {
-            d @ '0'..='9' => {
-                let g = DIGITS[d as usize - '0' as usize];
-                for (r, part) in rows.iter_mut().zip(g) {
-                    r.push_str(part);
-                }
-            }
-            ',' => {
-                // A stroke from the baseline down: a lone baseline block would read as a decimal
-                // point, and a gap read "1,284" as "1 284".
-                rows[0].push(' ');
-                rows[1].push(' ');
-                rows[2].push('▌');
-            }
-            _ => {
-                for r in &mut rows {
-                    r.push(' ');
-                }
-            }
-        }
-    }
-    rows
-}
+pub use super::glyphfont::big_digits;
 
 /// A balance "hero": big whole part, dim fraction and unit, ledger stripe.
 /// Whether both balances fit as block digits (they share one size).

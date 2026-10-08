@@ -9,6 +9,7 @@ pub mod eco;
 pub mod edge;
 pub mod fx;
 pub mod glossary;
+pub mod glyphfont;
 pub mod hit;
 pub mod icons;
 pub mod images;
