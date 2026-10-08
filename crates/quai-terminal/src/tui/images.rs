@@ -16,7 +16,7 @@ use std::sync::Arc;
 use wallet_core::media::{ICON, ICON_LARGE, Rendition, THUMB, is_native_icon, monogram, native_icon};
 
 /// Most bitmaps placed in one frame.
-const MAX_PLACEMENTS: usize = 128;
+pub(crate) const MAX_PLACEMENTS: usize = 128;
 
 /// What a picture's cells hold under its bitmap: a blank no widget draws. A row restyled after
 /// the picture was reserved (the selection passing over it) keeps it, so the picture stays; a

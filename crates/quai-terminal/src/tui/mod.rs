@@ -23,6 +23,7 @@ pub mod palette;
 pub mod persist;
 pub mod placeholders;
 pub mod pointer;
+pub mod raster;
 pub mod screen;
 pub mod term;
 pub mod terminal;
@@ -209,7 +210,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         app.poll_copy();
         app.poll_persist();
         // Pictures fitted and encoded off this thread: placed on the next frame.
-        if images::poll_fitted(&app) {
+        if images::poll_fitted(&app) || raster::poll() {
             app.dirty = true;
         }
         app.poll_monitor_check();
