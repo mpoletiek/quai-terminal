@@ -9,6 +9,26 @@
 pub const DECODE: [&str; 20] =
     ["ア", "カ", "サ", "タ", "ナ", "ハ", "マ", "ヤ", "ラ", "ワ", "イ", "キ", "シ", "チ", "ニ", "ヒ", "ミ", "リ", "ウ", "ク"];
 
+/// Japanese beside the Chain screen's panel titles, by panel.
+const SUBTITLES: [(&str, &str); 8] = [
+    ("timer", "時計"),
+    ("hierarchy", "階層"),
+    ("head", "先頭"),
+    ("lattice", "格子"),
+    ("entropy", "エントロピー"),
+    ("hashrate", "採掘"),
+    ("gas", "手数料"),
+    ("blocks", "台帳"),
+];
+
+/// A panel title with its Japanese subtitle where a font draws it: "lattice 格子".
+pub fn titled(key: &str, english: &str) -> String {
+    match SUBTITLES.iter().find(|(k, _)| *k == key) {
+        Some((_, jp)) if renders() => format!("{english} {jp}"),
+        _ => english.to_string(),
+    }
+}
+
 static CJK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Whether a font here draws full-width katakana and kanji. Never waits: until the probe has
@@ -41,6 +61,16 @@ pub(crate) fn is_cjk(c: char) -> bool {
 mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn every_subtitle_is_cjk_and_titles_fall_back_to_english() {
+        for (_, jp) in SUBTITLES {
+            assert!(jp.chars().all(is_cjk), "{jp}");
+            assert_eq!(jp.width(), jp.chars().count() * 2, "{jp}");
+        }
+        // No font answer in tests: English alone.
+        assert_eq!(titled("lattice", "lattice"), "lattice");
+    }
 
     #[test]
     fn every_decode_glyph_is_one_cjk_character_two_cells_wide() {

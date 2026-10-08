@@ -1156,6 +1156,49 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
     }
     // Mainnet profile so swap and marketplace views render their full cards.
     app.network_id = "mainnet".into();
+    // System › Chain: thirty blocks ending 4 s before the frozen clock, every 6th a region block
+    // and every 20th a prime one, with one height never read (a gap in the lattice).
+    app.eco.chain.network = "local".into();
+    let now = wallet_core::registry::now();
+    let (mut prime, mut region) = (2_325_680u64, 5_647_470u64);
+    let heads: Vec<wallet_core::blocks::BlockHead> = (10_515_380u64..=10_515_409)
+        .filter(|h| *h != 10_515_395)
+        .map(|h| {
+            let order = if h % 20 == 0 {
+                0
+            } else if h % 6 == 0 {
+                1
+            } else {
+                2
+            };
+            region += u64::from(order <= 1);
+            prime += u64::from(order == 0);
+            let zeros = (h % 4 + 1) as usize;
+            wallet_core::blocks::BlockHead {
+                height: h,
+                prime,
+                region,
+                order,
+                // `zeros` zero digits, then a non-zero one, then well-mixed digits.
+                hash: {
+                    let v = u128::from(h).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
+                    format!("0x{}{:x}{}", "0".repeat(zeros), 1 + h % 15, &format!("{v:032x}{v:032x}")[zeros + 1..])
+                },
+                parent: String::new(),
+                timestamp: now - 4 - (10_515_409 - h) * 5,
+                txs: (h % 90) as u32,
+                etxs: (h % 23) as u32,
+                workshares: (h % 17) as u32,
+                gas_used: 268_000 + (h % 50) * 4_000,
+                gas_limit: 50_000_000,
+                base_fee_wei: 63_600_000_000_000 + u128::from(h % 9) * 1_000_000_000,
+                miner: "0x0011d16c5f4801D8d7B2eD4A84fC98D114Cb85b8".into(),
+                difficulty: 0xd9a9cb2a80,
+                entropy_mbits: 38_000 + (h * 7_919) % 6_500,
+            }
+        })
+        .collect();
+    app.eco.chain.merge(heads, std::time::Instant::now());
     (dir, app)
 }
 

@@ -77,11 +77,16 @@ pub enum Icon {
     Bell,
     Search,
     Mining,
+    // Quai's chains: a block's order, and zones on the hierarchy map.
+    Prime,
+    Region,
+    Zone,
+    OtherZone,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 46] = [
+    pub const ALL: [Icon; 50] = [
         Icon::Ok,
         Icon::InFlight,
         Icon::Stale,
@@ -128,6 +133,10 @@ impl Icon {
         Icon::Bell,
         Icon::Search,
         Icon::Mining,
+        Icon::Prime,
+        Icon::Region,
+        Icon::Zone,
+        Icon::OtherZone,
     ];
 
     /// (nerd, unicode, ascii). An empty form draws nothing.
@@ -182,6 +191,10 @@ impl Icon {
             Icon::Bell => ("\u{f009c}", "●", "*"),   // md-bell_outline
             Icon::Search => ("\u{f0349}", "", ""),   // md-magnify
             Icon::Mining => ("\u{f08b7}", "", ""),   // md-pickaxe
+            Icon::Prime => ("◈", "◈", "P"),
+            Icon::Region => ("◆", "◆", "R"),
+            Icon::Zone => ("●", "●", "*"),
+            Icon::OtherZone => ("○", "○", "o"),
         }
     }
 

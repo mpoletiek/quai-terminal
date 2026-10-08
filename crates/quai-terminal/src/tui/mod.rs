@@ -56,6 +56,13 @@ fn desktop_notice(enabled: bool, focused: bool, listed: bool, daemon_running: bo
 
 /// How long the loop may sleep: until the next thing that needs a frame (an animation step, the
 /// half-second tick, a resize settling), capped so a missed wake is never noticed for long.
+/// How often System › Chain's block timer moves, while it is on screen: tenths, or whole seconds
+/// below Full motion.
+fn chain_timer_step(app: &App) -> Option<u128> {
+    (app.nav.screen == app::Screen::Chain && app.term.focused && !app.lock.locked && app.eco.chain.newest().is_some())
+        .then(|| if app.motion().effects() { 100 } else { 1000 })
+}
+
 fn next_wait(app: &App, animating: bool, last_tick: Instant, resized_at: Option<Instant>) -> Duration {
     const IDLE: Duration = Duration::from_millis(500);
     let mut wait = IDLE.saturating_sub(last_tick.elapsed()).max(Duration::from_millis(1));
@@ -72,6 +79,10 @@ fn next_wait(app: &App, animating: bool, last_tick: Instant, resized_at: Option<
     }
     if let Some(step) = app.eco.anim.step.get().filter(|_| app.term.focused) {
         wait = wait.min(Duration::from_millis(step - app.eco.anim.ms % step).max(Duration::from_millis(15)));
+    }
+    if let Some(step) = chain_timer_step(app) {
+        // Woken twice a step, so the digits turn within half a step of when they should.
+        wait = wait.min(Duration::from_millis(step as u64 / 2));
     }
     if let Some(at) = resized_at {
         wait = wait.min(RESEND_AFTER_RESIZE.saturating_sub(at.elapsed()).max(Duration::from_millis(1)));
@@ -180,6 +191,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     let mut last_theme_check = Instant::now();
     // The spinner glyph and the minute last drawn (see the tick and the redraw rules below).
     let mut spinner_drawn = 0u128;
+    let mut chain_timer_drawn = 0u128;
     let mut ages_minute = 0u64;
     let mut last_tick = Instant::now();
     let mut last_size = term.ui.size().map(|s| (s.width, s.height)).unwrap_or((0, 0));
@@ -345,6 +357,12 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         if ui::spinning(&app) && ui::spinner_step() != spinner_drawn {
             app.dirty = true;
         }
+        // System › Chain's block timer counts in tenths (whole seconds below Full motion).
+        if let Some(step) = chain_timer_step(&app)
+            && Instant::now().duration_since(startup).as_millis() / step != chain_timer_drawn
+        {
+            app.dirty = true;
+        }
         if let Some(beat) = app.fx.beat
             && beat.elapsed() >= ui::BEAT_PULSE
             && app.last_frame < beat + ui::BEAT_PULSE
@@ -440,6 +458,9 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             }
             app.last_frame = Instant::now();
             spinner_drawn = ui::spinner_step();
+            if let Some(step) = chain_timer_step(&app) {
+                chain_timer_drawn = Instant::now().duration_since(startup).as_millis() / step;
+            }
             app.dirty = false;
             if let Some(req) = app.tasks.clipboard.take() {
                 // The desktop's own tool here, read back; OSC 52 over SSH (see `clipboard`).

@@ -673,6 +673,8 @@ pub struct Eco {
     /// The chain's clock: the newest block and when it arrived. Chain-backed resources are
     /// measured against it.
     pub clock: quai_engine::resource::Clock,
+    /// System › Chain's block headers.
+    pub chain: ChainLog,
     pub pools_view: PoolsView,
     pub board: BoardView,
     /// Every section's data was requested in the background for this network.
@@ -1009,6 +1011,8 @@ fn hash_key(parts: &[&str]) -> u64 {
 }
 
 mod board;
+mod chain;
+pub use chain::ChainLog;
 mod cards;
 mod data_events;
 mod flows;
@@ -1418,6 +1422,7 @@ pub fn focus_jobs(place: super::keymap::Place) -> &'static [&'static str] {
         Screen::Board => &["board", "board_channels"],
         Screen::Accounts => &["lockups"],
         Screen::Network => &["chain_stats"],
+        Screen::Chain => &["chain_heads", "chain_stats"],
         Screen::Wallets => &["wallet_quai"],
         Screen::Activity => &["tx_cost"],
         _ => &[],

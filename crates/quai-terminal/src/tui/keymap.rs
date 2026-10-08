@@ -318,6 +318,7 @@ pub const ROUTES: &[(char, Place)] = &[
     ('a', Place::Screen(Screen::Activity)),
     ('W', Place::Screen(Screen::Wallets)),
     ('N', Place::Screen(Screen::Network)),
+    ('k', Place::Screen(Screen::Chain)),
     ('s', Place::Screen(Screen::Settings)),
     ('d', Place::Screen(Screen::DataSources)),
 ];

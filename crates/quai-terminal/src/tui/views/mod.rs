@@ -25,6 +25,7 @@ use wallet_core::track::describe;
 
 pub(crate) mod board;
 mod cards;
+mod chain;
 mod data_sources;
 mod home;
 mod markets;
@@ -33,6 +34,7 @@ mod pools;
 mod wallets;
 pub use board::*;
 pub use cards::*;
+pub use chain::*;
 pub use data_sources::*;
 pub use home::*;
 pub use markets::*;

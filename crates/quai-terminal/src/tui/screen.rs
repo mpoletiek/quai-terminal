@@ -58,6 +58,7 @@ pub fn view(screen: Screen) -> &'static dyn ScreenView {
         Screen::Wallets => &Wallets,
         Screen::Activity => &Activity,
         Screen::Network => &Network,
+        Screen::Chain => &Chain,
         Screen::Settings => &Settings,
         Screen::DataSources => &DataSources,
     }
@@ -441,6 +442,26 @@ impl ScreenView for Network {
     }
     fn draw(&self, f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         ui::draw_node(f, app, t, area);
+    }
+}
+
+struct Chain;
+impl ScreenView for Chain {
+    fn title(&self) -> &'static str {
+        "Chain"
+    }
+    fn pro_only(&self) -> bool {
+        true
+    }
+    fn on_open(&self, app: &mut App) {
+        app.tick_chain_heads();
+        app.tick_chain_stats();
+    }
+    fn key(&self, app: &mut App, key: KeyEvent) -> bool {
+        app.chain_key(key)
+    }
+    fn draw(&self, f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+        views::draw_chain(f, app, t, area);
     }
 }
 

@@ -85,7 +85,7 @@ impl Section {
             Section::Nfts => &[Screen::Collected, Screen::Explore, Screen::Listings],
             Section::People => &[Screen::Contacts, Screen::Board],
             Section::Activity => &[Screen::Activity],
-            Section::System => &[Screen::Wallets, Screen::Network, Screen::Settings, Screen::DataSources],
+            Section::System => &[Screen::Wallets, Screen::Network, Screen::Chain, Screen::Settings, Screen::DataSources],
         }
     }
 
@@ -167,12 +167,14 @@ pub enum Screen {
     Wallets,
     Activity,
     Network,
+    /// Quai's hierarchy as this zone sees it: the block lattice, timer and feed.
+    Chain,
     Settings,
     DataSources,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 19] = [
+    pub const ALL: [Screen; 20] = [
         Screen::Home,
         Screen::Qi,
         Screen::Accounts,
@@ -190,6 +192,7 @@ impl Screen {
         Screen::Wallets,
         Screen::Activity,
         Screen::Network,
+        Screen::Chain,
         Screen::Settings,
         Screen::DataSources,
     ];

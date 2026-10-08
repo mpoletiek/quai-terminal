@@ -170,6 +170,13 @@ pub enum DataCmd {
     Launches,
     /// Hashrate, transactions and gas over time, for System › Network.
     ChainStats,
+    /// Block headers for System › Chain: every block after `after` up to the head (the newest
+    /// `max` of them), or with nothing known yet the newest `max`. Read from the monitoring node
+    /// when one is set.
+    ChainHeads {
+        after: Option<u64>,
+        max: u16,
+    },
     /// Live QUAI for every wallet on this computer: (wallet id, its public Quai addresses).
     WalletQuai(Vec<(String, Vec<String>)>),
     /// Read or change this wallet's alerts and watchlist, or check the alerts.
@@ -261,6 +268,8 @@ pub enum DataEv {
     /// Logo URLs for launch tokens, by token address. Sent after the list it belongs to.
     LaunchLogos(std::collections::HashMap<String, String>),
     ChainStats(Result<Box<wallet_core::chainstats::ChainStats>, String>),
+    /// Headers oldest first; empty when nothing is newer than what was asked after.
+    ChainHeads(Result<Vec<wallet_core::blocks::BlockHead>, String>),
     WalletQuai(#[serde(with = "wallet_core::ser::u256_pairs")] Vec<(String, wallet_core::sdk::U256)>),
     /// The alerts and watchlist as stored after the operation; what fired; a line to show.
     Alerts {
@@ -454,6 +463,7 @@ fn lane(cmd: &DataCmd) -> usize {
         | DataCmd::TxCost(_)
         | DataCmd::CurveMarket { .. }
         | DataCmd::QiRoutes { .. }
+        | DataCmd::ChainHeads { .. }
         | DataCmd::Test => QUICK,
         _ => VIEWS,
     }
@@ -487,6 +497,7 @@ fn flight_key(cmd: &DataCmd) -> Option<String> {
         DataCmd::TxCost(h) => format!("tx_cost:{h}"),
         DataCmd::Launches => "launches".into(),
         DataCmd::ChainStats => "chain_stats".into(),
+        DataCmd::ChainHeads { .. } => "chain_heads".into(),
         DataCmd::WalletQuai(_) => "wallet_quai".into(),
         // Every operation counts: two edits are not one.
         DataCmd::Alerts(_) => return None,
@@ -1033,6 +1044,10 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
                 note,
             });
         }
+        DataCmd::ChainHeads { after, max } => {
+            let r = wallet_core::blocks::since(&ctx.node, after, usize::from(max)).await.map_err(|e| e.to_string());
+            send(DataEv::ChainHeads(r));
+        }
         DataCmd::ChainStats => {
             send(DataEv::ChainStats(wallet_core::chainstats::chain_stats(ctx).await.map(|c| Box::new(c.value)).map_err(|e| e.to_string())));
         }
@@ -1191,6 +1206,7 @@ fn cmd_name(cmd: &DataCmd) -> &'static str {
         DataCmd::TxCost(_) => "tx_cost",
         DataCmd::Launches => "launches",
         DataCmd::ChainStats => "chain_stats",
+        DataCmd::ChainHeads { .. } => "chain_heads",
         DataCmd::WalletQuai(_) => "wallet_quai",
         DataCmd::Alerts(_) => "alerts",
         DataCmd::CurveMarket { .. } => "curve_market",
