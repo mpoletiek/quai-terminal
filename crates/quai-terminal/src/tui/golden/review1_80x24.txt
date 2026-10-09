@@ -1,4 +1,4 @@
- ◆  PREVIEW │ 1 Home 2 3 4 5 6 0 │ ● Local dev │ watch-only       ● 1 unread N
+ ◆  PREVIEW ▖▗ │ 1 Home 2 3 4 5 6 0 │ ● Local dev │ watch-only    ● 1 unread N
  Home ·  Portfolio   Qi coins   Accounts   [ ]
 ┌┌ review · Buy Quai Pepe #212 ───────────────────────────────────────────────┐┐
 ││                                                                            ││
@@ -8,8 +8,8 @@
 ││    −   0.1 QUAI             network fee, at most                           ││
 ││                                                                            │┃
 ││  network         Quai Mainnet                                              │┃
-││  from            0x00 (Account 1)                                          │┃
-││  to              0x0012                                                    │┃
+││  from            ▚▞ 0x00 (Account 1)                                       │┃
+││  to              ██ 0x0012                                                 │┃
 ││  amount          1000 QUAI                                                 │┃
 ││  max fee         0.1 QUAI                                                  ││
 └│                                                                            │┘

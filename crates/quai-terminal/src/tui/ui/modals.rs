@@ -124,6 +124,9 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
     // What the action sheet acts on, named the way the header names it.
     let here = app.breadcrumb().last().cloned().unwrap_or_default().to_lowercase();
     let dash = &app.dash;
+    // Sigils beside the review's addresses, from fields the modal does not hold.
+    let (show, bitmaps) = (!app.term.plain && !app.term.no_color, super::super::images::bitmaps(app));
+    let sigils = crate::tui::sigil::Ctx { show, bitmaps, icons: &app.eco.media.inline_icons };
     match &mut app.modal {
         Modal::None => {}
         Modal::Form(form) => {
@@ -326,9 +329,13 @@ pub(crate) fn draw_modal(f: &mut Frame, app: &mut App, t: &Theme, area: Rect) {
             };
             let asset_color = if rv.asset.eq_ignore_ascii_case("QI") { t.qi } else { t.quai };
             lines.push(kv("network", rv.network.clone(), Style::default().fg(t.link)));
-            // Addresses in groups of four, to be checked group by group against another copy.
+            // Addresses in groups of four, to be checked group by group against another copy, each
+            // after its sigil: a recipient that is not the one you know looks different at once.
             let addr = |k: &str, v: &str| {
                 let mut spans = vec![Span::styled(format!("{k:<label_w$}"), t.dim_style())];
+                if v.trim_start().starts_with("0x") {
+                    spans.extend([sigils.span(t, v), Span::raw(" ")]);
+                }
                 spans.extend(super::super::widgets::address(t, v, t.text_style()));
                 Line::from(spans)
             };

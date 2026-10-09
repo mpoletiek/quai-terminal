@@ -784,15 +784,26 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
             ],
         )
     });
-    // With more than one account, which one acts rides beside the name (`@` changes it).
+    // With more than one account, which one acts rides beside the name (`@` changes it), after
+    // its sigil; with one, the sigil alone.
     if d.accounts.len() > 1
         && let Some(active) = d.active_account()
     {
         segs.push(Seg {
             joined: Some(0),
-            targets: vec![(1, Target::Header(HeaderPart::Account))],
-            ..seg(3, vec![Span::styled(" · ", t.dim_style()), Span::styled(truncate(&active.label, 18), t.strong_style())])
+            targets: vec![(3, Target::Header(HeaderPart::Account))],
+            ..seg(
+                3,
+                vec![
+                    Span::styled(" · ", t.dim_style()),
+                    crate::tui::sigil::span(app, t, &active.address),
+                    Span::raw(" "),
+                    Span::styled(truncate(&active.label, 18), t.strong_style()),
+                ],
+            )
         });
+    } else if let Some(active) = d.active_account() {
+        segs.push(Seg { joined: Some(0), ..seg(3, vec![Span::raw(" "), crate::tui::sigil::span(app, t, &active.address)]) });
     }
     // The balance rides beside the name, rounded: this is the glance figure, not the ledger.
     // `$` hides it, for a room with other people in it. It is the first thing to go.

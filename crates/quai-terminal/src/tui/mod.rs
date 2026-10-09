@@ -25,6 +25,7 @@ pub mod placeholders;
 pub mod pointer;
 pub mod raster;
 pub mod screen;
+pub mod sigil;
 pub mod term;
 pub mod terminal;
 pub mod tfx;

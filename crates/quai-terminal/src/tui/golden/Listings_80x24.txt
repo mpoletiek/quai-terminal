@@ -1,4 +1,4 @@
- ◆  PREVIEW │ 1 2 3 4 NFTs 5 6 0 │ ● Local dev │ watch-only       ● 1 unread N
+ ◆  PREVIEW ▖▗ │ 1 2 3 4 NFTs 5 6 0 │ ● Local dev │ watch-only    ● 1 unread N
  NFTs ·  Collected   Explore   Listings   [ ]
 ┌ ▸ listings · Bazarr · all collections · cheapest first ──────────────────────┐
 │ price                     item           collection   market       listed    │

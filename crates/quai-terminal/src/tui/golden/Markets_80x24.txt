@@ -1,4 +1,4 @@
- ◆  PREVIEW │ 1 2 Markets 3 4 5 6 0 │ ● Local dev │ watch-only    ● 1 unread N
+ ◆  PREVIEW ▖▗ │ 1 2 Markets 3 4 5 6 0 │ ● Local dev │ watch-only ● 1 unread N
  Markets ·  Pairs   Launches   Pools   [ ]
 ┌ ▸ pairs · stale/partial source · reserves unverified · TVL $11.9k · 24h $2.…─┐
 │ pair                                      price              24h     TVL/%   │

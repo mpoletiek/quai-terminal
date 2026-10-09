@@ -345,10 +345,11 @@ pub(crate) fn draw_accounts(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     Cell::from(Span::styled(app::jump_label(i - offset).to_string(), jump_style(app, t))),
                     Cell::from(Span::styled("▌", Style::default().fg(t.quai))),
                     Cell::from(a.label.clone()),
-                    Cell::from(Span::styled(
-                        if narrow { short_address(&a.address) } else { a.address.clone() },
-                        Style::default().fg(t.link),
-                    )),
+                    Cell::from(Line::from(vec![
+                        crate::tui::sigil::span(app, t, &a.address),
+                        Span::raw(" "),
+                        Span::styled(if narrow { short_address(&a.address) } else { a.address.clone() }, Style::default().fg(t.link)),
+                    ])),
                     Cell::from(Line::from(Span::styled(q(a.balance), t.strong_style().fg(t.quai))).alignment(Alignment::Right)),
                     Cell::from(if a.locked.is_zero() { String::new() } else { format!("{} {}", t.icon(Icon::Locked), q(a.locked)) }),
                     Cell::from(Span::styled(a.nonce.to_string(), t.dim_style())),
@@ -356,7 +357,8 @@ pub(crate) fn draw_accounts(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 if i == app.nav.selected { row.style(t.selected()) } else { row }
             })
             .collect();
-        let addr_w = if narrow { 13 } else { 44 };
+        // The sigil, a space, then the address.
+        let addr_w = if narrow { 16 } else { 47 };
         let table = Table::new(
             rows,
             [
@@ -788,7 +790,12 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 let more = contact_accounts(app, c).len().saturating_sub(1);
                 let row = Row::new(vec![
                     Cell::from(Span::styled(app::jump_label(i - offset).to_string(), jump_style(app, t))),
-                    Cell::from(Span::styled(c.name.clone(), t.strong_style())),
+                    // The contact's sigil: of its address, or of its payment code when it has none.
+                    Cell::from(Line::from(vec![
+                        crate::tui::sigil::span(app, t, c.address.as_deref().or(c.payment_code.as_deref()).unwrap_or_default()),
+                        Span::raw(" "),
+                        Span::styled(c.name.clone(), t.strong_style()),
+                    ])),
                     Cell::from(match (&c.address, ledger) {
                         (Some(a), Some((label, color))) => Line::from(vec![
                             Span::styled(format!("{label:<4} "), Style::default().fg(color)),
@@ -809,7 +816,7 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         f.render_widget(
             Table::new(
                 rows,
-                [Constraint::Length(1), Constraint::Length(16), Constraint::Length(19), Constraint::Length(16), Constraint::Min(8)],
+                [Constraint::Length(1), Constraint::Length(19), Constraint::Length(19), Constraint::Length(16), Constraint::Min(8)],
             )
             .column_spacing(2)
             .header(Row::new(["", "name", "address", "payment code", "note"]).style(t.dim_style())),
@@ -832,12 +839,20 @@ pub(crate) fn draw_payments(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             if !accounts.is_empty() {
                 lines.push(label(if accounts.len() > 1 { "accounts · payments go to the first" } else { "address" }));
                 for a in &accounts {
-                    lines.push(Line::from(Span::styled(a.clone(), Style::default().fg(t.link))));
+                    lines.push(Line::from(vec![
+                        crate::tui::sigil::span(app, t, a),
+                        Span::raw(" "),
+                        Span::styled(a.clone(), Style::default().fg(t.link)),
+                    ]));
                 }
             }
             if let Some(code) = &c.payment_code {
                 lines.push(label("payment code"));
-                lines.push(Line::from(Span::styled(code.clone(), Style::default().fg(t.qi))));
+                lines.push(Line::from(vec![
+                    crate::tui::sigil::span(app, t, code),
+                    Span::raw(" "),
+                    Span::styled(code.clone(), Style::default().fg(t.qi)),
+                ]));
                 if let Some(p) = app.dash.peers.iter().find(|p| p.code == *code) {
                     lines.push(Line::from(Span::styled(
                         format!("channel · ↘ {} received · ↗ {} sent", p.receive_addresses, p.send_addresses),
@@ -1072,12 +1087,14 @@ fn draw_account_inspector(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let details_w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(0).max(28);
     let beside = qr.is_some() && inner.width >= details_w + 2 + qr_w && inner.height >= qr_h;
     let text_w = if beside { inner.width - qr_w - 2 } else { inner.width };
-    let mut grouped = super::super::widgets::address(t, &a.address, t.text_style());
-    let mut head = if text_w >= 54 {
+    // The account's sigil first, so a changed address is seen before it is read.
+    let mut grouped = vec![crate::tui::sigil::span(app, t, &a.address), Span::raw(" ")];
+    grouped.extend(super::super::widgets::address(t, &a.address, t.text_style()));
+    let mut head = if text_w >= 57 {
         vec![Line::from(grouped)]
     } else {
-        let second: Vec<Span> = grouped.split_off(6.min(grouped.len()));
-        vec![Line::from(grouped), Line::from([vec![Span::raw("  ")], second].concat())]
+        let second: Vec<Span> = grouped.split_off(8.min(grouped.len()));
+        vec![Line::from(grouped), Line::from([vec![Span::raw("     ")], second].concat())]
     };
     head.push(Line::from(""));
     head.append(&mut lines);
