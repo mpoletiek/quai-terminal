@@ -4063,7 +4063,23 @@ fn screens_remember_where_they_were_left_and_backspace_returns() {
 fn the_window_title_says_what_is_happening_and_nothing_it_holds() {
     let (_dir, mut app) = test_app(WalletKind::Hd);
     app.dash.notifications.clear();
+    app.dash.health = None;
     assert_eq!(app.window_title(), "Quai Terminal");
+    // Nothing to report: the chain's height, which is public.
+    app.dash.health = Some(wallet_core::network::NodeHealth {
+        network: "local".into(),
+        chain_id: "1".into(),
+        genesis: "0x".into(),
+        identity_ok: true,
+        height: 10_390_405,
+        head_hash: "0x".into(),
+        head_age_secs: None,
+        gas_price: "0".into(),
+        client_version: None,
+        latency_ms: 1,
+        order: None,
+    });
+    assert_eq!(app.window_title(), "◆ #10,390,405 · Cyprus-1 · Quai Terminal");
     app.lock.locked = true;
     assert!(app.window_title().ends_with("locked"), "{}", app.window_title());
     assert_eq!(app.taskbar_state(), 0, "nothing shown busy while locked");

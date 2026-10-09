@@ -30,22 +30,31 @@ pub const HEIGHT_DECODE_MS: u32 = 320;
 /// segment moves when others drop, and the shot ends when its text is gone.
 pub enum Spot {
     Area(Rect),
-    Text { row: u16, text: String },
+    Text {
+        row: u16,
+        text: String,
+    },
+    /// The first place `text` is drawn, top to bottom (a panel whose row the layout decides).
+    Anywhere(String),
+}
+
+/// Where `text` starts on `row`, if it is drawn there.
+fn on_row(buf: &Buffer, row: u16, text: &str) -> Option<Rect> {
+    let w = text.chars().count() as u16;
+    if w == 0 || row >= buf.area.bottom() || w > buf.area.width {
+        return None;
+    }
+    (buf.area.left()..=buf.area.right() - w)
+        .find(|&x| text.chars().enumerate().all(|(i, c)| buf[(x + i as u16, row)].symbol().chars().eq(std::iter::once(c))))
+        .map(|x| Rect::new(x, row, w, 1))
 }
 
 impl Spot {
     fn find(&self, buf: &Buffer) -> Option<Rect> {
         match self {
             Spot::Area(r) => Some(r.intersection(buf.area)).filter(|r| !r.is_empty()),
-            Spot::Text { row, text } => {
-                let w = text.chars().count() as u16;
-                if w == 0 || *row >= buf.area.bottom() || w > buf.area.width {
-                    return None;
-                }
-                (buf.area.left()..=buf.area.right() - w)
-                    .find(|&x| text.chars().enumerate().all(|(i, c)| buf[(x + i as u16, *row)].symbol().chars().eq(std::iter::once(c))))
-                    .map(|x| Rect::new(x, *row, w, 1))
-            }
+            Spot::Text { row, text } => on_row(buf, *row, text),
+            Spot::Anywhere(text) => (buf.area.top()..buf.area.bottom()).find_map(|row| on_row(buf, row, text)),
         }
     }
 }
@@ -465,6 +474,11 @@ mod tests {
             play(&mut area, &mut b, start + std::time::Duration::from_millis(ms));
             assert!(money().iter().flat_map(|r| r.positions()).all(|p| b[p] == base()[p]));
         }
+        // A text anywhere is found on whichever row has it.
+        let mut anywhere = vec![Shot::new("y", decode(300, 1, true), Spot::Anywhere("APPROVED".into()))];
+        let mut b = base();
+        play(&mut anywhere, &mut b, start);
+        assert_eq!(anywhere.len(), 1, "found on row 2");
         let mut gone = vec![Shot::new("x", decode(300, 1, true), Spot::Text { row: 2, text: "NOT THERE".into() })];
         play(&mut gone, &mut base(), start);
         assert!(gone.is_empty());

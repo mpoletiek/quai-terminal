@@ -146,8 +146,25 @@ impl App {
         match result {
             Ok(heads) => {
                 chain.heads.settle(Ok(()));
+                let before = chain.newest().map(|b| b.height);
                 if chain.merge(heads, Instant::now()) > 0 {
                     self.dirty = true;
+                    // A new head on the screen: its hash decodes in the head panel, as the
+                    // header's height does (above Reduced; katakana where a font has them).
+                    let newest = chain.newest().cloned();
+                    if let Some(b) = newest.filter(|b| before.is_some_and(|h| b.height > h))
+                        && self.nav.screen == Screen::Chain
+                        && self.motion().effects()
+                    {
+                        let text = wallet_core::session::short_address(&b.hash);
+                        let effect = super::super::tfx::decode(
+                            super::super::tfx::HEIGHT_DECODE_MS + 160,
+                            b.height as u32 ^ 0x5a5a,
+                            super::super::kana::renders(),
+                        );
+                        self.fx.shots.retain(|s| s.tag != "head-hash");
+                        self.fx.shots.push(super::super::tfx::Shot::new("head-hash", effect, super::super::tfx::Spot::Anywhere(text)));
+                    }
                 }
             }
             Err(e) => {

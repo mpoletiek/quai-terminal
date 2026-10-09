@@ -3072,6 +3072,27 @@ fn the_board_reads_as_a_chat() {
     assert!(text.contains(" you ") && text.contains("on my way"));
 }
 
+/// A new head arriving on System › Chain decodes its hash in the head panel (above Reduced).
+#[test]
+fn a_new_head_decodes_its_hash_on_the_chain_screen() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Chain);
+    app.config.motion = Motion::Full;
+    let mut next = app.eco.chain.newest().unwrap().clone();
+    next.height += 1;
+    next.hash = format!("0x{:064x}", 0xabcdef_u64);
+    app.settle_chain_heads(Ok(vec![next.clone()]));
+    assert!(app.fx.shots.iter().any(|s| s.tag == "head-hash"));
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.fx.shots.iter().any(|s| s.tag == "head-hash"), "it found the hash on screen and plays");
+    app.fx.shots.clear();
+    app.config.motion = Motion::Reduced;
+    next.height += 1;
+    app.settle_chain_heads(Ok(vec![next]));
+    assert!(app.fx.shots.is_empty(), "still below Full");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

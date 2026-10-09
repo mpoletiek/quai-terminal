@@ -1856,7 +1856,8 @@ impl App {
     }
 
     /// The window's title: what the wallet is doing, never what it holds. A title is shown in
-    /// task bars, window switchers and screen shares, so it names no balance and no wallet.
+    /// task bars, window switchers and screen shares, so it names no balance and no wallet. With
+    /// nothing to report it follows the chain's height, which is public.
     pub fn window_title(&self) -> String {
         use super::icons::{Icon, Set};
         // Unicode marks: a window manager's title font may have no Nerd Font glyphs.
@@ -1871,7 +1872,18 @@ impl App {
         } else {
             String::new()
         };
-        if status.is_empty() { "Quai Terminal".into() } else { format!("Quai Terminal · {status}") }
+        if !status.is_empty() {
+            return format!("Quai Terminal · {status}");
+        }
+        // With nothing to say, the chain: its height is public, and it shows the window is live.
+        match &self.dash.health {
+            Some(h) if !self.lock.locked => format!(
+                "{} #{} · Cyprus-1 · Quai Terminal",
+                Icon::Region.glyph(Set::Unicode),
+                wallet_core::amount::group_thousands(&h.height.to_string())
+            ),
+            _ => "Quai Terminal".into(),
+        }
     }
 
     /// Taskbar progress (OSC 9;4 state): busy (3) while transactions confirm or one is being
