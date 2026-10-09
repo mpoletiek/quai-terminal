@@ -24,6 +24,7 @@ pub mod persist;
 pub mod placeholders;
 pub mod pointer;
 pub mod raster;
+pub mod record;
 pub mod screen;
 pub mod sigil;
 pub mod term;
@@ -172,6 +173,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     let mut app = App::new(ctx.paths.clone(), network_id.clone(), config, theme, caps, meta);
     // The boot card says what is starting until the first dashboard lands (`ui::boot`).
     app.fx.boot = Some(Instant::now());
+    // A demo recording, when asked for (`record`): watch-only wallets only.
+    let watch_only = app.meta.as_ref().is_some_and(|m| m.kind == wallet_core::registry::WalletKind::Watch);
+    let mut recorder = std::env::var_os("QW_RECORD").and_then(|p| record::Recorder::new(p.into(), watch_only));
+    // A persona for this session only (the tour's), never saved.
+    app.term.persona_override = std::env::var("QUAI_TERMINAL_PERSONA")
+        .ok()
+        .and_then(|v| wallet_core::config::Persona::ALL.into_iter().find(|p| p.id() == v.trim()));
+    app.eco.markets_view.chart.overlays = app.persona() == wallet_core::config::Persona::Desk;
     // Large pictures go to the terminal as files it reads and deletes, when it is on this machine.
     app.term.kitty.file_dir = terminal::picture_dir(app.term.caps.ssh);
     wallet_core::diag::timing("startup.app_new", startup);
@@ -420,6 +429,9 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             if std::mem::take(&mut first_frame) {
                 wallet_core::diag::timing("startup.first_frame", startup);
             }
+            if let (Some(r), Ok(done)) = (recorder.as_mut(), res.as_ref()) {
+                r.frame(done.buffer, app.theme.text, app.theme.surface);
+            }
             if let Err(e) = res {
                 break Err(CoreError::Invalid(format!("draw: {e}")));
             }
@@ -554,6 +566,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         for event in events {
             match event {
                 Event::Key(key) => {
+                    if let Some(r) = recorder.as_mut()
+                        && key.kind != crossterm::event::KeyEventKind::Release
+                    {
+                        r.key(&match key.code {
+                            crossterm::event::KeyCode::Char(c) => c.to_string(),
+                            code => format!("{code:?}").to_lowercase(),
+                        });
+                    }
                     if key.kind != crossterm::event::KeyEventKind::Release && wallet_core::diag::enabled() {
                         input_started.get_or_insert_with(Instant::now);
                     }
@@ -625,6 +645,11 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         terminal::clean_picture_files(dir);
     }
     drop(term);
+    if let Some(r) = &recorder
+        && let Err(e) = r.finish()
+    {
+        eprintln!("QW_RECORD: {e}");
+    }
     if let Some(line) = app.quit_receipt() {
         println!("{line}");
     }

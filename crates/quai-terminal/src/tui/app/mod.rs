@@ -1256,6 +1256,8 @@ pub struct TermState {
     pub pending_theme_reload: bool,
     /// Session-only theme (QUAI_TERMINAL_THEME); cleared when a theme is chosen.
     pub theme_override: Option<String>,
+    /// A persona for this session only (`QUAI_TERMINAL_PERSONA`), never saved.
+    pub persona_override: Option<wallet_core::config::Persona>,
     /// Session-only plain mode (NO_COLOR, Linux console): no block digits, reduced motion.
     pub plain: bool,
     /// The terminal's own background (OSC 11), when it said.
@@ -1504,6 +1506,7 @@ impl App {
                 kitty: KittyGraphics::default(),
                 pending_theme_reload: false,
                 theme_override: None,
+                persona_override: None,
                 plain: false,
                 background: None,
                 last_size: (80, 24),
@@ -1540,12 +1543,17 @@ impl App {
         }
     }
 
+    /// The persona the terminal is drawn in: the session's, else the saved one.
+    pub fn persona(&self) -> wallet_core::config::Persona {
+        self.term.persona_override.unwrap_or(self.config.persona)
+    }
+
     pub fn motion(&self) -> Motion {
         // Plain is still: a screen reader has nothing to gain from motion, and every frame it
         // would cost is one more thing re-read.
         if self.term.plain {
             Motion::Off
-        } else if (self.term.caps.ssh || self.config.persona == wallet_core::config::Persona::Desk) && self.config.motion.effects() {
+        } else if (self.term.caps.ssh || self.persona() == wallet_core::config::Persona::Desk) && self.config.motion.effects() {
             // Over SSH every frame crosses the link; at the desk, nothing should pull the eye.
             Motion::Reduced
         } else {

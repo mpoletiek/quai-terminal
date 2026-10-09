@@ -217,7 +217,8 @@ impl App {
             }
             Some("persona") => {
                 use wallet_core::config::Persona;
-                self.config.persona = cycle(&Persona::ALL, self.config.persona, dir);
+                self.config.persona = cycle(&Persona::ALL, self.persona(), dir);
+                self.term.persona_override = None;
                 let p = self.config.persona;
                 self.eco.markets_view.chart.overlays = p == Persona::Desk;
                 Some(("Persona".into(), format!("{} · {}", p.id(), p.about())))

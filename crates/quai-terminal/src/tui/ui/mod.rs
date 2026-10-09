@@ -388,7 +388,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.theme.icons = app.icon_set();
     SPUN.with(|s| s.set(false));
     STILL.with(|s| s.set(app.motion() == Motion::Off));
-    PERSONA.with(|p| p.set(app.config.persona));
+    PERSONA.with(|p| p.set(app.persona()));
     FRAMED.with(|m| m.borrow_mut().clear());
     draw_frame(f, app);
     // Any spinner drawn keeps turning until the frame no longer shows one.
@@ -417,7 +417,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 .all(|y| (b.x..b.x + b.width()).all(|x| buf.cell((x, y)).is_some_and(|c| c.symbol() == BIG_TEXT_CELL)))
         });
     }
-    if app.config.persona == wallet_core::config::Persona::Ghost {
+    if app.persona() == wallet_core::config::Persona::Ghost {
         ghost_frames(f.buffer_mut(), &t);
     }
     // The composed content, kept for the frames where only the edge light moves (`draw_edges`),
