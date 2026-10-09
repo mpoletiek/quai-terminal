@@ -107,6 +107,42 @@ pub(crate) fn pct_span(t: &Theme, pct: Option<f64>) -> Span<'static> {
     }
 }
 
+/// The pairs that moved most in a day, biggest first, as tiles tinted by how far: `QOGE ▲ 12.4%`.
+/// Pairs with under $100 of liquidity (or none known) are left out; a dust pool's swings are noise.
+/// Direction is in the arrow and the sign as well as the colour.
+fn draw_movers(f: &mut Frame, app: &App, t: &Theme, area: Rect, pools: &[&wallet_core::markets::Pool], now: u64) {
+    let mut movers: Vec<(String, f64)> = pools
+        .iter()
+        .filter(|p| app.row_tvl_usd(p).is_some_and(|v| v >= 100.0))
+        .filter_map(|p| {
+            let change = app.row_change(p, now).filter(|c| c.abs() >= 0.05)?;
+            let base = if app.pool_base0(p) { &p.token0 } else { &p.token1 };
+            Some((app.market_symbol(base), change))
+        })
+        .collect();
+    movers.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
+    let mut spans = vec![Span::styled("movers ", t.dim_style())];
+    let mut used = 7usize;
+    if movers.is_empty() {
+        spans.push(Span::styled("no day's changes to rank yet", t.dim_style()));
+    }
+    for (symbol, change) in movers {
+        let (glyph, colour) = if change >= 0.0 { ("▲", t.up) } else { ("▼", t.down) };
+        let tile = format!(" {} {glyph} {:.1}% ", truncate(&symbol, 8), change.abs());
+        if used + tile.chars().count() + 1 > area.width as usize {
+            break;
+        }
+        used += tile.chars().count() + 1;
+        // Stronger tint for bigger moves, from a whisper at 1% to its fullest at 20%.
+        let k = (0.10 + change.abs().min(20.0) / 20.0 * 0.30) as f32;
+        let bg = super::super::edge::tint(t, colour, k);
+        let style = bg.map_or(Style::default().fg(colour), |bg| Style::default().fg(colour).bg(bg));
+        spans.push(Span::styled(tile, style));
+        spans.push(Span::raw(" "));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     use wallet_core::markets::{TIMEFRAMES, Venue};
     let mv = &app.eco.markets_view;
@@ -194,6 +230,13 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = panel(t, &title, app.nav.screen == Screen::Markets && app.lit_pane() == Some(0));
     let inner = block.inner(list_area);
     f.render_widget(block, list_area);
+    // The day's movers across the top of the list, where it has rows to spare.
+    let inner = if inner.height >= 9 {
+        draw_movers(f, app, t, Rect { height: 1, ..inner }, &rows_pools, now);
+        Rect { y: inner.y + 2, height: inner.height - 2, ..inner }
+    } else {
+        inner
+    };
     let visible = inner.height.saturating_sub(1) as usize;
     let pairs_id = crate::tui::hit::ListId::Screen(Screen::Markets, 0);
     let offset = app.list_window(pairs_id, selected, rows_pools.len(), visible);

@@ -2886,6 +2886,29 @@ fn the_swap_card_shows_its_routes_depth() {
     assert!(text.contains("depth through WQUAI") && text.contains("type an amount to see its impact · LP fee 0.6% on top"), "{text}");
 }
 
+/// The day's movers head the pairs list, biggest first, arrow and sign beside the colour; a pool
+/// too shallow to mean anything is left out.
+#[test]
+fn the_days_movers_head_the_pairs_list() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Markets);
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
+        for p in pools.iter_mut() {
+            if p.token0.symbol == "QOGE" {
+                p.spot_24h_ago = p.spot_price().map(|s| s / 1.136);
+            }
+        }
+    }
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let b = term.backend().buffer();
+    let row = (0..b.area.height)
+        .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+        .find(|r| r.contains("movers"))
+        .unwrap();
+    assert!(row.contains("QOGE ▲ 13.6%"), "{row}");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus
