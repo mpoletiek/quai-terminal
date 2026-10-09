@@ -248,6 +248,27 @@ fn draw_lattice(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     }
     let start = inner.x + GUTTER + ((slots - (newest.height - first + 1)) * 2) as u16;
     let x_of = |h: u64| start + ((h - first) * 2) as u16;
+    let drawing = Rect { x: inner.x + GUTTER, y: inner.y, width: slots as u16 * 2, height: 5 };
+    let picture = LatticePicture {
+        slots: slots as u16,
+        offset: (start - drawing.x) / 2,
+        blocks: (first..=newest.height)
+            .map(|h| by_height.get(&h).map(|b| (b.order, b.txs.min(120) as u8, b.workshares.min(24) as u8)))
+            .collect(),
+        lit: app
+            .eco
+            .chain
+            .arrived
+            .get(&newest.height)
+            .map(|at| at.elapsed().as_millis())
+            .filter(|ms| *ms < LIT_MS && app.motion().effects())
+            .map(|ms| (ms / 125) as u8),
+    };
+    if lattice_pixels(app, buf, t, drawing, picture) {
+        draw_moment(app, t, buf, area, newest);
+        draw_lattice_numbers(t, buf, inner, label_w, newest);
+        return;
+    }
     for (lane, (_, order, colour)) in lanes.iter().enumerate() {
         let y = inner.y + lane as u16 * 2;
         // Links: from each block of this chain to the next one along.
@@ -287,8 +308,14 @@ fn draw_lattice(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             }
         }
     }
-    // A prime block's moment, on the panel's top line: the block named in the prime hue, stripes to
-    // the corner, one colour flip halfway. Region blocks come every few seconds; only prime gets one.
+    draw_moment(app, t, buf, area, newest);
+    draw_lattice_numbers(t, buf, inner, label_w, newest);
+}
+
+/// A prime block's moment, on the lattice panel's top line: the block named in the prime hue,
+/// stripes to the corner, one colour flip halfway. Region blocks come every few seconds; only
+/// prime gets one.
+fn draw_moment(app: &App, t: &Theme, buf: &mut ratatui::buffer::Buffer, area: Rect, newest: &BlockHead) {
     if newest.order == 0
         && let Some(ms) = app.eco.chain.arrived.get(&newest.height).map(|at| at.elapsed().as_millis())
         && ms < MOMENT_MS
@@ -305,10 +332,118 @@ fn draw_lattice(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             }
         }
     }
+}
+
+/// Each chain's newest number at the right end of its lane.
+fn draw_lattice_numbers(t: &Theme, buf: &mut ratatui::buffer::Buffer, inner: Rect, label_w: u16, newest: &BlockHead) {
     let right = inner.right() - label_w + 1;
     for (lane, n) in [(0u16, newest.prime), (1, newest.region), (2, newest.height)] {
         buf.set_string(right, inner.y + lane * 2, format!("#{}", amount::group_thousands(&n.to_string())), t.dim_style());
     }
+}
+
+/// What the pixel lattice draws: per slot from the oldest shown, the block's order, transactions
+/// and workshares (none for a height never read), where the first one sits, and how far into
+/// its light the newest block is (eighths of a second).
+#[derive(Hash)]
+struct LatticePicture {
+    slots: u16,
+    offset: u16,
+    blocks: Vec<Option<(u8, u8, u8)>>,
+    lit: Option<u8>,
+}
+
+fn rgb3(c: Color) -> Option<[u8; 3]> {
+    match c {
+        Color::Rgb(r, g, b) => Some([r, g, b]),
+        _ => None,
+    }
+}
+
+/// The lattice in pixels (kitty and Ghostty): anti-aliased lanes and ties, prime and region
+/// blocks glowing in their chains' hues, zone blocks sized by the transactions they carried, a
+/// tick under each for its workshares, and the newest block's light rising up its tie as it
+/// lands. False where it cannot be drawn (another tier, a theme without RGB colours, nothing
+/// drawn yet), and the cells draw the lattice instead.
+fn lattice_pixels(app: &App, buf: &mut ratatui::buffer::Buffer, t: &Theme, area: Rect, p: LatticePicture) -> bool {
+    use super::super::raster::{self, Canvas};
+    if !images::bitmaps(app) {
+        return false;
+    }
+    let (Some(prime), Some(region), Some(zone), Some(line), Some(lit)) =
+        (rgb3(t.danger), rgb3(t.qi), rgb3(t.strong), rgb3(t.dim), rgb3(t.focus))
+    else {
+        return false;
+    };
+    let key = raster::key_of(&(&p, prime, region, zone, line, lit, area.width, area.height));
+    raster::scene(app, buf, area, t, "lattice", key, move |c: &mut Canvas| {
+        let (cw, ch) = (c.w as f64 / f64::from(p.slots * 2), c.h as f64 / 5.0);
+        let lane_y = |lane: u8| (f64::from(lane) * 2.0 + 0.5) * ch;
+        let x_of = |i: usize| ((f64::from(p.offset) + i as f64) * 2.0 + 0.5) * cw;
+        let colours = [prime, region, zone];
+        let width = (ch * 0.07).max(1.0);
+        // Lanes: each chain's blocks linked to the next one along; a dotted gap where a zone
+        // height was never read.
+        for lane in 0..3u8 {
+            let mut last: Option<f64> = None;
+            for (i, b) in p.blocks.iter().enumerate() {
+                match b {
+                    Some((order, ..)) if *order <= lane => {
+                        if let Some(from) = last {
+                            c.line(
+                                (from, lane_y(lane)),
+                                (x_of(i), lane_y(lane)),
+                                width,
+                                if lane == 2 { line } else { colours[lane as usize] },
+                                0.55,
+                            );
+                        }
+                        last = Some(x_of(i));
+                    }
+                    None if lane == 2 => {
+                        for k in 0..4 {
+                            c.dot(x_of(i) - cw + f64::from(k) * cw * 0.66, lane_y(2), width * 0.6, line, 0.6);
+                        }
+                        last = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (i, b) in p.blocks.iter().enumerate() {
+            let Some((order, txs, ws)) = *b else { continue };
+            let x = x_of(i);
+            // A tie from the zone lane up to the highest chain the block is also a block of.
+            if order < 2 {
+                c.line((x, lane_y(2)), (x, lane_y(order)), width, colours[order as usize], 0.7);
+            }
+            for lane in order..3 {
+                let r = match lane {
+                    0 => cw * 0.36,
+                    1 => cw * 0.30,
+                    _ => cw * (0.24 + 0.18 * f64::from(txs) / 120.0),
+                };
+                if lane < 2 {
+                    c.glow(x, lane_y(lane), r * 3.0, colours[lane as usize], 0.30);
+                }
+                c.dot(x, lane_y(lane), r, colours[lane as usize], 0.95);
+            }
+            // Workshares hang under the zone block.
+            if ws > 0 {
+                let top = lane_y(2) + cw * 0.4;
+                c.line((x, top), (x, top + (ch * 0.42 - cw * 0.4).max(2.0) * f64::from(ws) / 24.0), width * 0.8, line, 0.8);
+            }
+        }
+        // The newest block's light: a glow on it, rising up its tie to its chain as it fades.
+        if let (Some(q), Some(Some((order, ..)))) = (p.lit, p.blocks.last()) {
+            let k = f64::from(q) / 12.0;
+            let x = x_of(p.blocks.len() - 1);
+            let top = lane_y(*order);
+            let y = lane_y(2) + (top - lane_y(2)) * (k * 1.6).min(1.0);
+            c.glow(x, y, cw * 1.6, lit, 0.8 * (1.0 - k));
+            c.dot(x, y, cw * 0.22, lit, 1.0 - k);
+        }
+    })
 }
 
 /// The blocks the lattice shows, oldest first, for the strip charts under it.

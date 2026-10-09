@@ -2766,6 +2766,41 @@ fn a_prime_block_has_its_moment_on_the_lattice_line() {
     assert!(top.contains('▞') && top.trim_end().ends_with('┐'), "stripes to the corner, which stays: {top}");
 }
 
+/// In kitty the lattice is a picture: its lanes become a bitmap placed over held cells, while
+/// the lane names and each chain's number stay text; until the picture is drawn, the cells draw
+/// the lattice.
+#[test]
+fn the_lattice_is_a_picture_where_bitmaps_draw() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.tier = super::super::terminal::Tier::Pixels;
+    app.term.caps.cell_px = (10, 20);
+    app.term.plain = false;
+    app.switch(Screen::Chain);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    let text = |term: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+        let b = term.backend().buffer();
+        (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>()
+    };
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(text(&term).iter().any(|r| r.contains("ZONE") && r.contains('●')), "cells first");
+    let mut placed = false;
+    for _ in 0..300 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        app.eco.media.kitty.borrow_mut().clear();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        if app.eco.media.kitty.borrow().iter().any(|(r, ..)| r.height == 5 && r.width > 60) {
+            placed = true;
+            break;
+        }
+    }
+    assert!(placed, "the lattice bitmap was placed");
+    let rows = text(&term);
+    let zone = rows.iter().find(|r| r.contains("ZONE")).unwrap();
+    assert!(!zone.contains('●') && zone.contains(super::super::images::RESERVED), "the lanes are held for the picture: {zone}");
+    assert!(zone.contains("#10,515,409"), "the zone's number stays text");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus
