@@ -107,6 +107,53 @@ pub(crate) fn pct_span(t: &Theme, pct: Option<f64>) -> Span<'static> {
     }
 }
 
+/// Cells in a pairs row's sparkline: three hours each.
+const TREND_CELLS: u16 = 8;
+
+/// A pair's last day in a row: eight cells of eighths, each the price at the end of its three
+/// hours (carried through hours without a trade, starting from the price a day ago and ending at
+/// the price now), from the day's low to its high; up or down by where the day ended, as the 24h
+/// change beside it says. Blank without a day of history; a flat floor
+/// when it did not move.
+fn trend_cell(app: &App, t: &Theme, p: &wallet_core::markets::Pool, base0: bool) -> Line<'static> {
+    const EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let Some(points) = app.eco.markets_view.trends.value().and_then(|m| m.get(&p.address.to_lowercase())) else {
+        return Line::from("");
+    };
+    let orient = |v: f64| if base0 { v } else { 1.0 / v };
+    let now = wallet_core::registry::now();
+    let start = now.saturating_sub(86_400);
+    let slot = 86_400 / u64::from(TREND_CELLS);
+    let mut values = Vec::with_capacity(TREND_CELLS as usize);
+    for k in 0..u64::from(TREND_CELLS) {
+        let end = start + (k + 1) * slot;
+        // Before the day's first trade, the price a day ago: what the 24h change compares with.
+        let at = points
+            .iter()
+            .rev()
+            .find(|(at, _)| *at < end)
+            .map(|(_, v)| *v)
+            .or(p.spot_24h_ago)
+            .or(points.first().map(|(_, v)| *v))
+            .map(orient);
+        values.push(at);
+    }
+    if let (Some(last), Some(spot)) = (values.last_mut(), p.spot_price()) {
+        *last = Some(orient(spot));
+    }
+    let values: Vec<f64> = values.into_iter().flatten().filter(|v| v.is_finite() && *v > 0.0).collect();
+    if values.len() < 2 {
+        return Line::from("");
+    }
+    let (lo, hi) = values.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    let colour = if values[values.len() - 1] >= values[0] { t.up } else { t.down };
+    if (hi - lo) <= hi.abs() * 1e-6 {
+        return Line::from(Span::styled("▁".repeat(values.len()), t.dim_style()));
+    }
+    let text: String = values.iter().map(|v| EIGHTHS[(((v - lo) / (hi - lo)) * 7.0).round() as usize]).collect();
+    Line::from(Span::styled(text, Style::default().fg(colour)))
+}
+
 /// The pairs that moved most in a day, biggest first, as tiles tinted by how far: `QOGE ▲ 12.4%`.
 /// Pairs with under $100 of liquidity (or none known) are left out; a dust pool's swings are noise.
 /// Direction is in the arrow and the sign as well as the colour.
@@ -238,6 +285,8 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         inner
     };
     let visible = inner.height.saturating_sub(1) as usize;
+    // The day's sparklines where the list is wide enough to keep the pair names.
+    let trend_w: u16 = if inner.width >= 48 { TREND_CELLS } else { 0 };
     let pairs_id = crate::tui::hit::ListId::Screen(Screen::Markets, 0);
     let offset = app.list_window(pairs_id, selected, rows_pools.len(), visible);
     {
@@ -295,6 +344,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     watch,
                 ])),
                 Cell::from(Line::from(price.map(fmt_price).unwrap_or_else(|| "—".into())).alignment(Alignment::Right)),
+                Cell::from(trend_cell(app, t, p, base0)),
                 Cell::from(change),
                 Cell::from(Line::from(depth).alignment(Alignment::Right)),
             ]);
@@ -302,9 +352,12 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         })
         .collect();
     f.render_widget(
-        Table::new(rows, [Constraint::Min(12), Constraint::Length(9), Constraint::Length(7), Constraint::Length(7)])
-            .column_spacing(1)
-            .header(Row::new(["pair", "price", "24h", "TVL/%"]).style(t.dim_style())),
+        Table::new(
+            rows,
+            [Constraint::Min(12), Constraint::Length(9), Constraint::Length(trend_w), Constraint::Length(7), Constraint::Length(7)],
+        )
+        .column_spacing(1)
+        .header(Row::new(["pair", "price", "", "24h", "TVL/%"]).style(t.dim_style())),
         inner,
     );
 

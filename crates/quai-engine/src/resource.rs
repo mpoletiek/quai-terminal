@@ -84,6 +84,8 @@ pub mod fresh {
     pub const CHAIN_HEADS_LIVE: Freshness = Freshness::TtlRetry(Duration::from_secs(15), Duration::from_secs(30));
     /// Following new heads over the node's WebSocket: asked again 30 s after it ended.
     pub const CHAIN_WATCH: Freshness = secs(30);
+    /// The pairs list's day of hourly prices: the indexer's hourly buckets turn once an hour.
+    pub const DAY_TRENDS: Freshness = secs(600);
     /// A pair's ready-made candles from the indexer, while its chart is on screen.
     pub const CANDLES: Freshness = secs(5);
     /// A pair's own trades (its chart and tape).

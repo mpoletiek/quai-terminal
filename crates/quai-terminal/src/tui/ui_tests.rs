@@ -2972,6 +2972,31 @@ fn the_price_chart_draws_its_styles() {
     assert!(placed, "the chart was placed as a picture");
 }
 
+/// A pair's row carries its day as a sparkline: rising here, so up-coloured and ending high.
+#[test]
+fn pairs_rows_carry_their_day() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Markets);
+    let now = wallet_core::registry::now();
+    // USDT/WQUAI, token1 per token0 (WQUAI per USDT), falling across the day: QUAI/USDT rises.
+    let points: Vec<(u64, f64)> = (0..24u64).map(|h| (now - 86_400 + h * 3_600, 140.0 - h as f64)).collect();
+    app.eco
+        .markets_view
+        .trends
+        .settle(Ok(std::collections::HashMap::from([("0x0021f5cc862ebb0252ba209266f2fabbc7592e83".to_string(), points)])));
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let b = term.backend().buffer();
+    let row = (0..b.area.height)
+        .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+        .find(|r| r.contains("QUAI/USDT") && r.contains("$3.33k"))
+        .unwrap();
+    // The pairs column only (the chart beside it has eighths of its own).
+    let spark: String = row.chars().skip(24).take(52).filter(|c| "▁▂▃▄▅▆▇█".contains(*c)).collect();
+    assert_eq!(spark.chars().count(), 8, "{row}");
+    assert!(spark.starts_with('▁') && spark.ends_with('█'), "rising: {spark}");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

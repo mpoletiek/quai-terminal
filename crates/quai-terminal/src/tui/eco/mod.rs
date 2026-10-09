@@ -307,6 +307,8 @@ pub struct MarketsView {
     pub timeframe: usize,
     /// How the price charts draw (Markets and the swap card's).
     pub chart: ChartStyle,
+    /// Each pair's hourly prices over the last day, for the list's sparklines.
+    pub trends: Resource<HashMap<String, Vec<(u64, f64)>>>,
     /// How many candles the chart is dragged back from now (0: it ends now), and the pair and
     /// timeframe that pan belongs to (another resets it).
     pub pan: (usize, String, usize),
@@ -396,6 +398,7 @@ impl Default for MarketsView {
     fn default() -> Self {
         MarketsView {
             chart: ChartStyle::default(),
+            trends: Resource::default(),
             candles: HashMap::new(),
             candle_reads: Keyed::default(),
             pools: Resource::default(),

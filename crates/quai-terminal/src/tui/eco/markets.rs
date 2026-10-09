@@ -686,6 +686,21 @@ impl App {
     /// Refresh the pool directory, the DEX-wide tape, live reserves and the selected pool's own
     /// trades. A tick that falls inside a source's cache TTL is served from the store and never
     /// reaches the network, so this paces the screen rather than the network.
+    /// The list's day of hourly prices, for its sparklines: every pair the indexer can know
+    /// (curves trade outside it), at most 200, on `fresh::DAY_TRENDS`'s pace.
+    fn tick_trends(&mut self) {
+        let pairs: Vec<String> = self
+            .market_rows()
+            .iter()
+            .filter(|p| p.venue != wallet_core::markets::Venue::Curve)
+            .take(200)
+            .map(|p| p.address.clone())
+            .collect();
+        if !pairs.is_empty() && self.eco.markets_view.trends.take_due(fresh::DAY_TRENDS, &self.eco.clock) {
+            self.send_data(DataCmd::DayTrends(pairs));
+        }
+    }
+
     pub(crate) fn tick_markets(&mut self) {
         self.unstick_markets();
         // Without a data worker nothing would answer, and the directory would say it is loading
@@ -696,6 +711,7 @@ impl App {
         }
         self.tick_dex_flow();
         self.tick_reserves();
+        self.tick_trends();
         let Some(pool) = self.selected_pool() else { return };
         // Scrolling the list is not a request for every row it passes over. A row is only asked
         // about once the cursor has rested on it, which is what turns a 26-row scroll from one

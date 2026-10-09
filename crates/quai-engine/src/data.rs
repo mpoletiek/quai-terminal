@@ -177,6 +177,8 @@ pub enum DataCmd {
         after: Option<u64>,
         max: u16,
     },
+    /// Each pair's hourly prices over the last day, for the Markets list's sparklines.
+    DayTrends(Vec<String>),
     /// Follow (or stop following) the node's new heads over its WebSocket, for System › Chain:
     /// each one is a `DataEv::ChainHead`. Dropped whenever the worker changes node.
     ChainWatch(bool),
@@ -273,6 +275,8 @@ pub enum DataEv {
     ChainStats(Result<Box<wallet_core::chainstats::ChainStats>, String>),
     /// Headers oldest first; empty when nothing is newer than what was asked after.
     ChainHeads(Result<Vec<wallet_core::blocks::BlockHead>, String>),
+    /// Hourly prices over the last day, by pair (`DataCmd::DayTrends`).
+    DayTrends(Result<std::collections::HashMap<String, Vec<(u64, f64)>>, String>),
     /// The node announced a new head at this height.
     ChainHead(u64),
     /// Following new heads ended: the node closed it (`Ok`) or it failed.
@@ -409,6 +413,7 @@ fn cache_pass(cmd: &DataCmd) -> Option<DataCmd> {
         DataCmd::MarketPools => DataCmd::MarketPools,
         DataCmd::Launches => DataCmd::Launches,
         DataCmd::ChainStats => DataCmd::ChainStats,
+        DataCmd::DayTrends(p) => DataCmd::DayTrends(p.clone()),
         DataCmd::PairCandles { pool, bucket, count } => DataCmd::PairCandles { pool: pool.clone(), bucket: *bucket, count: *count },
         DataCmd::DexFlow { pools, blocks, at } => DataCmd::DexFlow { pools: pools.clone(), blocks: *blocks, at: *at },
         DataCmd::Board { channel, blocks } => DataCmd::Board { channel: channel.clone(), blocks: *blocks },
@@ -444,6 +449,7 @@ fn worth_showing(ev: &DataEv) -> bool {
             | DataEv::MarketPools(Err(_))
             | DataEv::Launches(Err(_))
             | DataEv::ChainStats(Err(_))
+            | DataEv::DayTrends(Err(_))
             | DataEv::DexFlow(Err(_))
             | DataEv::PoolReserves(Err(_))
             | DataEv::Board { result: Err(_), .. }
@@ -505,6 +511,7 @@ fn flight_key(cmd: &DataCmd) -> Option<String> {
         DataCmd::Launches => "launches".into(),
         DataCmd::ChainStats => "chain_stats".into(),
         DataCmd::ChainHeads { .. } => "chain_heads".into(),
+        DataCmd::DayTrends(_) => "day_trends".into(),
         DataCmd::WalletQuai(_) => "wallet_quai".into(),
         // Every operation counts: two edits are not one.
         DataCmd::Alerts(_) => return None,
@@ -1095,6 +1102,9 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
         }
         // Control: taken off the queue before jobs start.
         DataCmd::ChainWatch(_) => {}
+        DataCmd::DayTrends(pairs) => {
+            send(DataEv::DayTrends(wallet_core::subgraph::day_trends(ctx, &pairs).await.map_err(|e| e.to_string())));
+        }
         DataCmd::ChainHeads { after, max } => {
             let r = wallet_core::blocks::since(&ctx.node, after, usize::from(max)).await.map_err(|e| e.to_string());
             send(DataEv::ChainHeads(r));
@@ -1209,6 +1219,7 @@ impl DataCmd {
             | DataCmd::Markets
             | DataCmd::SwapQuote { .. }
             | DataCmd::LiquidityQuote { .. }
+            | DataCmd::DayTrends(_)
             | DataCmd::Launches => Some(Feature::Trading),
             DataCmd::Nfts { .. }
             | DataCmd::Collections { .. }
@@ -1258,6 +1269,7 @@ fn cmd_name(cmd: &DataCmd) -> &'static str {
         DataCmd::Launches => "launches",
         DataCmd::ChainStats => "chain_stats",
         DataCmd::ChainHeads { .. } => "chain_heads",
+        DataCmd::DayTrends(_) => "day_trends",
         DataCmd::ChainWatch(_) => "chain_watch",
         DataCmd::WalletQuai(_) => "wallet_quai",
         DataCmd::Alerts(_) => "alerts",

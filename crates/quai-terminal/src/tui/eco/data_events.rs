@@ -424,6 +424,7 @@ impl App {
                 }
             }
             DataEv::ChainHeads(result) => self.settle_chain_heads(result),
+            DataEv::DayTrends(result) => self.eco.markets_view.trends.settle(result),
             DataEv::ChainHead(height) => self.chain_head(height),
             DataEv::ChainWatch(result) => self.chain_watch_ended(result),
             DataEv::ChainStats(result) => {

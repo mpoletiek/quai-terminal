@@ -4,10 +4,10 @@
   1  Home            • │┌ ▸ pairs · stale/partial source · reserves unverif…─┐┌ QUAI/USDT · Quainance · 1h · . timeframe · f flip · t trade · updating… ───────┐
                        ││ movers no day's changes to rank yet                ││ ◆  US 0.008744 USDT  —  24h · partial history  H 0.01173  L 0.008744           │
 ▌ 2  Markets           ││                                                    ││ vol 343.50 USDT ($343.50) · 30 trades · TVL $3.33k priced 3m ago · you hold 90 │
-                       ││ pair                     price     24h     TVL/%   ││ QUAI 0x006c…ddbb · Quainance pair 0x0021…2e83 · ctrl+click opens · y copies    │
-  3  Trade             ││ ◆  US QUAI/USDT           0.008744 —        $3.33k ││                                                                     0.01191    │
-                       ││ QO ◆  QOGE/QUAI ◈         0.0₃4062 —       $997.60 ││ ▄                                                                              │
-  4  NFTs            ◧ ││ CH ◆  CHEEZ/QUAI ◇         0.0₄744 —           68% ││ █                                                                              │
+                       ││ pair            price              24h     TVL/%   ││ QUAI 0x006c…ddbb · Quainance pair 0x0021…2e83 · ctrl+click opens · y copies    │
+  3  Trade             ││ ◆  US QUAI/USDT  0.008744          —        $3.33k ││                                                                     0.01191    │
+                       ││ QO ◆  QOGE/QUAI  0.0₃4062          —       $997.60 ││ ▄                                                                              │
+  4  NFTs            ◧ ││ CH ◆  CHEEZ/QUA   0.0₄744          —           68% ││ █                                                                              │
                        ││                                                    ││ █                                                                              │
   5  People            ││                                                    ││ █                                                                              │
                        ││                                                    ││ █                                                                              │

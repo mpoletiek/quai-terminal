@@ -161,6 +161,95 @@ pub async fn spot_24h_ago(ctx: &DataCtx, pairs: &[String]) -> Result<std::collec
     Ok(board.value)
 }
 
+/// Hourly prices by pair, oldest first.
+pub type Trends = std::collections::HashMap<String, Vec<(u64, f64)>>;
+
+/// Each pair's token1-per-token0 price at the end of every hour of the last day that it traded,
+/// oldest first: the reserves in its hourly buckets. A pair with no trade in the day is left out.
+/// One request per 50 pairs, cached until the hour turns.
+pub async fn day_trends(ctx: &DataCtx, pairs: &[String]) -> Result<Trends> {
+    if !ctx.policy.market || pairs.is_empty() {
+        return Err(CoreError::NotFound("market data is off".into()));
+    }
+    let base = ctx
+        .network
+        .ecosystem
+        .quainance_subgraph
+        .clone()
+        .ok_or_else(|| CoreError::NotFound(format!("no subgraph on {}", ctx.network.name)))?;
+    let hour = crate::registry::now() / 3_600 * 3_600;
+    let from = hour.saturating_sub(86_400);
+    let mut pairs: Vec<String> = pairs.iter().map(|p| p.to_lowercase()).collect();
+    pairs.sort();
+    pairs.dedup();
+    let key = format!("subgraph_trends:{hour}:{}", source_set_digest(&base, &pairs));
+    let board = ctx
+        .cached(&key, 600, || async move {
+            use futures::StreamExt;
+            let reads = pairs.chunks(50).map(|chunk| {
+                let base = &base;
+                async move {
+                    let body = crate::http::post_json_with(
+                        base,
+                        &json!({ "query": trends_query(chunk, from) }),
+                        crate::http::Priority::Background,
+                    )
+                    .await?;
+                    if let Some(errors) = body["errors"].as_array().filter(|e| !e.is_empty()) {
+                        return Err(CoreError::Network(format!(
+                            "subgraph: {}",
+                            crate::explorer::clean_text(errors[0]["message"].as_str().unwrap_or("query failed"))
+                        )));
+                    }
+                    Ok(parse_trends(&body, chunk))
+                }
+            });
+            let chunks: Vec<Result<Trends>> = futures::stream::iter(reads).buffer_unordered(3).collect().await;
+            let mut trends = std::collections::HashMap::new();
+            for chunk in chunks {
+                trends.extend(chunk?);
+            }
+            Ok(trends)
+        })
+        .await?;
+    Ok(board.value)
+}
+
+fn trends_query(pairs: &[String], from: u64) -> String {
+    let parts: String = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            format!(
+                "p{i}: pairHourDatas(first: 24, where: {{pair: \"{p}\", hourStartUnix_gt: {from}}}, orderBy: hourStartUnix, orderDirection: desc) {{ hourStartUnix reserve0 reserve1 }} "
+            )
+        })
+        .collect();
+    format!("{{ {parts}}}")
+}
+
+fn parse_trends(body: &serde_json::Value, pairs: &[String]) -> Trends {
+    let num = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<f64>().ok());
+    pairs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let rows = body["data"][format!("p{i}")].as_array()?;
+            let mut points: Vec<(u64, f64)> = rows
+                .iter()
+                .filter_map(|row| {
+                    let at = row["hourStartUnix"].as_u64()?;
+                    let (r0, r1) = (num(&row["reserve0"])?, num(&row["reserve1"])?);
+                    let price = r1 / r0;
+                    (r0 > 0.0 && price.is_finite() && price > 0.0).then_some((at, price))
+                })
+                .collect();
+            points.sort_by_key(|(at, _)| *at);
+            (!points.is_empty()).then(|| (p.clone(), points))
+        })
+        .collect()
+}
+
 fn source_set_digest(source: &str, pairs: &[String]) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
@@ -201,6 +290,24 @@ fn parse_day_ago(body: &serde_json::Value, pairs: &[String]) -> std::collections
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_days_trend_is_each_traded_hour_oldest_first() {
+        let pairs = vec!["0xaa".to_string(), "0xbb".to_string()];
+        let q = trends_query(&pairs, 5_000);
+        assert!(q.contains("p1: pairHourDatas(first: 24, where: {pair: \"0xbb\", hourStartUnix_gt: 5000}"), "{q}");
+        let body = json!({ "data": {
+            "p0": [
+                { "hourStartUnix": 7_200, "reserve0": "100", "reserve1": "300" },
+                { "hourStartUnix": 3_600, "reserve0": "100", "reserve1": "250" },
+                { "hourStartUnix": 10_800, "reserve0": "0", "reserve1": "1" },
+            ],
+            "p1": [],
+        }});
+        let got = parse_trends(&body, &pairs);
+        assert_eq!(got.get("0xaa"), Some(&vec![(3_600, 2.5), (7_200, 3.0)]), "oldest first, the empty pool's row dropped");
+        assert!(!got.contains_key("0xbb"), "no trade in the day: no trend");
+    }
 
     #[test]
     fn a_day_ago_price_comes_from_the_last_bucket_before_it() {
