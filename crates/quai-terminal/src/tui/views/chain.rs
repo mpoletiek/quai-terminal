@@ -1,6 +1,6 @@
-//! System › Chain: Quai's hierarchy as this zone sees it. A block timer, the prime → region → zone
-//! map, the newest head, the block lattice (which zone blocks were also region and prime
-//! blocks), per-block entropy, hashrate and base fee, and the block feed.
+//! System › Chain: Quai's hierarchy as this zone sees it. A block timer, the newest head, the block
+//! lattice (which zone blocks were also region and prime blocks), per-block entropy, hashrate and
+//! base fee, and the block feed.
 //!
 //! Nothing here is money: heights, hashes, counts and network fees. The newest block is lit for a
 //! moment when it lands (above Reduced motion); everything else holds still.
@@ -18,8 +18,6 @@ use wallet_core::config::Motion;
 const LIT_MS: u128 = 1500;
 /// A prime block's moment on the lattice's top line.
 const MOMENT_MS: u128 = 1200;
-
-const REGIONS: [&str; 3] = ["Cyprus", "Paxos", "Hydra"];
 
 fn order_icon(order: u8) -> Icon {
     match order {
@@ -69,13 +67,8 @@ pub fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Constraint::Length(u16::from(hint)),
     ])
     .areas(area);
-    let wide = top.width >= 124;
-    let [timer, map, head] =
-        Layout::horizontal([Constraint::Length(30), Constraint::Length(if wide { 44 } else { 0 }), Constraint::Min(30)]).areas(top);
+    let [timer, head] = Layout::horizontal([Constraint::Length(30), Constraint::Min(30)]).areas(top);
     draw_timer(f, app, t, timer);
-    if wide {
-        draw_hierarchy(f, app, t, map);
-    }
     draw_head(f, app, t, head);
     draw_lattice(f, app, t, lattice);
     if tall {
@@ -148,136 +141,6 @@ fn draw_timer(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         t.dim_style(),
     )));
     f.render_widget(Paragraph::new(lines), inner);
-}
-
-/// Prime over its three regions over their nine zones, with this wallet's zone lit; the chain the
-/// newest block also belongs to lights its path for a moment. Columns of 13 cells, one region and
-/// its zones each, prime over the middle one.
-fn draw_hierarchy(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let block = panel(t, &titled("hierarchy", "hierarchy"), false);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let newest = app.eco.chain.newest();
-    let flash = lit(app).and(newest).map(|b| b.order);
-    let hot = |order: u8| flash.is_some_and(|o| o <= order);
-    let style = |on: bool| if on { t.strong_style().fg(t.focus) } else { t.dim_style() };
-    let number = |n: Option<u64>| n.map(|n| format!("#{}", amount::group_thousands(&n.to_string()))).unwrap_or_default();
-    // In kitty the map between the top and bottom rows is a picture; its words stay text.
-    if inner.height >= 7 && inner.width >= 30 {
-        let picture = Rect { y: inner.y + 1, height: inner.height - 2, ..inner };
-        let phase = app.eco.chain.newest().and_then(|b| app.eco.chain.arrived.get(&b.height)).map(|at| at.elapsed().as_millis());
-        let packet = flash.zip(phase).filter(|(order, _)| *order < 2).map(|(order, ms)| (order, (ms / 100) as u8));
-        if hierarchy_pixels(app, f.buffer_mut(), t, picture, packet) {
-            let words = vec![Line::from(vec![
-                Span::raw(" ".repeat((inner.width / 2).saturating_sub(10) as usize)),
-                Span::styled(format!("{}prime {}", t.lead(Icon::Prime), number(newest.map(|b| b.prime))), style(hot(0))),
-            ])];
-            f.render_widget(Paragraph::new(words), Rect { height: 1, ..inner });
-            let foot = Line::from(vec![
-                Span::styled(format!("{} {}", REGIONS[0], number(newest.map(|b| b.region))), style(hot(1))),
-                // Cyprus-1 glows in the picture: the words name the regions under it.
-                Span::styled(format!(" · {} · {}", REGIONS[1], REGIONS[2]), t.dim_style()),
-            ]);
-            f.render_widget(Paragraph::new(foot), Rect { y: inner.bottom() - 1, height: 1, ..inner });
-            return;
-        }
-    }
-    let o = t.icon(Icon::OtherZone);
-    let cols = |parts: [String; 3]| parts.iter().map(|p| format!("{p:<13}")).collect::<String>();
-    let lines = vec![
-        Line::from(vec![
-            Span::raw(" ".repeat(13)),
-            Span::styled(format!("{}prime {}", t.lead(Icon::Prime), number(newest.map(|b| b.prime))), style(hot(0))),
-        ]),
-        Line::from(Span::styled(format!("┌{}┼{}┐", "─".repeat(12), "─".repeat(12)), style(hot(0)))),
-        Line::from(vec![
-            Span::styled(format!("{:<13}", format!("{}{}", t.lead(Icon::Region), REGIONS[0])), style(hot(1))),
-            Span::styled(
-                cols([format!("{}{}", t.lead(Icon::Region), REGIONS[1]), format!("{}{}", t.lead(Icon::Region), REGIONS[2]), String::new()]),
-                t.dim_style(),
-            ),
-        ]),
-        Line::from(Span::styled(number(newest.map(|b| b.region)), t.dim_style())),
-        Line::from(vec![
-            Span::styled(t.icon(Icon::Zone).to_string(), t.strong_style().fg(t.focus)),
-            Span::styled(format!("{:<12}", format!(" {o} {o}")), t.dim_style()),
-            Span::styled(cols([format!("{o} {o} {o}"), format!("{o} {o} {o}"), String::new()]), t.dim_style()),
-        ]),
-        Line::from(Span::styled(cols(["1 2 3".into(), "1 2 3".into(), "1 2 3".into()]), t.dim_style())),
-        Line::from(vec![
-            Span::styled(t.lead(Icon::Zone), t.strong_style().fg(t.focus)),
-            Span::styled("Cyprus-1, this wallet's zone", t.dim_style()),
-        ]),
-    ];
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
-/// The hierarchy in pixels (kitty): prime over its three regions over their nine zones, linked by
-/// curves, this wallet's zone glowing and its path to prime lit; when a region or prime block
-/// lands, a packet of light climbs from Cyprus-1 to its region and, for a prime block, on to
-/// prime (`packet`: the block's order and tenths of a second since it landed). False where it
-/// cannot be drawn, and the cells draw the map.
-fn hierarchy_pixels(app: &App, buf: &mut ratatui::buffer::Buffer, t: &Theme, area: Rect, packet: Option<(u8, u8)>) -> bool {
-    use super::super::raster::{self, Canvas, rgb};
-    if !images::bitmaps(app) {
-        return false;
-    }
-    let (Some(prime), Some(region), Some(zone), Some(line), Some(lit)) =
-        (rgb(t.danger), rgb(t.qi), rgb(t.strong), rgb(t.dim), rgb(t.focus))
-    else {
-        return false;
-    };
-    let key = raster::key_of(&(packet, prime, region, zone, line, lit, area.width, area.height));
-    raster::scene(app, buf, area, t, "hierarchy", key, move |c: &mut Canvas| {
-        let (w, h) = (c.w as f64, c.h as f64);
-        let unit = (h / 10.0).max(2.0);
-        let top = (w / 2.0, h * 0.14);
-        let regions: Vec<(f64, f64)> = (0..3).map(|i| (w * (1.0 + 2.0 * i as f64) / 6.0, h * 0.48)).collect();
-        let zones: Vec<Vec<(f64, f64)>> =
-            regions.iter().map(|r| (0..3).map(|k| (r.0 + (k as f64 - 1.0) * w / 14.0, h * 0.86)).collect()).collect();
-        let curve = |c: &mut Canvas, a: (f64, f64), b: (f64, f64), colour: raster::Rgb, alpha: f64, width: f64| {
-            c.curve(a, (b.0, a.1 + (b.1 - a.1) * 0.15), b, width, colour, alpha);
-        };
-        for (i, r) in regions.iter().enumerate() {
-            let ours = i == 0;
-            curve(c, top, *r, if ours { lit } else { line }, if ours { 0.9 } else { 0.6 }, if ours { 1.6 } else { 1.0 });
-            for (k, z) in zones[i].iter().enumerate() {
-                let here = ours && k == 0;
-                curve(c, *r, *z, if here { lit } else { line }, if here { 0.9 } else { 0.5 }, if here { 1.4 } else { 0.9 });
-            }
-        }
-        c.glow(top.0, top.1, unit * 3.0, prime, 0.35);
-        c.dot(top.0, top.1, unit * 0.9, prime, 1.0);
-        for (i, r) in regions.iter().enumerate() {
-            c.glow(r.0, r.1, unit * 2.4, region, if i == 0 { 0.4 } else { 0.18 });
-            c.dot(r.0, r.1, unit * 0.75, region, if i == 0 { 1.0 } else { 0.6 });
-            for (k, z) in zones[i].iter().enumerate() {
-                if i == 0 && k == 0 {
-                    c.glow(z.0, z.1, unit * 2.4, lit, 0.55);
-                    c.dot(z.0, z.1, unit * 0.65, lit, 1.0);
-                } else {
-                    c.dot(z.0, z.1, unit * 0.45, zone, 0.45);
-                }
-            }
-        }
-        // The packet: up the lit path, zone to region in the first half second, region to prime
-        // in the next for a prime block; fading over its last tenths.
-        if let Some((order, tenths)) = packet {
-            let k = f64::from(tenths) / 10.0;
-            let (zone, reg) = (zones[0][0], regions[0]);
-            let ctrl = |a: (f64, f64), b: (f64, f64)| (b.0, a.1 + (b.1 - a.1) * 0.15);
-            let at = if k < 0.5 || order == 1 {
-                let u = (k / 0.5).min(1.0);
-                raster::bezier(reg, ctrl(reg, zone), zone, 1.0 - u)
-            } else {
-                let u = ((k - 0.5) / 0.5).min(1.0);
-                raster::bezier(top, ctrl(top, reg), reg, 1.0 - u)
-            };
-            let fade = (1.0 - (k - 1.0).max(0.0) / 0.5).clamp(0.0, 1.0);
-            c.glow(at.0, at.1, unit * 2.2, lit, 0.9 * fade);
-            c.dot(at.0, at.1, unit * 0.45, [255, 255, 255], fade);
-        }
-    })
 }
 
 /// The newest block: height, hash, which chains it belongs to, and what it carried.

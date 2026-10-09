@@ -2793,7 +2793,7 @@ fn the_lattice_is_a_picture_where_bitmaps_draw() {
         app.eco.media.kitty.borrow_mut().clear();
         term.draw(|f| draw(f, &mut app)).unwrap();
         let kitty = app.eco.media.kitty.borrow();
-        if kitty.iter().any(|(r, ..)| r.height == 5 && r.width > 60) && kitty.iter().any(|(r, ..)| r.height == 5 && r.width == 40) {
+        if kitty.iter().any(|(r, ..)| r.height == 5 && r.width > 60) {
             placed = true;
             break;
         }
@@ -2803,7 +2803,6 @@ fn the_lattice_is_a_picture_where_bitmaps_draw() {
     let zone = rows.iter().find(|r| r.contains("ZONE")).unwrap();
     assert!(!zone.contains('●') && zone.contains(super::super::images::RESERVED), "the lanes are held for the picture: {zone}");
     assert!(zone.contains("#10,515,409"), "the zone's number stays text");
-    assert!(rows.iter().any(|r| r.contains("Cyprus #5,647,477 · Paxos · Hydra")), "the map's words stay text");
 }
 
 /// A block holding one of this wallet's transactions is marked: `◉` on the zone lane, and a

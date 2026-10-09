@@ -10,9 +10,8 @@ pub const DECODE: [&str; 20] =
     ["ア", "カ", "サ", "タ", "ナ", "ハ", "マ", "ヤ", "ラ", "ワ", "イ", "キ", "シ", "チ", "ニ", "ヒ", "ミ", "リ", "ウ", "ク"];
 
 /// Japanese beside the Chain screen's panel titles, by panel.
-const SUBTITLES: [(&str, &str); 8] = [
+const SUBTITLES: [(&str, &str); 7] = [
     ("timer", "時計"),
-    ("hierarchy", "階層"),
     ("head", "先頭"),
     ("lattice", "格子"),
     ("entropy", "エントロピー"),
