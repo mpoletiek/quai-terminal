@@ -800,12 +800,18 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         }
     };
     let trade_rows = pnl.fills.len().min(8) as u16;
-    let [summary, positions, trades] = Layout::vertical([
+    // The curve and the per-trade bars where the screen is tall enough to keep the table too.
+    let equity_h = if inner.height >= 30 && pnl.curve.len() >= 2 { (11 + (inner.height - 30) / 2).min(16) } else { 0 };
+    let [summary, equity, positions, trades] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(equity_h),
         Constraint::Min(4),
         Constraint::Length(if inner.height >= 18 { trade_rows + 2 } else { 0 }),
     ])
     .areas(inner);
+    if equity_h > 0 {
+        draw_pnl_equity(f, app, t, Rect { y: equity.y + 1, height: equity.height - 1, ..equity }, pnl);
+    }
     f.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -932,6 +938,99 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             ]));
         }
         f.render_widget(Paragraph::new(lines), trades);
+    }
+}
+
+/// What trading has realized over time, less the fees paid, beside what each trade realized: gains
+/// above the line, losses below it, and a dot for a buy (which realizes nothing). Up and down, not
+/// ok and danger: gains and losses are money moving, not states.
+fn draw_pnl_equity(f: &mut Frame, app: &App, t: &Theme, area: Rect, pnl: &wallet_core::pnl::Pnl) {
+    use wallet_core::pnl::signed_text;
+    let [curve, bars] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).spacing(2).areas(area);
+    let points: Vec<(f64, f64)> = pnl.curve.iter().map(|c| (c.at as f64, c.realized - c.fees)).collect();
+    let last = points.last().map_or(0.0, |p| p.1);
+    let colour = if last >= 0.0 { t.up } else { t.down };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("realized less fees ", t.dim_style()),
+            Span::styled(format!("{} QUAI", num::minus(signed_text(last))), Style::default().fg(colour)),
+        ])),
+        Rect { height: 1, ..curve },
+    );
+    let (x0, x1) = (points.first().map_or(0.0, |p| p.0), points.last().map_or(1.0, |p| p.0));
+    let (lo, hi) = points.iter().fold((0.0f64, 0.0f64), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    let pad = ((hi - lo) * 0.1).max(0.01);
+    let zero = [(x0, 0.0), (x1.max(x0 + 1.0), 0.0)];
+    let marker = super::home::chart_marker(app);
+    let date = |at: f64| {
+        chrono::DateTime::from_timestamp(at as i64, 0)
+            .map(|d| d.with_timezone(&chrono::Local).format("%m-%d").to_string())
+            .unwrap_or_default()
+    };
+    let chart = Chart::new(vec![
+        Dataset::default().graph_type(GraphType::Line).marker(marker).style(t.dim_style()).data(&zero),
+        Dataset::default().graph_type(GraphType::Line).marker(marker).style(Style::default().fg(colour)).data(&points),
+    ])
+    .x_axis(
+        Axis::default()
+            .bounds([x0, x1.max(x0 + 1.0)])
+            .labels(vec![Span::styled(date(x0), t.dim_style()), Span::styled(date(x1), t.dim_style())])
+            .style(t.dim_style()),
+    )
+    .y_axis(
+        Axis::default()
+            .bounds([lo - pad, hi + pad])
+            .labels(vec![
+                Span::styled(num::minus(signed_text(lo)), t.dim_style()),
+                Span::styled(num::minus(signed_text(hi)), t.dim_style()),
+            ])
+            .style(t.dim_style()),
+    );
+    f.render_widget(chart, Rect { y: curve.y + 1, height: curve.height.saturating_sub(1), ..curve });
+    // Per-trade bars, newest on the right: eighths up from the line for a gain, halves down from
+    // it for a loss (the glyph set has no lower eighths), `·` on the line for a buy.
+    let shown: Vec<f64> =
+        pnl.curve.iter().rev().take(bars.width as usize / 2).map(|c| c.trade).collect::<Vec<_>>().into_iter().rev().collect();
+    let best = shown.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-9);
+    f.render_widget(Paragraph::new(Span::styled("each trade", t.dim_style())), Rect { height: 1, ..bars });
+    let field = Rect { y: bars.y + 1, height: bars.height.saturating_sub(1), ..bars };
+    if field.height < 3 {
+        return;
+    }
+    let half = (field.height - 1) / 2;
+    let mid = field.y + half;
+    let buf = f.buffer_mut();
+    for x in field.left()..field.right() {
+        buf.set_string(x, mid, "─", t.dim_style());
+    }
+    const UP: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    for (i, v) in shown.iter().enumerate() {
+        let x = field.right().saturating_sub((shown.len() - i) as u16 * 2);
+        if x < field.left() {
+            continue;
+        }
+        let cells = v.abs() / best * f64::from(half);
+        if v.abs() < 1e-9 {
+            buf.set_string(x, mid, "·", t.dim_style());
+        } else if *v > 0.0 {
+            let eighths = (cells * 8.0).round().max(1.0) as u16;
+            for k in 0..half {
+                let left = eighths.saturating_sub(k * 8);
+                if left == 0 {
+                    break;
+                }
+                buf.set_string(x, mid - 1 - k, UP[(left.min(8) - 1) as usize], Style::default().fg(t.up));
+            }
+        } else {
+            let halves = (cells * 2.0).round().max(1.0) as u16;
+            for k in 0..half {
+                let left = halves.saturating_sub(k * 2);
+                if left == 0 {
+                    break;
+                }
+                buf.set_string(x, mid + 1 + k, if left >= 2 { "█" } else { "▀" }, Style::default().fg(t.down));
+            }
+        }
     }
 }
 
