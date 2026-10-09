@@ -3034,6 +3034,44 @@ fn the_boot_card_says_what_is_starting_and_goes() {
     assert!(!screen(&mut app).contains("starting"), "never at Motion Off");
 }
 
+/// The board reads as a chat: a sender's sigil and name once per run of their messages, "you"
+/// for your own, a sealed post said to be one, and a quoted line behind a gutter.
+#[test]
+fn the_board_reads_as_a_chat() {
+    let (_dir, mut app) = populated_app();
+    app.config.board_channels = vec!["general".into()];
+    let me = app.dash.accounts[0].address.to_lowercase();
+    let alice = "0x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+    let post = |at: u64, from: &str, kind: u8, body: &str| wallet_core::messages::Post {
+        at,
+        timed: true,
+        block: at,
+        tx: format!("0x{at:064x}"),
+        index: 0,
+        from: from.into(),
+        tag: String::new(),
+        kind,
+        body: body.as_bytes().to_vec(),
+    };
+    // Newest first, as the board keeps them.
+    let posts = vec![
+        post(50, &me, 0, "on my way"),
+        post(40, "0x00cccccccccccccccccccccccccccccccccccccc", 0, "> gm all"),
+        post(30, "0x00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1, "twelve bytes"),
+        post(20, &alice, 0, "and again"),
+        post(10, &alice, 0, "hello"),
+    ];
+    app.eco.board.posts.settle("general".into(), Ok(posts));
+    app.switch(Screen::Board);
+    app.nav.selected = 0;
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert_eq!(text.matches("0x00aa…aaaa").count(), 1, "alice's two in a row read as one run:\n{text}");
+    assert!(text.contains("hello") && text.contains("and again"));
+    assert!(text.contains("sealed · 12 bytes"), "{text}");
+    assert!(text.contains("│ gm all"), "a quote behind its gutter");
+    assert!(text.contains(" you ") && text.contains("on my way"));
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus
