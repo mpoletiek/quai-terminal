@@ -249,6 +249,41 @@ impl MarketSort {
     }
 }
 
+/// How the price charts draw: candles, a line or an area; on a log scale; with moving averages
+/// (20 and 50 buckets) and the VWAP over them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ChartStyle {
+    pub kind: ChartKind,
+    pub log: bool,
+    pub overlays: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ChartKind {
+    #[default]
+    Candles,
+    Line,
+    Area,
+}
+
+impl ChartKind {
+    pub fn next(self) -> ChartKind {
+        match self {
+            ChartKind::Candles => ChartKind::Line,
+            ChartKind::Line => ChartKind::Area,
+            ChartKind::Area => ChartKind::Candles,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ChartKind::Candles => "candles",
+            ChartKind::Line => "line",
+            ChartKind::Area => "area",
+        }
+    }
+}
+
 pub struct MarketsView {
     /// The pool directory (and the DEX overview), kept through failed refreshes.
     pub pools: Resource<(Vec<wallet_core::markets::Pool>, wallet_core::markets::DexOverview)>,
@@ -270,6 +305,8 @@ pub struct MarketsView {
     pub event_reads: Keyed<String, u64>,
     /// Index into `markets::TIMEFRAMES` (1h by default).
     pub timeframe: usize,
+    /// How the price charts draw (Markets and the swap card's).
+    pub chart: ChartStyle,
     /// How many candles the chart is dragged back from now (0: it ends now), and the pair and
     /// timeframe that pan belongs to (another resets it).
     pub pan: (usize, String, usize),
@@ -358,6 +395,7 @@ impl BoardView {
 impl Default for MarketsView {
     fn default() -> Self {
         MarketsView {
+            chart: ChartStyle::default(),
             candles: HashMap::new(),
             candle_reads: Keyed::default(),
             pools: Resource::default(),

@@ -365,13 +365,6 @@ struct LatticePicture {
     lit: Option<u8>,
 }
 
-fn rgb3(c: Color) -> Option<[u8; 3]> {
-    match c {
-        Color::Rgb(r, g, b) => Some([r, g, b]),
-        _ => None,
-    }
-}
-
 /// The lattice in pixels (kitty and Ghostty): anti-aliased lanes and ties, prime and region
 /// blocks glowing in their chains' hues, zone blocks sized by the transactions they carried, a
 /// tick under each for its workshares, and the newest block's light rising up its tie as it
@@ -382,9 +375,13 @@ fn lattice_pixels(app: &App, buf: &mut ratatui::buffer::Buffer, t: &Theme, area:
     if !images::bitmaps(app) {
         return false;
     }
-    let (Some(prime), Some(region), Some(zone), Some(line), Some(lit)) =
-        (rgb3(t.danger), rgb3(t.qi), rgb3(t.strong), rgb3(t.dim), rgb3(t.focus))
-    else {
+    let (Some(prime), Some(region), Some(zone), Some(line), Some(lit)) = (
+        super::super::raster::rgb(t.danger),
+        super::super::raster::rgb(t.qi),
+        super::super::raster::rgb(t.strong),
+        super::super::raster::rgb(t.dim),
+        super::super::raster::rgb(t.focus),
+    ) else {
         return false;
     };
     let key = raster::key_of(&(&p, prime, region, zone, line, lit, area.width, area.height));

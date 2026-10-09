@@ -450,6 +450,28 @@ impl App {
                 }
                 true
             }
+            // The chart's style: candles, line or area; a log scale; averages and the VWAP.
+            KeyCode::Char('K') => {
+                let chart = &mut self.eco.markets_view.chart;
+                chart.kind = chart.kind.next();
+                let label = chart.kind.label();
+                self.info(format!("chart: {label}"));
+                true
+            }
+            KeyCode::Char('Z') => {
+                let chart = &mut self.eco.markets_view.chart;
+                chart.log = !chart.log;
+                let on = chart.log;
+                self.info(if on { "chart: log scale" } else { "chart: linear scale" });
+                true
+            }
+            KeyCode::Char('V') => {
+                let chart = &mut self.eco.markets_view.chart;
+                chart.overlays = !chart.overlays;
+                let on = chart.overlays;
+                self.info(if on { "chart: MA20 · MA50 · VWAP" } else { "chart: averages off" });
+                true
+            }
             KeyCode::Char('T') => {
                 let mv = &mut self.eco.markets_view;
                 mv.timeframe = (mv.timeframe + 1) % wallet_core::markets::TIMEFRAMES.len();

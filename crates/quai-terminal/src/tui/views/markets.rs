@@ -495,7 +495,7 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 empty(f, chart_area, t, Icon::Trade, "No trades in this window yet.", &[(".", "longer timeframe")]);
             } else {
                 app.input.hits.borrow_mut().add(chart_area, crate::tui::hit::Target::Scroll(crate::tui::hit::Scroll::Chart));
-                draw_candles(f, t, chart_area, &cs, step, bucket, app.input.pointer.at);
+                draw_candles(f, app, t, chart_area, &cs, step, bucket, app.input.pointer.at);
                 draw_volume(f, t, volume_area, &cs, step);
             }
             draw_trade_tape(f, app, t, tape_area, &app.market_trades(pool, base0), &base_sym, &quote_sym);
@@ -551,9 +551,13 @@ pub(crate) fn holding_line(
     format!(" · you hold {} {bs} · {} {qs}", held(base), held(quote))
 }
 
-/// Candles with wicks and bodies at half-cell resolution, price axis on the right.
+/// A price chart: candles (or a line, or an area) at half-cell resolution in cells, or in pixels
+/// where kitty draws bitmaps; optionally on a log scale, with the 20- and 50-bucket moving
+/// averages and the VWAP over them (`eco::ChartStyle`). The grid, the price and time axes, the
+/// last price and the pointer's readout are always text.
 pub(crate) fn draw_candles(
     f: &mut Frame,
+    app: &App,
     t: &Theme,
     area: Rect,
     cs: &[wallet_core::markets::Candle],
@@ -561,27 +565,164 @@ pub(crate) fn draw_candles(
     bucket: u64,
     pointer: Option<(u16, u16)>,
 ) {
+    use super::super::eco::ChartKind;
+    let style = app.eco.markets_view.chart;
     let axis_w = 10u16;
     let plot = Rect { width: area.width.saturating_sub(axis_w + 1), height: area.height.saturating_sub(1), ..area };
-    if plot.height < 3 || plot.width < 4 {
+    if plot.height < 3 || plot.width < 4 || cs.is_empty() {
         return;
     }
     let hi = cs.iter().map(|c| c.high).fold(f64::MIN, f64::max);
     let lo = cs.iter().map(|c| c.low).fold(f64::MAX, f64::min);
-    let pad = ((hi - lo) * 0.06).max(hi.abs() * 1e-6).max(1e-18);
-    let (top, bottom) = (hi + pad, (lo - pad).max(0.0));
+    // A log scale needs positive prices; anything else stays linear.
+    let log = style.log && lo > 0.0;
+    let to = |p: f64| if log { p.ln() } else { p };
+    let back = |v: f64| if log { v.exp() } else { v };
+    let pad = ((to(hi) - to(lo)) * 0.06).max(to(hi).abs() * 1e-6).max(1e-18);
+    let (top, bottom) = (to(hi) + pad, if log { to(lo) - pad } else { (lo - pad).max(0.0) });
     let rows = f64::from(plot.height) * 2.0;
     // Half-cell index from the top for a price.
-    let y = |p: f64| (((top - p) / (top - bottom)) * rows).clamp(0.0, rows - 1.0);
+    let y = |p: f64| (((top - to(p)) / (top - bottom)) * rows).clamp(0.0, rows - 1.0);
+    let averages = style.overlays.then(|| {
+        [
+            (wallet_core::markets::sma(cs, 20), t.chart[1], "MA20"),
+            (wallet_core::markets::sma(cs, 50), t.chart[3], "MA50"),
+            (wallet_core::markets::vwap(cs), t.attention, "VWAP"),
+        ]
+    });
+    let pixels = candle_pixels(app, t, f.buffer_mut(), plot, cs, step, &style, (top, bottom, log), averages.as_ref(), pointer);
     let buf = f.buffer_mut();
-    // Light grid at quarter heights.
-    for r in [plot.height / 4, plot.height / 2, plot.height * 3 / 4] {
-        for x in plot.left()..plot.right() {
-            if let Some(cell) = buf.cell_mut((x, plot.y + r)) {
-                cell.set_char('┈').set_style(t.dim_style());
+    if !pixels {
+        // Light grid at quarter heights.
+        for r in [plot.height / 4, plot.height / 2, plot.height * 3 / 4] {
+            for x in plot.left()..plot.right() {
+                if let Some(cell) = buf.cell_mut((x, plot.y + r)) {
+                    cell.set_char('┈').set_style(t.dim_style());
+                }
+            }
+        }
+        match style.kind {
+            ChartKind::Candles => cell_candles(buf, t, plot, cs, step, &y),
+            kind => cell_closes(buf, t, plot, cs, step, &y, kind == ChartKind::Area),
+        }
+        // Averages as dots in the cells the price left free.
+        for (series, colour, _) in averages.iter().flatten() {
+            for (i, v) in series.iter().enumerate() {
+                let (Some(v), x) = (v, plot.x + i as u16 * step) else { continue };
+                if x >= plot.right() {
+                    break;
+                }
+                let row = ((y(*v) / 2.0) as u16).min(plot.height - 1);
+                if let Some(cell) = buf.cell_mut((x, plot.y + row))
+                    && matches!(cell.symbol(), " " | "┈")
+                {
+                    cell.set_char('·').set_style(Style::default().fg(*colour));
+                }
             }
         }
     }
+    // Price axis: top, middle, bottom.
+    let axis_x = plot.right() + 1;
+    for (row, v) in [(0u16, top), (plot.height / 2, (top + bottom) / 2.0), (plot.height - 1, bottom)] {
+        let text = fmt_price(back(v));
+        for (k, ch) in text.chars().take(axis_w as usize).enumerate() {
+            if let Some(cell) = buf.cell_mut((axis_x + k as u16, plot.y + row)) {
+                cell.set_char(ch).set_style(t.dim_style());
+            }
+        }
+    }
+    // What the averages are (and the scale, when it is logarithmic), under the middle figure,
+    // stepping over the row the last price is marked on.
+    let last_row = cs.last().map(|c| ((y(c.close) / 2.0) as u16).min(plot.height - 1));
+    let mut row = plot.height / 2 + 1;
+    let notes = averages.iter().flatten().map(|(_, colour, name)| (format!("· {name}"), Style::default().fg(*colour)));
+    for (text, style) in notes.chain(log.then(|| ("log".to_string(), t.dim_style()))) {
+        if Some(row) == last_row {
+            row += 1;
+        }
+        if row + 1 >= plot.height {
+            break;
+        }
+        buf.set_string(axis_x, plot.y + row, text, style);
+        row += 1;
+    }
+    // Last price marker.
+    if let Some(last) = cs.last() {
+        let row = (y(last.close) / 2.0) as u16;
+        let text = format!("◂{}", fmt_price(last.close));
+        for (k, ch) in text.chars().take(axis_w as usize).enumerate() {
+            if let Some(cell) = buf.cell_mut((axis_x + k as u16, plot.y + row.min(plot.height - 1))) {
+                cell.set_char(ch).set_style(t.strong_style());
+            }
+        }
+    }
+    // The pointer over the plot: a crosshair down the candle under it, and that candle in words
+    // (along the top in cells, along the time axis over a picture, which would cover the top).
+    if let Some((px, _)) = pointer.filter(|(px, py)| *px >= plot.x && *px < plot.right() && *py >= plot.y && *py < plot.bottom()) {
+        let i = ((px - plot.x) / step.max(1)) as usize;
+        if let Some(c) = cs.get(i) {
+            let cx = plot.x + i as u16 * step;
+            if !pixels {
+                for row in plot.top()..plot.bottom() {
+                    if let Some(cell) = buf.cell_mut((cx, row))
+                        && matches!(cell.symbol(), " " | "┈")
+                    {
+                        cell.set_char('┊').set_style(t.dim_style());
+                    }
+                }
+            }
+            let readout = format!(
+                " {} · O {} H {} L {} C {} · {} ",
+                local_time_label(c.start, bucket),
+                fmt_price(c.open),
+                fmt_price(c.high),
+                fmt_price(c.low),
+                fmt_price(c.close),
+                wallet_core::amount::count(c.trades, "trade")
+            );
+            let w = (readout.chars().count() as u16).min(plot.width);
+            let rx = if cx + w + 2 < plot.right() { cx + 2 } else { plot.x };
+            let ry = if pixels { plot.bottom() } else { plot.y };
+            for (k, ch) in readout.chars().take(w as usize).enumerate() {
+                if let Some(cell) = buf.cell_mut((rx + k as u16, ry)) {
+                    cell.set_char(ch).set_style(t.strong_style().bg(t.raised));
+                }
+            }
+            if pixels {
+                return;
+            }
+        }
+    }
+    // Time axis: first, middle and last candle.
+    let label = |ts: u64| local_time_label(ts, bucket);
+    let axis_y = plot.bottom();
+    let mid = cs.len() / 2;
+    let mut next_free = plot.x;
+    for (i, c) in [(0, &cs[0]), (mid, &cs[mid]), (cs.len() - 1, &cs[cs.len() - 1])] {
+        let text = label(c.start);
+        let x = (plot.x + i as u16 * step).min(plot.right().saturating_sub(text.len() as u16));
+        // Labels never overlap (few candles put first, middle and last close together).
+        if x < next_free {
+            continue;
+        }
+        next_free = x + text.len() as u16 + 1;
+        for (k, ch) in text.chars().enumerate() {
+            if let Some(cell) = buf.cell_mut((x + k as u16, axis_y)) {
+                cell.set_char(ch).set_style(t.dim_style());
+            }
+        }
+    }
+}
+
+/// Candles in cells: bodies and wicks at half-cell resolution.
+fn cell_candles(
+    buf: &mut ratatui::buffer::Buffer,
+    t: &Theme,
+    plot: Rect,
+    cs: &[wallet_core::markets::Candle],
+    step: u16,
+    y: &dyn Fn(f64) -> f64,
+) {
     for (i, c) in cs.iter().enumerate() {
         let x = plot.x + i as u16 * step;
         if x >= plot.right() {
@@ -625,77 +766,155 @@ pub(crate) fn draw_candles(
             }
         }
     }
-    // Price axis: top, middle, bottom.
-    let axis_x = plot.right() + 1;
-    for (row, p) in [(0u16, top), (plot.height / 2, (top + bottom) / 2.0), (plot.height - 1, bottom)] {
-        let text = fmt_price(p);
-        for (k, ch) in text.chars().take(axis_w as usize).enumerate() {
-            if let Some(cell) = buf.cell_mut((axis_x + k as u16, plot.y + row)) {
-                cell.set_char(ch).set_style(t.dim_style());
-            }
+}
+
+/// Closes in cells: the top of each column in eighths (a line), filled to the floor for an area.
+fn cell_closes(
+    buf: &mut ratatui::buffer::Buffer,
+    t: &Theme,
+    plot: Rect,
+    cs: &[wallet_core::markets::Candle],
+    step: u16,
+    y: &dyn Fn(f64) -> f64,
+    fill: bool,
+) {
+    const EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    for (i, c) in cs.iter().enumerate() {
+        let x = plot.x + i as u16 * step;
+        if x >= plot.right() {
+            break;
         }
-    }
-    // Last price marker.
-    if let Some(last) = cs.last() {
-        let row = (y(last.close) / 2.0) as u16;
-        let text = format!("◂{}", fmt_price(last.close));
-        for (k, ch) in text.chars().take(axis_w as usize).enumerate() {
-            if let Some(cell) = buf.cell_mut((axis_x + k as u16, plot.y + row.min(plot.height - 1))) {
-                cell.set_char(ch).set_style(t.strong_style());
-            }
-        }
-    }
-    // The pointer over the plot: a crosshair down the candle under it, and that candle in words
-    // along the top (a readout, never over the axis figures).
-    if let Some((px, py)) = pointer.filter(|(px, py)| *px >= plot.x && *px < plot.right() && *py >= plot.y && *py < plot.bottom()) {
-        let i = ((px - plot.x) / step.max(1)) as usize;
-        if let Some(c) = cs.get(i) {
-            let cx = plot.x + i as u16 * step;
-            for row in plot.top()..plot.bottom() {
-                if let Some(cell) = buf.cell_mut((cx, row))
-                    && matches!(cell.symbol(), " " | "┈")
-                {
-                    cell.set_char('┊').set_style(t.dim_style());
+        // Eighths of a cell from the bottom of the plot to the close.
+        let level = ((f64::from(plot.height) * 2.0 - y(c.close)) * 4.0).round().max(1.0) as u16;
+        let (full, part) = (level / 8, level % 8);
+        for dx in 0..step.min(plot.right() - x) {
+            if fill {
+                for k in 0..full.min(plot.height) {
+                    buf[(x + dx, plot.bottom() - 1 - k)].set_char('█').set_style(Style::default().fg(t.link));
                 }
             }
-            let _ = py;
-            let readout = format!(
-                " {} · O {} H {} L {} C {} · {} ",
-                local_time_label(c.start, bucket),
-                fmt_price(c.open),
-                fmt_price(c.high),
-                fmt_price(c.low),
-                fmt_price(c.close),
-                wallet_core::amount::count(c.trades, "trade")
-            );
-            let w = (readout.chars().count() as u16).min(plot.width);
-            let rx = if cx + w + 2 < plot.right() { cx + 2 } else { plot.x };
-            for (k, ch) in readout.chars().take(w as usize).enumerate() {
-                if let Some(cell) = buf.cell_mut((rx + k as u16, plot.y)) {
-                    cell.set_char(ch).set_style(t.strong_style().bg(t.raised));
+            let row = plot.bottom().saturating_sub(1 + full);
+            if row >= plot.y {
+                let ch = if part == 0 { if fill { continue } else { '▁' } } else { EIGHTHS[part as usize - 1] };
+                buf[(x + dx, row)].set_char(ch).set_style(Style::default().fg(t.link));
+            }
+        }
+    }
+}
+
+/// One overlay line: its values per candle, its colour, its name.
+type Average = (Vec<Option<f64>>, Color, &'static str);
+
+/// The chart in pixels where kitty draws bitmaps: candles with wicks, or a line (with a fading
+/// fill for an area), the averages as smooth lines, and the pointer's column. False where it
+/// cannot be drawn (another tier, a theme without RGB colours, nothing drawn yet).
+#[allow(clippy::too_many_arguments)]
+fn candle_pixels(
+    app: &App,
+    t: &Theme,
+    buf: &mut ratatui::buffer::Buffer,
+    plot: Rect,
+    cs: &[wallet_core::markets::Candle],
+    step: u16,
+    style: &super::super::eco::ChartStyle,
+    (top, bottom, log): (f64, f64, bool),
+    averages: Option<&[Average; 3]>,
+    pointer: Option<(u16, u16)>,
+) -> bool {
+    use super::super::eco::ChartKind;
+    use super::super::raster::{self, Canvas, rgb};
+    if !images::bitmaps(app) {
+        return false;
+    }
+    let (Some(up), Some(down), Some(grid), Some(link)) = (rgb(t.up), rgb(t.down), rgb(t.dim), rgb(t.link)) else { return false };
+    let lines: Vec<(Vec<Option<f64>>, raster::Rgb)> = match averages {
+        Some(a) => match a.iter().map(|(s, c, _)| rgb(*c).map(|c| (s.clone(), c))).collect::<Option<Vec<_>>>() {
+            Some(l) => l,
+            None => return false,
+        },
+        None => Vec::new(),
+    };
+    let candles: Vec<(u64, u64, u64, u64, u32)> =
+        cs.iter().map(|c| (c.open.to_bits(), c.high.to_bits(), c.low.to_bits(), c.close.to_bits(), c.trades)).collect();
+    let lines_key: Vec<Vec<Option<u64>>> = lines.iter().map(|(s, _)| s.iter().map(|v| v.map(f64::to_bits)).collect()).collect();
+    let column = pointer
+        .filter(|(px, py)| *px >= plot.x && *px < plot.right() && *py >= plot.y && *py < plot.bottom())
+        .map(|(px, _)| (px - plot.x) / step.max(1));
+    let key = raster::key_of(&(
+        (&candles, &lines_key, step, style),
+        (top.to_bits(), bottom.to_bits(), plot.width, plot.height),
+        (up, down, grid, link),
+        column,
+    ));
+    let (kind, cols) = (style.kind, plot.width);
+    raster::scene(app, buf, plot, t, "price-chart", key, move |c: &mut Canvas| {
+        let (cw, h) = (c.w as f64 / f64::from(cols), c.h as f64);
+        let to = |p: f64| if log { p.ln() } else { p };
+        let py = |p: f64| ((top - to(p)) / (top - bottom) * h).clamp(0.0, h - 1.0);
+        let x_of = |i: usize| (i as f64 * f64::from(step) + 0.5) * cw;
+        let thin = (h / 300.0).max(1.0);
+        for k in 1..4 {
+            let gy = h * f64::from(k) / 4.0;
+            let mut x = 0.0;
+            while x < c.w as f64 {
+                c.fill(x, gy, 2.0, 1.0, grid, 0.35);
+                x += 6.0;
+            }
+        }
+        let open: Vec<usize> = (0..candles.len()).filter(|i| x_of(*i) < c.w as f64).collect();
+        match kind {
+            ChartKind::Candles => {
+                for &i in &open {
+                    let (o, hi, lo, cl, trades) = candles[i];
+                    let (o, hi, lo, cl) = (f64::from_bits(o), f64::from_bits(hi), f64::from_bits(lo), f64::from_bits(cl));
+                    let x = x_of(i);
+                    if trades == 0 && (hi - lo).abs() <= f64::EPSILON * hi.abs().max(1.0) {
+                        c.line((x - cw * 0.4, py(cl)), (x + cw * 0.4, py(cl)), thin, grid, 0.7);
+                        continue;
+                    }
+                    let colour = if cl >= o { up } else { down };
+                    c.line((x, py(hi)), (x, py(lo)), thin, colour, 0.85);
+                    let (b0, b1) = (py(o.max(cl)), py(o.min(cl)));
+                    let w = (cw * 0.72).max(1.0);
+                    c.fill(x - w / 2.0, b0, w, (b1 - b0).max(thin), colour, 0.95);
                 }
             }
-        }
-    }
-    // Time axis: first, middle and last candle.
-    let label = |ts: u64| local_time_label(ts, bucket);
-    let axis_y = plot.bottom();
-    let mid = cs.len() / 2;
-    let mut next_free = plot.x;
-    for (i, c) in [(0, &cs[0]), (mid, &cs[mid]), (cs.len() - 1, &cs[cs.len() - 1])] {
-        let text = label(c.start);
-        let x = (plot.x + i as u16 * step).min(plot.right().saturating_sub(text.len() as u16));
-        // Labels never overlap (few candles put first, middle and last close together).
-        if x < next_free {
-            continue;
-        }
-        next_free = x + text.len() as u16 + 1;
-        for (k, ch) in text.chars().enumerate() {
-            if let Some(cell) = buf.cell_mut((x + k as u16, axis_y)) {
-                cell.set_char(ch).set_style(t.dim_style());
+            kind => {
+                let points: Vec<(f64, f64)> = open.iter().map(|&i| (x_of(i), py(f64::from_bits(candles[i].3)))).collect();
+                if kind == ChartKind::Area {
+                    for pair in points.windows(2) {
+                        let (a, b) = (pair[0], pair[1]);
+                        let mut x = a.0;
+                        while x < b.0 {
+                            let yy = a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0).max(1e-9);
+                            // A fill that fades toward the floor.
+                            let mut row = yy;
+                            while row < h {
+                                c.blend(x as i64, row as i64, link, 0.30 * (1.0 - (row - yy) / (h - yy).max(1.0)));
+                                row += 1.0;
+                            }
+                            x += 1.0;
+                        }
+                    }
+                }
+                c.path(&points, (h / 160.0).max(1.4), link, 1.0);
             }
         }
-    }
+        for (series, colour) in &lines {
+            let points: Vec<(f64, f64)> = open.iter().filter_map(|&i| series.get(i).copied().flatten().map(|v| (x_of(i), py(v)))).collect();
+            if points.len() >= 2 {
+                c.path(&points, (h / 220.0).max(1.0), *colour, 0.9);
+            }
+        }
+        if let Some(i) = column {
+            let x = x_of(i as usize);
+            let mut yy = 0.0;
+            while yy < h {
+                c.fill(x, yy, 1.0, 3.0, grid, 0.8);
+                yy += 7.0;
+            }
+        }
+    })
 }
 
 /// Axis label in system local time: `14:00` for intraday candles, `Sep 14` for daily ones.

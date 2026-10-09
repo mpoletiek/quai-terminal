@@ -27,6 +27,15 @@ use super::theme::Theme;
 /// An RGB colour.
 pub type Rgb = [u8; 3];
 
+/// A theme colour as RGB, for drawing; None for terminal-palette colours (a picture needs exact
+/// ones, so the cells draw instead).
+pub fn rgb(c: ratatui::style::Color) -> Option<Rgb> {
+    match c {
+        ratatui::style::Color::Rgb(r, g, b) => Some([r, g, b]),
+        _ => None,
+    }
+}
+
 /// An RGBA image.
 pub struct Canvas {
     pub w: usize,

@@ -2925,6 +2925,53 @@ fn the_markets_price_is_a_headline_where_text_can_be_sized() {
     assert!(!app.term.big_text.borrow().iter().any(|b| b.text == "0.008744"), "plain under a modal");
 }
 
+/// The price chart's styles: averages named beside the axis and dotted into free cells, a line
+/// or an area of eighths in place of candles, a log scale marked on the axis, and in kitty the
+/// plot as a picture under text axes.
+#[test]
+fn the_price_chart_draws_its_styles() {
+    use super::super::eco::ChartKind;
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Markets);
+    let grab = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>()
+    };
+    let plain = grab(&mut app);
+    assert!(plain.iter().any(|r| r.contains('▀') || r.contains('▄') || r.contains('█')), "candles by default");
+    app.eco.markets_view.chart.overlays = true;
+    let rows = grab(&mut app);
+    for name in ["· MA20", "· MA50", "· VWAP"] {
+        assert!(rows.iter().any(|r| r.contains(name)), "{name} named");
+    }
+    app.eco.markets_view.chart.overlays = false;
+    app.eco.markets_view.chart.kind = ChartKind::Line;
+    let line = grab(&mut app);
+    // The chart's columns only: the pairs list's icon badges are half blocks too.
+    let chart_rows = |rows: &[String]| rows.iter().skip(5).take(36).map(|r| r.chars().skip(80).collect::<String>()).collect::<String>();
+    assert!(!chart_rows(&line).contains('▀') && chart_rows(&line).chars().any(|c| "▁▂▃▄▅▆▇".contains(c)), "a line of eighths");
+    app.eco.markets_view.chart.log = true;
+    assert!(grab(&mut app).iter().any(|r| r.contains(" log ")), "the axis says log");
+    // In kitty the plot is a picture.
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.tier = super::super::terminal::Tier::Pixels;
+    app.term.caps.cell_px = (10, 20);
+    app.term.plain = false;
+    let mut placed = false;
+    for _ in 0..300 {
+        app.eco.media.kitty.borrow_mut().clear();
+        grab(&mut app);
+        if app.eco.media.kitty.borrow().iter().any(|(r, ..)| r.width > 40 && r.height > 8) {
+            placed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(placed, "the chart was placed as a picture");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

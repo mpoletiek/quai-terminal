@@ -486,7 +486,7 @@ pub(crate) fn draw_swap_chart(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
     if cs.is_empty() {
         empty_state(f, inner, t, spinner(), "Reading the pair's history…", &[]);
     } else {
-        draw_candles(f, t, inner, &cs, step, super::super::eco::SWAP_CHART_BUCKET, app.input.pointer.at);
+        draw_candles(f, app, t, inner, &cs, step, super::super::eco::SWAP_CHART_BUCKET, app.input.pointer.at);
     }
 }
 
