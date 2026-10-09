@@ -2801,6 +2801,24 @@ fn the_lattice_is_a_picture_where_bitmaps_draw() {
     assert!(zone.contains("#10,515,409"), "the zone's number stays text");
 }
 
+/// A block holding one of this wallet's transactions is marked: `◉` on the zone lane, and a
+/// gutter on its row of the feed.
+#[test]
+fn blocks_with_your_transactions_are_marked() {
+    let (_dir, mut app) = populated_app();
+    let mut a = app.dash.activity[0].clone();
+    a.block = Some(10_515_405);
+    app.dash.activity.push(a);
+    app.switch(Screen::Chain);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let b = term.backend().buffer();
+    let rows: Vec<String> = (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect()).collect();
+    assert_eq!(rows.iter().find(|r| r.contains("ZONE")).unwrap().matches('◉').count(), 1, "one on the lattice");
+    assert!(rows.iter().any(|r| r.contains("▌ 10,515,405")), "its feed row");
+    assert!(!rows.iter().any(|r| r.contains("▌ 10,515,404")));
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

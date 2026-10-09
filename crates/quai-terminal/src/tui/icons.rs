@@ -82,11 +82,13 @@ pub enum Icon {
     Region,
     Zone,
     OtherZone,
+    /// A block holding one of this wallet's transactions.
+    Yours,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 50] = [
+    pub const ALL: [Icon; 51] = [
         Icon::Ok,
         Icon::InFlight,
         Icon::Stale,
@@ -137,6 +139,7 @@ impl Icon {
         Icon::Region,
         Icon::Zone,
         Icon::OtherZone,
+        Icon::Yours,
     ];
 
     /// (nerd, unicode, ascii). An empty form draws nothing.
@@ -195,6 +198,7 @@ impl Icon {
             Icon::Region => ("◆", "◆", "R"),
             Icon::Zone => ("●", "●", "*"),
             Icon::OtherZone => ("○", "○", "o"),
+            Icon::Yours => ("◉", "◉", "@"),
         }
     }
 

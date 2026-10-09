@@ -46,6 +46,11 @@ fn order_word(order: u8) -> &'static str {
     }
 }
 
+/// Heights holding one of this wallet's transactions, from its activity.
+fn yours(app: &App) -> std::collections::HashSet<u64> {
+    app.dash.activity.iter().filter_map(|a| a.block).collect()
+}
+
 /// The newest block, while it is still lit.
 fn lit(app: &App) -> Option<u64> {
     let b = app.eco.chain.newest()?;
@@ -241,6 +246,7 @@ fn draw_lattice(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let by_height: std::collections::HashMap<u64, &BlockHead> =
         log.blocks.iter().filter(|b| b.height >= first).map(|b| (b.height, b)).collect();
     let lit = lit(app);
+    let mine = yours(app);
     let buf = f.buffer_mut();
     let lanes = [("PRIME", 0u8, t.danger), ("REGION", 1u8, t.qi), ("ZONE", 2u8, t.strong)];
     for (i, (name, _, colour)) in lanes.iter().enumerate() {
@@ -253,7 +259,7 @@ fn draw_lattice(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         slots: slots as u16,
         offset: (start - drawing.x) / 2,
         blocks: (first..=newest.height)
-            .map(|h| by_height.get(&h).map(|b| (b.order, b.txs.min(120) as u8, b.workshares.min(24) as u8)))
+            .map(|h| by_height.get(&h).map(|b| (b.order, b.txs.min(120) as u8, b.workshares.min(24) as u8, mine.contains(&h))))
             .collect(),
         lit: app
             .eco
@@ -297,8 +303,13 @@ fn draw_lattice(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 continue;
             }
             let x = x_of(h);
-            let style = if lit == Some(h) { t.strong_style().fg(t.focus) } else { Style::default().fg(*colour) };
-            buf.set_string(x, y, t.icon(order_icon(*order)), style);
+            let style = if lit == Some(h) || (lane == 2 && mine.contains(&h)) {
+                t.strong_style().fg(t.focus)
+            } else {
+                Style::default().fg(*colour)
+            };
+            let icon = if lane == 2 && mine.contains(&h) { Icon::Yours } else { order_icon(*order) };
+            buf.set_string(x, y, t.icon(icon), style);
             // A tie up from the zone lane through the connector rows to this lane.
             if lane == 2 && b.order < 2 {
                 buf.set_string(x, y - 1, "│", Style::default().fg(lanes[b.order as usize].2));
@@ -342,14 +353,15 @@ fn draw_lattice_numbers(t: &Theme, buf: &mut ratatui::buffer::Buffer, inner: Rec
     }
 }
 
-/// What the pixel lattice draws: per slot from the oldest shown, the block's order, transactions
-/// and workshares (none for a height never read), where the first one sits, and how far into
-/// its light the newest block is (eighths of a second).
+/// What the pixel lattice draws: per slot from the oldest shown, the block's order, transactions,
+/// workshares and whether it holds one of this wallet's transactions (none for a height never
+/// read), where the first one sits, and how far into its light the newest block is (eighths of a
+/// second).
 #[derive(Hash)]
 struct LatticePicture {
     slots: u16,
     offset: u16,
-    blocks: Vec<Option<(u8, u8, u8)>>,
+    blocks: Vec<Option<(u8, u8, u8, bool)>>,
     lit: Option<u8>,
 }
 
@@ -411,7 +423,7 @@ fn lattice_pixels(app: &App, buf: &mut ratatui::buffer::Buffer, t: &Theme, area:
             }
         }
         for (i, b) in p.blocks.iter().enumerate() {
-            let Some((order, txs, ws)) = *b else { continue };
+            let Some((order, txs, ws, yours)) = *b else { continue };
             let x = x_of(i);
             // A tie from the zone lane up to the highest chain the block is also a block of.
             if order < 2 {
@@ -425,6 +437,10 @@ fn lattice_pixels(app: &App, buf: &mut ratatui::buffer::Buffer, t: &Theme, area:
                 };
                 if lane < 2 {
                     c.glow(x, lane_y(lane), r * 3.0, colours[lane as usize], 0.30);
+                }
+                // Yours: a ring in the focus colour around the zone block.
+                if lane == 2 && yours {
+                    c.dot(x, lane_y(2), r + cw * 0.16, lit, 0.95);
                 }
                 c.dot(x, lane_y(lane), r, colours[lane as usize], 0.95);
             }
@@ -545,6 +561,7 @@ fn draw_feed(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     }
     let now = wallet_core::registry::now_f64() as u64;
     let lit = lit(app);
+    let mine = yours(app);
     let wide = inner.width >= 100;
     let rows: Vec<Row> = app
         .eco
@@ -557,6 +574,7 @@ fn draw_feed(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             let gas = if b.gas_limit > 0 { b.gas_used as f64 * 100.0 / b.gas_limit as f64 } else { 0.0 };
             let order = Span::styled(format!("{} {}", t.icon(order_icon(b.order)), order_word(b.order)), order_style(t, b.order));
             let mut cells = vec![
+                Cell::from(Span::styled(if mine.contains(&b.height) { "▌" } else { " " }, Style::default().fg(t.focus))),
                 Cell::from(Span::styled(amount::group_thousands(&b.height.to_string()), t.strong_style())),
                 Cell::from(format!("{}s", now.saturating_sub(b.timestamp))),
                 Cell::from(order),
@@ -576,6 +594,7 @@ fn draw_feed(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         })
         .collect();
     let mut widths = vec![
+        Constraint::Length(1),
         Constraint::Length(11),
         Constraint::Length(6),
         Constraint::Length(9),
@@ -585,7 +604,7 @@ fn draw_feed(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Constraint::Length(6),
         Constraint::Length(5),
     ];
-    let mut header = vec!["height", "age", "order", "hash", "txs", "out", "gas", "bits"];
+    let mut header = vec!["", "height", "age", "order", "hash", "txs", "out", "gas", "bits"];
     if wide {
         widths.extend([Constraint::Length(5), Constraint::Length(12), Constraint::Min(13)]);
         header.extend(["ws", "base fee", "miner"]);
