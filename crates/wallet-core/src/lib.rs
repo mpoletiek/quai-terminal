@@ -15,6 +15,7 @@ pub mod contracts;
 pub mod curve;
 pub mod custody;
 pub mod data;
+pub mod depth;
 pub mod execution;
 pub mod extras;
 pub mod flows;

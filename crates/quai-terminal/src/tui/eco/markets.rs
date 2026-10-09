@@ -55,6 +55,39 @@ impl App {
             .map(|p| (p.clone(), p.token0.address.eq_ignore_ascii_case(&pay)))
     }
 
+    /// The swap card's route as constant-product hops, for its depth: the pool that trades the
+    /// pair directly, else the deepest pool from the pay token to WQUAI and the deepest from WQUAI
+    /// to the token received. None when a hop is missing or is a bonding curve (whose price
+    /// moves by its own formula, not x·y = k). True when the route is direct.
+    pub fn swap_route(&self) -> Option<(Vec<wallet_core::depth::Hop>, bool)> {
+        use wallet_core::depth::Hop;
+        use wallet_core::markets::Venue;
+        if let Some((pool, pay0)) = self.swap_pool() {
+            return (pool.venue != Venue::Curve).then(|| (vec![Hop::of(&pool, pay0)], true));
+        }
+        let to = self.eco.swap.to.as_ref()?;
+        let wquai = self.net().and_then(|n| n.wquai.clone())?.to_lowercase();
+        let address = |a: &SwapAsset| match a {
+            SwapAsset::Quai => wquai.clone(),
+            SwapAsset::Token { address, .. } => address.to_lowercase(),
+        };
+        let (pay, get) = (address(&self.eco.swap.from), address(to));
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return None };
+        // The deepest constant-product pool between two tokens, paying in `from`.
+        let hop = |from: &str, into: &str| {
+            pools
+                .iter()
+                .filter(|p| p.venue != Venue::Curve)
+                .filter(|p| {
+                    let (a, b) = (p.token0.address.to_lowercase(), p.token1.address.to_lowercase());
+                    (a == from && b == into) || (a == into && b == from)
+                })
+                .max_by(|a, b| self.row_tvl_usd(a).unwrap_or(0.0).total_cmp(&self.row_tvl_usd(b).unwrap_or(0.0)))
+                .map(|p| Hop::of(p, p.token0.address.eq_ignore_ascii_case(from)))
+        };
+        Some((vec![hop(&pay, &wquai)?, hop(&wquai, &get)?], false))
+    }
+
     /// Which pair the chart is showing: the cursor while the pairs list has it, else the pair
     /// the cursor left behind when it moved to the flow column.
     pub fn markets_pair(&self) -> usize {

@@ -2842,6 +2842,50 @@ fn the_base_fee_is_measured_against_your_fee_policy() {
     assert!(title(&mut app).contains("above your fee policy (100,000 gwei)"), "{}", title(&mut app));
 }
 
+/// The swap card shows its route's depth: under the candles for a direct pool, filling the panel
+/// for a route through WQUAI, with the card's own amount's impact.
+#[test]
+fn the_swap_card_shows_its_routes_depth() {
+    use wallet_core::markets::{Pool, PoolToken};
+    use wallet_core::swap::SwapAsset;
+    let (_dir, mut app) = populated_app();
+    app.show_card(Card::Swap);
+    let usdt = SwapAsset::Token { address: "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5".into(), symbol: "USDT".into(), decimals: 6 };
+    let screen = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height)
+            .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // QUAI → USDT trades directly in the USDT/WQUAI pool: 182,985.5 WQUAI deep, so 1% is
+    // 0.01 · 182,985.5 / 0.99 = 1,848 QUAI.
+    app.eco.swap.from = SwapAsset::Quai;
+    app.eco.swap.to = Some(usdt.clone());
+    app.eco.swap.amount = "5000".into();
+    let text = screen(&mut app);
+    assert!(text.contains("depth this pool") && text.contains("1% 1.8k QUAI   2% 3.7k QUAI   5% 9.6k QUAI"), "{text}");
+    assert!(text.contains("5,000.0000 QUAI moves it 2.66% · noticeable"), "{text}");
+    // WQI → USDT has no pool of its own: through WQI/WQUAI and WQUAI/USDT.
+    let wqi = "0x002b2596ecf05c93a31ff916e8b456df6c77c750";
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
+        pools.push(Pool {
+            address: "0x00aa".into(),
+            token0: PoolToken { address: wqi.into(), symbol: "WQI".into(), decimals: 18 },
+            token1: PoolToken { address: "0x006c3e2aaae5db1bcd11a1a097ce572312eaddbb".into(), symbol: "WQUAI".into(), decimals: 18 },
+            reserve0: 5_000.0,
+            reserve1: 40_000.0,
+            ..Default::default()
+        });
+    }
+    app.eco.swap.from = SwapAsset::Token { address: wqi.into(), symbol: "WQI".into(), decimals: 18 };
+    app.eco.swap.amount = String::new();
+    let text = screen(&mut app);
+    assert!(text.contains("depth through WQUAI") && text.contains("type an amount to see its impact · LP fee 0.6% on top"), "{text}");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus
