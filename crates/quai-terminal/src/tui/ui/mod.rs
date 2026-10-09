@@ -19,6 +19,7 @@ use wallet_core::sdk::U256;
 use wallet_core::session::{short_address, short_code};
 use wallet_core::track::{describe, human_duration};
 
+pub(crate) mod boot;
 pub(crate) mod layout;
 mod lock;
 mod modals;
@@ -635,6 +636,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
             }
         }
     }
+    boot::draw(f, app, &t, main);
     // Cell effects, over the header and the screen but under the footer, modals and toasts.
     // Dropped rather than paused: one that waited would play late, over something else.
     if modal_open || !app.term.focused || app.lock.locked || !app.motion().effects() {

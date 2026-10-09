@@ -2999,6 +2999,41 @@ fn pairs_rows_carry_their_day() {
     assert!(spark.starts_with('▁') && spark.ends_with('█'), "rising: {spark}");
 }
 
+/// The boot card says what is running while the wallet starts, each line its real state, and
+/// goes once the first dashboard lands, at a key, or at Motion Off.
+#[test]
+fn the_boot_card_says_what_is_starting_and_goes() {
+    let (_dir, mut app) = populated_app();
+    let health = app.dash.health.take();
+    let refreshed = std::mem::take(&mut app.dash.refreshed_at);
+    app.config.motion = Motion::Full;
+    app.fx.boot = Some(std::time::Instant::now());
+    let screen = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height)
+            .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = screen(&mut app);
+    assert!(text.contains("starting") && text.contains("watch-only"), "{text}");
+    assert!(text.contains("connecting") && text.contains("waiting for the node"), "the node is not answered yet");
+    // The node answers: its lines tick; the accounts are still being read.
+    app.dash.health = health;
+    let text = screen(&mut app);
+    assert!(text.contains("chain id and genesis match") && text.contains("reading"), "{text}");
+    app.dash.refreshed_at = refreshed;
+    assert!(!screen(&mut app).contains("starting"), "gone once the dashboard lands");
+    app.dash.refreshed_at = 0;
+    app.note_input();
+    assert!(!screen(&mut app).contains("starting"), "and at a key");
+    app.fx.boot = Some(std::time::Instant::now());
+    app.config.motion = Motion::Off;
+    assert!(!screen(&mut app).contains("starting"), "never at Motion Off");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

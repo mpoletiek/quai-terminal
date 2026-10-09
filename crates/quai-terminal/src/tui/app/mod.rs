@@ -1183,6 +1183,8 @@ pub struct Fx {
     pub ambient: Option<Ceremony>,
     /// Cell effects running on the frame (`tfx`): the header height's decode.
     pub shots: Vec<super::tfx::Shot>,
+    /// When the boot card went up (`ui::boot`); none once a key has dismissed it.
+    pub boot: Option<Instant>,
     /// Border draw-in started on the last screen change.
     pub edge_intro: Option<Instant>,
     /// Order of the block behind the last heartbeat: 0 prime, 1 region, 2 zone.
@@ -1459,6 +1461,7 @@ impl App {
             fx: Fx {
                 ambient: None,
                 shots: Vec::new(),
+                boot: None,
                 edge_intro: None,
                 beat_order: 2,
                 recent_hashes: std::collections::VecDeque::new(),
@@ -1737,6 +1740,7 @@ impl App {
     /// Input arrived: the screen's auto-lock starts over, and the engine's with it.
     pub(crate) fn note_input(&mut self) {
         self.input.last_input = Instant::now();
+        self.fx.boot = None;
         if let Some(w) = &self.worker {
             w.activity();
         }

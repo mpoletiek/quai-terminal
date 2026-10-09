@@ -169,6 +169,8 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     let mut theme = theme;
     theme.fit_to_terminal(term.answers.background, caps.ansi8, caps.truecolor);
     let mut app = App::new(ctx.paths.clone(), network_id.clone(), config, theme, caps, meta);
+    // The boot card says what is starting until the first dashboard lands (`ui::boot`).
+    app.fx.boot = Some(Instant::now());
     // Large pictures go to the terminal as files it reads and deletes, when it is on this machine.
     app.term.kitty.file_dir = terminal::picture_dir(app.term.caps.ssh);
     wallet_core::diag::timing("startup.app_new", startup);
