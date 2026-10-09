@@ -289,7 +289,11 @@ pub fn draw_screen(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 Ok(v) => row_text(v),
                 Err(_) => format!("{} · unreadable record", super::ui::truncate(&p.id, 18)),
             };
-            Line::from(vec![mark, ratatui::text::Span::styled(text, style)])
+            let mut spans = vec![mark, ratatui::text::Span::styled(text, style)];
+            if let Ok(v) = &view {
+                spans.extend(meter(t, v));
+            }
+            Line::from(spans)
         })
         .collect();
     let terms = rows.get(selected).map(|plan| order_terms(t, plan)).unwrap_or_default();
@@ -306,6 +310,25 @@ pub fn draw_screen(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         }
     }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// How far an armed order's quote has come toward its target, as a ten-cell meter and a share:
+/// `■■■■■■■■■□ 92%`. Full, in the attention colour, once it is reachable. Nothing for an order
+/// with no target, no check yet, or no longer waiting.
+fn meter(t: &Theme, v: &orders::Record) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::style::Style;
+    use ratatui::text::Span;
+    let Some(p) = orders::progress(v).filter(|_| matches!(v.state, orders::State::Armed | orders::State::Triggered)) else {
+        return Vec::new();
+    };
+    let filled = ((p.min(1.0) * 10.0).floor() as usize).min(10);
+    let colour = if p >= 1.0 { t.attention } else { t.link };
+    vec![
+        Span::raw("   "),
+        Span::styled("■".repeat(filled), Style::default().fg(colour)),
+        Span::styled("□".repeat(10 - filled), t.dim_style()),
+        Span::styled(format!(" {:.0}% of target", (p * 100.0).floor()), t.dim_style()),
+    ]
 }
 
 /// One order as a list row: what it trades, where it stands, and how far its price is.

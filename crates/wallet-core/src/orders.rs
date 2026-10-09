@@ -123,6 +123,20 @@ pub fn default_fees(network: &crate::network::NetworkProfile, attempts: u8) -> R
     Ok((crate::amount::quai(per), crate::amount::quai(total)))
 }
 
+/// How far the last check's quote has come toward the order's target: the expected output as a
+/// share of the target output (1.0 or more is reachable). None for orders with no target or no
+/// check yet.
+pub fn progress(value: &Record) -> Option<f64> {
+    let target = atoms(value.spec.target_output_atoms.as_deref()?).ok()?;
+    let current = atoms(value.last_expected_output_atoms.as_deref()?).ok()?;
+    if target.is_zero() {
+        return None;
+    }
+    // Basis points of the target, in integers, then a fraction: atoms overflow f64 precision.
+    let bps = current.checked_mul(U256::from(10_000u64))? / target;
+    Some(u64::try_from(bps).unwrap_or(u64::MAX) as f64 / 10_000.0)
+}
+
 /// An order in plain words, one (label, text) row each: what it trades, what it waits for and
 /// how far that is, what it guarantees, where it stands, and what it may cost.
 pub fn describe(value: &Record, now: u64) -> Vec<(&'static str, String)> {
@@ -870,6 +884,22 @@ mod tests {
         assert_eq!(title, "Limit order reachable");
         assert!(body.contains("QUAI → USD: 0.000202 USD back is available now"), "{body}");
         assert!(body.contains("Trade › Orders"), "{body}");
+    }
+
+    /// Progress is the last quote over the target: short of it below 1, reachable at 1 or more,
+    /// and nothing to say without both.
+    #[test]
+    fn progress_is_the_quote_over_the_target() {
+        let mut spec = spec();
+        spec.target_output_atoms = Some("200".into());
+        let mut v = value(spec);
+        assert_eq!(progress(&v), None, "no check yet");
+        v.last_expected_output_atoms = Some("184".into());
+        assert_eq!(progress(&v), Some(0.92));
+        v.last_expected_output_atoms = Some("202".into());
+        assert_eq!(progress(&v), Some(1.01));
+        v.spec.target_output_atoms = None;
+        assert_eq!(progress(&v), None);
     }
 
     /// Orders saved before targets and symbols existed still load, and still validate.
