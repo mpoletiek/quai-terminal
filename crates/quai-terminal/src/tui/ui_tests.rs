@@ -1779,10 +1779,10 @@ fn glyphs_stay_in_the_nerd_font_set() {
 /// The non-ASCII glyphs any monospace font here draws: the Unicode icon set lives inside it, and
 /// Nerd Font icons are written only as escapes in `icons.rs`.
 /// Quadrants, the right half block, diagonals and heavy corners were checked against
-/// JetBrainsMono Nerd Font Mono on 2026-10-08 (`fc-list ':charset=2596'` etc.); `▮▯` are not in
-/// it and stay out.
+/// JetBrainsMono Nerd Font Mono on 2026-10-08 (`fc-list ':charset=2596'` etc.), as was `▓`; `▮▯`
+/// are not in it and stay out.
 pub(crate) const GLYPHS: &str =
-    "━╍±·»×èéê–—‖“”•…‹›←↑→↓↔↕↗↘↩−≈≋≤─│┃┈┊┌┐└┘├┤┬┴┼┏┓┗┛╱╲▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐▖▗▘▙▚▛▜▝▞▟░▒▔■□▪▲▸▼▾◂◆◇◈◉◊○◌◎●◔◕◦◧⚠✓✕⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼";
+    "━╍±·»×èéê–—‖“”•…‹›←↑→↓↔↕↗↘↩−≈≋≤─│┃┈┊┌┐└┘├┤┬┴┼┏┓┗┛╱╲▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐▖▗▘▙▚▛▜▝▞▟░▒▓▔■□▪▲▸▼▾◂◆◇◈◉◊○◌◎●◔◕◦◧⚠✓✕⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼";
 
 /// Rough raster of a buffer for visual review: 8×16 cells, box glyphs as strokes, other glyphs
 /// as blocks, underlines as a bottom line.

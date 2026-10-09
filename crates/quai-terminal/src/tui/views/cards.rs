@@ -339,6 +339,12 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     Span::raw(format!("{} {} per {}", fmt_price(price), q.to.symbol(), q.from.symbol())),
                 ));
             }
+            if q.legs.len() <= 1
+                && let Some(spans) = value_split(t, q, inner.width.saturating_sub(super::super::widgets::KV_LABEL as u16 + 4))
+            {
+                q_lines.push(kv(t, "of its value", spans.0));
+                q_lines.push(kv(t, "", spans.1));
+            }
             let filled = ((q.impact_bps as f64 / 500.0) * 10.0).round().clamp(0.0, 10.0) as usize;
             let high = q.impact_bps >= wallet_core::swap::IMPACT_WARN_BPS;
             let impact_color = if high { t.attention } else { t.ok };
@@ -488,6 +494,40 @@ pub(crate) fn draw_swap_chart(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
     } else {
         draw_candles(f, app, t, inner, &cs, step, super::super::eco::SWAP_CHART_BUCKET, app.input.pointer.at);
     }
+}
+
+/// Where a swap's value at the pools' spot price goes: the minimum the router guarantees, the
+/// rest of what is expected (the slippage allowance), the LP fee and the price impact, as one bar
+/// (each part at least a cell, so a small one is still seen) and in words. Static: it changes
+/// only when the quote does. None when the quote's figures do not add up to a split.
+fn value_split<'a>(t: &Theme, q: &wallet_core::swap::SwapQuote, width: u16) -> Option<(Span<'a>, Span<'a>)> {
+    let out = q.amount_out.parse::<f64>().ok().filter(|v| *v > 0.0)?;
+    let min = q.minimum_out.parse::<f64>().ok()?.min(out);
+    let (fee, impact) = (q.fee_bps as f64 / 10_000.0, q.impact_bps as f64 / 10_000.0);
+    let kept = 1.0 - fee - impact;
+    if !(0.0..=1.0).contains(&kept) || kept <= 0.0 {
+        return None;
+    }
+    // Shares of the value at spot: the output is what is kept after the fee and the impact.
+    let spot = out / kept;
+    let parts = [(min / spot, '█', t.ok), ((out - min) / spot, '▒', t.dim), (fee, '░', t.attention), (impact, '▓', t.danger)];
+    let width = width.clamp(10, 40) as usize;
+    let mut cells: Vec<usize> =
+        parts.iter().map(|(share, ..)| if *share > 0.0 { ((share * width as f64).round() as usize).max(1) } else { 0 }).collect();
+    // The guaranteed part gives up what the small ones were rounded up to.
+    let over = cells.iter().sum::<usize>().saturating_sub(width);
+    cells[0] = cells[0].saturating_sub(over);
+    let bar: String = parts.iter().zip(&cells).map(|((_, ch, _), n)| ch.to_string().repeat(*n)).collect();
+    // One colour per part would need a span each; the bar is the guaranteed part's colour, the
+    // glyphs tell the parts apart, and the words say each share.
+    let words = format!(
+        "{:.1}% guaranteed · {:.1}% more expected · {:.1}% LP fee · {:.2}% impact",
+        parts[0].0 * 100.0,
+        parts[1].0 * 100.0,
+        fee * 100.0,
+        impact * 100.0
+    );
+    Some((Span::styled(bar, Style::default().fg(t.ok)), Span::styled(words, t.dim_style())))
 }
 
 /// A route's depth, the AMM's order book: how much can be paid in before its price moves 1%, 2%
@@ -1589,4 +1629,46 @@ pub fn draw_token_picker(f: &mut Frame, app: &App, t: &Theme, area: Rect, query:
     }
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), area);
     let _ = f;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 51.94 USDT expected, 51.68 guaranteed, 0.3% LP fee, 2.40% impact: the value at spot is
+    /// 51.94 / 0.973, and each part is its share of it.
+    #[test]
+    fn a_swaps_value_splits_into_what_is_kept_and_what_goes() {
+        let t = Theme::terminal(false);
+        let q = wallet_core::swap::SwapQuote {
+            from: wallet_core::swap::SwapAsset::Quai,
+            to: wallet_core::swap::SwapAsset::Quai,
+            amount_in: "1".into(),
+            amount_out: "51940000".into(),
+            minimum_out: "51680000".into(),
+            slippage_bps: 50,
+            path: vec![],
+            route: vec![],
+            pools: vec![],
+            impact_bps: 240,
+            fee_bps: 30,
+            router: String::new(),
+            allowance: None,
+            approval_needed: false,
+            balance: None,
+            insufficient: false,
+            warnings: vec![],
+            observed_at: 0,
+            liquidity_at: None,
+            legs: vec![],
+        };
+        let (bar, words) = value_split(&t, &q, 40).unwrap();
+        assert_eq!(words.content, "96.8% guaranteed · 0.5% more expected · 0.3% LP fee · 2.40% impact");
+        assert_eq!(bar.content.chars().count(), 40, "{}", bar.content);
+        for part in ['█', '▒', '░', '▓'] {
+            assert!(bar.content.contains(part), "every non-zero part is seen: {}", bar.content);
+        }
+        let none = wallet_core::swap::SwapQuote { amount_out: "0".into(), ..q };
+        assert!(value_split(&t, &none, 40).is_none());
+    }
 }
