@@ -2738,6 +2738,34 @@ fn the_height_decode_keeps_to_the_motion_level_and_never_plays_under_a_modal() {
     assert!(app.fx.shots.is_empty(), "a modal drops it");
 }
 
+/// A prime block landing names itself on the lattice's top line for a moment, above Reduced
+/// motion only; the panel keeps its corners.
+#[test]
+fn a_prime_block_has_its_moment_on_the_lattice_line() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Chain);
+    let mut prime = app.eco.chain.newest().unwrap().clone();
+    prime.height += 1;
+    prime.order = 0;
+    prime.prime += 1;
+    app.eco.chain.merge(vec![prime.clone()], std::time::Instant::now());
+    let lattice_top = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .find(|r| r.contains("lattice"))
+            .unwrap()
+    };
+    app.config.motion = Motion::Off;
+    assert!(!lattice_top(&mut app).contains("PRIME #"), "still at Motion Off");
+    app.config.motion = Motion::Full;
+    let top = lattice_top(&mut app);
+    assert!(top.contains(&format!("PRIME #{}", wallet_core::amount::group_thousands(&prime.prime.to_string()))), "{top}");
+    assert!(top.contains('▞') && top.trim_end().ends_with('┐'), "stripes to the corner, which stays: {top}");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

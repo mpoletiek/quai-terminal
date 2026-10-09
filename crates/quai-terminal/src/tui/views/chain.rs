@@ -10,10 +10,14 @@ use super::super::kana::titled;
 use super::super::ui::screens::{count_text, gwei_text};
 use super::*;
 use ratatui::widgets::Sparkline;
+use unicode_width::UnicodeWidthStr;
 use wallet_core::blocks::BlockHead;
+use wallet_core::config::Motion;
 
 /// How long the newest block stays lit after it lands.
 const LIT_MS: u128 = 1500;
+/// A prime block's moment on the lattice's top line.
+const MOMENT_MS: u128 = 1200;
 
 const REGIONS: [&str; 3] = ["Cyprus", "Paxos", "Hydra"];
 
@@ -77,6 +81,7 @@ pub fn draw_chain(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         draw_base_fee(f, app, t, gas);
     }
     draw_feed(f, app, t, feed);
+    scanline(app, f.buffer_mut(), area, t);
     if hint {
         f.render_widget(
             Paragraph::new(Span::styled(
@@ -282,6 +287,24 @@ fn draw_lattice(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             }
         }
     }
+    // A prime block's moment, on the panel's top line: the block named in the prime hue, stripes to
+    // the corner, one colour flip halfway. Region blocks come every few seconds; only prime gets one.
+    if newest.order == 0
+        && let Some(ms) = app.eco.chain.arrived.get(&newest.height).map(|at| at.elapsed().as_millis())
+        && ms < MOMENT_MS
+        && app.motion().effects()
+    {
+        let title_end = area.x + 2 + titled("lattice", "lattice").width() as u16 + 2;
+        let label = format!(" {}PRIME #{} ", t.lead(Icon::Prime), amount::group_thousands(&newest.prime.to_string()));
+        let style = if ms < MOMENT_MS / 2 { t.strong_style().fg(t.danger) } else { Style::default().fg(t.on_danger).bg(t.danger) };
+        let end = area.right().saturating_sub(2);
+        if title_end + (label.width() as u16) < end {
+            buf.set_string(title_end, area.y, &label, style);
+            for x in title_end + label.width() as u16..end {
+                buf.set_string(x, area.y, "▞", Style::default().fg(t.danger));
+            }
+        }
+    }
     let right = inner.right() - label_w + 1;
     for (lane, n) in [(0u16, newest.prime), (1, newest.region), (2, newest.height)] {
         buf.set_string(right, inner.y + lane * 2, format!("#{}", amount::group_thousands(&n.to_string())), t.dim_style());
@@ -328,23 +351,27 @@ fn draw_hashrate(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     type Pick = fn(&wallet_core::chainstats::Hashrates) -> f64;
     let algos: [(&str, Pick, Color); 3] =
         [("SHA", |h| h.sha, t.chart[0]), ("Scrypt", |h| h.scrypt, t.chart[2]), ("KawPoW", |h| h.kawpow, t.chart[4])];
+    // One row each, label then sparkline; a row between them where the panel is tall enough.
+    let step = if inner.height >= 5 { 2 } else { 1 };
     for (i, (name, pick, colour)) in algos.iter().enumerate() {
-        let y = inner.y + i as u16 * 2;
-        if y + 1 >= inner.bottom() {
+        let y = inner.y + i as u16 * step;
+        if y >= inner.bottom() {
             break;
         }
+        let label = format!("{name:<7}{:>11} ", wallet_core::chainstats::hashrate_text(pick(&s.hashrate)));
+        let label_w = (label.chars().count() as u16).min(inner.width);
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(format!("{name:<7}"), t.dim_style()),
-                Span::styled(wallet_core::chainstats::hashrate_text(pick(&s.hashrate)), t.strong_style()),
+                Span::styled(label.chars().skip(7).collect::<String>(), t.strong_style()),
             ])),
-            Rect { y, height: 1, ..inner },
+            Rect { y, height: 1, width: label_w, ..inner },
         );
         // Log scale, then the window's own range: a few percent of movement fills the row.
         let logs: Vec<f64> = s.hashrate_history.iter().map(|(_, h)| pick(h).max(1.0).log10()).collect();
         let lo = logs.iter().copied().fold(f64::INFINITY, f64::min);
         let data: Vec<u64> = logs.iter().map(|v| ((v - lo) * 1000.0) as u64 + 1).collect();
-        let row = Rect { y: y + 1, height: 1, ..inner };
+        let row = Rect { x: inner.x + label_w, y, width: inner.width - label_w, height: 1 };
         f.render_widget(
             Sparkline::default().data(super::super::ui::screens::scaled(&data, row.width)).style(Style::default().fg(*colour)),
             row,
@@ -429,4 +456,68 @@ fn draw_feed(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         header.extend(["ws", "base fee", "miner"]);
     }
     f.render_widget(Table::new(rows, widths).header(Row::new(header).style(t.dim_style())), inner);
+}
+
+/// A band of light that sweeps down the screen, one row a tenth of a second, and rests a moment
+/// at the bottom. Vivid only.
+fn scanline(app: &App, buf: &mut ratatui::buffer::Buffer, area: Rect, t: &Theme) {
+    if app.motion() != Motion::Vivid || !app.term.focused || !app.term.caps.truecolor {
+        return;
+    }
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    scanline_at(buf, area, t, ms);
+}
+
+/// The scanline `ms` into the clock: only behind blank cells and panel lines, so text never
+/// changes and no height, hash, fee or address moves under it.
+fn scanline_at(buf: &mut ratatui::buffer::Buffer, area: Rect, t: &Theme, ms: u128) {
+    if area.height < 4 {
+        return;
+    }
+    let sweep = u128::from(area.height) * 100;
+    let ms = ms % (sweep + 1500);
+    if ms >= sweep {
+        return;
+    }
+    let row = area.y + (ms / 100) as u16;
+    for (y, k) in [(row, 0.10), (row.saturating_sub(1), 0.05)] {
+        if y < area.y {
+            continue;
+        }
+        let Some(bg) = super::super::edge::tint(t, t.focus, k) else { return };
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            if matches!(cell.symbol(), " " | "─" | "│" | "┌" | "┐" | "└" | "┘" | "┈") {
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    #[test]
+    fn the_scanline_lights_blank_cells_and_lines_but_never_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = super::super::super::theme::resolve(dir.path(), "quai-red", false, false).0;
+        let area = Rect::new(0, 0, 30, 10);
+        let mut plain = Buffer::empty(area);
+        plain.set_string(0, 3, "fee 63,607 gwei 0x0011…85b8", t.text_style());
+        plain.set_string(0, 2, "┌──────┐", t.dim_style());
+        let mut lit = plain.clone();
+        // 300 ms in: the band is on row 3, its trail on row 2.
+        scanline_at(&mut lit, area, &t, 300);
+        let text = (0..30u16).filter(|x| plain[(*x, 3)].symbol() != " ");
+        for x in text {
+            assert_eq!(lit[(x, 3)], plain[(x, 3)], "text at {x} untouched");
+        }
+        assert_ne!(lit[(29, 3)].bg, plain[(29, 3)].bg, "a blank cell on the band is lit");
+        assert_ne!(lit[(1, 2)].bg, plain[(1, 2)].bg, "and a panel line on its trail");
+        let mut rest = plain.clone();
+        scanline_at(&mut rest, area, &t, 1_200);
+        assert_eq!(rest, plain, "resting at the bottom");
+    }
 }
