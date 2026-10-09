@@ -2909,6 +2909,22 @@ fn the_days_movers_head_the_pairs_list() {
     assert!(row.contains("QOGE ▲ 13.6%"), "{row}");
 }
 
+/// Where the terminal sizes text, the Markets price is the pair's headline at twice the size, held
+/// cells beneath it, and its quote symbol, change and range beside it; under a modal it is plain.
+#[test]
+fn the_markets_price_is_a_headline_where_text_can_be_sized() {
+    let (_dir, mut app) = populated_app();
+    app.term.caps.text_sizing = true;
+    app.switch(Screen::Markets);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let big: Vec<_> = app.term.big_text.borrow().iter().map(|b| (b.scale, b.text.clone())).collect();
+    assert!(big.contains(&(2, "0.008744".to_string())), "{big:?}");
+    app.modal = Modal::Help;
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(!app.term.big_text.borrow().iter().any(|b| b.text == "0.008744"), "plain under a modal");
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

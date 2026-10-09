@@ -332,8 +332,17 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     f.render_widget(block, main);
     // A third header line names the contracts when there is room for it.
     let info_line = inner.height > 20;
+    // Where the terminal sizes text (kitty's OSC 66) and there is room, the price is the pair's
+    // headline at twice the size; under a modal or an effect it is ordinary text, so nothing moves.
+    let sized = app.term.caps.text_sizing
+        && app.config.big_numbers
+        && !app.term.plain
+        && !app.term.short
+        && matches!(app.modal, app::Modal::None)
+        && app.fx.ambient.is_none()
+        && inner.height > 24;
     let [header, chart_area, volume_area, tape_area] = Layout::vertical([
-        Constraint::Length(if info_line { 3 } else { 2 }),
+        Constraint::Length(if info_line { 3 } else { 2 } + u16::from(sized)),
         Constraint::Min(6),
         Constraint::Length(3),
         Constraint::Length(if inner.height > 26 { 9 } else { 5 }),
@@ -420,11 +429,43 @@ pub fn draw_markets(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     ];
     line2.extend(priced);
     line2.push(Span::styled(holdings, t.dim_style()));
-    let mut lines = vec![Line::from(line1), Line::from(line2)];
+    let mut lines = vec![Line::from(line2)];
     if info_line {
         lines.push(Line::from(token_info(app, t, pool, base, &base_sym)));
     }
-    f.render_widget(Paragraph::new(lines), header);
+    let rest = if sized {
+        use super::super::term::backend::{BIG_TEXT_CELL, BigText};
+        // Icons, then the price two rows tall, then the rest of the line on its lower row.
+        let icons: Vec<Span> = line1.drain(..4).collect();
+        let price_text = price.map(fmt_price).unwrap_or_else(|| "—".into());
+        line1.remove(0);
+        f.render_widget(Paragraph::new(Line::from(icons)), Rect { height: 1, ..header });
+        let x = header.x + 6;
+        let buf = f.buffer_mut();
+        let bg = buf.cell((x, header.y)).map_or(t.surface, |c| c.bg);
+        let text = BigText { x, y: header.y, scale: 2, text: price_text, fg: t.strong, bg, bold: true };
+        let w = text.width().min(header.width.saturating_sub(7));
+        for row in 0..2 {
+            for col in 0..w {
+                if let Some(c) = buf.cell_mut((x + col, header.y + row)) {
+                    c.set_symbol(BIG_TEXT_CELL).set_style(t.strong_style());
+                }
+            }
+        }
+        app.term.big_text.borrow_mut().push(text);
+        let mut beside = vec![Span::styled(format!(" {quote_sym}"), t.dim_style())];
+        beside.extend(line1);
+        let after = x + w;
+        f.render_widget(
+            Paragraph::new(Line::from(beside)),
+            Rect { x: after, y: header.y + 1, width: header.right().saturating_sub(after), height: 1 },
+        );
+        Rect { y: header.y + 2, height: header.height - 2, ..header }
+    } else {
+        lines.insert(0, Line::from(line1));
+        header
+    };
+    f.render_widget(Paragraph::new(lines), rest);
 
     match events {
         None if loading || !mv.events.contains_key(&pool.address) => {
