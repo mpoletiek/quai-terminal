@@ -2819,6 +2819,29 @@ fn blocks_with_your_transactions_are_marked() {
     assert!(!rows.iter().any(|r| r.contains("▌ 10,515,404")));
 }
 
+/// The base fee panel says how much of the fee policy's gas price the newest base fee is, and
+/// says so in words when it is above it.
+#[test]
+fn the_base_fee_is_measured_against_your_fee_policy() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Chain);
+    let title = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height)
+            .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+            .find(|r| r.contains("fee policy ("))
+            .unwrap_or_default()
+    };
+    assert!(title(&mut app).contains("63% of your fee policy (100,000 gwei)"), "{}", title(&mut app));
+    let mut hot = app.eco.chain.newest().unwrap().clone();
+    hot.height += 1;
+    hot.base_fee_wei = 120_000_000_000_000;
+    app.eco.chain.merge(vec![hot], std::time::Instant::now());
+    assert!(title(&mut app).contains("above your fee policy (100,000 gwei)"), "{}", title(&mut app));
+}
+
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
 /// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
 /// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus

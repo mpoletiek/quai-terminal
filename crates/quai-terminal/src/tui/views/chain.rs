@@ -530,20 +530,36 @@ fn draw_hashrate(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     }
 }
 
-/// Base fee per block, in gwei, with the newest in the title.
+/// Base fee per block, the newest in the title, and above the bars how much of the fee policy's
+/// gas price it is. A base fee above the policy turns the bars red and says so: highlighted,
+/// never blocked (a review over policy still goes through, see `fee_policy_note`).
 fn draw_base_fee(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let blocks = window(app, area.width.saturating_sub(4));
-    let last = blocks.last().map(|b| format!(" · {}", gwei_text(b.base_fee_wei as f64 / 1e9))).unwrap_or_default();
+    let policy = app.config.network(&app.network_id).ok().and_then(|n| n.max_gas_price.parse::<u128>().ok()).filter(|p| *p > 0);
+    let newest = blocks.last().map(|b| b.base_fee_wei);
+    let over = newest.zip(policy).is_some_and(|(fee, cap)| fee > cap);
+    let last = newest.map(|fee| format!(" · {}", gwei_text(fee as f64 / 1e9))).unwrap_or_default();
     let block = panel(t, &format!("{}{last}", titled("gas", "base fee")), false);
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     f.render_widget(block, area);
     if blocks.is_empty() {
         return waiting(f, app, t, inner);
     }
+    if let (Some(fee), Some(cap)) = (newest, policy)
+        && inner.height > 2
+    {
+        let (text, style) = match over {
+            true => (format!("above your fee policy ({})", gwei_text(cap as f64 / 1e9)), Style::default().fg(t.danger)),
+            false => (format!("{}% of your fee policy ({})", fee * 100 / cap, gwei_text(cap as f64 / 1e9)), t.dim_style()),
+        };
+        f.render_widget(Paragraph::new(Span::styled(text, style)), Rect { height: 1, ..inner });
+        inner = Rect { y: inner.y + 1, height: inner.height - 1, ..inner };
+    }
+    let colour = if over { t.danger } else { t.attention };
     let lo = blocks.iter().map(|b| b.base_fee_wei).min().unwrap_or(0);
     let data: Vec<u64> = blocks.iter().map(|b| ((b.base_fee_wei - lo) / 1_000_000) as u64 + 1).collect();
-    f.render_widget(Sparkline::default().data(&data).style(Style::default().fg(t.attention)), inner);
-    super::super::edge::ramp_bars(app, f.buffer_mut(), inner, t.attention, t);
+    f.render_widget(Sparkline::default().data(&data).style(Style::default().fg(colour)), inner);
+    super::super::edge::ramp_bars(app, f.buffer_mut(), inner, colour, t);
 }
 
 /// Every block read, newest first.
