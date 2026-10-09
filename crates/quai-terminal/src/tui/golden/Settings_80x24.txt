@@ -3,6 +3,7 @@
 ┌ ▸ settings ──────────────────────────────────────────────────────────────────┐
 │ Appearance                                                                   │
 │   Theme                          terminal  ›                                 │
+│   Persona                        filament · light on lines                   │
 │   Motion                         off                                         │
 │   Background                     auto · the theme's, solid                   │
 │   Icons                          auto · unicode                              │
@@ -14,8 +15,7 @@
 │   Effects & celebrations         ● on                                        │
 │   Lock screen animation          random  ›                                   │
 │   Loop the lock screen animation ● on · one after another                    │
-│   Terminal bell on good news     ○ off                                       │
-│   ↓ 16 more                                                                  │
+│   ↓ 17 more                                                                  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ environment ─────────────────────────────────────────────────────────────────┐
 │ terminal      xterm-256color · block QR codes · 24-bit color                 │

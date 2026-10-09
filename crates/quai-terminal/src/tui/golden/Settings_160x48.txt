@@ -4,19 +4,20 @@
   1  Home            • │┌ ▸ settings ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
                        ││ Appearance                                                                                                                           │
   2  Markets           ││   Theme                          terminal  ›                                                                                         │
-                       ││   Motion                         off                                                                                                 │
-  3  Trade             ││   Background                     auto · the theme's, solid                                                                           │
-                       ││   Icons                          auto · unicode                                                                                      │
-  4  NFTs            ◧ ││   Layout                         auto · trader from 200 columns                                                                      │
-                       ││   Mouse                          auto · clicks, wheel and hover · shift-drag selects text                                            │
-  5  People            ││   Move with h j k l              ● on · the arrows always move                                                                       │
-                       ││   Big balance digits             ● on                                                                                                │
-  6  Activity          ││   Balance in the top bar         ● on · $ toggles it                                                                                 │
+                       ││   Persona                        filament · light on lines                                                                           │
+  3  Trade             ││   Motion                         off                                                                                                 │
+                       ││   Background                     auto · the theme's, solid                                                                           │
+  4  NFTs            ◧ ││   Icons                          auto · unicode                                                                                      │
+                       ││   Layout                         auto · trader from 200 columns                                                                      │
+  5  People            ││   Mouse                          auto · clicks, wheel and hover · shift-drag selects text                                            │
+                       ││   Move with h j k l              ● on · the arrows always move                                                                       │
+  6  Activity          ││   Big balance digits             ● on                                                                                                │
+                       ││   Balance in the top bar         ● on · $ toggles it                                                                                 │
                        ││   Effects & celebrations         ● on                                                                                                │
-                       ││   Lock screen animation          random  ›                                                                                           │
-▌ 0  System            ││   Loop the lock screen animation ● on · one after another                                                                            │
-                       ││   Terminal bell on good news     ○ off                                                                                               │
-   [ ] tabs            ││                                                                                                                                      │
+▌ 0  System            ││   Lock screen animation          random  ›                                                                                           │
+                       ││   Loop the lock screen animation ● on · one after another                                                                            │
+   [ ] tabs            ││   Terminal bell on good news     ○ off                                                                                               │
+                       ││                                                                                                                                      │
                        ││ Features                                                                                                                             │
                        ││   Mode                           pro  ›  adds markets, pools, launches, orders, PnL, the marketplace, Qi coins, the board, network   │
                        ││   Messaging                      ● on · board, sealed DMs, chat dock                                                                 │
@@ -39,7 +40,6 @@
                        ││ data          <data>                                                                                                                 │
                        ││                                                                                                                                      │
                        ││ With theme = auto the wallet follows Omarchy live; T opens the showroom from anywhere.                                               │
-                       ││                                                                                                                                      │
                        ││                                                                                                                                      │
                        ││                                                                                                                                      │
                        ││                                                                                                                                      │

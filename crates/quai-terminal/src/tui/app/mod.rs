@@ -1391,6 +1391,8 @@ impl App {
         let mut eco = super::eco::Eco::default();
         eco.swap.slippage_bps = config.swap_slippage_bps;
         eco.swap.deadline_minutes = config.swap_deadline_minutes;
+        // The desk opens its charts with the averages on.
+        eco.markets_view.chart.overlays = config.persona == wallet_core::config::Persona::Desk;
         Self {
             registry: wallet_core::registry::Registry::new(paths.clone()),
             paths,
@@ -1543,7 +1545,8 @@ impl App {
         // would cost is one more thing re-read.
         if self.term.plain {
             Motion::Off
-        } else if self.term.caps.ssh && self.config.motion.effects() {
+        } else if (self.term.caps.ssh || self.config.persona == wallet_core::config::Persona::Desk) && self.config.motion.effects() {
+            // Over SSH every frame crosses the link; at the desk, nothing should pull the eye.
             Motion::Reduced
         } else {
             self.config.motion
@@ -2339,6 +2342,7 @@ pub fn action_feature(id: &str) -> Option<Feature> {
 pub const SETTINGS: &[(&str, &str)] = &[
     // Appearance
     ("theme", "Theme"),
+    ("persona", "Persona"),
     ("motion", "Motion"),
     ("background", "Background"),
     ("icons", "Icons"),

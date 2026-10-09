@@ -4,17 +4,18 @@
   1  Home            • │┌ ▸ settings ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
                        ││ Appearance                                                                                                                           │
   3  Trade             ││   Theme                          terminal  ›                                                                                         │
-                       ││   Motion                         off                                                                                                 │
-  4  NFTs            ◧ ││   Background                     auto · the theme's, solid                                                                           │
-                       ││   Icons                          auto · unicode                                                                                      │
-  5  People            ││   Layout                         auto · trader from 200 columns                                                                      │
-                       ││   Mouse                          auto · clicks, wheel and hover · shift-drag selects text                                            │
-  6  Activity          ││   Move with h j k l              ● on · the arrows always move                                                                       │
+                       ││   Persona                        filament · light on lines                                                                           │
+  4  NFTs            ◧ ││   Motion                         off                                                                                                 │
+                       ││   Background                     auto · the theme's, solid                                                                           │
+  5  People            ││   Icons                          auto · unicode                                                                                      │
+                       ││   Layout                         auto · trader from 200 columns                                                                      │
+  6  Activity          ││   Mouse                          auto · clicks, wheel and hover · shift-drag selects text                                            │
+                       ││   Move with h j k l              ● on · the arrows always move                                                                       │
                        ││   Big balance digits             ● on                                                                                                │
-                       ││   Balance in the top bar         ● on · $ toggles it                                                                                 │
-▌ 0  System            ││   Effects & celebrations         ● on                                                                                                │
-                       ││   Lock screen animation          random  ›                                                                                           │
-   [ ] tabs            ││   Loop the lock screen animation ● on · one after another                                                                            │
+▌ 0  System            ││   Balance in the top bar         ● on · $ toggles it                                                                                 │
+                       ││   Effects & celebrations         ● on                                                                                                │
+   [ ] tabs            ││   Lock screen animation          random  ›                                                                                           │
+                       ││   Loop the lock screen animation ● on · one after another                                                                            │
                        ││   Terminal bell on good news     ○ off                                                                                               │
                        ││                                                                                                                                      │
                        ││ Features                                                                                                                             │
@@ -39,7 +40,6 @@
                        ││ data          <data>                                                                                                                 │
                        ││                                                                                                                                      │
                        ││ With theme = auto the wallet follows Omarchy live; T opens the showroom from anywhere.                                               │
-                       ││                                                                                                                                      │
                        ││                                                                                                                                      │
                        ││                                                                                                                                      │
                        ││                                                                                                                                      │

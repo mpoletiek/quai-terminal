@@ -175,9 +175,8 @@ fn draw_hierarchy(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             f.render_widget(Paragraph::new(words), Rect { height: 1, ..inner });
             let foot = Line::from(vec![
                 Span::styled(format!("{} {}", REGIONS[0], number(newest.map(|b| b.region))), style(hot(1))),
-                Span::styled(format!(" · {} · {}   ", REGIONS[1], REGIONS[2]), t.dim_style()),
-                Span::styled(t.lead(Icon::Zone), t.strong_style().fg(t.focus)),
-                Span::styled("yours", t.dim_style()),
+                // Cyprus-1 glows in the picture: the words name the regions under it.
+                Span::styled(format!(" · {} · {}", REGIONS[1], REGIONS[2]), t.dim_style()),
             ]);
             f.render_widget(Paragraph::new(foot), Rect { y: inner.bottom() - 1, height: 1, ..inner });
             return;

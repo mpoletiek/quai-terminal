@@ -46,6 +46,8 @@ std::thread_local! {
     static FRAMED: std::cell::RefCell<Vec<Rect>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Motion is Off: spinners stand still (`◌`) and ask for no frames.
     static STILL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The persona the frame is drawn in (`panel` reads it for titles and padding).
+    static PERSONA: std::cell::Cell<wallet_core::config::Persona> = const { std::cell::Cell::new(wallet_core::config::Persona::Filament) };
 }
 
 /// Whether `rect` lies inside a frame drawn this frame (a modal, a sheet).
@@ -151,16 +153,57 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 
 /// Hairline panel with one cell of horizontal padding; only the focused panel gets the accent.
 pub(crate) fn panel<'a>(t: &Theme, title: &str, focused: bool) -> Block<'a> {
+    use wallet_core::config::Persona;
+    let (padding, title) = match PERSONA.with(std::cell::Cell::get) {
+        // A heads-up display: every title marked and in capitals.
+        Persona::Ghost => {
+            (1, Span::styled(format!(" ▸ {} ", title.to_uppercase()), if focused { t.strong_style().fg(t.focus) } else { t.dim_style() }))
+        }
+        // A trading desk: titles as chips, the lit one in the accent; no gutter inside the frame.
+        Persona::Desk => (
+            0,
+            if focused {
+                Span::styled(format!(" {title} "), Style::default().fg(t.on_accent).bg(t.focus).add_modifier(Modifier::BOLD))
+            } else {
+                Span::styled(format!(" {title} "), Style::default().fg(t.surface).bg(t.dim))
+            },
+        ),
+        Persona::Filament => (
+            1,
+            if focused {
+                Span::styled(format!(" ▸ {title} "), t.strong_style().fg(t.focus))
+            } else {
+                Span::styled(format!(" {title} "), t.dim_style())
+            },
+        ),
+    };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(t.border(focused))
-        .padding(Padding::horizontal(1))
-        .title(if focused {
-            Span::styled(format!(" ▸ {title} "), t.strong_style().fg(t.focus))
-        } else {
-            Span::styled(format!(" {title} "), t.dim_style())
-        })
+        .padding(Padding::horizontal(padding))
+        .title(title)
+}
+
+/// Ghost's frames: every panel but the lit one faded almost to the page, its corners left bright
+/// as brackets (the corner and one cell along each side), the way a heads-up display draws a
+/// box. Truecolor only; elsewhere the frames stay as they are.
+fn ghost_frames(buf: &mut Buffer, t: &Theme) {
+    let Some(faint) = super::edge::fade_to(t.line, t.surface, 0.6) else { return };
+    for p in super::edge::panels(buf, t).into_iter().filter(|p| !p.focused) {
+        let r = p.rect;
+        let (x1, y1) = (r.right() - 1, r.bottom() - 1);
+        let bracket = |x: u16, y: u16| {
+            let near = |a: u16, lo: u16, hi: u16| a <= lo + 1 || a + 1 >= hi;
+            near(x, r.x, x1) && near(y, r.y, y1)
+        };
+        for (x, y) in super::edge::perimeter(r) {
+            let cell = &mut buf[(x, y)];
+            if matches!(cell.symbol(), "─" | "│" | "┌" | "┐" | "└" | "┘") {
+                cell.set_fg(if bracket(x, y) { t.line_strong } else { faint });
+            }
+        }
+    }
 }
 
 pub fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -345,6 +388,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.theme.icons = app.icon_set();
     SPUN.with(|s| s.set(false));
     STILL.with(|s| s.set(app.motion() == Motion::Off));
+    PERSONA.with(|p| p.set(app.config.persona));
     FRAMED.with(|m| m.borrow_mut().clear());
     draw_frame(f, app);
     // Any spinner drawn keeps turning until the frame no longer shows one.
@@ -372,6 +416,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             (b.y..b.y + u16::from(b.scale))
                 .all(|y| (b.x..b.x + b.width()).all(|x| buf.cell((x, y)).is_some_and(|c| c.symbol() == BIG_TEXT_CELL)))
         });
+    }
+    if app.config.persona == wallet_core::config::Persona::Ghost {
+        ghost_frames(f.buffer_mut(), &t);
     }
     // The composed content, kept for the frames where only the edge light moves (`draw_edges`),
     // while the edges animate at all.

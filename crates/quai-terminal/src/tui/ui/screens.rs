@@ -1489,7 +1489,15 @@ pub(crate) fn draw_settings(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                         super::super::themes::find(&c.theme).map(|e| e.name.to_string()).unwrap_or_else(|| app.theme.name.clone())
                     )
                 }
-                "motion" => format!("{:?}{}", c.motion, if app.motion() != c.motion { " (reduced over SSH)" } else { "" }).to_lowercase(),
+                "persona" => format!("{} · {}", c.persona.id(), c.persona.about()),
+                "motion" => {
+                    let why = match (app.motion() != c.motion, c.persona == wallet_core::config::Persona::Desk) {
+                        (true, true) => " (reduced at the desk)",
+                        (true, false) => " (reduced over SSH)",
+                        _ => "",
+                    };
+                    format!("{:?}{why}", c.motion).to_lowercase()
+                }
                 "mouse" => {
                     let now = match app.pointer_mode() {
                         super::super::term::Pointer::Hover => "clicks, wheel and hover",

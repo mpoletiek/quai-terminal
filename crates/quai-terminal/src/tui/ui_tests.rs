@@ -2403,7 +2403,8 @@ fn the_accent_is_kept_for_focus_and_keys() {
     let t = app.theme.clone();
     let (w, h) = (160u16, 48u16);
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
-    for screen in Screen::ALL {
+    for (persona, screen) in wallet_core::config::Persona::ALL.into_iter().flat_map(|p| Screen::ALL.into_iter().map(move |s| (p, s))) {
+        app.config.persona = persona;
         app.switch(screen);
         app.modal = Modal::None;
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -2419,7 +2420,7 @@ fn the_accent_is_kept_for_focus_and_keys() {
                 }
             }
         }
-        assert!(lit.len() <= 40, "{screen:?} spends the accent on {} cells: {}", lit.len(), lit.concat());
+        assert!(lit.len() <= 40, "{persona:?} {screen:?} spends the accent on {} cells: {}", lit.len(), lit.concat());
     }
 }
 
@@ -2517,7 +2518,9 @@ fn one_panel_is_lit() {
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
     let mut lies = Vec::new();
     let mut seen = 0;
-    for screen in Screen::ALL {
+    // Every persona keeps the rule.
+    for (persona, screen) in wallet_core::config::Persona::ALL.into_iter().flat_map(|p| Screen::ALL.into_iter().map(move |s| (p, s))) {
+        app.config.persona = persona;
         app.switch(screen);
         for pane in 0..screen.panes().max(1) {
             app.nav.pane = pane;
@@ -2530,7 +2533,7 @@ fn one_panel_is_lit() {
                 .count();
             seen += lit;
             if lit > 1 {
-                lies.push(format!("{screen:?} pane {pane}: {lit} lit panels"));
+                lies.push(format!("{persona:?} {screen:?} pane {pane}: {lit} lit panels"));
             }
         }
     }
@@ -3091,6 +3094,41 @@ fn a_new_head_decodes_its_hash_on_the_chain_screen() {
     next.height += 1;
     app.settle_chain_heads(Ok(vec![next]));
     assert!(app.fx.shots.is_empty(), "still below Full");
+}
+
+/// Each persona draws its own frames and titles: Ghost's faint frames with bright corner brackets
+/// and `▸ TITLE`, Desk's titles as chips with no gutter, Filament as it was.
+#[test]
+fn personas_draw_their_own_frames_and_titles() {
+    use wallet_core::config::Persona;
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.truecolor = true;
+    app.switch(Screen::Chain);
+    let t = app.theme.clone();
+    let frame = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        term.backend().buffer().clone()
+    };
+    let row_with = |b: &Buffer, needle: &str| {
+        (0..b.area.height).find(|y| (0..b.area.width).map(|x| b[(x, *y)].symbol().to_string()).collect::<String>().contains(needle))
+    };
+    app.config.persona = Persona::Ghost;
+    let b = frame(&mut app);
+    let y = row_with(&b, "▸ LATTICE").expect("Ghost titles are marked and in capitals");
+    let corner = (0..b.area.width).find(|x| b[(*x, y)].symbol() == "┌").unwrap();
+    assert_eq!(b[(corner, y)].fg, t.line_strong, "a bright bracket at the corner");
+    assert_ne!(b[(corner + 6, y)].fg, t.line_strong, "the rest of the frame faint");
+    app.config.persona = Persona::Desk;
+    let b = frame(&mut app);
+    let y = row_with(&b, " lattice ").unwrap();
+    let x = (0..b.area.width).find(|x| b[(*x, y)].symbol() == "l" && b[(*x + 1, y)].symbol() == "a").unwrap();
+    assert_eq!(b[(x, y)].bg, t.dim, "Desk titles are chips");
+    app.config.motion = Motion::Vivid;
+    assert_eq!(app.motion(), Motion::Reduced, "and the desk is calm");
+    app.config.persona = Persona::Filament;
+    assert!(row_with(&frame(&mut app), " lattice ").is_some());
 }
 
 /// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
