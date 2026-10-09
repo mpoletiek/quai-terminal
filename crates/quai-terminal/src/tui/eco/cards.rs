@@ -665,6 +665,15 @@ impl App {
         true
     }
 
+    /// System › Chain: `m` sets the node it reads from (the monitoring endpoint).
+    pub(crate) fn chain_key(&mut self, key: KeyEvent) -> bool {
+        if key.code != KeyCode::Char('m') {
+            return false;
+        }
+        self.open_form(super::super::app::FormKind::Monitor { network: self.dash.network_id.clone() });
+        true
+    }
+
     /// The exchange's keys are its card's.
     pub(crate) fn exchange_key(&mut self, key: KeyEvent) -> bool {
         match self.nav.card {

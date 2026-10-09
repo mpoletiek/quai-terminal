@@ -7,6 +7,41 @@ use crate::registry::VaultExt;
 use serde::{Deserialize, Serialize};
 
 /// Motion preference for TUI effects.
+/// How the terminal is drawn, apart from its colours (the theme): panel frames, titles, density
+/// and how much moves. Any persona goes with any theme.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Persona {
+    /// Light on lines: hairline frames, the focused one lit.
+    #[default]
+    Filament,
+    /// A heads-up display: frames all but gone, bright corner brackets, `▸ TITLE`.
+    Ghost,
+    /// A trading desk: denser panels, titles as chips, calm motion, averages on the charts.
+    Desk,
+}
+
+impl Persona {
+    pub const ALL: [Persona; 3] = [Persona::Filament, Persona::Ghost, Persona::Desk];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Persona::Filament => "filament",
+            Persona::Ghost => "ghost",
+            Persona::Desk => "desk",
+        }
+    }
+
+    /// One line on what it changes.
+    pub fn about(self) -> &'static str {
+        match self {
+            Persona::Filament => "light on lines",
+            Persona::Ghost => "HUD brackets, frames all but gone",
+            Persona::Desk => "dense, calm, averages on charts",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Motion {
@@ -240,6 +275,9 @@ pub struct AppConfig {
     pub theme: String,
     /// Motion preference.
     pub motion: Motion,
+    /// How the terminal is drawn apart from its colours.
+    #[serde(default)]
+    pub persona: Persona,
     /// Graphics tier.
     pub graphics: GraphicsMode,
     /// Mouse support (`auto`, `full`, `click`, `off`).
@@ -353,6 +391,7 @@ impl Default for AppConfig {
             auto_lock_minutes: 10,
             theme: "auto".into(),
             motion: Motion::Vivid,
+            persona: Persona::Filament,
             graphics: GraphicsMode::Auto,
             mouse: MouseMode::Auto,
             background: BackgroundMode::Auto,
@@ -483,6 +522,12 @@ impl AppConfig {
                     _ => return Err(CoreError::Invalid(format!("mode is simple or pro, not `{value}`"))),
                 }
             }
+            "persona" => {
+                self.persona = Persona::ALL
+                    .into_iter()
+                    .find(|p| p.id() == value)
+                    .ok_or_else(|| CoreError::Invalid("persona: filament|ghost|desk".into()))?;
+            }
             "motion" => {
                 self.motion = match value {
                     "vivid" => Motion::Vivid,
@@ -606,6 +651,9 @@ mod tests {
     fn roundtrip_and_set() {
         let mut c = AppConfig::default();
         c.set("motion", "off").unwrap();
+        c.set("persona", "desk").unwrap();
+        assert_eq!(c.persona, Persona::Desk);
+        assert!(c.set("persona", "neon").is_err());
         c.set("notifications", "false").unwrap();
         assert!(c.set("bogus", "1").is_err());
         let text = toml::to_string_pretty(&c).unwrap();

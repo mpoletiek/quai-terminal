@@ -65,12 +65,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anpa"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d097f1722c2da82295c9e941c0dde75b4bf7a71102580c4ea63f8e5bc2d50c4e"
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3176,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "quai-engine"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "ciborium",
  "futures",
@@ -3191,7 +3185,7 @@ dependencies = [
 
 [[package]]
 name = "quai-feeds"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -3234,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "quai-messaging"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3249,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "quai-model"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "quai-sdk",
  "rusqlite",
@@ -3364,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "quai-terminal-cli"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3382,6 +3376,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "signal-hook",
  "tachyonfx",
  "tempfile",
@@ -3397,7 +3392,7 @@ dependencies = [
 
 [[package]]
 name = "quai-venues"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "serde",
 ]
@@ -4562,7 +4557,6 @@ version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e74555389c0a1c1c20e302994dc6eb478ab8754472b944b79a6558d44f33be3"
 dependencies = [
- "anpa",
  "bon",
  "compact_str 0.10.0",
  "micromath",
@@ -5195,7 +5189,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-core"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -5229,7 +5223,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-vault"
-version = "0.1.0-alpha.12"
+version = "0.1.0-alpha.13"
 dependencies = [
  "argon2",
  "base64 0.22.1",

@@ -170,6 +170,18 @@ pub enum DataCmd {
     Launches,
     /// Hashrate, transactions and gas over time, for System › Network.
     ChainStats,
+    /// Block headers for System › Chain: every block after `after` up to the head (the newest
+    /// `max` of them), or with nothing known yet the newest `max`. Read from the monitoring node
+    /// when one is set.
+    ChainHeads {
+        after: Option<u64>,
+        max: u16,
+    },
+    /// Each pair's hourly prices over the last day, for the Markets list's sparklines.
+    DayTrends(Vec<String>),
+    /// Follow (or stop following) the node's new heads over its WebSocket, for System › Chain:
+    /// each one is a `DataEv::ChainHead`. Dropped whenever the worker changes node.
+    ChainWatch(bool),
     /// Live QUAI for every wallet on this computer: (wallet id, its public Quai addresses).
     WalletQuai(Vec<(String, Vec<String>)>),
     /// Read or change this wallet's alerts and watchlist, or check the alerts.
@@ -261,6 +273,14 @@ pub enum DataEv {
     /// Logo URLs for launch tokens, by token address. Sent after the list it belongs to.
     LaunchLogos(std::collections::HashMap<String, String>),
     ChainStats(Result<Box<wallet_core::chainstats::ChainStats>, String>),
+    /// Headers oldest first; empty when nothing is newer than what was asked after.
+    ChainHeads(Result<Vec<wallet_core::blocks::BlockHead>, String>),
+    /// Hourly prices over the last day, by pair (`DataCmd::DayTrends`).
+    DayTrends(Result<std::collections::HashMap<String, Vec<(u64, f64)>>, String>),
+    /// The node announced a new head at this height.
+    ChainHead(u64),
+    /// Following new heads ended: the node closed it (`Ok`) or it failed.
+    ChainWatch(Result<(), String>),
     WalletQuai(#[serde(with = "wallet_core::ser::u256_pairs")] Vec<(String, wallet_core::sdk::U256)>),
     /// The alerts and watchlist as stored after the operation; what fired; a line to show.
     Alerts {
@@ -393,6 +413,7 @@ fn cache_pass(cmd: &DataCmd) -> Option<DataCmd> {
         DataCmd::MarketPools => DataCmd::MarketPools,
         DataCmd::Launches => DataCmd::Launches,
         DataCmd::ChainStats => DataCmd::ChainStats,
+        DataCmd::DayTrends(p) => DataCmd::DayTrends(p.clone()),
         DataCmd::PairCandles { pool, bucket, count } => DataCmd::PairCandles { pool: pool.clone(), bucket: *bucket, count: *count },
         DataCmd::DexFlow { pools, blocks, at } => DataCmd::DexFlow { pools: pools.clone(), blocks: *blocks, at: *at },
         DataCmd::Board { channel, blocks } => DataCmd::Board { channel: channel.clone(), blocks: *blocks },
@@ -428,6 +449,7 @@ fn worth_showing(ev: &DataEv) -> bool {
             | DataEv::MarketPools(Err(_))
             | DataEv::Launches(Err(_))
             | DataEv::ChainStats(Err(_))
+            | DataEv::DayTrends(Err(_))
             | DataEv::DexFlow(Err(_))
             | DataEv::PoolReserves(Err(_))
             | DataEv::Board { result: Err(_), .. }
@@ -454,6 +476,7 @@ fn lane(cmd: &DataCmd) -> usize {
         | DataCmd::TxCost(_)
         | DataCmd::CurveMarket { .. }
         | DataCmd::QiRoutes { .. }
+        | DataCmd::ChainHeads { .. }
         | DataCmd::Test => QUICK,
         _ => VIEWS,
     }
@@ -487,6 +510,8 @@ fn flight_key(cmd: &DataCmd) -> Option<String> {
         DataCmd::TxCost(h) => format!("tx_cost:{h}"),
         DataCmd::Launches => "launches".into(),
         DataCmd::ChainStats => "chain_stats".into(),
+        DataCmd::ChainHeads { .. } => "chain_heads".into(),
+        DataCmd::DayTrends(_) => "day_trends".into(),
         DataCmd::WalletQuai(_) => "wallet_quai".into(),
         // Every operation counts: two edits are not one.
         DataCmd::Alerts(_) => return None,
@@ -497,12 +522,38 @@ fn flight_key(cmd: &DataCmd) -> Option<String> {
         DataCmd::SwapQuote { .. } => "quote".into(),
         DataCmd::LiquidityQuote { .. } => "liquidity_quote".into(),
         DataCmd::QiRoutes { .. } => "qi_routes".into(),
-        DataCmd::Images(_) | DataCmd::Configure { .. } | DataCmd::Shutdown | DataCmd::Focus(_) => return None,
+        DataCmd::Images(_) | DataCmd::Configure { .. } | DataCmd::Shutdown | DataCmd::Focus(_) | DataCmd::ChainWatch(_) => return None,
     })
 }
 
 type Job = std::pin::Pin<Box<dyn std::future::Future<Output = (usize, Option<String>)>>>;
 type MonitorJob = std::pin::Pin<Box<dyn std::future::Future<Output = (u64, Option<DataCtx>)>>>;
+
+/// Following a node's new heads (`DataCmd::ChainWatch`) until it ends.
+type HeadWatch = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>;
+
+/// Follow `ctx`'s node over its WebSocket, sending each new head's height. The places a node's
+/// WebSocket may be are tried in order until one connects.
+fn head_watch(ctx: &DataCtx, events: &Sender<DataEv>) -> HeadWatch {
+    let urls = wallet_core::blocks::ws_urls(ctx.node.endpoint_url());
+    let events = events.clone();
+    Box::pin(async move {
+        let mut last = Err("this endpoint has no WebSocket".to_string());
+        for url in urls {
+            last = wallet_core::blocks::watch_heads(&url, |height| {
+                let open = events.send(DataEv::ChainHead(height)).is_ok();
+                crate::wake();
+                open
+            })
+            .await
+            .map_err(|e| e.to_string());
+            if last.is_ok() {
+                break;
+            }
+        }
+        last
+    })
+}
 
 /// Images from one source loading at once. A slow, strictly paced source (a public IPFS gateway)
 /// holds one slot, so it cannot block images from the explorer or the local cache. The user's own
@@ -560,6 +611,7 @@ async fn run(
     let mut monitor_tick = tokio::time::interval(std::time::Duration::from_secs(60));
     monitor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut monitor_job: Option<MonitorJob> = None;
+    let mut heads: Option<HeadWatch> = None;
     let mut ticks = 0u64;
     // Old third-party data is cleared once per run, after the first screens have loaded.
     let prune = tokio::time::sleep(std::time::Duration::from_secs(20));
@@ -611,7 +663,13 @@ async fn run(
                 ctx = Rc::new(c);
                 cache = Rc::new(cached);
                 generation.set(generation.get() + 1);
+                // Another node: whoever wanted its heads asks again.
+                heads = None;
             }
+        }
+        while let Some(i) = queue.iter().position(|c| matches!(c, DataCmd::ChainWatch(_))) {
+            let DataCmd::ChainWatch(on) = queue.remove(i) else { continue };
+            heads = on.then(|| head_watch(&ctx, &events));
         }
         for batch in queue.iter_mut().filter_map(|c| match c {
             DataCmd::Images(w) => Some(std::mem::take(w)),
@@ -778,7 +836,16 @@ async fn run(
                             follow(&mut cached, &next);
                             ctx = Rc::new(next);
                             cache = Rc::new(cached);
+                            if heads.take().is_some() {
+                                let _ = events.send(DataEv::ChainWatch(Ok(())));
+                                crate::wake();
+                            }
                         }
+                    }
+                    ended = async { heads.as_mut().expect("guarded head watch").await }, if heads.is_some() => {
+                        heads = None;
+                        let _ = events.send(DataEv::ChainWatch(ended));
+                        crate::wake();
                     }
                     Some((l, key)) = running.next(), if !running.is_empty() => {
                         busy[l] -= 1;
@@ -1033,6 +1100,15 @@ async fn handle(ctx: &DataCtx, cmd: DataCmd, send: &dyn Fn(DataEv)) {
                 note,
             });
         }
+        // Control: taken off the queue before jobs start.
+        DataCmd::ChainWatch(_) => {}
+        DataCmd::DayTrends(pairs) => {
+            send(DataEv::DayTrends(wallet_core::subgraph::day_trends(ctx, &pairs).await.map_err(|e| e.to_string())));
+        }
+        DataCmd::ChainHeads { after, max } => {
+            let r = wallet_core::blocks::since(&ctx.node, after, usize::from(max)).await.map_err(|e| e.to_string());
+            send(DataEv::ChainHeads(r));
+        }
         DataCmd::ChainStats => {
             send(DataEv::ChainStats(wallet_core::chainstats::chain_stats(ctx).await.map(|c| Box::new(c.value)).map_err(|e| e.to_string())));
         }
@@ -1143,6 +1219,7 @@ impl DataCmd {
             | DataCmd::Markets
             | DataCmd::SwapQuote { .. }
             | DataCmd::LiquidityQuote { .. }
+            | DataCmd::DayTrends(_)
             | DataCmd::Launches => Some(Feature::Trading),
             DataCmd::Nfts { .. }
             | DataCmd::Collections { .. }
@@ -1191,6 +1268,9 @@ fn cmd_name(cmd: &DataCmd) -> &'static str {
         DataCmd::TxCost(_) => "tx_cost",
         DataCmd::Launches => "launches",
         DataCmd::ChainStats => "chain_stats",
+        DataCmd::ChainHeads { .. } => "chain_heads",
+        DataCmd::DayTrends(_) => "day_trends",
+        DataCmd::ChainWatch(_) => "chain_watch",
         DataCmd::WalletQuai(_) => "wallet_quai",
         DataCmd::Alerts(_) => "alerts",
         DataCmd::CurveMarket { .. } => "curve_market",

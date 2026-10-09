@@ -1156,6 +1156,49 @@ pub(crate) fn populated_app() -> (tempfile::TempDir, App) {
     }
     // Mainnet profile so swap and marketplace views render their full cards.
     app.network_id = "mainnet".into();
+    // System › Chain: thirty blocks ending 4 s before the frozen clock, every 6th a region block
+    // and every 20th a prime one, with one height never read (a gap in the lattice).
+    app.eco.chain.network = "local".into();
+    let now = wallet_core::registry::now();
+    let (mut prime, mut region) = (2_325_680u64, 5_647_470u64);
+    let heads: Vec<wallet_core::blocks::BlockHead> = (10_515_380u64..=10_515_409)
+        .filter(|h| *h != 10_515_395)
+        .map(|h| {
+            let order = if h % 20 == 0 {
+                0
+            } else if h % 6 == 0 {
+                1
+            } else {
+                2
+            };
+            region += u64::from(order <= 1);
+            prime += u64::from(order == 0);
+            let zeros = (h % 4 + 1) as usize;
+            wallet_core::blocks::BlockHead {
+                height: h,
+                prime,
+                region,
+                order,
+                // `zeros` zero digits, then a non-zero one, then well-mixed digits.
+                hash: {
+                    let v = u128::from(h).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
+                    format!("0x{}{:x}{}", "0".repeat(zeros), 1 + h % 15, &format!("{v:032x}{v:032x}")[zeros + 1..])
+                },
+                parent: String::new(),
+                timestamp: now - 4 - (10_515_409 - h) * 5,
+                txs: (h % 90) as u32,
+                etxs: (h % 23) as u32,
+                workshares: (h % 17) as u32,
+                gas_used: 268_000 + (h % 50) * 4_000,
+                gas_limit: 50_000_000,
+                base_fee_wei: 63_600_000_000_000 + u128::from(h % 9) * 1_000_000_000,
+                miner: "0x0011d16c5f4801D8d7B2eD4A84fC98D114Cb85b8".into(),
+                difficulty: 0xd9a9cb2a80,
+                entropy_mbits: 38_000 + (h * 7_919) % 6_500,
+            }
+        })
+        .collect();
+    app.eco.chain.merge(heads, std::time::Instant::now());
     (dir, app)
 }
 
@@ -1719,9 +1762,11 @@ fn glyphs_stay_in_the_nerd_font_set() {
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|e| e == "rs") {
+                // CJK lives in `kana.rs` alone, drawn where a font covers it (see there).
+                let kana = p.file_name().is_some_and(|n| n == "kana.rs");
                 for (n, line) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
                     let code = line.split("//").next().unwrap_or("");
-                    for ch in code.chars().filter(|c| !c.is_ascii() && !ALLOWED.contains(*c)) {
+                    for ch in code.chars().filter(|c| !c.is_ascii() && !ALLOWED.contains(*c) && !(kana && super::super::kana::is_cjk(*c))) {
                         offenders.push(format!("{}:{} {ch} U+{:04X}", p.display(), n + 1, ch as u32));
                     }
                 }
@@ -1733,7 +1778,11 @@ fn glyphs_stay_in_the_nerd_font_set() {
 
 /// The non-ASCII glyphs any monospace font here draws: the Unicode icon set lives inside it, and
 /// Nerd Font icons are written only as escapes in `icons.rs`.
-pub(crate) const GLYPHS: &str = "━╍±·»×èéê–—‖“”•…‹›←↑→↓↔↕↗↘↩−≈≋≤─│┃┈┊┌┐└┘├┤┬┴┼▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏░▒▔■□▪▲▸▼▾◂◆◇◈◉◊○◌◎●◔◕◦◧⚠✓✕⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼";
+/// Quadrants, the right half block, diagonals and heavy corners were checked against
+/// JetBrainsMono Nerd Font Mono on 2026-10-08 (`fc-list ':charset=2596'` etc.), as was `▓`; `▮▯`
+/// are not in it and stay out.
+pub(crate) const GLYPHS: &str =
+    "━╍±·»×èéê–—‖“”•…‹›←↑→↓↔↕↗↘↩−≈≋≤─│┃┈┊┌┐└┘├┤┬┴┼┏┓┗┛╱╲▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐▖▗▘▙▚▛▜▝▞▟░▒▓▔■□▪▲▸▼▾◂◆◇◈◉◊○◌◎●◔◕◦◧⚠✓✕⠇⠋⠏⠙⠦⠧⠴⠸⠹⠼";
 
 /// Rough raster of a buffer for visual review: 8×16 cells, box glyphs as strokes, other glyphs
 /// as blocks, underlines as a bottom line.
@@ -2354,7 +2403,8 @@ fn the_accent_is_kept_for_focus_and_keys() {
     let t = app.theme.clone();
     let (w, h) = (160u16, 48u16);
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
-    for screen in Screen::ALL {
+    for (persona, screen) in wallet_core::config::Persona::ALL.into_iter().flat_map(|p| Screen::ALL.into_iter().map(move |s| (p, s))) {
+        app.config.persona = persona;
         app.switch(screen);
         app.modal = Modal::None;
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -2370,7 +2420,7 @@ fn the_accent_is_kept_for_focus_and_keys() {
                 }
             }
         }
-        assert!(lit.len() <= 40, "{screen:?} spends the accent on {} cells: {}", lit.len(), lit.concat());
+        assert!(lit.len() <= 40, "{persona:?} {screen:?} spends the accent on {} cells: {}", lit.len(), lit.concat());
     }
 }
 
@@ -2468,7 +2518,9 @@ fn one_panel_is_lit() {
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
     let mut lies = Vec::new();
     let mut seen = 0;
-    for screen in Screen::ALL {
+    // Every persona keeps the rule.
+    for (persona, screen) in wallet_core::config::Persona::ALL.into_iter().flat_map(|p| Screen::ALL.into_iter().map(move |s| (p, s))) {
+        app.config.persona = persona;
         app.switch(screen);
         for pane in 0..screen.panes().max(1) {
             app.nav.pane = pane;
@@ -2481,7 +2533,7 @@ fn one_panel_is_lit() {
                 .count();
             seen += lit;
             if lit > 1 {
-                lies.push(format!("{screen:?} pane {pane}: {lit} lit panels"));
+                lies.push(format!("{persona:?} {screen:?} pane {pane}: {lit} lit panels"));
             }
         }
     }
@@ -2616,6 +2668,543 @@ fn frame_budget() {
     }
     eprintln!("{}", report.join("\n"));
     assert!(over.is_empty(), "over the frame budget:\n{}", over.join("\n"));
+}
+
+/// A new block decodes the header's height and nothing else on that row; the decode is over in
+/// well under half a second and leaves the plain header behind.
+#[test]
+fn a_new_block_decodes_the_header_height_and_nothing_else() {
+    let (_dir, mut app) = populated_app();
+    app.config.motion = Motion::Vivid;
+    app.term.focused = true;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let mut next = app.dash.clone();
+    let h = next.health.as_mut().expect("the fixture has a head");
+    h.height += 1;
+    h.order = Some(2);
+    let height = h.height;
+    app.observe_changes(&next);
+    app.dash = next;
+    // The header glyph's own pulse is another signal; hold it still for the comparison.
+    app.fx.beat = None;
+    assert_eq!(app.fx.shots.len(), 1, "a zone block at Vivid decodes the height");
+    let row = |b: &Buffer| (0..b.area.width).map(|x| b[(x, 0)].symbol().to_string()).collect::<Vec<_>>();
+    let shots = std::mem::take(&mut app.fx.shots);
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let plain = row(term.backend().buffer());
+    app.fx.shots = shots;
+    let text: Vec<String> = format!("#{}", wallet_core::amount::group_thousands(&height.to_string())).chars().map(String::from).collect();
+    let x0 = (0..plain.len() - text.len()).find(|&x| plain[x..x + text.len()] == text[..]).expect("the header shows the height");
+    let span = x0..x0 + text.len();
+    let mut changed = false;
+    for _ in 0..12 {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let now = row(term.backend().buffer());
+        for x in (0..plain.len()).filter(|x| !span.contains(x)) {
+            assert_eq!(now[x], plain[x], "header cell {x} moved while the height decoded");
+        }
+        changed |= now[span.clone()] != plain[span.clone()];
+    }
+    assert!(changed, "the decode showed");
+    assert!(app.fx.shots.is_empty(), "and finished");
+    assert_eq!(row(term.backend().buffer()), plain, "leaving the plain header");
+}
+
+/// The decode follows the heartbeat's rules: zone blocks only at Vivid, region and prime from
+/// Full; nothing below Full; and a modal drops what is playing.
+#[test]
+fn the_height_decode_keeps_to_the_motion_level_and_never_plays_under_a_modal() {
+    let (_dir, mut app) = populated_app();
+    app.term.focused = true;
+    let block = |app: &mut App, order: u8| {
+        app.fx.shots.clear();
+        let mut next = app.dash.clone();
+        let h = next.health.as_mut().unwrap();
+        h.height += 1;
+        h.order = Some(order);
+        app.observe_changes(&next);
+        app.dash = next;
+        app.fx.shots.len()
+    };
+    app.config.motion = Motion::Full;
+    assert_eq!(block(&mut app, 2), 0, "a zone block whispers below Vivid");
+    assert_eq!(block(&mut app, 0), 1, "a prime block decodes at Full");
+    app.config.motion = Motion::Reduced;
+    assert_eq!(block(&mut app, 0), 0, "nothing below Full");
+    app.config.motion = Motion::Vivid;
+    assert_eq!(block(&mut app, 2), 1);
+    app.modal = Modal::Help;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.fx.shots.is_empty(), "a modal drops it");
+}
+
+/// A prime block landing names itself on the lattice's top line for a moment, above Reduced
+/// motion only; the panel keeps its corners.
+#[test]
+fn a_prime_block_has_its_moment_on_the_lattice_line() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Chain);
+    let mut prime = app.eco.chain.newest().unwrap().clone();
+    prime.height += 1;
+    prime.order = 0;
+    prime.prime += 1;
+    app.eco.chain.merge(vec![prime.clone()], std::time::Instant::now());
+    let lattice_top = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .find(|r| r.contains("lattice"))
+            .unwrap()
+    };
+    app.config.motion = Motion::Off;
+    assert!(!lattice_top(&mut app).contains("PRIME #"), "still at Motion Off");
+    app.config.motion = Motion::Full;
+    let top = lattice_top(&mut app);
+    assert!(top.contains(&format!("PRIME #{}", wallet_core::amount::group_thousands(&prime.prime.to_string()))), "{top}");
+    assert!(top.contains('▞') && top.trim_end().ends_with('┐'), "stripes to the corner, which stays: {top}");
+}
+
+/// In kitty the lattice is a picture: its lanes become a bitmap placed over held cells, while
+/// the lane names and each chain's number stay text; until the picture is drawn, the cells draw
+/// the lattice.
+#[test]
+fn the_lattice_is_a_picture_where_bitmaps_draw() {
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.tier = super::super::terminal::Tier::Pixels;
+    app.term.caps.cell_px = (10, 20);
+    app.term.plain = false;
+    app.switch(Screen::Chain);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    let text = |term: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+        let b = term.backend().buffer();
+        (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>()
+    };
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(text(&term).iter().any(|r| r.contains("ZONE") && r.contains('●')), "cells first");
+    let mut placed = false;
+    for _ in 0..300 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        app.eco.media.kitty.borrow_mut().clear();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let kitty = app.eco.media.kitty.borrow();
+        if kitty.iter().any(|(r, ..)| r.height == 5 && r.width > 60) {
+            placed = true;
+            break;
+        }
+    }
+    assert!(placed, "the lattice bitmap was placed");
+    let rows = text(&term);
+    let zone = rows.iter().find(|r| r.contains("ZONE")).unwrap();
+    assert!(!zone.contains('●') && zone.contains(super::super::images::RESERVED), "the lanes are held for the picture: {zone}");
+    assert!(zone.contains("#10,515,409"), "the zone's number stays text");
+}
+
+/// A block holding one of this wallet's transactions is marked: `◉` on the zone lane, and a
+/// gutter on its row of the feed.
+#[test]
+fn blocks_with_your_transactions_are_marked() {
+    let (_dir, mut app) = populated_app();
+    let mut a = app.dash.activity[0].clone();
+    a.block = Some(10_515_405);
+    app.dash.activity.push(a);
+    app.switch(Screen::Chain);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let b = term.backend().buffer();
+    let rows: Vec<String> = (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect()).collect();
+    assert_eq!(rows.iter().find(|r| r.contains("ZONE")).unwrap().matches('◉').count(), 1, "one on the lattice");
+    assert!(rows.iter().any(|r| r.contains("▌ 10,515,405")), "its feed row");
+    assert!(!rows.iter().any(|r| r.contains("▌ 10,515,404")));
+}
+
+/// The base fee panel says how much of the fee policy's gas price the newest base fee is, and
+/// says so in words when it is above it.
+#[test]
+fn the_base_fee_is_measured_against_your_fee_policy() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Chain);
+    let title = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height)
+            .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+            .find(|r| r.contains("fee policy ("))
+            .unwrap_or_default()
+    };
+    assert!(title(&mut app).contains("63% of your fee policy (100,000 gwei)"), "{}", title(&mut app));
+    let mut hot = app.eco.chain.newest().unwrap().clone();
+    hot.height += 1;
+    hot.base_fee_wei = 120_000_000_000_000;
+    app.eco.chain.merge(vec![hot], std::time::Instant::now());
+    assert!(title(&mut app).contains("above your fee policy (100,000 gwei)"), "{}", title(&mut app));
+}
+
+/// The swap card shows its route's depth: under the candles for a direct pool, filling the panel
+/// for a route through WQUAI, with the card's own amount's impact.
+#[test]
+fn the_swap_card_shows_its_routes_depth() {
+    use wallet_core::markets::{Pool, PoolToken};
+    use wallet_core::swap::SwapAsset;
+    let (_dir, mut app) = populated_app();
+    app.show_card(Card::Swap);
+    let usdt = SwapAsset::Token { address: "0x0049f7cbca3556c2dfae62aafa7015f99de1b8f5".into(), symbol: "USDT".into(), decimals: 6 };
+    let screen = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height)
+            .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // QUAI → USDT trades directly in the USDT/WQUAI pool: 182,985.5 WQUAI deep, so 1% is
+    // 0.01 · 182,985.5 / 0.99 = 1,848 QUAI.
+    app.eco.swap.from = SwapAsset::Quai;
+    app.eco.swap.to = Some(usdt.clone());
+    app.eco.swap.amount = "5000".into();
+    let text = screen(&mut app);
+    assert!(text.contains("depth this pool") && text.contains("1% 1.8k QUAI   2% 3.7k QUAI   5% 9.6k QUAI"), "{text}");
+    assert!(text.contains("5,000.0000 QUAI moves it 2.66% · noticeable"), "{text}");
+    // WQI → USDT has no pool of its own: through WQI/WQUAI and WQUAI/USDT.
+    let wqi = "0x002b2596ecf05c93a31ff916e8b456df6c77c750";
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
+        pools.push(Pool {
+            address: "0x00aa".into(),
+            token0: PoolToken { address: wqi.into(), symbol: "WQI".into(), decimals: 18 },
+            token1: PoolToken { address: "0x006c3e2aaae5db1bcd11a1a097ce572312eaddbb".into(), symbol: "WQUAI".into(), decimals: 18 },
+            reserve0: 5_000.0,
+            reserve1: 40_000.0,
+            ..Default::default()
+        });
+    }
+    app.eco.swap.from = SwapAsset::Token { address: wqi.into(), symbol: "WQI".into(), decimals: 18 };
+    app.eco.swap.amount = String::new();
+    let text = screen(&mut app);
+    assert!(text.contains("depth through WQUAI") && text.contains("type an amount to see its impact · LP fee 0.6% on top"), "{text}");
+}
+
+/// The day's movers head the pairs list, biggest first, arrow and sign beside the colour; a pool
+/// too shallow to mean anything is left out.
+#[test]
+fn the_days_movers_head_the_pairs_list() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Markets);
+    if let Some((pools, _)) = app.eco.markets_view.pools.value_mut() {
+        for p in pools.iter_mut() {
+            if p.token0.symbol == "QOGE" {
+                p.spot_24h_ago = p.spot_price().map(|s| s / 1.136);
+            }
+        }
+    }
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let b = term.backend().buffer();
+    let row = (0..b.area.height)
+        .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+        .find(|r| r.contains("movers"))
+        .unwrap();
+    assert!(row.contains("QOGE ▲ 13.6%"), "{row}");
+}
+
+/// Where the terminal sizes text, the Markets price is the pair's headline at twice the size, held
+/// cells beneath it, and its quote symbol, change and range beside it; under a modal it is plain.
+#[test]
+fn the_markets_price_is_a_headline_where_text_can_be_sized() {
+    let (_dir, mut app) = populated_app();
+    app.term.caps.text_sizing = true;
+    app.switch(Screen::Markets);
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let big: Vec<_> = app.term.big_text.borrow().iter().map(|b| (b.scale, b.text.clone())).collect();
+    assert!(big.contains(&(2, "0.008744".to_string())), "{big:?}");
+    app.modal = Modal::Help;
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(!app.term.big_text.borrow().iter().any(|b| b.text == "0.008744"), "plain under a modal");
+}
+
+/// The price chart's styles: averages named beside the axis and dotted into free cells, a line
+/// or an area of eighths in place of candles, a log scale marked on the axis, and in kitty the
+/// plot as a picture under text axes.
+#[test]
+fn the_price_chart_draws_its_styles() {
+    use super::super::eco::ChartKind;
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Markets);
+    let grab = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>()
+    };
+    let plain = grab(&mut app);
+    assert!(plain.iter().any(|r| r.contains('▀') || r.contains('▄') || r.contains('█')), "candles by default");
+    app.eco.markets_view.chart.overlays = true;
+    let rows = grab(&mut app);
+    for name in ["· MA20", "· MA50", "· VWAP"] {
+        assert!(rows.iter().any(|r| r.contains(name)), "{name} named");
+    }
+    app.eco.markets_view.chart.overlays = false;
+    app.eco.markets_view.chart.kind = ChartKind::Line;
+    let line = grab(&mut app);
+    // The chart's columns only: the pairs list's icon badges are half blocks too.
+    let chart_rows = |rows: &[String]| rows.iter().skip(5).take(36).map(|r| r.chars().skip(80).collect::<String>()).collect::<String>();
+    assert!(!chart_rows(&line).contains('▀') && chart_rows(&line).chars().any(|c| "▁▂▃▄▅▆▇".contains(c)), "a line of eighths");
+    app.eco.markets_view.chart.log = true;
+    assert!(grab(&mut app).iter().any(|r| r.contains(" log ")), "the axis says log");
+    // In kitty the plot is a picture.
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.tier = super::super::terminal::Tier::Pixels;
+    app.term.caps.cell_px = (10, 20);
+    app.term.plain = false;
+    let mut placed = false;
+    for _ in 0..300 {
+        app.eco.media.kitty.borrow_mut().clear();
+        grab(&mut app);
+        if app.eco.media.kitty.borrow().iter().any(|(r, ..)| r.width > 40 && r.height > 8) {
+            placed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(placed, "the chart was placed as a picture");
+}
+
+/// A pair's row carries its day as a sparkline: rising here, so up-coloured and ending high.
+#[test]
+fn pairs_rows_carry_their_day() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Markets);
+    let now = wallet_core::registry::now();
+    // USDT/WQUAI, token1 per token0 (WQUAI per USDT), falling across the day: QUAI/USDT rises.
+    let points: Vec<(u64, f64)> = (0..24u64).map(|h| (now - 86_400 + h * 3_600, 140.0 - h as f64)).collect();
+    app.eco
+        .markets_view
+        .trends
+        .settle(Ok(std::collections::HashMap::from([("0x0021f5cc862ebb0252ba209266f2fabbc7592e83".to_string(), points)])));
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    let b = term.backend().buffer();
+    let row = (0..b.area.height)
+        .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+        .find(|r| r.contains("QUAI/USDT") && r.contains("$3.33k"))
+        .unwrap();
+    // The pairs column only (the chart beside it has eighths of its own).
+    let spark: String = row.chars().skip(24).take(52).filter(|c| "▁▂▃▄▅▆▇█".contains(*c)).collect();
+    assert_eq!(spark.chars().count(), 8, "{row}");
+    assert!(spark.starts_with('▁') && spark.ends_with('█'), "rising: {spark}");
+}
+
+/// The boot card says what is running while the wallet starts, each line its real state, and
+/// goes once the first dashboard lands, at a key, or at Motion Off.
+#[test]
+fn the_boot_card_says_what_is_starting_and_goes() {
+    let (_dir, mut app) = populated_app();
+    let health = app.dash.health.take();
+    let refreshed = std::mem::take(&mut app.dash.refreshed_at);
+    app.config.motion = Motion::Full;
+    app.fx.boot = Some(std::time::Instant::now());
+    let screen = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let b = term.backend().buffer().clone();
+        (0..b.area.height)
+            .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = screen(&mut app);
+    assert!(text.contains("starting") && text.contains("watch-only"), "{text}");
+    assert!(text.contains("connecting") && text.contains("waiting for the node"), "the node is not answered yet");
+    // The node answers: its lines tick; the accounts are still being read.
+    app.dash.health = health;
+    let text = screen(&mut app);
+    assert!(text.contains("chain id and genesis match") && text.contains("reading"), "{text}");
+    app.dash.refreshed_at = refreshed;
+    assert!(!screen(&mut app).contains("starting"), "gone once the dashboard lands");
+    app.dash.refreshed_at = 0;
+    app.note_input();
+    assert!(!screen(&mut app).contains("starting"), "and at a key");
+    app.fx.boot = Some(std::time::Instant::now());
+    app.config.motion = Motion::Off;
+    assert!(!screen(&mut app).contains("starting"), "never at Motion Off");
+}
+
+/// The board reads as a chat: a sender's sigil and name once per run of their messages, "you"
+/// for your own, a sealed post said to be one, and a quoted line behind a gutter.
+#[test]
+fn the_board_reads_as_a_chat() {
+    let (_dir, mut app) = populated_app();
+    app.config.board_channels = vec!["general".into()];
+    let me = app.dash.accounts[0].address.to_lowercase();
+    let alice = "0x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+    let post = |at: u64, from: &str, kind: u8, body: &str| wallet_core::messages::Post {
+        at,
+        timed: true,
+        block: at,
+        tx: format!("0x{at:064x}"),
+        index: 0,
+        from: from.into(),
+        tag: String::new(),
+        kind,
+        body: body.as_bytes().to_vec(),
+    };
+    // Newest first, as the board keeps them.
+    let posts = vec![
+        post(50, &me, 0, "on my way"),
+        post(40, "0x00cccccccccccccccccccccccccccccccccccccc", 0, "> gm all"),
+        post(30, "0x00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1, "twelve bytes"),
+        post(20, &alice, 0, "and again"),
+        post(10, &alice, 0, "hello"),
+    ];
+    app.eco.board.posts.settle("general".into(), Ok(posts));
+    app.switch(Screen::Board);
+    app.nav.selected = 0;
+    let text = screen_text(&mut app, 160, 48).join("\n");
+    assert_eq!(text.matches("0x00aa…aaaa").count(), 1, "alice's two in a row read as one run:\n{text}");
+    assert!(text.contains("hello") && text.contains("and again"));
+    assert!(text.contains("sealed · 12 bytes"), "{text}");
+    assert!(text.contains("│ gm all"), "a quote behind its gutter");
+    assert!(text.contains(" you ") && text.contains("on my way"));
+}
+
+/// A new head arriving on System › Chain decodes its hash in the head panel (above Reduced).
+#[test]
+fn a_new_head_decodes_its_hash_on_the_chain_screen() {
+    let (_dir, mut app) = populated_app();
+    app.switch(Screen::Chain);
+    app.config.motion = Motion::Full;
+    let mut next = app.eco.chain.newest().unwrap().clone();
+    next.height += 1;
+    next.hash = format!("0x{:064x}", 0xabcdef_u64);
+    app.settle_chain_heads(Ok(vec![next.clone()]));
+    assert!(app.fx.shots.iter().any(|s| s.tag == "head-hash"));
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
+    assert!(app.fx.shots.iter().any(|s| s.tag == "head-hash"), "it found the hash on screen and plays");
+    app.fx.shots.clear();
+    app.config.motion = Motion::Reduced;
+    next.height += 1;
+    app.settle_chain_heads(Ok(vec![next]));
+    assert!(app.fx.shots.is_empty(), "still below Full");
+}
+
+/// Each persona draws its own frames and titles: Ghost's faint frames with bright corner brackets
+/// and `▸ TITLE`, Desk's titles as chips with no gutter, Filament as it was.
+#[test]
+fn personas_draw_their_own_frames_and_titles() {
+    use wallet_core::config::Persona;
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.truecolor = true;
+    app.switch(Screen::Chain);
+    let t = app.theme.clone();
+    let frame = |app: &mut App| {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        term.backend().buffer().clone()
+    };
+    let row_with = |b: &Buffer, needle: &str| {
+        (0..b.area.height).find(|y| (0..b.area.width).map(|x| b[(x, *y)].symbol().to_string()).collect::<String>().contains(needle))
+    };
+    app.config.persona = Persona::Ghost;
+    let b = frame(&mut app);
+    let y = row_with(&b, "▸ LATTICE").expect("Ghost titles are marked and in capitals");
+    let corner = (0..b.area.width).find(|x| b[(*x, y)].symbol() == "┌").unwrap();
+    assert_eq!(b[(corner, y)].fg, t.line_strong, "a bright bracket at the corner");
+    assert_ne!(b[(corner + 6, y)].fg, t.line_strong, "the rest of the frame faint");
+    app.config.persona = Persona::Desk;
+    let b = frame(&mut app);
+    let y = row_with(&b, " lattice ").unwrap();
+    let x = (0..b.area.width).find(|x| b[(*x, y)].symbol() == "l" && b[(*x + 1, y)].symbol() == "a").unwrap();
+    assert_eq!(b[(x, y)].bg, t.dim, "Desk titles are chips");
+    app.config.motion = Motion::Vivid;
+    assert_eq!(app.motion(), Motion::Reduced, "and the desk is calm");
+    app.config.persona = Persona::Filament;
+    assert!(row_with(&frame(&mut app), " lattice ").is_some());
+}
+
+/// tachyonfx trial (`tfx`): a full frame with an effect running over the whole screen, on every
+/// screen at 160×48, stays inside `frame_budget`'s 4 ms p90. An effect rewrites the frame, so
+/// these frames can't take `draw_edges`' relit path; each one is a full draw plus the effect plus
+/// ratatui's diff. Run with `cargo test --release -p quai-terminal-cli frame_budget_with_effects
+/// -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn frame_budget_with_effects() {
+    use super::super::tfx;
+    use tachyonfx::{SimpleRng, fx};
+    let (_dir, mut app) = populated_app();
+    app.theme = super::super::theme::resolve(app.paths.root(), "quai-red", false, false).0;
+    app.term.caps.truecolor = true;
+    app.config.motion = Motion::Vivid;
+    app.term.focused = true;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    let at = |mut v: Vec<u128>, q: usize| {
+        v.sort_unstable();
+        v[v.len() * q / 100]
+    };
+    type Make = fn() -> tachyonfx::Effect;
+    let effects: Vec<(&str, Make)> = vec![
+        ("none", || fx::sleep(1_000_000)),
+        ("dissolve", || fx::dissolve(600).with_rng(SimpleRng::new(3))),
+        ("coalesce", || fx::coalesce(600).with_rng(SimpleRng::new(3))),
+        ("glitch", || tfx::glitch(7, 0.05)),
+        ("evolve_into", || fx::evolve_into(fx::EvolveSymbolSet::Shaded, 600)),
+        ("sweep_in", || fx::sweep_in(tachyonfx::Motion::LeftToRight, 12, 0, ratatui::style::Color::Black, 600)),
+        ("hsl_shift", || fx::hsl_shift(Some([90.0, 0.0, 0.0]), None, 600)),
+        ("decode_kana", || tfx::decode(600, 11, true)),
+    ];
+    // Twenty kept rects, as a busy screen's amounts would be.
+    let keep: Vec<Rect> = (0..20).map(|i| Rect::new(40 + (i % 4) * 30, 6 + i / 4 * 8, 14, 1)).collect();
+    let mut report = Vec::new();
+    let mut worst: Vec<(u128, String)> = Vec::new();
+    for screen in Screen::ALL {
+        app.switch(screen);
+        app.fx.edge_intro = None;
+        app.modal = Modal::None;
+        for _ in 0..3 {
+            term.draw(|f| draw(f, &mut app)).unwrap();
+        }
+        let mut line = format!("{screen:?}:");
+        for (name, make) in &effects {
+            let mut p90 = u128::MAX;
+            let mut p50 = u128::MAX;
+            for round in 0..3u64 {
+                let mut effect = make();
+                let mut times = Vec::new();
+                for i in 0..40u64 {
+                    app.eco.anim.ms = 1_000 + (round * 40 + i) * 150;
+                    if effect.done() {
+                        effect = make();
+                    }
+                    let t = std::time::Instant::now();
+                    term.draw(|f| {
+                        draw(f, &mut app);
+                        let area = f.area();
+                        tfx::apply(&mut effect, 33, f.buffer_mut(), area, &keep);
+                    })
+                    .unwrap();
+                    times.push(t.elapsed().as_micros());
+                }
+                p50 = p50.min(at(times.clone(), 50));
+                p90 = p90.min(at(times, 90));
+            }
+            line.push_str(&format!(" {name} {p50}/{p90}"));
+            worst.push((p90, format!("{screen:?} {name}")));
+        }
+        report.push(line);
+    }
+    worst.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    eprintln!("p50/p90 us per frame\n{}\nworst: {:?}", report.join("\n"), &worst[..5]);
+    let over: Vec<_> = worst.iter().filter(|(us, _)| *us > 4_000).collect();
+    assert!(over.is_empty(), "over the 4 ms frame budget: {over:?}");
 }
 
 /// What the wallet owns is on Home: liquidity positions are holdings rows, their value is in the

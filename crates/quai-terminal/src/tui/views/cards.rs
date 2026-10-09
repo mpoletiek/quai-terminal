@@ -339,6 +339,12 @@ pub fn draw_swap(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     Span::raw(format!("{} {} per {}", fmt_price(price), q.to.symbol(), q.from.symbol())),
                 ));
             }
+            if q.legs.len() <= 1
+                && let Some(spans) = value_split(t, q, inner.width.saturating_sub(super::super::widgets::KV_LABEL as u16 + 4))
+            {
+                q_lines.push(kv(t, "of its value", spans.0));
+                q_lines.push(kv(t, "", spans.1));
+            }
             let filled = ((q.impact_bps as f64 / 500.0) * 10.0).round().clamp(0.0, 10.0) as usize;
             let high = q.impact_bps >= wallet_core::swap::IMPACT_WARN_BPS;
             let impact_color = if high { t.attention } else { t.ok };
@@ -462,10 +468,22 @@ pub(crate) fn draw_swap_chart(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
         let loading = app.eco.markets_view.pools.loading() || app.eco.markets_view.pools.shown().is_none();
         if loading {
             empty_state(f, inner, t, spinner(), "Reading the market…", &[]);
+        } else if let Some((hops, _)) = app.swap_route() {
+            // No direct pool: the route's depth through WQUAI fills the panel instead of a chart.
+            draw_depth(f, app, t, inner, &hops, "through WQUAI");
         } else {
             empty(f, inner, t, Icon::Pool, "No pool trades this pair directly; the router finds a path through WQUAI.", &[]);
         }
         return;
+    };
+    // Tall enough: the pool's depth under its candles.
+    let inner = match app.swap_route() {
+        Some((hops, true)) if inner.height >= 20 => {
+            let [candles, depth] = Layout::vertical([Constraint::Min(10), Constraint::Length(9)]).areas(inner);
+            draw_depth(f, app, t, depth, &hops, "this pool");
+            candles
+        }
+        _ => inner,
     };
     let chart_w = inner.width.saturating_sub(11).max(8);
     let step = if chart_w as usize / 2 >= 24 { 2 } else { 1 };
@@ -474,8 +492,122 @@ pub(crate) fn draw_swap_chart(f: &mut Frame, app: &App, t: &Theme, area: Rect, p
     if cs.is_empty() {
         empty_state(f, inner, t, spinner(), "Reading the pair's history…", &[]);
     } else {
-        draw_candles(f, t, inner, &cs, step, super::super::eco::SWAP_CHART_BUCKET, app.input.pointer.at);
+        draw_candles(f, app, t, inner, &cs, step, super::super::eco::SWAP_CHART_BUCKET, app.input.pointer.at);
     }
+}
+
+/// Where a swap's value at the pools' spot price goes: the minimum the router guarantees, the
+/// rest of what is expected (the slippage allowance), the LP fee and the price impact, as one bar
+/// (each part at least a cell, so a small one is still seen) and in words. Static: it changes
+/// only when the quote does. None when the quote's figures do not add up to a split.
+fn value_split<'a>(t: &Theme, q: &wallet_core::swap::SwapQuote, width: u16) -> Option<(Span<'a>, Span<'a>)> {
+    let out = q.amount_out.parse::<f64>().ok().filter(|v| *v > 0.0)?;
+    let min = q.minimum_out.parse::<f64>().ok()?.min(out);
+    let (fee, impact) = (q.fee_bps as f64 / 10_000.0, q.impact_bps as f64 / 10_000.0);
+    let kept = 1.0 - fee - impact;
+    if !(0.0..=1.0).contains(&kept) || kept <= 0.0 {
+        return None;
+    }
+    // Shares of the value at spot: the output is what is kept after the fee and the impact.
+    let spot = out / kept;
+    let parts = [(min / spot, '█', t.ok), ((out - min) / spot, '▒', t.dim), (fee, '░', t.attention), (impact, '▓', t.danger)];
+    let width = width.clamp(10, 40) as usize;
+    let mut cells: Vec<usize> =
+        parts.iter().map(|(share, ..)| if *share > 0.0 { ((share * width as f64).round() as usize).max(1) } else { 0 }).collect();
+    // The guaranteed part gives up what the small ones were rounded up to.
+    let over = cells.iter().sum::<usize>().saturating_sub(width);
+    cells[0] = cells[0].saturating_sub(over);
+    let bar: String = parts.iter().zip(&cells).map(|((_, ch, _), n)| ch.to_string().repeat(*n)).collect();
+    // One colour per part would need a span each; the bar is the guaranteed part's colour, the
+    // glyphs tell the parts apart, and the words say each share.
+    let words = format!(
+        "{:.1}% guaranteed · {:.1}% more expected · {:.1}% LP fee · {:.2}% impact",
+        parts[0].0 * 100.0,
+        parts[1].0 * 100.0,
+        fee * 100.0,
+        impact * 100.0
+    );
+    Some((Span::styled(bar, Style::default().fg(t.ok)), Span::styled(words, t.dim_style())))
+}
+
+/// A route's depth, the AMM's order book: how much can be paid in before its price moves 1%, 2%
+/// and 5%, the card's own amount's impact, and impact against size on a log scale with the
+/// amount marked. Price impact here leaves the LP fee aside (it is on top, 0.3% a hop).
+fn draw_depth(f: &mut Frame, app: &App, t: &Theme, area: Rect, hops: &[wallet_core::depth::Hop], which: &str) {
+    use wallet_core::depth::{impact, size_for};
+    use wallet_core::pnl::units_text;
+    if area.height < 4 {
+        return;
+    }
+    let pay = app.eco.swap.from.symbol();
+    // Sizes at a glance: 1.8k, 12.5, 0.0341.
+    let size = |v: f64| {
+        if v >= 1_000.0 {
+            amount::compact(v)
+        } else if v >= 1.0 {
+            format!("{v:.1}")
+        } else {
+            units_text(v)
+        }
+    };
+    let fee = wallet_core::swap::LP_FEE_BPS as f64 / 100.0 * hops.len() as f64;
+    let mut ladder = vec![Span::styled(format!("depth {which} · "), t.dim_style())];
+    for level in [0.01, 0.02, 0.05] {
+        if let Some(at) = size_for(hops, level) {
+            ladder.push(Span::styled(format!("{:.0}% ", level * 100.0), t.dim_style()));
+            ladder.push(Span::styled(format!("{} {pay}", size(at)), t.strong_style()));
+            ladder.push(Span::raw("   "));
+        }
+    }
+    let amount = app.eco.swap.amount.trim().replace(',', "").parse::<f64>().ok().filter(|a| *a > 0.0);
+    let yours = amount.map(|a| (a, impact(hops, a)));
+    let note = match yours {
+        Some((a, i)) => {
+            let (word, style) = match i {
+                i if i >= 0.05 => (" · high", Style::default().fg(t.danger)),
+                i if i >= 0.02 => (" · noticeable", Style::default().fg(t.attention)),
+                _ => ("", t.text_style()),
+            };
+            vec![
+                Span::styled(format!("{} {pay} moves it ", units_text(a)), t.dim_style()),
+                Span::styled(format!("{:.2}%{word}", i * 100.0), style),
+                Span::styled(format!("   LP fee {fee:.1}% on top"), t.dim_style()),
+            ]
+        }
+        None => vec![Span::styled(format!("type an amount to see its impact · LP fee {fee:.1}% on top"), t.dim_style())],
+    };
+    f.render_widget(Paragraph::new(vec![Line::from(ladder), Line::from(note)]), Rect { height: 2, ..area });
+    let chart = Rect { y: area.y + 2, height: area.height - 2, ..area };
+    let (Some(lo), Some(hi)) = (size_for(hops, 0.001), size_for(hops, 0.3)) else { return };
+    if chart.height < 3 || lo <= 0.0 {
+        return;
+    }
+    let (x0, x1) = (lo.log10(), hi.log10());
+    let points: Vec<(f64, f64)> =
+        (0..=64).map(|i| x0 + (x1 - x0) * f64::from(i) / 64.0).map(|x| (x, impact(hops, 10f64.powf(x)) * 100.0)).collect();
+    let marker = super::home::chart_marker(app);
+    let mut sets = vec![Dataset::default().graph_type(GraphType::Line).marker(marker).style(Style::default().fg(t.link)).data(&points)];
+    let mark: Vec<(f64, f64)> = yours
+        .filter(|(a, _)| a.log10() >= x0 && a.log10() <= x1)
+        .map(|(a, i)| vec![(a.log10(), 0.0), (a.log10(), i * 100.0)])
+        .unwrap_or_default();
+    if !mark.is_empty() {
+        sets.push(Dataset::default().graph_type(GraphType::Line).marker(marker).style(Style::default().fg(t.focus)).data(&mark));
+    }
+    let widget = Chart::new(sets)
+        .x_axis(
+            Axis::default()
+                .bounds([x0, x1])
+                .labels(vec![Span::styled(size(lo), t.dim_style()), Span::styled(format!("{} {pay}", size(hi)), t.dim_style())])
+                .style(t.dim_style()),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([0.0, 30.0])
+                .labels(vec![Span::styled("0%", t.dim_style()), Span::styled("30%", t.dim_style())])
+                .style(t.dim_style()),
+        );
+    f.render_widget(widget, chart);
 }
 
 /// QUAI ⇄ Qi has two markets: the protocol conversion (one transaction, the controller's rate,
@@ -800,12 +932,18 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         }
     };
     let trade_rows = pnl.fills.len().min(8) as u16;
-    let [summary, positions, trades] = Layout::vertical([
+    // The curve and the per-trade bars where the screen is tall enough to keep the table too.
+    let equity_h = if inner.height >= 30 && pnl.curve.len() >= 2 { (11 + (inner.height - 30) / 2).min(16) } else { 0 };
+    let [summary, equity, positions, trades] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(equity_h),
         Constraint::Min(4),
         Constraint::Length(if inner.height >= 18 { trade_rows + 2 } else { 0 }),
     ])
     .areas(inner);
+    if equity_h > 0 {
+        draw_pnl_equity(f, app, t, Rect { y: equity.y + 1, height: equity.height - 1, ..equity }, pnl);
+    }
     f.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -932,6 +1070,99 @@ pub fn draw_pnl(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             ]));
         }
         f.render_widget(Paragraph::new(lines), trades);
+    }
+}
+
+/// What trading has realized over time, less the fees paid, beside what each trade realized: gains
+/// above the line, losses below it, and a dot for a buy (which realizes nothing). Up and down, not
+/// ok and danger: gains and losses are money moving, not states.
+fn draw_pnl_equity(f: &mut Frame, app: &App, t: &Theme, area: Rect, pnl: &wallet_core::pnl::Pnl) {
+    use wallet_core::pnl::signed_text;
+    let [curve, bars] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).spacing(2).areas(area);
+    let points: Vec<(f64, f64)> = pnl.curve.iter().map(|c| (c.at as f64, c.realized - c.fees)).collect();
+    let last = points.last().map_or(0.0, |p| p.1);
+    let colour = if last >= 0.0 { t.up } else { t.down };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("realized less fees ", t.dim_style()),
+            Span::styled(format!("{} QUAI", num::minus(signed_text(last))), Style::default().fg(colour)),
+        ])),
+        Rect { height: 1, ..curve },
+    );
+    let (x0, x1) = (points.first().map_or(0.0, |p| p.0), points.last().map_or(1.0, |p| p.0));
+    let (lo, hi) = points.iter().fold((0.0f64, 0.0f64), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    let pad = ((hi - lo) * 0.1).max(0.01);
+    let zero = [(x0, 0.0), (x1.max(x0 + 1.0), 0.0)];
+    let marker = super::home::chart_marker(app);
+    let date = |at: f64| {
+        chrono::DateTime::from_timestamp(at as i64, 0)
+            .map(|d| d.with_timezone(&chrono::Local).format("%m-%d").to_string())
+            .unwrap_or_default()
+    };
+    let chart = Chart::new(vec![
+        Dataset::default().graph_type(GraphType::Line).marker(marker).style(t.dim_style()).data(&zero),
+        Dataset::default().graph_type(GraphType::Line).marker(marker).style(Style::default().fg(colour)).data(&points),
+    ])
+    .x_axis(
+        Axis::default()
+            .bounds([x0, x1.max(x0 + 1.0)])
+            .labels(vec![Span::styled(date(x0), t.dim_style()), Span::styled(date(x1), t.dim_style())])
+            .style(t.dim_style()),
+    )
+    .y_axis(
+        Axis::default()
+            .bounds([lo - pad, hi + pad])
+            .labels(vec![
+                Span::styled(num::minus(signed_text(lo)), t.dim_style()),
+                Span::styled(num::minus(signed_text(hi)), t.dim_style()),
+            ])
+            .style(t.dim_style()),
+    );
+    f.render_widget(chart, Rect { y: curve.y + 1, height: curve.height.saturating_sub(1), ..curve });
+    // Per-trade bars, newest on the right: eighths up from the line for a gain, halves down from
+    // it for a loss (the glyph set has no lower eighths), `·` on the line for a buy.
+    let shown: Vec<f64> =
+        pnl.curve.iter().rev().take(bars.width as usize / 2).map(|c| c.trade).collect::<Vec<_>>().into_iter().rev().collect();
+    let best = shown.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-9);
+    f.render_widget(Paragraph::new(Span::styled("each trade", t.dim_style())), Rect { height: 1, ..bars });
+    let field = Rect { y: bars.y + 1, height: bars.height.saturating_sub(1), ..bars };
+    if field.height < 3 {
+        return;
+    }
+    let half = (field.height - 1) / 2;
+    let mid = field.y + half;
+    let buf = f.buffer_mut();
+    for x in field.left()..field.right() {
+        buf.set_string(x, mid, "─", t.dim_style());
+    }
+    const UP: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    for (i, v) in shown.iter().enumerate() {
+        let x = field.right().saturating_sub((shown.len() - i) as u16 * 2);
+        if x < field.left() {
+            continue;
+        }
+        let cells = v.abs() / best * f64::from(half);
+        if v.abs() < 1e-9 {
+            buf.set_string(x, mid, "·", t.dim_style());
+        } else if *v > 0.0 {
+            let eighths = (cells * 8.0).round().max(1.0) as u16;
+            for k in 0..half {
+                let left = eighths.saturating_sub(k * 8);
+                if left == 0 {
+                    break;
+                }
+                buf.set_string(x, mid - 1 - k, UP[(left.min(8) - 1) as usize], Style::default().fg(t.up));
+            }
+        } else {
+            let halves = (cells * 2.0).round().max(1.0) as u16;
+            for k in 0..half {
+                let left = halves.saturating_sub(k * 2);
+                if left == 0 {
+                    break;
+                }
+                buf.set_string(x, mid + 1 + k, if left >= 2 { "█" } else { "▀" }, Style::default().fg(t.down));
+            }
+        }
     }
 }
 
@@ -1398,4 +1629,46 @@ pub fn draw_token_picker(f: &mut Frame, app: &App, t: &Theme, area: Rect, query:
     }
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.raised)), area);
     let _ = f;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 51.94 USDT expected, 51.68 guaranteed, 0.3% LP fee, 2.40% impact: the value at spot is
+    /// 51.94 / 0.973, and each part is its share of it.
+    #[test]
+    fn a_swaps_value_splits_into_what_is_kept_and_what_goes() {
+        let t = Theme::terminal(false);
+        let q = wallet_core::swap::SwapQuote {
+            from: wallet_core::swap::SwapAsset::Quai,
+            to: wallet_core::swap::SwapAsset::Quai,
+            amount_in: "1".into(),
+            amount_out: "51940000".into(),
+            minimum_out: "51680000".into(),
+            slippage_bps: 50,
+            path: vec![],
+            route: vec![],
+            pools: vec![],
+            impact_bps: 240,
+            fee_bps: 30,
+            router: String::new(),
+            allowance: None,
+            approval_needed: false,
+            balance: None,
+            insufficient: false,
+            warnings: vec![],
+            observed_at: 0,
+            liquidity_at: None,
+            legs: vec![],
+        };
+        let (bar, words) = value_split(&t, &q, 40).unwrap();
+        assert_eq!(words.content, "96.8% guaranteed · 0.5% more expected · 0.3% LP fee · 2.40% impact");
+        assert_eq!(bar.content.chars().count(), 40, "{}", bar.content);
+        for part in ['█', '▒', '░', '▓'] {
+            assert!(bar.content.contains(part), "every non-zero part is seen: {}", bar.content);
+        }
+        let none = wallet_core::swap::SwapQuote { amount_out: "0".into(), ..q };
+        assert!(value_split(&t, &none, 40).is_none());
+    }
 }

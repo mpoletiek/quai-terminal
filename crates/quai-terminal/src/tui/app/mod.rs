@@ -85,7 +85,7 @@ impl Section {
             Section::Nfts => &[Screen::Collected, Screen::Explore, Screen::Listings],
             Section::People => &[Screen::Contacts, Screen::Board],
             Section::Activity => &[Screen::Activity],
-            Section::System => &[Screen::Wallets, Screen::Network, Screen::Settings, Screen::DataSources],
+            Section::System => &[Screen::Wallets, Screen::Network, Screen::Chain, Screen::Settings, Screen::DataSources],
         }
     }
 
@@ -167,12 +167,14 @@ pub enum Screen {
     Wallets,
     Activity,
     Network,
+    /// Quai's hierarchy as this zone sees it: the block lattice, timer and feed.
+    Chain,
     Settings,
     DataSources,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 19] = [
+    pub const ALL: [Screen; 20] = [
         Screen::Home,
         Screen::Qi,
         Screen::Accounts,
@@ -190,6 +192,7 @@ impl Screen {
         Screen::Wallets,
         Screen::Activity,
         Screen::Network,
+        Screen::Chain,
         Screen::Settings,
         Screen::DataSources,
     ];
@@ -1178,6 +1181,10 @@ pub struct Lock {
 pub struct Fx {
     /// Whole-main-area ambient effect (lock screen, easter egg).
     pub ambient: Option<Ceremony>,
+    /// Cell effects running on the frame (`tfx`): the header height's decode.
+    pub shots: Vec<super::tfx::Shot>,
+    /// When the boot card went up (`ui::boot`); none once a key has dismissed it.
+    pub boot: Option<Instant>,
     /// Border draw-in started on the last screen change.
     pub edge_intro: Option<Instant>,
     /// Order of the block behind the last heartbeat: 0 prime, 1 region, 2 zone.
@@ -1249,6 +1256,8 @@ pub struct TermState {
     pub pending_theme_reload: bool,
     /// Session-only theme (QUAI_TERMINAL_THEME); cleared when a theme is chosen.
     pub theme_override: Option<String>,
+    /// A persona for this session only (`QUAI_TERMINAL_PERSONA`), never saved.
+    pub persona_override: Option<wallet_core::config::Persona>,
     /// Session-only plain mode (NO_COLOR, Linux console): no block digits, reduced motion.
     pub plain: bool,
     /// The terminal's own background (OSC 11), when it said.
@@ -1384,6 +1393,8 @@ impl App {
         let mut eco = super::eco::Eco::default();
         eco.swap.slippage_bps = config.swap_slippage_bps;
         eco.swap.deadline_minutes = config.swap_deadline_minutes;
+        // The desk opens its charts with the averages on.
+        eco.markets_view.chart.overlays = config.persona == wallet_core::config::Persona::Desk;
         Self {
             registry: wallet_core::registry::Registry::new(paths.clone()),
             paths,
@@ -1453,6 +1464,8 @@ impl App {
             },
             fx: Fx {
                 ambient: None,
+                shots: Vec::new(),
+                boot: None,
                 edge_intro: None,
                 beat_order: 2,
                 recent_hashes: std::collections::VecDeque::new(),
@@ -1493,6 +1506,7 @@ impl App {
                 kitty: KittyGraphics::default(),
                 pending_theme_reload: false,
                 theme_override: None,
+                persona_override: None,
                 plain: false,
                 background: None,
                 last_size: (80, 24),
@@ -1529,12 +1543,18 @@ impl App {
         }
     }
 
+    /// The persona the terminal is drawn in: the session's, else the saved one.
+    pub fn persona(&self) -> wallet_core::config::Persona {
+        self.term.persona_override.unwrap_or(self.config.persona)
+    }
+
     pub fn motion(&self) -> Motion {
         // Plain is still: a screen reader has nothing to gain from motion, and every frame it
         // would cost is one more thing re-read.
         if self.term.plain {
             Motion::Off
-        } else if self.term.caps.ssh && self.config.motion.effects() {
+        } else if (self.term.caps.ssh || self.persona() == wallet_core::config::Persona::Desk) && self.config.motion.effects() {
+            // Over SSH every frame crosses the link; at the desk, nothing should pull the eye.
             Motion::Reduced
         } else {
             self.config.motion
@@ -1723,6 +1743,7 @@ impl App {
             || self.fx.drawer_flash.values().any(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
             || self.fx.gutter_flash.is_some_and(|s| s.elapsed().as_millis() < super::edge::FLASH_MS)
             || self.fx.ambient.is_some()
+            || !self.fx.shots.is_empty()
             || self.lock.fade.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() < 500)
             || matches!(self.modal, Modal::Effects(_))
     }
@@ -1730,6 +1751,7 @@ impl App {
     /// Input arrived: the screen's auto-lock starts over, and the engine's with it.
     pub(crate) fn note_input(&mut self) {
         self.input.last_input = Instant::now();
+        self.fx.boot = None;
         if let Some(w) = &self.worker {
             w.activity();
         }
@@ -1845,7 +1867,8 @@ impl App {
     }
 
     /// The window's title: what the wallet is doing, never what it holds. A title is shown in
-    /// task bars, window switchers and screen shares, so it names no balance and no wallet.
+    /// task bars, window switchers and screen shares, so it names no balance and no wallet. With
+    /// nothing to report it follows the chain's height, which is public.
     pub fn window_title(&self) -> String {
         use super::icons::{Icon, Set};
         // Unicode marks: a window manager's title font may have no Nerd Font glyphs.
@@ -1860,7 +1883,18 @@ impl App {
         } else {
             String::new()
         };
-        if status.is_empty() { "Quai Terminal".into() } else { format!("Quai Terminal · {status}") }
+        if !status.is_empty() {
+            return format!("Quai Terminal · {status}");
+        }
+        // With nothing to say, the chain: its height is public, and it shows the window is live.
+        match &self.dash.health {
+            Some(h) if !self.lock.locked => format!(
+                "{} #{} · Cyprus-1 · Quai Terminal",
+                Icon::Region.glyph(Set::Unicode),
+                wallet_core::amount::group_thousands(&h.height.to_string())
+            ),
+            _ => "Quai Terminal".into(),
+        }
     }
 
     /// Taskbar progress (OSC 9;4 state): busy (3) while transactions confirm or one is being
@@ -2316,6 +2350,7 @@ pub fn action_feature(id: &str) -> Option<Feature> {
 pub const SETTINGS: &[(&str, &str)] = &[
     // Appearance
     ("theme", "Theme"),
+    ("persona", "Persona"),
     ("motion", "Motion"),
     ("background", "Background"),
     ("icons", "Icons"),

@@ -1,4 +1,4 @@
- ◆  PREVIEW │ 1 Home 2 3 4 5 6 0 │ ● Local dev │ watch-only       ● 1 unread N
+ ◆  PREVIEW ▖▗ │ 1 Home 2 3 4 5 6 0 │ ● Local dev │ watch-only    ● 1 unread N
  Home ·  Portfolio   Qi coins   Accounts   [ ]
 ┌ qi balance ──────────────────────────────────────────────────────────────────┐
 │ ◉  ■ spendable 240   ■ locked 5   ■ reserved 5   · checkpoint #1,234,560     │

@@ -377,6 +377,35 @@ pub fn trades(events: &[PoolEvent], pool: &Pool, base0: bool) -> Vec<Trade> {
 }
 
 /// `count` candles of `bucket` seconds ending at the bucket containing `now`. Prices come from
+/// The simple moving average of the closes over `n` candles, one per candle; none until there are
+/// `n` to average.
+pub fn sma(candles: &[Candle], n: usize) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut sum = 0.0;
+    for (i, c) in candles.iter().enumerate() {
+        sum += c.close;
+        if i >= n {
+            sum -= candles[i - n].close;
+        }
+        out.push((n > 0 && i + 1 >= n).then(|| sum / n as f64));
+    }
+    out
+}
+
+/// The volume-weighted average price from the first candle shown, one per candle: each bucket's
+/// typical price ((high + low + close) / 3) weighted by its volume. None until something traded.
+pub fn vwap(candles: &[Candle]) -> Vec<Option<f64>> {
+    let (mut pv, mut v) = (0.0, 0.0);
+    candles
+        .iter()
+        .map(|c| {
+            pv += (c.high + c.low + c.close) / 3.0 * c.volume;
+            v += c.volume;
+            (v > 0.0).then(|| pv / v)
+        })
+        .collect()
+}
+
 /// Sync reserves; empty buckets carry the previous close. Buckets before the first known price
 /// are omitted.
 pub fn candles(events: &[PoolEvent], pool: &Pool, base0: bool, bucket: u64, now: u64, count: usize) -> Vec<Candle> {
@@ -2324,6 +2353,16 @@ fn read_dex_flow(ctx: &DataCtx) -> Result<Vec<DexSwap>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn moving_averages_and_vwap_follow_the_candles() {
+        let c = |close: f64, volume: f64| Candle { start: 0, open: close, high: close + 1.0, low: close - 1.0, close, volume, trades: 1 };
+        let cs = [c(10.0, 1.0), c(20.0, 3.0), c(30.0, 0.0), c(40.0, 1.0)];
+        assert_eq!(super::sma(&cs, 2), vec![None, Some(15.0), Some(25.0), Some(35.0)]);
+        // Typical price is the close here (high and low are symmetric): (10·1 + 20·3 + 40·1) / 5.
+        assert_eq!(super::vwap(&cs).last().copied().flatten(), Some(22.0));
+        assert_eq!(super::vwap(&[c(5.0, 0.0)]), vec![None], "nothing traded yet");
+    }
+
     use super::*;
 
     fn market(address: &str, a: &str, b: &str, tvl: f64, venue: Venue) -> Pool {

@@ -130,6 +130,53 @@ blue = "#8888ff"
 magenta = "#ff77ff"
 "##
     ),
+    // An amber monochrome terminal of the trading-floor era: amber text and lines on black, with
+    // states kept apart by hue (the loader pushes meanings apart where the palette is close).
+    theme!(
+        "amber-crt",
+        "Amber CRT",
+        "Terminal",
+        r##"
+mode = "dark"
+accent = "#ffcc33"
+selection = "#3a2604"
+muted = "#a8742a"
+background = "#0a0602"
+lighter_background = "#160e04"
+foreground = "#ffb347"
+bright_foreground = "#ffe0a3"
+red = "#ff5c3a"
+orange = "#ff9a1f"
+yellow = "#ffe066"
+green = "#d8e86a"
+cyan = "#ffd38a"
+blue = "#ffa94d"
+magenta = "#e88a5a"
+"##
+    ),
+    // Green phosphor on black, the hacker's terminal.
+    theme!(
+        "phosphor",
+        "Phosphor",
+        "Terminal",
+        r##"
+mode = "dark"
+accent = "#39ff88"
+selection = "#06301a"
+muted = "#3f9a63"
+background = "#020a05"
+lighter_background = "#06140b"
+foreground = "#7dffb0"
+bright_foreground = "#d4ffe6"
+red = "#ff5f5f"
+orange = "#ffb347"
+yellow = "#e8ff6a"
+green = "#39ff88"
+cyan = "#5ff5d6"
+blue = "#5fd4ff"
+magenta = "#c38cff"
+"##
+    ),
     theme!(
         "tokyo-night",
         "Tokyo Night",

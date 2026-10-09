@@ -512,6 +512,7 @@ pub fn keys_for(id: &str) -> String {
         "contacts" => Some(super::app::Screen::Contacts),
         "data_sources" => Some(super::app::Screen::DataSources),
         "network" => Some(super::app::Screen::Network),
+        "chain" => Some(super::app::Screen::Chain),
         "wrap_qi" | "claim_wqi" | "unwrap_wqi" | "wrap_quai" | "unwrap_quai" => return keymap::chord_to(keymap::Place::Card(Card::Wrap)),
         "quote" | "convert_qi_quai" => return keymap::chord_to(keymap::Place::Card(Card::Convert)),
         _ => None,

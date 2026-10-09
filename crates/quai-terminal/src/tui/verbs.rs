@@ -141,6 +141,9 @@ const MARKETS: ViewKeys = ViewKeys {
         it('w', "watch pair", V(ch('w'))),
         it('a', "alert on pair", V(ch('A'))),
         it('f', "timeframe", V(ch('T'))),
+        it('k', "chart: candles · line · area", V(ch('K'))),
+        it('v', "moving averages and VWAP", V(ch('V'))),
+        it('z', "log scale", V(ch('Z'))),
         it('m', "hide dust in the flow", V(ch('m'))),
         it('l', "sort by TVL", V(ch('L'))),
         it('c', "sort by 24h change", V(ch('M'))),
@@ -392,6 +395,9 @@ const NETWORK: ViewKeys = ViewKeys {
     sheet: &[it('s', "switch to this network", Act(App::screen_enter_pub)), it('m', "monitoring endpoint", V(ch('m')))],
 };
 
+const CHAIN: ViewKeys =
+    ViewKeys { overrides: &[], footer: &[Sheet], sheet: &[it('m', "read the chain from your own node (monitoring endpoint)", V(ch('m')))] };
+
 const SETTINGS: ViewKeys = ViewKeys {
     overrides: &[
         ov(Open, "change · open", Act(App::settings_action)),
@@ -488,6 +494,7 @@ pub fn view_keys(place: Place, detail: Option<&Detail>) -> &'static ViewKeys {
         Screen::Activity => &ACTIVITY,
         Screen::Wallets => &WALLETS,
         Screen::Network => &NETWORK,
+        Screen::Chain => &CHAIN,
         Screen::Settings => &SETTINGS,
         Screen::DataSources => &DATA_SOURCES,
     }

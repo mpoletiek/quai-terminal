@@ -498,6 +498,19 @@ impl Node {
         use quai_sdk::rpc::Transport;
         Ok(self.transport.request(&self.endpoint, method, params).await?)
     }
+
+    /// The JSON-RPC URL this node answers on.
+    pub fn endpoint_url(&self) -> &str {
+        self.endpoint.as_str()
+    }
+
+    /// Several raw calls in one JSON-RPC batch: one answer per request, in order. None when the
+    /// transport does not batch (call [`Node::raw`] for each instead).
+    pub async fn raw_batch(&self, requests: Vec<(&str, serde_json::Value)>) -> Option<Result<Vec<Result<serde_json::Value>>>> {
+        use quai_sdk::rpc::Transport;
+        let answers = self.transport.request_batch(&self.endpoint, requests).await?;
+        Some(answers.map(|items| items.into_iter().map(|r| r.map_err(Into::into)).collect()).map_err(Into::into))
+    }
 }
 
 /// How many blocks behind the network's RPC a monitoring node may be before a review says so.

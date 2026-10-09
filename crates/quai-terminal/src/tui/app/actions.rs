@@ -215,6 +215,14 @@ impl App {
                 self.run_action("lock_gallery");
                 None
             }
+            Some("persona") => {
+                use wallet_core::config::Persona;
+                self.config.persona = cycle(&Persona::ALL, self.persona(), dir);
+                self.term.persona_override = None;
+                let p = self.config.persona;
+                self.eco.markets_view.chart.overlays = p == Persona::Desk;
+                Some(("Persona".into(), format!("{} · {}", p.id(), p.about())))
+            }
             Some("motion") => {
                 self.config.motion = cycle(&[Motion::Vivid, Motion::Full, Motion::Reduced, Motion::Off], self.config.motion, dir);
                 Some(("Motion".into(), format!("{:?}", self.config.motion).to_lowercase()))

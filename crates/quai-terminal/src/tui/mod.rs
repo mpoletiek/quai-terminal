@@ -9,9 +9,11 @@ pub mod eco;
 pub mod edge;
 pub mod fx;
 pub mod glossary;
+pub mod glyphfont;
 pub mod hit;
 pub mod icons;
 pub mod images;
+pub mod kana;
 pub mod keymap;
 pub mod links;
 pub mod num;
@@ -21,9 +23,13 @@ pub mod palette;
 pub mod persist;
 pub mod placeholders;
 pub mod pointer;
+pub mod raster;
+pub mod record;
 pub mod screen;
+pub mod sigil;
 pub mod term;
 pub mod terminal;
+pub mod tfx;
 pub mod theme;
 pub mod themes;
 pub mod ui;
@@ -52,6 +58,13 @@ fn desktop_notice(enabled: bool, focused: bool, listed: bool, daemon_running: bo
 
 /// How long the loop may sleep: until the next thing that needs a frame (an animation step, the
 /// half-second tick, a resize settling), capped so a missed wake is never noticed for long.
+/// How often System › Chain's block timer moves, while it is on screen: tenths, or whole seconds
+/// below Full motion.
+fn chain_timer_step(app: &App) -> Option<u128> {
+    (app.nav.screen == app::Screen::Chain && app.term.focused && !app.lock.locked && app.eco.chain.newest().is_some())
+        .then(|| if app.motion().effects() { 100 } else { 1000 })
+}
+
 fn next_wait(app: &App, animating: bool, last_tick: Instant, resized_at: Option<Instant>) -> Duration {
     const IDLE: Duration = Duration::from_millis(500);
     let mut wait = IDLE.saturating_sub(last_tick.elapsed()).max(Duration::from_millis(1));
@@ -68,6 +81,10 @@ fn next_wait(app: &App, animating: bool, last_tick: Instant, resized_at: Option<
     }
     if let Some(step) = app.eco.anim.step.get().filter(|_| app.term.focused) {
         wait = wait.min(Duration::from_millis(step - app.eco.anim.ms % step).max(Duration::from_millis(15)));
+    }
+    if let Some(step) = chain_timer_step(app) {
+        // Woken twice a step, so the digits turn within half a step of when they should.
+        wait = wait.min(Duration::from_millis(step as u64 / 2));
     }
     if let Some(at) = resized_at {
         wait = wait.min(RESEND_AFTER_RESIZE.saturating_sub(at.elapsed()).max(Duration::from_millis(1)));
@@ -154,6 +171,16 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     let mut theme = theme;
     theme.fit_to_terminal(term.answers.background, caps.ansi8, caps.truecolor);
     let mut app = App::new(ctx.paths.clone(), network_id.clone(), config, theme, caps, meta);
+    // The boot card says what is starting until the first dashboard lands (`ui::boot`).
+    app.fx.boot = Some(Instant::now());
+    // A demo recording, when asked for (`record`): watch-only wallets only.
+    let watch_only = app.meta.as_ref().is_some_and(|m| m.kind == wallet_core::registry::WalletKind::Watch);
+    let mut recorder = std::env::var_os("QW_RECORD").and_then(|p| record::Recorder::new(p.into(), watch_only));
+    // A persona for this session only (the tour's), never saved.
+    app.term.persona_override = std::env::var("QUAI_TERMINAL_PERSONA")
+        .ok()
+        .and_then(|v| wallet_core::config::Persona::ALL.into_iter().find(|p| p.id() == v.trim()));
+    app.eco.markets_view.chart.overlays = app.persona() == wallet_core::config::Persona::Desk;
     // Large pictures go to the terminal as files it reads and deletes, when it is on this machine.
     app.term.kitty.file_dir = terminal::picture_dir(app.term.caps.ssh);
     wallet_core::diag::timing("startup.app_new", startup);
@@ -176,6 +203,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
     let mut last_theme_check = Instant::now();
     // The spinner glyph and the minute last drawn (see the tick and the redraw rules below).
     let mut spinner_drawn = 0u128;
+    let mut chain_timer_drawn = 0u128;
     let mut ages_minute = 0u64;
     let mut last_tick = Instant::now();
     let mut last_size = term.ui.size().map(|s| (s.width, s.height)).unwrap_or((0, 0));
@@ -206,7 +234,7 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         app.poll_copy();
         app.poll_persist();
         // Pictures fitted and encoded off this thread: placed on the next frame.
-        if images::poll_fitted(&app) {
+        if images::poll_fitted(&app) || raster::poll() {
             app.dirty = true;
         }
         app.poll_monitor_check();
@@ -341,6 +369,12 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         if ui::spinning(&app) && ui::spinner_step() != spinner_drawn {
             app.dirty = true;
         }
+        // System › Chain's block timer counts in tenths (whole seconds below Full motion).
+        if let Some(step) = chain_timer_step(&app)
+            && Instant::now().duration_since(startup).as_millis() / step != chain_timer_drawn
+        {
+            app.dirty = true;
+        }
         if let Some(beat) = app.fx.beat
             && beat.elapsed() >= ui::BEAT_PULSE
             && app.last_frame < beat + ui::BEAT_PULSE
@@ -395,6 +429,9 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             if std::mem::take(&mut first_frame) {
                 wallet_core::diag::timing("startup.first_frame", startup);
             }
+            if let (Some(r), Ok(done)) = (recorder.as_mut(), res.as_ref()) {
+                r.frame(done.buffer, app.theme.text, app.theme.surface);
+            }
             if let Err(e) = res {
                 break Err(CoreError::Invalid(format!("draw: {e}")));
             }
@@ -436,6 +473,9 @@ pub async fn run(ctx: Ctx) -> Result<()> {
             }
             app.last_frame = Instant::now();
             spinner_drawn = ui::spinner_step();
+            if let Some(step) = chain_timer_step(&app) {
+                chain_timer_drawn = Instant::now().duration_since(startup).as_millis() / step;
+            }
             app.dirty = false;
             if let Some(req) = app.tasks.clipboard.take() {
                 // The desktop's own tool here, read back; OSC 52 over SSH (see `clipboard`).
@@ -526,6 +566,14 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         for event in events {
             match event {
                 Event::Key(key) => {
+                    if let Some(r) = recorder.as_mut()
+                        && key.kind != crossterm::event::KeyEventKind::Release
+                    {
+                        r.key(&match key.code {
+                            crossterm::event::KeyCode::Char(c) => c.to_string(),
+                            code => format!("{code:?}").to_lowercase(),
+                        });
+                    }
                     if key.kind != crossterm::event::KeyEventKind::Release && wallet_core::diag::enabled() {
                         input_started.get_or_insert_with(Instant::now);
                     }
@@ -597,6 +645,11 @@ pub async fn run(ctx: Ctx) -> Result<()> {
         terminal::clean_picture_files(dir);
     }
     drop(term);
+    if let Some(r) = &recorder
+        && let Err(e) = r.finish()
+    {
+        eprintln!("QW_RECORD: {e}");
+    }
     if let Some(line) = app.quit_receipt() {
         println!("{line}");
     }

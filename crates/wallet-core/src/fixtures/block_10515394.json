@@ -1,0 +1,104 @@
+{
+ "hash": "0x667bbb1670b5f2f10fd61a64467e3008e1dc9b60840a146c26280a48ff59e2ff",
+ "header": {
+  "avgTxFees": "0xe99bb4f7f65574cd",
+  "baseFeePerGas": "0x39de51b6b079",
+  "conversionFlowAmount": "0x56c961923cef42d49",
+  "efficiencyScore": "0x3f",
+  "etxEligibleSlices": "0x0100000000000000000000000000000000000000000000000000000000000000",
+  "etxRollupRoot": "0x8ac3881eb04754216989311d886061b5fc3203ccd932a0bbbf0dce8738bbb8aa",
+  "etxSetRoot": "0x0ff3164d025db398bb6e5f0c92002f35e0c019cfc0896f5e6dbc6a40c1b78ac7",
+  "evmRoot": "0xc4fc415e02098a5bdff7ebc83e114fefda16407948e4c264c246c7a898f3ab2e",
+  "exchangeRate": "0xb815924db8c94800",
+  "expansionNumber": "0x0",
+  "extraData": "0xd88876302e35362e310a88676f312e32372e31856c696e7578",
+  "gasLimit": "0x2faf080",
+  "gasUsed": "0x416e0",
+  "interlinkRootHash": "0xf23090f5b228e3306a0b3f10473c2974cb74aba1fbf50c2d74dad5366550b7e6",
+  "kQuaiDiscount": "0x0",
+  "manifestHash": [
+   "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+   "0x00fb85e8a5536ddaf592883f9b87e195809b8fe5cb5dd8eef9c7799bcd3133e8",
+   "0x00fb85e8a5536ddaf592883f9b87e195809b8fe5cb5dd8eef9c7799bcd3133e8"
+  ],
+  "minerDifficulty": "0xe4c6dbfd45",
+  "number": [
+   "0x237cb3",
+   "0x562c84"
+  ],
+  "outboundEtxsRoot": "0x313960b25bfde5a0a946dbc95d03898a2f1188e39bfad81af6faaca955059ca2",
+  "parentDeltaEntropy": [
+   "0x0",
+   "0x0",
+   "0x0"
+  ],
+  "parentEntropy": [
+   "0x1b88075359caec189093e04e",
+   "0x1b88075359caec189093e04e",
+   "0x1b88075759caec189093e04e"
+  ],
+  "parentHash": [
+   "0x357aeb7915166a57e08b75f786a6ab6711be8bfcee3a28a70557cbcca1dd01cd",
+   "0x357aeb7915166a57e08b75f786a6ab6711be8bfcee3a28a70557cbcca1dd01cd"
+  ],
+  "parentUncledDeltaEntropy": [
+   "0x0",
+   "0x0",
+   "0x0"
+  ],
+  "primeStateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+  "primeTerminusHash": "0x357aeb7915166a57e08b75f786a6ab6711be8bfcee3a28a70557cbcca1dd01cd",
+  "quaiStateSize": "0x145fc",
+  "receiptsRoot": "0xa0017d5ddd037c20c554f067067104f4fe91baf27c2803df4de539d4f737dd23",
+  "regionStateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+  "size": "0x2f6",
+  "stateLimit": "0x2faf080",
+  "stateUsed": "0x0",
+  "thresholdCount": "0x0",
+  "totalFees": "0x0",
+  "transactionsRoot": "0xc335467ac25205f3fe3eb45838f70eba83d23b2eebf57dba193755ffbb8df81f",
+  "uncleHash": "0x4f0d685d946d5126f7b80dd4508cb94434d910aad7906fbf380fd65c720ef7cb",
+  "uncledEntropy": "0x0",
+  "utxoRoot": "0x71746f2f58531ae8be9ccf9d273250699b5b9240b1faf864afd91c287261189a"
+ },
+ "interlinkHashes": [],
+ "order": 1,
+ "outboundEtxs": [
+  "0x00760074510d40002b95e93c45719119a85bdcd8af4b22911a3e8c7d127b5419",
+  "0x007a00068a60813ce569ae473ae6dd0c83836c75b5329b5c2b304c729086ffe4",
+  "0x003c0060cfb0b55773ba2d581a54e9d82d8d3e1f99d3cb39644aca850d33d43e"
+ ],
+ "size": "0x201f",
+ "subManifest": [],
+ "totalEntropy": "0x1b88077e06e45f627e2af52f",
+ "transactions": [
+  "0x0006000b433b071df31c66c4a8b5b3de71c12fdd06f4af1256dc686ffc7e4411",
+  "0x00090028e55194e047641a10ac728bda7f5fc895cd08db290dd32804079942f3",
+  "0x002f003ff2ab7fa782ed37b5ce12d8876171873547707b7228cd0e02d46569a6"
+ ],
+ "uncles": [],
+ "woHeader": {
+  "data": "0x00",
+  "difficulty": "0xd9a9cb2a80",
+  "hash": "0x667bbb1670b5f2f10fd61a64467e3008e1dc9b60840a146c26280a48ff59e2ff",
+  "headerHash": "0x2d6805ba9d528eec412a9aac4abfbbbe8b236f3286432397993ad3e2b0d6ece3",
+  "location": "0x0000",
+  "lock": "0x0",
+  "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "nonce": "0x0000000000000000",
+  "number": "0xa073c2",
+  "parentHash": "0x357aeb7915166a57e08b75f786a6ab6711be8bfcee3a28a70557cbcca1dd01cd",
+  "primaryCoinbase": "0x0011d16c5f4801D8d7B2eD4A84fC98D114Cb85b8",
+  "primeTerminusNumber": "0x237cb2",
+  "timestamp": "0x6ac8221a",
+  "txHash": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+ },
+ "workshares": [
+  {
+   "hash": "0x45e289b98d7f8a133575794b137bc084abd623b1f1fb83ad5e5ba85e4676c47e"
+  },
+  {
+   "hash": "0x6981e5e88c491c4b52452777bf73f6a27e6d3904ee4ab251cc558c159a8064ea"
+  }
+ ]
+}

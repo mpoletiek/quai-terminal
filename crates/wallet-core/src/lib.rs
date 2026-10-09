@@ -3,6 +3,7 @@
 pub mod alerts;
 pub mod anchor;
 pub mod appdb;
+pub mod blocks;
 pub mod capabilities;
 pub mod chainstats;
 pub mod chat;
@@ -14,6 +15,7 @@ pub mod contracts;
 pub mod curve;
 pub mod custody;
 pub mod data;
+pub mod depth;
 pub mod execution;
 pub mod extras;
 pub mod flows;

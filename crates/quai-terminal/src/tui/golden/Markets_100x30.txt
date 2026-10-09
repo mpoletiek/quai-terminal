@@ -1,11 +1,11 @@
- ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+ ◆  PREVIEW ▖▗  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                ● 1 unread N
                         Markets ·  Pairs   Launches   Pools   [ ]
                        ───────────━━━━━━━───────────────────────────────────────────────────────────
   1  Home           • │┌ ▸ pairs · stale/partial source · reserves unverified · TVL $11.9k · 24h …─┐
-                      ││ pair                                            price     24h     TVL/%   │
-▌ 2  Markets          ││ ◆  US QUAI/USDT                                  0.008744 —        $3.33k │
-                      ││ QO ◆  QOGE/QUAI ◈                                0.0₃4062 —       $997.60 │
-  3  Trade            ││ CH ◆  CHEEZ/QUAI ◇                                0.0₄744 —           68% │
+                      ││ pair                                   price              24h     TVL/%   │
+▌ 2  Markets          ││ ◆  US QUAI/USDT                         0.008744          —        $3.33k │
+                      ││ QO ◆  QOGE/QUAI ◈                       0.0₃4062          —       $997.60 │
+  3  Trade            ││ CH ◆  CHEEZ/QUAI ◇                       0.0₄744          —           68% │
                       ││                                                                           │
   4  NFTs           ◧ │└───────────────────────────────────────────────────────────────────────────┘
                       │┌ QUAI/USDT · Quainance · 1h · . timeframe · f flip · t trade · updating… ──┐

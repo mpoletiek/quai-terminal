@@ -1,4 +1,4 @@
- ◆  PREVIEW │ 1 2 Markets 3 4 5 6 0 │ ● Local dev │ watch-only    ● 1 unread N
+ ◆  PREVIEW ▖▗ │ 1 2 Markets 3 4 5 6 0 │ ● Local dev │ watch-only ● 1 unread N
  Markets ·  Pairs   Launches   Pools   [ ]
 ┌ ▸ your liquidity · $435.32 ──────────────────────────────────────────────────┐
 │  WQ WQ WQI/WQUAI        0.40%     $284.10       —                            │

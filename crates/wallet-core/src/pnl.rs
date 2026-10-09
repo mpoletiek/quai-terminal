@@ -116,6 +116,22 @@ pub struct Pnl {
     pub net: f64,
     /// Open positions with no price to mark them at.
     pub unmarked: usize,
+    /// After each fill, oldest first: what had been realized and paid in fees so far, and what
+    /// that fill realized itself. The equity curve and the per-trade bars.
+    #[serde(default)]
+    pub curve: Vec<CurvePoint>,
+}
+
+/// The running totals after one fill.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CurvePoint {
+    pub at: u64,
+    /// Realized so far, in QUAI.
+    pub realized: f64,
+    /// Fees so far (failed trades' included from the start), in QUAI.
+    pub fees: f64,
+    /// What this fill realized (zero for a buy).
+    pub trade: f64,
 }
 
 /// A QUAI total: `1,284.52`, `0.0342`. Display only.
@@ -311,8 +327,11 @@ pub fn marks(pools: &[crate::markets::Pool], wquai: &str) -> HashMap<String, f64
 pub fn compute(fills: &[Fill], failed_fees: f64, marks: &HashMap<String, f64>, held: &HashMap<String, f64>) -> Pnl {
     let mut book: HashMap<String, Position> = HashMap::new();
     let mut fees = failed_fees;
+    let mut curve = Vec::with_capacity(fills.len());
+    let mut realized = 0.0;
     for fill in fills {
         fees += fill.fee;
+        let before = realized;
         let (paid, received): (Vec<&Leg>, Vec<&Leg>) = fill.legs.iter().partition(|l| l.units < 0.0);
         // What was paid, in QUAI: the QUAI itself, and any token at its average cost.
         let mut value = (-fill.quai).max(0.0);
@@ -326,7 +345,9 @@ pub fn compute(fills: &[Fill], failed_fees: f64, marks: &HashMap<String, f64>, h
             // bought, once that is sold. Paid for QUAI, it realizes what it fetched above cost.
             let proceeds = if received.is_empty() { fill.quai.max(0.0) } else { basis };
             if units > 0.0 {
-                p.realized += proceeds * (take / units) - basis;
+                let gain = proceeds * (take / units) - basis;
+                p.realized += gain;
+                realized += gain;
             }
             p.proceeds += proceeds;
             p.cost -= basis;
@@ -347,8 +368,9 @@ pub fn compute(fills: &[Fill], failed_fees: f64, marks: &HashMap<String, f64>, h
             p.spent += share;
             p.incomplete_basis |= !basis_known;
         }
+        curve.push(CurvePoint { at: fill.at, realized, fees, trade: realized - before });
     }
-    let mut pnl = Pnl { fees, fills: fills.iter().rev().cloned().collect(), ..Default::default() };
+    let mut pnl = Pnl { fees, curve, fills: fills.iter().rev().cloned().collect(), ..Default::default() };
     for (_, mut p) in book {
         if let Some(h) = held.get(&p.token).copied()
             && h < p.open
@@ -566,6 +588,20 @@ mod tests {
         assert!(close(pnl.fees, 0.003), "three trades' gas: {}", pnl.fees);
         assert!(close(pnl.net, 50.0 + 300.0 - 0.003));
         assert_eq!(pnl.fills[0].op_id, "s1", "newest first");
+    }
+
+    /// The curve walks the same fills: a point after each, its running totals ending at the
+    /// summary's, a buy realizing nothing and the sale realizing its gain.
+    #[test]
+    fn the_curve_follows_every_fill_to_the_totals() {
+        let ops = [buy("b1", 1, 100, 1000, Some(1000)), buy("b2", 2, 300, 1000, Some(1000)), sell("s1", 3, 500, 150)];
+        let (fills, failed) = fills(&ops, WQUAI);
+        let pnl = compute(&fills, failed, &HashMap::new(), &HashMap::new());
+        assert_eq!(pnl.curve.iter().map(|c| c.at).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert!(close(pnl.curve[0].trade, 0.0) && close(pnl.curve[1].trade, 0.0));
+        assert!(close(pnl.curve[2].trade, 50.0));
+        let last = pnl.curve.last().unwrap();
+        assert!(close(last.realized, pnl.realized) && close(last.fees, pnl.fees));
     }
 
     /// WQUAI is QUAI, a failed trade still cost its gas, and a trade still in flight is no fill.

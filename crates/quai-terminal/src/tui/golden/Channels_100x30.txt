@@ -1,4 +1,4 @@
- ◆  PREVIEW  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                   ● 1 unread N
+ ◆  PREVIEW ▖▗  179,071.75 QUAI │ ● Local dev  #1,234,567 │ watch-only                ● 1 unread N
                         People ·  Contacts   Board   [ ]
                        ──────────━━━━━━━━━━─────────────────────────────────────────────────────────
   1  Home           • │┌ you ──────────────────────────────────────────────────────────────────────┐
@@ -6,8 +6,8 @@
   2  Markets          ││                                                                           │
                       │└───────────────────────────────────────────────────────────────────────────┘
   3  Trade            │┌ ▸ contacts · 1 ───────────────────────────────────────────────────────────┐
-                      ││    name              address              payment code      note          │
-  4  NFTs           ◧ ││ 0  bob               —                    PM8TJcZE…D1SWDD                 │
+                      ││    name                 address              payment code      note       │
+  4  NFTs           ◧ ││ 0  ▖▗ bob               —                    PM8TJcZE…D1SWDD              │
                       ││                                                                           │
 ▌ 5  People           ││                                                                           │
                       ││                                                                           │

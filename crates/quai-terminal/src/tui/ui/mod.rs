@@ -19,6 +19,7 @@ use wallet_core::sdk::U256;
 use wallet_core::session::{short_address, short_code};
 use wallet_core::track::{describe, human_duration};
 
+pub(crate) mod boot;
 pub(crate) mod layout;
 mod lock;
 mod modals;
@@ -45,6 +46,8 @@ std::thread_local! {
     static FRAMED: std::cell::RefCell<Vec<Rect>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Motion is Off: spinners stand still (`◌`) and ask for no frames.
     static STILL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The persona the frame is drawn in (`panel` reads it for titles and padding).
+    static PERSONA: std::cell::Cell<wallet_core::config::Persona> = const { std::cell::Cell::new(wallet_core::config::Persona::Filament) };
 }
 
 /// Whether `rect` lies inside a frame drawn this frame (a modal, a sheet).
@@ -150,16 +153,57 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 
 /// Hairline panel with one cell of horizontal padding; only the focused panel gets the accent.
 pub(crate) fn panel<'a>(t: &Theme, title: &str, focused: bool) -> Block<'a> {
+    use wallet_core::config::Persona;
+    let (padding, title) = match PERSONA.with(std::cell::Cell::get) {
+        // A heads-up display: every title marked and in capitals.
+        Persona::Ghost => {
+            (1, Span::styled(format!(" ▸ {} ", title.to_uppercase()), if focused { t.strong_style().fg(t.focus) } else { t.dim_style() }))
+        }
+        // A trading desk: titles as chips, the lit one in the accent; no gutter inside the frame.
+        Persona::Desk => (
+            0,
+            if focused {
+                Span::styled(format!(" {title} "), Style::default().fg(t.on_accent).bg(t.focus).add_modifier(Modifier::BOLD))
+            } else {
+                Span::styled(format!(" {title} "), Style::default().fg(t.surface).bg(t.dim))
+            },
+        ),
+        Persona::Filament => (
+            1,
+            if focused {
+                Span::styled(format!(" ▸ {title} "), t.strong_style().fg(t.focus))
+            } else {
+                Span::styled(format!(" {title} "), t.dim_style())
+            },
+        ),
+    };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(t.border(focused))
-        .padding(Padding::horizontal(1))
-        .title(if focused {
-            Span::styled(format!(" ▸ {title} "), t.strong_style().fg(t.focus))
-        } else {
-            Span::styled(format!(" {title} "), t.dim_style())
-        })
+        .padding(Padding::horizontal(padding))
+        .title(title)
+}
+
+/// Ghost's frames: every panel but the lit one faded almost to the page, its corners left bright
+/// as brackets (the corner and one cell along each side), the way a heads-up display draws a
+/// box. Truecolor only; elsewhere the frames stay as they are.
+fn ghost_frames(buf: &mut Buffer, t: &Theme) {
+    let Some(faint) = super::edge::fade_to(t.line, t.surface, 0.6) else { return };
+    for p in super::edge::panels(buf, t).into_iter().filter(|p| !p.focused) {
+        let r = p.rect;
+        let (x1, y1) = (r.right() - 1, r.bottom() - 1);
+        let bracket = |x: u16, y: u16| {
+            let near = |a: u16, lo: u16, hi: u16| a <= lo + 1 || a + 1 >= hi;
+            near(x, r.x, x1) && near(y, r.y, y1)
+        };
+        for (x, y) in super::edge::perimeter(r) {
+            let cell = &mut buf[(x, y)];
+            if matches!(cell.symbol(), "─" | "│" | "┌" | "┐" | "└" | "┘") {
+                cell.set_fg(if bracket(x, y) { t.line_strong } else { faint });
+            }
+        }
+    }
 }
 
 pub fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -313,51 +357,7 @@ pub(crate) fn empty_state(f: &mut Frame, area: Rect, t: &Theme, glyph: &str, tex
 
 // ---------------------------------------------------------------- big digits
 
-const DIGITS: [[&str; 3]; 10] = [
-    ["█▀█", "█ █", "▀▀▀"],
-    ["▀█ ", " █ ", "▀▀▀"],
-    ["▀▀█", "█▀▀", "▀▀▀"],
-    ["▀▀█", " ▀█", "▀▀▀"],
-    ["█ █", "▀▀█", "  ▀"],
-    ["█▀▀", "▀▀█", "▀▀▀"],
-    ["█▀▀", "█▀█", "▀▀▀"],
-    ["▀▀█", "  █", "  ▀"],
-    ["█▀█", "█▀█", "▀▀▀"],
-    ["█▀█", "▀▀█", "▀▀▀"],
-];
-
-/// Three-row block digits for the whole part of a grouped number (e.g. "179,071").
-pub fn big_digits(text: &str) -> [String; 3] {
-    let mut rows = [String::new(), String::new(), String::new()];
-    for (i, c) in text.chars().enumerate() {
-        if i > 0 {
-            for r in &mut rows {
-                r.push(' ');
-            }
-        }
-        match c {
-            d @ '0'..='9' => {
-                let g = DIGITS[d as usize - '0' as usize];
-                for (r, part) in rows.iter_mut().zip(g) {
-                    r.push_str(part);
-                }
-            }
-            ',' => {
-                // A stroke from the baseline down: a lone baseline block would read as a decimal
-                // point, and a gap read "1,284" as "1 284".
-                rows[0].push(' ');
-                rows[1].push(' ');
-                rows[2].push('▌');
-            }
-            _ => {
-                for r in &mut rows {
-                    r.push(' ');
-                }
-            }
-        }
-    }
-    rows
-}
+pub use super::glyphfont::big_digits;
 
 /// A balance "hero": big whole part, dim fraction and unit, ledger stripe.
 /// Whether both balances fit as block digits (they share one size).
@@ -388,6 +388,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.theme.icons = app.icon_set();
     SPUN.with(|s| s.set(false));
     STILL.with(|s| s.set(app.motion() == Motion::Off));
+    PERSONA.with(|p| p.set(app.persona()));
     FRAMED.with(|m| m.borrow_mut().clear());
     draw_frame(f, app);
     // Any spinner drawn keeps turning until the frame no longer shows one.
@@ -415,6 +416,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             (b.y..b.y + u16::from(b.scale))
                 .all(|y| (b.x..b.x + b.width()).all(|x| buf.cell((x, y)).is_some_and(|c| c.symbol() == BIG_TEXT_CELL)))
         });
+    }
+    if app.persona() == wallet_core::config::Persona::Ghost {
+        ghost_frames(f.buffer_mut(), &t);
     }
     // The composed content, kept for the frames where only the edge light moves (`draw_edges`),
     // while the edges animate at all.
@@ -679,6 +683,13 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
             }
         }
     }
+    boot::draw(f, app, &t, main);
+    // Cell effects, over the header and the screen but under the footer, modals and toasts.
+    // Dropped rather than paused: one that waited would play late, over something else.
+    if modal_open || !app.term.focused || app.lock.locked || !app.motion().effects() {
+        app.fx.shots.clear();
+    }
+    super::tfx::play(&mut app.fx.shots, f.buffer_mut(), std::time::Instant::now());
     draw_footer(f, app, &t, footer);
     // Before the modal, so its glass dims them with the page.
     draw_scrollbars(f.buffer_mut(), app, &t);
@@ -820,15 +831,26 @@ fn draw_header(f: &mut Frame, app: &App, t: &Theme, area: Rect, show_screen: boo
             ],
         )
     });
-    // With more than one account, which one acts rides beside the name (`@` changes it).
+    // With more than one account, which one acts rides beside the name (`@` changes it), after
+    // its sigil; with one, the sigil alone.
     if d.accounts.len() > 1
         && let Some(active) = d.active_account()
     {
         segs.push(Seg {
             joined: Some(0),
-            targets: vec![(1, Target::Header(HeaderPart::Account))],
-            ..seg(3, vec![Span::styled(" · ", t.dim_style()), Span::styled(truncate(&active.label, 18), t.strong_style())])
+            targets: vec![(3, Target::Header(HeaderPart::Account))],
+            ..seg(
+                3,
+                vec![
+                    Span::styled(" · ", t.dim_style()),
+                    crate::tui::sigil::span(app, t, &active.address),
+                    Span::raw(" "),
+                    Span::styled(truncate(&active.label, 18), t.strong_style()),
+                ],
+            )
         });
+    } else if let Some(active) = d.active_account() {
+        segs.push(Seg { joined: Some(0), ..seg(3, vec![Span::raw(" "), crate::tui::sigil::span(app, t, &active.address)]) });
     }
     // The balance rides beside the name, rounded: this is the glance figure, not the ledger.
     // `$` hides it, for a room with other people in it. It is the first thing to go.

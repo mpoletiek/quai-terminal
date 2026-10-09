@@ -3,6 +3,36 @@ Quai Terminal is a keyboard-first CLI and TUI wallet for Quai Network.
 **This is an alpha.** It is published to be tried, not to be relied on. Read "Before you put funds
 in it" below before doing anything with real money.
 
+## What's new in 0.1.0-alpha.13
+
+This release is about how the terminal looks and what it shows. Nothing about how it signs or
+sends changed.
+
+- **System › Chain** (`g k`, Pro): Quai's hierarchy as your zone sees it. A timer since the last
+  block; the newest head; the block lattice, showing which zone blocks were also region and prime
+  blocks, with yours marked; the entropy each block added; hashrate; the base fee against your fee policy; and
+  a live feed of blocks. It follows new blocks over the node's WebSocket while open, and reads
+  from your own node when you set one (`m`).
+- **Charts.** Markets and the swap card draw candles, a line or an area (`K`), on a log scale
+  (`Z`), with the 20- and 50-bucket moving averages and VWAP (`V`); in kitty and Ghostty as
+  pixels. Every pair carries a sparkline of its day, the day's biggest movers head the list, and
+  in kitty the selected pair's price is set large.
+- **Depth.** The swap card shows how much can be traded before the price moves 1%, 2% and 5%,
+  how far your amount moves it, and, on a quote, how much of the trade's value is guaranteed and
+  what the LP fee and price impact take. It works for routes through WQUAI too.
+- **PnL** charts realized gains less fees over time, and each trade's result. **Orders** shows
+  how far each limit order's price has come toward its target.
+- **Sigils.** Every address carries a small picture drawn from it (in the header, on accounts and
+  contacts, on the board, and beside a review's from and to), so a changed address looks
+  different before you read it. It sits beside the address, never instead of it.
+- **Personas and themes.** Ghost (a heads-up display) and Desk (dense and calm) join the default
+  look, in Settings › Persona; Amber CRT and Phosphor join the themes.
+- **Smaller things.** A card says what is starting while the wallet starts; the board reads as a
+  chat; the window title follows the chain's height when there is nothing to report; the header's
+  block height scrambles and settles as a block lands (`motion = reduced` keeps it still).
+
+0.1.0-alpha.12 is below.
+
 ## What's new in 0.1.0-alpha.12
 
 - **Contract calls no longer run out of gas where the node said they would not.** On Quai, a

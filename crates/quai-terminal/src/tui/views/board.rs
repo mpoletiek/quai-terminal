@@ -299,7 +299,8 @@ pub(crate) fn draw_private_conversation(f: &mut Frame, app: &App, t: &Theme, are
     if lines.is_empty() {
         return empty(f, body, t, Icon::Chat, "Nothing between you yet.", &[("p", "write the first")]);
     }
-    let rows: Vec<(u64, bool, String, Option<String>)> = lines
+    let me = app.dash.active_account().map(|a| a.address.clone()).unwrap_or_default();
+    let rows: Vec<ChatLine> = lines
         .iter()
         .map(|l| {
             let mut text = l.text.clone();
@@ -309,7 +310,8 @@ pub(crate) fn draw_private_conversation(f: &mut Frame, app: &App, t: &Theme, are
             if l.outgoing && l.status != "sent" {
                 text = format!("{text}   · {}", l.status);
             }
-            (l.at, l.outgoing, who.clone(), Some(text))
+            let from = if l.outgoing { me.clone() } else { address.to_string() };
+            ChatLine { at: l.at, mine: l.outgoing, who: who.clone(), from, body: Some(text), sealed: None }
         })
         .collect();
     draw_message_rows(f, app, t, body, &rows);
@@ -485,47 +487,94 @@ pub(crate) fn draw_board_channel(f: &mut Frame, app: &App, t: &Theme, area: Rect
         return empty(f, inner, t, Icon::Chat, "No messages in this channel yet.", &[("enter", "write the first")]);
     }
     let mine: Vec<String> = app.dash.accounts.iter().map(|a| a.address.to_lowercase()).collect();
-    let lines: Vec<(u64, bool, String, Option<String>)> = posts
+    let lines: Vec<ChatLine> = posts
         .iter()
         .map(|p| {
-            let body = match p.text() {
-                Some(text) => Some(text),
-                // A sealed or unreadable body is described, never guessed at.
-                None if p.kind == wallet_core::messages::KIND_TEXT => None,
-                None => Some(format!("<sealed, {} bytes>", p.body.len())),
+            // A sealed or unreadable body is described, never guessed at.
+            let (body, sealed) = match p.text() {
+                Some(text) => (Some(text), None),
+                None if p.kind == wallet_core::messages::KIND_TEXT => (None, None),
+                None => (None, Some(p.body.len())),
             };
             // A post from someone in your contacts reads as their name, not their address.
             let who = app.contact_name_for(&p.from).unwrap_or_else(|| short_address(&p.from));
-            (p.at, mine.contains(&p.from.to_lowercase()), who, body)
+            ChatLine { at: p.at, mine: mine.contains(&p.from.to_lowercase()), who, from: p.from.clone(), body, sealed }
         })
         .collect();
     draw_message_rows(f, app, t, inner, &lines);
 }
 
-/// Messages as a conversation: newest at the bottom, your own marked, and a body that would not
-/// open described rather than guessed at.
-pub(crate) fn draw_message_rows(f: &mut Frame, app: &App, t: &Theme, area: Rect, lines: &[(u64, bool, String, Option<String>)]) {
+/// One message as the conversation shows it.
+pub(crate) struct ChatLine {
+    pub at: u64,
+    pub mine: bool,
+    /// The sender as read: a contact's name, "you", or a short address.
+    pub who: String,
+    /// The sender's address (for its sigil and the colour of its name).
+    pub from: String,
+    /// The text; none when it would not open.
+    pub body: Option<String>,
+    /// A sealed body's size, when it is one.
+    pub sealed: Option<usize>,
+}
+
+/// The colour a sender's name is written in: its sigil's hue, as long as it stays readable on the
+/// page (4.5:1); otherwise the dim text colour.
+fn handle_colour(t: &Theme, address: &str) -> Style {
+    let ((r, g, b), _) = crate::tui::sigil::of(address).colours(t.light);
+    match t.surface {
+        ratatui::style::Color::Rgb(sr, sg, sb) if super::super::theme::contrast((r, g, b), (sr, sg, sb)) >= 4.5 => {
+            Style::default().fg(ratatui::style::Color::Rgb(r, g, b))
+        }
+        _ => t.dim_style(),
+    }
+}
+
+/// Messages as a conversation, newest at the bottom: each sender's sigil and name, in a colour of
+/// their own, once per run of their messages; the text, with a quoted line (`> `) behind a gutter;
+/// how long ago, at the right. A sealed body says so and how big it is; one that would not open
+/// is described, never guessed at. Your own name is "you". One row per message, so the cursor
+/// and what it selects stay one.
+pub(crate) fn draw_message_rows(f: &mut Frame, app: &App, t: &Theme, area: Rect, lines: &[ChatLine]) {
     let height = area.height as usize;
     let cursor = (app.lit_pane() == Some(1)).then(|| app.nav.selected.min(lines.len().saturating_sub(1)));
     let offset = cursor.map_or(lines.len().saturating_sub(height), |c| if c >= height { c + 1 - height } else { 0 });
+    let sigils = crate::tui::sigil::Ctx::of(app);
     let rows: Vec<Row> = lines
         .iter()
         .enumerate()
         .skip(offset)
         .take(height)
-        .map(|(i, (at, mine, from, body))| {
-            let who = if *mine { Span::styled("you", t.strong_style()) } else { Span::styled(from.clone(), t.dim_style()) };
-            let text = match body {
-                Some(text) => Span::styled(text.clone(), if *mine { t.strong_style() } else { t.text_style() }),
-                None => Span::styled("<cannot read this>", t.dim_style()),
+        .map(|(i, line)| {
+            // The same sender as the message above: the run reads as one block.
+            let run = i > offset && lines[i - 1].from.eq_ignore_ascii_case(&line.from);
+            let who = match (run, line.mine) {
+                (true, _) => Line::from(""),
+                (false, true) => Line::from(vec![sigils.span(t, &line.from), Span::raw(" "), Span::styled("you", t.strong_style())]),
+                (false, false) => Line::from(vec![
+                    sigils.span(t, &line.from),
+                    Span::raw(" "),
+                    Span::styled(truncate(&line.who, 12), handle_colour(t, &line.from)),
+                ]),
+            };
+            let text = match (&line.body, line.sealed) {
+                (Some(text), _) if text.starts_with("> ") => {
+                    Line::from(vec![Span::styled("│ ", t.dim_style()), Span::styled(text[2..].to_string(), t.dim_style())])
+                }
+                (Some(text), _) => Line::from(Span::styled(text.clone(), if line.mine { t.strong_style() } else { t.text_style() })),
+                (None, Some(bytes)) => Line::from(vec![
+                    Span::styled(t.lead(Icon::Lock), Style::default().fg(t.qi)),
+                    Span::styled(format!("sealed · {bytes} bytes"), Style::default().fg(t.qi)),
+                ]),
+                (None, None) => Line::from(Span::styled("<cannot read this>", t.dim_style())),
             };
             let row = Row::new(vec![
-                Cell::from(Line::from(Span::styled(flow_age(*at), t.dim_style())).alignment(Alignment::Right)),
-                Cell::from(Line::from(who).alignment(Alignment::Right)),
-                Cell::from(Line::from(text)),
+                Cell::from(who),
+                Cell::from(text),
+                Cell::from(Line::from(Span::styled(flow_age(line.at), t.dim_style())).alignment(Alignment::Right)),
             ]);
             if cursor == Some(i) { row.style(t.selected()) } else { row }
         })
         .collect();
-    f.render_widget(Table::new(rows, [Constraint::Length(5), Constraint::Length(12), Constraint::Min(20)]).column_spacing(1), area);
+    f.render_widget(Table::new(rows, [Constraint::Length(16), Constraint::Min(20), Constraint::Length(5)]).column_spacing(1), area);
 }

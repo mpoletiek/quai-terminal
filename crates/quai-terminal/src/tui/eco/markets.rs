@@ -55,6 +55,39 @@ impl App {
             .map(|p| (p.clone(), p.token0.address.eq_ignore_ascii_case(&pay)))
     }
 
+    /// The swap card's route as constant-product hops, for its depth: the pool that trades the
+    /// pair directly, else the deepest pool from the pay token to WQUAI and the deepest from WQUAI
+    /// to the token received. None when a hop is missing or is a bonding curve (whose price
+    /// moves by its own formula, not x·y = k). True when the route is direct.
+    pub fn swap_route(&self) -> Option<(Vec<wallet_core::depth::Hop>, bool)> {
+        use wallet_core::depth::Hop;
+        use wallet_core::markets::Venue;
+        if let Some((pool, pay0)) = self.swap_pool() {
+            return (pool.venue != Venue::Curve).then(|| (vec![Hop::of(&pool, pay0)], true));
+        }
+        let to = self.eco.swap.to.as_ref()?;
+        let wquai = self.net().and_then(|n| n.wquai.clone())?.to_lowercase();
+        let address = |a: &SwapAsset| match a {
+            SwapAsset::Quai => wquai.clone(),
+            SwapAsset::Token { address, .. } => address.to_lowercase(),
+        };
+        let (pay, get) = (address(&self.eco.swap.from), address(to));
+        let Some(Ok((pools, _))) = self.eco.markets_view.pools.shown() else { return None };
+        // The deepest constant-product pool between two tokens, paying in `from`.
+        let hop = |from: &str, into: &str| {
+            pools
+                .iter()
+                .filter(|p| p.venue != Venue::Curve)
+                .filter(|p| {
+                    let (a, b) = (p.token0.address.to_lowercase(), p.token1.address.to_lowercase());
+                    (a == from && b == into) || (a == into && b == from)
+                })
+                .max_by(|a, b| self.row_tvl_usd(a).unwrap_or(0.0).total_cmp(&self.row_tvl_usd(b).unwrap_or(0.0)))
+                .map(|p| Hop::of(p, p.token0.address.eq_ignore_ascii_case(from)))
+        };
+        Some((vec![hop(&pay, &wquai)?, hop(&wquai, &get)?], false))
+    }
+
     /// Which pair the chart is showing: the cursor while the pairs list has it, else the pair
     /// the cursor left behind when it moved to the flow column.
     pub fn markets_pair(&self) -> usize {
@@ -417,6 +450,28 @@ impl App {
                 }
                 true
             }
+            // The chart's style: candles, line or area; a log scale; averages and the VWAP.
+            KeyCode::Char('K') => {
+                let chart = &mut self.eco.markets_view.chart;
+                chart.kind = chart.kind.next();
+                let label = chart.kind.label();
+                self.info(format!("chart: {label}"));
+                true
+            }
+            KeyCode::Char('Z') => {
+                let chart = &mut self.eco.markets_view.chart;
+                chart.log = !chart.log;
+                let on = chart.log;
+                self.info(if on { "chart: log scale" } else { "chart: linear scale" });
+                true
+            }
+            KeyCode::Char('V') => {
+                let chart = &mut self.eco.markets_view.chart;
+                chart.overlays = !chart.overlays;
+                let on = chart.overlays;
+                self.info(if on { "chart: MA20 · MA50 · VWAP" } else { "chart: averages off" });
+                true
+            }
             KeyCode::Char('T') => {
                 let mv = &mut self.eco.markets_view;
                 mv.timeframe = (mv.timeframe + 1) % wallet_core::markets::TIMEFRAMES.len();
@@ -631,6 +686,21 @@ impl App {
     /// Refresh the pool directory, the DEX-wide tape, live reserves and the selected pool's own
     /// trades. A tick that falls inside a source's cache TTL is served from the store and never
     /// reaches the network, so this paces the screen rather than the network.
+    /// The list's day of hourly prices, for its sparklines: every pair the indexer can know
+    /// (curves trade outside it), at most 200, on `fresh::DAY_TRENDS`'s pace.
+    fn tick_trends(&mut self) {
+        let pairs: Vec<String> = self
+            .market_rows()
+            .iter()
+            .filter(|p| p.venue != wallet_core::markets::Venue::Curve)
+            .take(200)
+            .map(|p| p.address.clone())
+            .collect();
+        if !pairs.is_empty() && self.eco.markets_view.trends.take_due(fresh::DAY_TRENDS, &self.eco.clock) {
+            self.send_data(DataCmd::DayTrends(pairs));
+        }
+    }
+
     pub(crate) fn tick_markets(&mut self) {
         self.unstick_markets();
         // Without a data worker nothing would answer, and the directory would say it is loading
@@ -641,6 +711,7 @@ impl App {
         }
         self.tick_dex_flow();
         self.tick_reserves();
+        self.tick_trends();
         let Some(pool) = self.selected_pool() else { return };
         // Scrolling the list is not a request for every row it passes over. A row is only asked
         // about once the cursor has rested on it, which is what turns a 26-row scroll from one
