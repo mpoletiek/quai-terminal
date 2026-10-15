@@ -7,7 +7,7 @@ version = "0.1.0-alpha.13"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
-repository = "https://github.com/mpoletiek/quai-rust-cli-wallet"
+repository = "https://github.com/mpoletiek/quai-terminal"
 
 [workspace.dependencies]
 quai-sdk = { version = "=0.1.0-alpha.14", features = ["sqlite", "ws", "abi", "payments", "keystore", "backup"] }
