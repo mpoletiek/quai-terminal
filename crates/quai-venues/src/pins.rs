@@ -203,7 +203,7 @@ impl Ecosystem {
             // SHA-256 of the same runtimes matches quai-sdk's fetch_wrapper_bytecode.py pins.
             wqi_code_hash: Some("0xab2ed076d1d3fa4c5a99a450ff7dcfd7e24710348fef0af8cad3b0665e482c4d".into()),
             wquai_code_hash: Some("0x72ebc2d882f6c49aa65b9be06e23d07516f7b34d144e132a154a3105eb2a88a9".into()),
-            // The message board (contracts/Messages.sol in the quai-messages project), deployed
+            // The message board (contracts/Messages.sol in github.com/mpoletiek/quai-messages), deployed
             // 2026-09-16. It has no owner: the key that deployed it holds no power over it.
             messages: Some(PinnedContract::new(
                 "0x0077AD436f63F35D0DeD89055402659750a28D0a",
